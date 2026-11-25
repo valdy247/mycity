@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """My City Studio: local Git synchronization and explicit scene operations."""
-bl_info = {'name':'My City Studio','author':'My City','version':(0,3,0),'blender':(4,2,0),'location':'View3D > Sidebar > My City','description':'Synchronize a local My City repository and apply reviewed scripts','category':'3D View'}
+bl_info = {'name':'My City Studio','author':'My City','version':(0,3,1),'blender':(4,2,0),'location':'View3D > Sidebar > My City','description':'Synchronize a local My City repository and apply reviewed scripts','category':'3D View'}
 import bpy
 from pathlib import Path
 import os, shutil, subprocess, threading, queue, runpy
@@ -292,6 +292,7 @@ def _restore_lod():
 
 def _stop_lod():
     _restore_lod()
+    _restore_sectors()
     _lod.clear()
     _perf_cache.clear()
 
@@ -308,6 +309,75 @@ def _districts(context):
     for lc in _layer_collections(context.view_layer.layer_collection):
         if lc.name.startswith(prefixes) and not lc.exclude:
             yield lc
+
+
+# Optional sector streaming in the viewport. It is intentionally disabled
+# by default because an aerial overview should retain the whole city.
+_sector_hidden = {}
+
+def _restore_sectors():
+    for (scene_name, layer_name, name), pointer in list(_sector_hidden.items()):
+        try:
+            layer = _lookup_layer(scene_name, layer_name)
+            if layer:
+                for lc in _layer_collections(layer.layer_collection):
+                    if lc.name == name and lc.as_pointer() == pointer:
+                        lc.hide_viewport = False
+                        break
+        except (RuntimeError, ReferenceError):
+            pass
+    _sector_hidden.clear()
+
+def _sector_bounds(context):
+    from mathutils import Vector
+    result = []
+    for lc in _districts(context):
+        # Buildings and furniture are valid sectors. Vehicles stay visible;
+        # their interiors and interactivity are handled separately.
+        if not lc.name.startswith(('04 | Casas','05 | Mobiliario','DISTRICT |','DISTRITO |')):
+            continue
+        lo = [float('inf')]*3
+        hi = [float('-inf')]*3
+        for ob in lc.collection.all_objects:
+            if ob.type not in {'MESH','CURVE','FONT','SURFACE'}:
+                continue
+            for corner in ob.bound_box:
+                v = ob.matrix_world @ Vector(corner)
+                for i in range(3):
+                    lo[i] = min(lo[i],v[i])
+                    hi[i] = max(hi[i],v[i])
+        if all(lo[i] <= hi[i] for i in range(3)):
+            result.append((lc.name,lc.as_pointer(),tuple(lo),tuple(hi)))
+    return result
+
+def _update_sectors(win, position, space):
+    sc,layer=win.scene,win.view_layer
+    if not sc.mycity_auto_sectors or space.region_3d.view_perspective == 'CAMERA':
+        changed=bool(_sector_hidden)
+        _restore_sectors()
+        return changed
+    # Only update cached bounds; refresh by restarting LOD after new construction.
+    lookup={lc.name:lc for lc in _layer_collections(layer.layer_collection)}
+    changed=False
+    active=layer.objects.active
+    for name,pointer,lo,hi in _lod.get('sectors',[]):
+        lc=lookup.get(name)
+        if not lc or lc.as_pointer()!=pointer or lc.exclude:
+            continue
+        key=(sc.name,layer.name,name)
+        dist=sum(max(lo[i]-position[i],0,position[i]-hi[i])**2 for i in range(3))**.5
+        # Protect the selected/active asset from being hidden while editing.
+        protected=bool(active and lc.collection.all_objects.get(active.name))
+        if key in _sector_hidden:
+            if protected or dist<sc.mycity_sector_distance*.8:
+                lc.hide_viewport=False
+                del _sector_hidden[key]
+                changed=True
+        elif not protected and dist>sc.mycity_sector_distance and not lc.hide_viewport:
+            lc.hide_viewport=True
+            _sector_hidden[key]=pointer
+            changed=True
+    return changed
 
 def _detail_candidates(scene):
     candidates = []
@@ -351,8 +421,9 @@ def _lod_tick():
         space = area.spaces.active
         # Never simplify a rendered preview, edit mode or local view.
         if space.shading.type == 'RENDERED' or space.local_view or win.view_layer.objects.active and win.view_layer.objects.active.mode != 'OBJECT':
-            if _lod_hidden:
+            if _lod_hidden or _sector_hidden:
                 _restore_lod()
+                _restore_sectors()
                 _perf_cache.clear()
                 area.tag_redraw()
             return .75
@@ -371,7 +442,7 @@ def _lod_tick():
                 van_selected = True
                 break
             active = active.parent
-        changed = False
+        changed = _update_sectors(win, position, space)
         dist_cache = {}
         for name,pointer,root_name in _lod['candidates']:
             ob = layer.objects.get(name)
@@ -416,7 +487,7 @@ class VMV_OT_lod_toggle(bpy.types.Operator):
         else:
             _lod.update(window=context.window.as_pointer(), area=context.area.as_pointer(),
                         scene=context.scene.name, layer=context.view_layer.name,
-                        candidates=_detail_candidates(context.scene))
+                        candidates=_detail_candidates(context.scene), sectors=_sector_bounds(context))
             if not bpy.app.timers.is_registered(_lod_tick):
                 bpy.app.timers.register(_lod_tick, first_interval=.1)
         context.area.tag_redraw()
@@ -430,6 +501,8 @@ class VMV_OT_district_show(bpy.types.Operator):
     def poll(cls, context):
         return perf_view(context) and not _busy
     def execute(self, context):
+        context.scene.mycity_auto_sectors = False
+        _restore_sectors()
         for lc in _districts(context):
             lc.hide_viewport = False
         _perf_cache.clear()
@@ -509,6 +582,11 @@ class VMV_PT_worldperf(bpy.types.Panel):
         layout.label(text='Puertas abiertas: detalle completo.')
         layout.separator()
         layout.label(text='Sectores del visor')
+        layout.prop(context.scene,'mycity_auto_sectors',text='Ocultar sectores lejanos')
+        if context.scene.mycity_auto_sectors:
+            layout.prop(context.scene,'mycity_sector_distance',text='Radio sectores (m)')
+            layout.label(text='Requiere LOD activo; no en camara.')
+            layout.label(text=f'Sectores auto ocultos: {len(_sector_hidden)}')
         for lc in _districts(context):
             row = layout.row(align=True)
             row.prop(lc,'hide_viewport',text='',icon='HIDE_ON' if lc.hide_viewport else 'HIDE_OFF',emboss=False)
@@ -528,6 +606,7 @@ class VMV_PT_worldperf(bpy.types.Panel):
 def _mycity_before_save(*args):
     # Never save temporary LOD hide states into the .blend.
     _restore_lod()
+    _restore_sectors()
 
 @persistent
 def _mycity_before_load(*args):
@@ -541,6 +620,8 @@ def _worldperf_register():
     global _draw_handle
     bpy.types.Scene.mycity_lod_distance = bpy.props.FloatProperty(
         name='Distancia LOD',default=28.0,min=8.0,max=500.0)
+    bpy.types.Scene.mycity_auto_sectors = bpy.props.BoolProperty(name='Sectores automaticos',default=False)
+    bpy.types.Scene.mycity_sector_distance = bpy.props.FloatProperty(name='Radio sectores',default=65.0,min=20.0,max=1000.0)
     bpy.app.handlers.save_pre.append(_mycity_before_save)
     bpy.app.handlers.load_pre.append(_mycity_before_load)
     _draw_handle = bpy.types.SpaceView3D.draw_handler_add(_sample_draw,(), 'WINDOW','POST_PIXEL')
@@ -559,6 +640,8 @@ def _worldperf_unregister():
     _draw_samples.clear()
     _system_stats.clear()
     del bpy.types.Scene.mycity_lod_distance
+    del bpy.types.Scene.mycity_auto_sectors
+    del bpy.types.Scene.mycity_sector_distance
 
 classes=(VMV_OT_sync,VMV_OT_build,VMV_OT_apply,VMV_PT_panel,VMV_OT_perf_refresh,VMV_OT_perf_mode,VMV_PT_performance,VMV_OT_lod_toggle,VMV_OT_district_show,VMV_OT_system_measure,VMV_PT_worldperf)
 def register():
