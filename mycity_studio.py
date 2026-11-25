@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """My City Studio: local Git synchronization and explicit scene operations."""
-bl_info = {'name':'My City Studio','author':'My City','version':(0,2,0),'blender':(4,2,0),'location':'View3D > Sidebar > My City','description':'Synchronize a local My City repository and apply reviewed scripts','category':'3D View'}
+bl_info = {'name':'My City Studio','author':'My City','version':(0,3,0),'blender':(4,2,0),'location':'View3D > Sidebar > My City','description':'Synchronize a local My City repository and apply reviewed scripts','category':'3D View'}
 import bpy
 from pathlib import Path
 import os, shutil, subprocess, threading, queue, runpy
@@ -249,12 +249,325 @@ class VMV_PT_performance(bpy.types.Panel):
         layout.label(text='Visible no significa dentro de camara.')
         layout.label(text='Vuelve a medir tras cada cambio.')
 
-classes=(VMV_OT_sync,VMV_OT_build,VMV_OT_apply,VMV_PT_panel,VMV_OT_perf_refresh,VMV_OT_perf_mode,VMV_PT_performance)
+
+# V0.3: reversible, opt-in distance-based detail visibility.
+# hide_set and LayerCollection.hide_viewport are viewport-only.
+# No mesh modification, no global hide_render, no automatic disk loads.
+from bpy.app.handlers import persistent
+import time
+from collections import deque
+
+_lod = {}
+_lod_hidden = {}
+_draw_samples = {}
+_draw_handle = None
+
+# Only small details of the original van; keep its silhouette, doors,
+# seats, wheels and windows. Future assets may opt in with mycity_lod_detail.
+_DETAIL_PREFIXES = (
+    'Tuerca rueda', 'Anillo rueda', 'Centro llanta', 'Costura cojín',
+    'Guía cabecera', 'Inserto asiento', 'Inserto respaldo', 'Hebilla cinturón',
+    'Botón hebilla', 'Indicador tablero', 'Carátula instrumento',
+    'Control climatización', 'Marca instrumento', 'Aguja indicador',
+    'Interfaz pantalla', 'Inserto banca', 'Anclaje carga', 'Pedal',
+    'Aleta entrada aire', 'Aro proyector', 'Lente proyector',
+    'Borde óptica', 'Detalle defensa', 'Detalle piloto trasero',
+)
+
+def _lookup_layer(scene_name, layer_name):
+    sc = bpy.data.scenes.get(scene_name)
+    return sc.view_layers.get(layer_name) if sc else None
+
+def _restore_lod():
+    # Only undo changes made by this tool, not objects already hidden by the user.
+    for (scene_name, layer_name, obj_name), pointer in list(_lod_hidden.items()):
+        try:
+            layer = _lookup_layer(scene_name, layer_name)
+            ob = layer.objects.get(obj_name) if layer else None
+            if ob and ob.as_pointer() == pointer:
+                ob.hide_set(False, view_layer=layer)
+        except (RuntimeError, ReferenceError):
+            pass
+    _lod_hidden.clear()
+
+def _stop_lod():
+    _restore_lod()
+    _lod.clear()
+    _perf_cache.clear()
+
+def _layer_collections(lc):
+    for child in lc.children:
+        yield child
+        yield from _layer_collections(child)
+
+def _districts(context):
+    # Named asset sectors of district 01 and future DISTRICT collections.
+    # Keep terrain, streets and lighting outside this manager.
+    prefixes = ('01 | VAN', '02 | Autobús', '04 | Casas', '05 | Mobiliario',
+                'DISTRICT |', 'DISTRITO |')
+    for lc in _layer_collections(context.view_layer.layer_collection):
+        if lc.name.startswith(prefixes) and not lc.exclude:
+            yield lc
+
+def _detail_candidates(scene):
+    candidates = []
+    van = scene.objects.get('VAN | CONTROL')
+    if van:
+        # Traverse descendants once; no repeated full-city scans in timer.
+        stack = list(van.children)
+        while stack:
+            ob = stack.pop()
+            stack.extend(ob.children)
+            if ob.type == 'MESH' and ob.name.startswith(_DETAIL_PREFIXES):
+                candidates.append((ob.name, ob.as_pointer(), van.name))
+    seen = {c[0] for c in candidates}
+    for ob in scene.objects:
+        if ob.type == 'MESH' and ob.get('mycity_lod_detail') and ob.name not in seen:
+            candidates.append((ob.name, ob.as_pointer(), ob.name))
+    return candidates
+
+def _viewport_position(space, scene):
+    rv = space.region_3d
+    if rv.view_perspective == 'CAMERA':
+        cam = space.camera if space.use_local_camera else scene.camera
+        if cam:
+            return cam.matrix_world.translation.copy()
+    return rv.view_matrix.inverted().translation.copy()
+
+def _lod_tick():
+    if not _lod:
+        return None
+    try:
+        win = next((w for w in bpy.context.window_manager.windows
+                    if w.as_pointer() == _lod['window']), None)
+        if not win or win.scene.name != _lod['scene'] or win.view_layer.name != _lod['layer']:
+            _stop_lod()
+            return None
+        area = next((a for a in win.screen.areas if a.as_pointer() == _lod['area']
+                     and a.type == 'VIEW_3D'), None)
+        if not area:
+            _stop_lod()
+            return None
+        space = area.spaces.active
+        # Never simplify a rendered preview, edit mode or local view.
+        if space.shading.type == 'RENDERED' or space.local_view or win.view_layer.objects.active and win.view_layer.objects.active.mode != 'OBJECT':
+            if _lod_hidden:
+                _restore_lod()
+                _perf_cache.clear()
+                area.tag_redraw()
+            return .75
+        layer = win.view_layer
+        sc = win.scene
+        position = _viewport_position(space, sc)
+        limit = sc.mycity_lod_distance
+        van = sc.objects.get('VAN | CONTROL')
+        # Keep full van detail when a door is open or its hierarchy is selected.
+        van_open = bool(van and any(isinstance(van[k], (float,int)) and van[k] > .005
+            for k in van.keys() if k[:2] in ('01','02','03','04','05')))
+        van_selected = False
+        active = layer.objects.active
+        while active and van:
+            if active == van:
+                van_selected = True
+                break
+            active = active.parent
+        changed = False
+        dist_cache = {}
+        for name,pointer,root_name in _lod['candidates']:
+            ob = layer.objects.get(name)
+            target = sc.objects.get(root_name)
+            if not ob or not target or ob.as_pointer() != pointer:
+                continue
+            key = (sc.name, layer.name, name)
+            if root_name not in dist_cache:
+                dist_cache[root_name] = (position - target.matrix_world.translation).length
+            dist = dist_cache[root_name]
+            protected = ob.select_get(view_layer=layer) or (van and root_name == van.name and (van_open or van_selected))
+            if key in _lod_hidden:
+                if protected or dist < limit*.8:
+                    ob.hide_set(False, view_layer=layer)
+                    del _lod_hidden[key]
+                    changed = True
+            elif not protected and dist > limit and not ob.hide_get(view_layer=layer):
+                ob.hide_set(True, view_layer=layer)
+                _lod_hidden[key] = pointer
+                changed = True
+        if changed:
+            _perf_cache.clear()
+            area.tag_redraw()
+    except Exception as exc:
+        print('My City LOD paused:', exc)
+        _stop_lod()
+        return None
+    return .75
+
+class VMV_OT_lod_toggle(bpy.types.Operator):
+    bl_idname = 'vmv_city.lod_toggle'
+    bl_label = 'Activar / detener LOD'
+    bl_description = 'LOD por distancia del visor, reversible. No modifica el render'
+    @classmethod
+    def poll(cls, context):
+        return perf_view(context) and not _busy
+    def execute(self, context):
+        if _lod:
+            _stop_lod()
+            if bpy.app.timers.is_registered(_lod_tick):
+                bpy.app.timers.unregister(_lod_tick)
+        else:
+            _lod.update(window=context.window.as_pointer(), area=context.area.as_pointer(),
+                        scene=context.scene.name, layer=context.view_layer.name,
+                        candidates=_detail_candidates(context.scene))
+            if not bpy.app.timers.is_registered(_lod_tick):
+                bpy.app.timers.register(_lod_tick, first_interval=.1)
+        context.area.tag_redraw()
+        return {'FINISHED'}
+
+class VMV_OT_district_show(bpy.types.Operator):
+    bl_idname = 'vmv_city.district_show'
+    bl_label = 'Mostrar todos los sectores'
+    bl_description = 'Hace visibles los sectores gestionados en esta capa de vista'
+    @classmethod
+    def poll(cls, context):
+        return perf_view(context) and not _busy
+    def execute(self, context):
+        for lc in _districts(context):
+            lc.hide_viewport = False
+        _perf_cache.clear()
+        return {'FINISHED'}
+
+# Draw intervals are a proxy for viewport refresh rate, not GPU FPS.
+# No forced redraw; sample only actual draw callbacks.
+def _sample_draw():
+    area = bpy.context.area
+    if area and area.type == 'VIEW_3D':
+        key = area.as_pointer()
+        samples = _draw_samples.setdefault(key, deque(maxlen=120))
+        samples.append(time.monotonic())
+
+def _recent_draw_rate(context):
+    now = time.monotonic()
+    arr = [t for t in _draw_samples.get(context.area.as_pointer(), ()) if now-t < 2.0]
+    if len(arr) < 4 or arr[-1]-arr[0] < .25:
+        return None
+    return (len(arr)-1)/(arr[-1]-arr[0])
+
+def _process_ram_mb():
+    try:
+        if os.name == 'nt':
+            import ctypes as c
+            from ctypes import wintypes as w
+            class PMC(c.Structure):
+                _fields_ = [('cb',w.DWORD),('PageFaultCount',w.DWORD)] + [
+                    (n,c.c_size_t) for n in ('PeakWorkingSetSize','WorkingSetSize',
+                    'QuotaPeakPagedPoolUsage','QuotaPagedPoolUsage','QuotaPeakNonPagedPoolUsage',
+                    'QuotaNonPagedPoolUsage','PagefileUsage','PeakPagefileUsage')]
+            k = c.WinDLL('kernel32',use_last_error=True)
+            p = c.WinDLL('psapi',use_last_error=True)
+            k.GetCurrentProcess.restype = w.HANDLE
+            p.GetProcessMemoryInfo.argtypes = [w.HANDLE,c.POINTER(PMC),w.DWORD]
+            p.GetProcessMemoryInfo.restype = w.BOOL
+            mem = PMC()
+            mem.cb = c.sizeof(mem)
+            if p.GetProcessMemoryInfo(k.GetCurrentProcess(),c.byref(mem),mem.cb):
+                return mem.WorkingSetSize / 1048576
+        elif os.path.isfile('/proc/self/status'):
+            with open('/proc/self/status',encoding='utf-8') as fp:
+                for line in fp:
+                    if line.startswith('VmRSS:'):
+                        return int(line.split()[1])/1024
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+_system_stats = {}
+
+class VMV_OT_system_measure(bpy.types.Operator):
+    bl_idname = 'vmv_city.system_measure'
+    bl_label = 'Medir RAM y redibujado'
+    bl_description = 'RAM residente del proceso y frecuencia reciente de redibujado, no FPS de GPU'
+    @classmethod
+    def poll(cls, context):
+        return perf_view(context)
+    def execute(self, context):
+        _system_stats[perf_key(context)] = (_process_ram_mb(),_recent_draw_rate(context))
+        return {'FINISHED'}
+
+class VMV_PT_worldperf(bpy.types.Panel):
+    bl_label = 'LOD y sectores'
+    bl_idname = 'VMV_PT_worldperf'
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'My City'
+    bl_parent_id = 'VMV_PT_city'
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(context.scene,'mycity_lod_distance',text='Distancia LOD (m)')
+        layout.operator('vmv_city.lod_toggle', text='Detener LOD / restaurar' if _lod else 'Activar LOD automatico')
+        if _lod:
+            layout.label(text=f'Detalles ocultos: {len(_lod_hidden)}')
+        layout.label(text='Selecciona VAN | CONTROL para detalle.')
+        layout.label(text='Puertas abiertas: detalle completo.')
+        layout.separator()
+        layout.label(text='Sectores del visor')
+        for lc in _districts(context):
+            row = layout.row(align=True)
+            row.prop(lc,'hide_viewport',text='',icon='HIDE_ON' if lc.hide_viewport else 'HIDE_OFF',emboss=False)
+            row.label(text=lc.name)
+        layout.operator('vmv_city.district_show')
+        layout.label(text='Ocultar no descarga RAM ni cambia render.')
+        layout.separator()
+        layout.operator('vmv_city.system_measure')
+        stats = _system_stats.get(perf_key(context))
+        if stats is not None:
+            ram,rate = stats
+            layout.label(text='RAM Blender: '+(f'{ram:,.0f} MiB' if ram is not None else 'No disponible'))
+            layout.label(text='Redibujado: '+(f'{rate:.1f}/s aprox.' if rate is not None else 'Mueve el visor y vuelve a medir'))
+        layout.label(text='Redibujado no es FPS de GPU.')
+
+@persistent
+def _mycity_before_save(*args):
+    # Never save temporary LOD hide states into the .blend.
+    _restore_lod()
+
+@persistent
+def _mycity_before_load(*args):
+    _stop_lod()
+    _draw_samples.clear()
+    _system_stats.clear()
+    if bpy.app.timers.is_registered(_lod_tick):
+        bpy.app.timers.unregister(_lod_tick)
+
+def _worldperf_register():
+    global _draw_handle
+    bpy.types.Scene.mycity_lod_distance = bpy.props.FloatProperty(
+        name='Distancia LOD',default=28.0,min=8.0,max=500.0)
+    bpy.app.handlers.save_pre.append(_mycity_before_save)
+    bpy.app.handlers.load_pre.append(_mycity_before_load)
+    _draw_handle = bpy.types.SpaceView3D.draw_handler_add(_sample_draw,(), 'WINDOW','POST_PIXEL')
+
+def _worldperf_unregister():
+    global _draw_handle
+    _stop_lod()
+    if bpy.app.timers.is_registered(_lod_tick):
+        bpy.app.timers.unregister(_lod_tick)
+    if _draw_handle is not None:
+        bpy.types.SpaceView3D.draw_handler_remove(_draw_handle,'WINDOW')
+        _draw_handle=None
+    for handlers,fn in [(bpy.app.handlers.save_pre,_mycity_before_save),(bpy.app.handlers.load_pre,_mycity_before_load)]:
+        if fn in handlers:
+            handlers.remove(fn)
+    _draw_samples.clear()
+    _system_stats.clear()
+    del bpy.types.Scene.mycity_lod_distance
+
+classes=(VMV_OT_sync,VMV_OT_build,VMV_OT_apply,VMV_PT_panel,VMV_OT_perf_refresh,VMV_OT_perf_mode,VMV_PT_performance,VMV_OT_lod_toggle,VMV_OT_district_show,VMV_OT_system_measure,VMV_PT_worldperf)
 def register():
     for cls in classes: bpy.utils.register_class(cls)
     bpy.types.Scene.vmv_repo=bpy.props.StringProperty(name='Repositorio local',subtype='DIR_PATH')
     bpy.types.Scene.vmv_update=bpy.props.StringProperty(name='Archivo de actualización')
+    _worldperf_register()
 def unregister():
+    _worldperf_unregister()
     _perf_cache.clear()
     if bpy.app.timers.is_registered(poll_git): bpy.app.timers.unregister(poll_git)
     del bpy.types.Scene.vmv_repo; del bpy.types.Scene.vmv_update
