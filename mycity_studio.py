@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """My City Studio: local Git synchronization and explicit scene operations."""
-bl_info = {'name':'My City Studio','author':'My City','version':(0,3,1),'blender':(4,2,0),'location':'View3D > Sidebar > My City','description':'Synchronize a local My City repository and apply reviewed scripts','category':'3D View'}
+bl_info = {'name':'My City Studio','author':'My City','version':(0,4,0),'blender':(4,2,0),'location':'View3D > Sidebar > My City','description':'Synchronize a local My City repository and apply reviewed scripts','category':'3D View'}
 import bpy
 from pathlib import Path
 import os, shutil, subprocess, threading, queue, runpy
@@ -643,7 +643,194 @@ def _worldperf_unregister():
     del bpy.types.Scene.mycity_auto_sectors
     del bpy.types.Scene.mycity_sector_distance
 
-classes=(VMV_OT_sync,VMV_OT_build,VMV_OT_apply,VMV_PT_panel,VMV_OT_perf_refresh,VMV_OT_perf_mode,VMV_PT_performance,VMV_OT_lod_toggle,VMV_OT_district_show,VMV_OT_system_measure,VMV_PT_worldperf)
+
+# V0.4 - lightweight construction planning markers and explicit exports.
+import json
+from datetime import datetime, timezone
+from math import degrees
+from mathutils import Vector
+from bpy_extras.io_utils import ExportHelper
+
+_PLAN_TYPES = {
+    'LAGO': ('Lago',(24,18,.30),(.12,.56,.92,1)),
+    'PARQUE': ('Parque',(24,24,.30),(.20,.72,.28,1)),
+    'CASA': ('Casa',(8,10,5),(.92,.60,.25,1)),
+    'EDIFICIO': ('Edificio',(14,14,12),(.65,.44,.90,1)),
+    'GASOLINERA': ('Gasolinera',(20,18,.30),(.91,.25,.16,1)),
+    'ESTACIONAMIENTO': ('Estacionamiento',(18,12,.30),(.68,.72,.77,1)),
+    'OTRO': ('Otro',(10,10,.30),(.94,.79,.18,1)),
+}
+_PLAN_VERTS = [(-.5,-.5,-.5),(.5,-.5,-.5),(.5,.5,-.5),(-.5,.5,-.5),
+               (-.5,-.5,.5),(.5,-.5,.5),(.5,.5,.5),(-.5,.5,.5)]
+_PLAN_EDGES = [(0,1),(1,2),(2,3),(3,0),(4,5),(5,6),(6,7),(7,4),
+               (0,4),(1,5),(2,6),(3,7)]
+
+def _plan_collection(scene):
+    name = '09 | Planificacion urbana'
+    col = scene.collection.children.get(name)
+    if col is None:
+        col = bpy.data.collections.new(name)
+        scene.collection.children.link(col)
+    col.hide_render = True
+    return col
+
+def _is_marker(ob):
+    return bool(ob and ob.get('mycity_plan_type') in _PLAN_TYPES and ob.type=='MESH')
+
+def _plan_markers(scene):
+    return sorted((ob for ob in scene.objects if _is_marker(ob)),key=lambda o:o.name)
+
+def _plan_payload(context):
+    context.view_layer.update()
+    scene=context.scene
+    def rounded(values):
+        return [round(float(x),5) for x in values]
+    markers=[]
+    for ob in _plan_markers(scene):
+        mw=ob.matrix_world.copy()
+        # The eight original cube vertices define the exact world footprint.
+        # Using the transformed vertices also supports rotation and applied scale.
+        if len(ob.data.vertices)!=8:
+            raise ValueError(ob.name+': el marcador debe conservar sus ocho vertices.')
+        corners=[mw@v.co for v in ob.data.vertices]
+        axes=[(corners[b]-corners[a]).length for a,b in [(0,1),(0,3),(0,4)]]
+        center=sum(corners,Vector((0,0,0)))/8
+        rotation=mw.to_quaternion().to_euler('XYZ')
+        markers.append({
+            'name':ob.name,
+            'type':ob['mycity_plan_type'],
+            'note':str(ob.get('mycity_plan_note','')),
+            'center_xyz':rounded(center),
+            'size_local_xyz':rounded(axes),
+            'rotation_xyz_deg':rounded(degrees(a) for a in rotation),
+            'world_corners_xyz':[rounded(c) for c in corners],
+        })
+    return {
+        'schema':'mycity.plan.v1',
+        'scene':scene.name,
+        'coordinate_system':'Blender XYZ, Z up',
+        'unit_system':scene.unit_settings.system,
+        'meters_per_blender_unit':scene.unit_settings.scale_length if scene.unit_settings.system!='NONE' else 1.0,
+        'coordinate_units':'Blender units; default My City uses 1 unit = 1 meter',
+        'markers':markers,
+    }
+
+class VMV_OT_plan_add(bpy.types.Operator):
+    bl_idname='vmv_city.plan_add'
+    bl_label='Agregar marcador'
+    bl_description='Crea una caja guia en el cursor 3D; no construye ni modifica el terreno'
+    bl_options={'REGISTER','UNDO'}
+    kind: bpy.props.EnumProperty(items=[(key,val[0],val[0]) for key,val in _PLAN_TYPES.items()],default='LAGO')
+    @classmethod
+    def poll(cls,context):
+        return perf_view(context) and context.mode=='OBJECT' and not _busy
+    def execute(self,context):
+        label,size,color=_PLAN_TYPES[self.kind]
+        col=_plan_collection(context.scene)
+        n=1
+        while bpy.data.objects.get(f'{self.kind}_{n:02d}'):
+            n+=1
+        name=f'{self.kind}_{n:02d}'
+        me=bpy.data.meshes.new(name+' | guia')
+        me.from_pydata(_PLAN_VERTS,_PLAN_EDGES,[])
+        me.update()
+        ob=bpy.data.objects.new(name,me)
+        col.objects.link(ob)
+        ob.location=context.scene.cursor.location.copy()
+        ob.scale=size
+        # Buildings rise from the cursor; thin footprint markers sit above it.
+        ob.location.z+=size[2]/2
+        ob.color=color
+        ob.show_in_front=True
+        ob.show_name=True
+        ob.display_type='WIRE'
+        ob.hide_render=True
+        ob['mycity_plan_type']=self.kind
+        ob['mycity_plan_note']=''
+        for selected in context.selected_objects:
+            selected.select_set(False)
+        context.view_layer.update()
+        if context.view_layer.objects.get(ob.name) is not None and ob.visible_get(view_layer=context.view_layer):
+            ob.select_set(True)
+            context.view_layer.objects.active=ob
+        else:
+            self.report({'WARNING'},'Marcador creado; muestra la coleccion 09 para seleccionarlo.')
+        _perf_cache.clear()
+        self.report({'INFO'},name+' creado. G mover, S escalar, R rotar.')
+        return {'FINISHED'}
+
+class VMV_OT_plan_copy(bpy.types.Operator):
+    bl_idname='vmv_city.plan_copy'
+    bl_label='Copiar plan para ChatGPT'
+    bl_description='Copia el JSON de todos los marcadores al portapapeles'
+    @classmethod
+    def poll(cls,context):
+        return perf_view(context) and bool(_plan_markers(context.scene))
+    def execute(self,context):
+        try:
+            payload=_plan_payload(context)
+            context.window_manager.clipboard=json.dumps(payload,ensure_ascii=False,indent=2)
+        except Exception as exc:
+            self.report({'ERROR'},str(exc))
+            return {'CANCELLED'}
+        self.report({'INFO'},f'{len(payload["markers"])} marcadores copiados. Pegalos en el chat.')
+        return {'FINISHED'}
+
+class VMV_OT_plan_export(bpy.types.Operator,ExportHelper):
+    bl_idname='vmv_city.plan_export'
+    bl_label='Exportar plan JSON'
+    bl_description='Guarda una copia del plan para compartir; no sube archivos a GitHub'
+    filename_ext='.json'
+    filter_glob: bpy.props.StringProperty(default='*.json',options={'HIDDEN'})
+    @classmethod
+    def poll(cls,context):
+        return perf_view(context) and bool(_plan_markers(context.scene))
+    def invoke(self,context,event):
+        folder=Path(bpy.data.filepath).parent if bpy.data.filepath else Path.home()
+        stamp=datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        self.filepath=str(folder/f'mycity_plan_{stamp}.json')
+        return ExportHelper.invoke(self,context,event)
+    def execute(self,context):
+        try:
+            payload=_plan_payload(context)
+            Path(self.filepath).write_text(json.dumps(payload,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+        except Exception as exc:
+            self.report({'ERROR'},str(exc))
+            return {'CANCELLED'}
+        self.report({'INFO'},f'{len(payload["markers"])} marcadores exportados.')
+        return {'FINISHED'}
+
+class VMV_PT_planner(bpy.types.Panel):
+    bl_label='Planificador urbano'
+    bl_idname='VMV_PT_planner'
+    bl_space_type='VIEW_3D'
+    bl_region_type='UI'
+    bl_category='My City'
+    bl_parent_id='VMV_PT_city'
+    def draw(self,context):
+        layout=self.layout
+        layout.label(text='1. Coloca el cursor 3D (Shift + clic derecho).')
+        grid=layout.grid_flow(columns=2,even_columns=True,align=True)
+        for key,(label,size,color) in _PLAN_TYPES.items():
+            op=grid.operator('vmv_city.plan_add',text=label)
+            op.kind=key
+        layout.label(text='2. G mover | S escalar | R rotar.')
+        layout.label(text='F2 renombra. X elimina una guia.')
+        ob=context.view_layer.objects.active
+        if _is_marker(ob):
+            box=layout.box()
+            box.prop(ob,'name',text='Nombre')
+            box.prop(ob,'location',text='Posicion')
+            box.prop(ob,'dimensions',text='Dimensiones')
+            box.prop(ob,'rotation_euler',text='Rotacion')
+            box.prop(ob,'["mycity_plan_note"]',text='Instrucciones')
+        layout.separator()
+        layout.label(text=f'Marcadores: {len(_plan_markers(context.scene))}')
+        layout.operator('vmv_city.plan_copy',icon='COPYDOWN')
+        layout.operator('vmv_city.plan_export',icon='EXPORT')
+        layout.label(text='Las guias no aparecen en el render.')
+
+classes=(VMV_OT_sync,VMV_OT_build,VMV_OT_apply,VMV_PT_panel,VMV_OT_perf_refresh,VMV_OT_perf_mode,VMV_PT_performance,VMV_OT_lod_toggle,VMV_OT_district_show,VMV_OT_system_measure,VMV_PT_worldperf,VMV_OT_plan_add,VMV_OT_plan_copy,VMV_OT_plan_export,VMV_PT_planner)
 def register():
     for cls in classes: bpy.utils.register_class(cls)
     bpy.types.Scene.vmv_repo=bpy.props.StringProperty(name='Repositorio local',subtype='DIR_PATH')
