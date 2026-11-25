@@ -184,10 +184,10 @@ scene["street_name"]="Cocacola Boulevard"
 cam_data=bpy.data.cameras.new("Valdy Jr TV | Vista general")
 cam=bpy.data.objects.new("CAM 04 | Boulevard completo",cam_data)
 col.objects.link(cam)
-cam.location=(-85,-105,190)
+cam.location=(-20,-170,150)
 cam.rotation_euler=(Vector((0,0,0))-cam.location).to_track_quat('-Z','Y').to_euler()
 cam_data.type='ORTHO'
-cam_data.ortho_scale=300
+cam_data.ortho_scale=320
 cam_data.clip_end=1000
 scene.camera=cam
 for screen in bpy.data.screens:
