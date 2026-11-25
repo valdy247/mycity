@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """My City Studio: local Git synchronization and explicit scene operations."""
-bl_info = {'name':'My City Studio','author':'My City','version':(0,1,0),'blender':(4,2,0),'location':'View3D > Sidebar > My City','description':'Synchronize a local My City repository and apply reviewed scripts','category':'3D View'}
+bl_info = {'name':'My City Studio','author':'My City','version':(0,2,0),'blender':(4,2,0),'location':'View3D > Sidebar > My City','description':'Synchronize a local My City repository and apply reviewed scripts','category':'3D View'}
 import bpy
 from pathlib import Path
 import os, shutil, subprocess, threading, queue, runpy
@@ -113,12 +113,148 @@ class VMV_PT_panel(bpy.types.Panel):
         col.prop(s,'vmv_update',text='Script'); col.label(text='Guarda una copia antes de aplicar.')
         col.operator('vmv_city.apply',icon='PLAY')
 
-classes=(VMV_OT_sync,VMV_OT_build,VMV_OT_apply,VMV_PT_panel)
+
+# Performance tools: explicit snapshots, no polling or background geometry scans.
+_perf_cache = {}
+
+def perf_key(context):
+    return (context.scene.as_pointer(), context.view_layer.as_pointer(),
+            context.area.as_pointer())
+
+def collect_performance(context):
+    total = [0, 0, 0, 0, 0]
+    visible = [0, 0, 0, 0, 0]
+    mesh_cache = {}
+    visible_ids = set()
+    for ob in context.scene.objects:
+        total[0] += 1
+        is_visible = ob.visible_get(view_layer=context.view_layer, viewport=context.space_data)
+        if is_visible:
+            visible[0] += 1
+        if ob.type != 'MESH' or ob.data is None:
+            continue
+        me = ob.data
+        key = me.as_pointer()
+        if key not in mesh_cache:
+            nfaces = len(me.polygons)
+            mesh_cache[key] = (len(me.vertices), nfaces, max(0, len(me.loops)-2*nfaces))
+        counts = mesh_cache[key]
+        total[1] += 1
+        for i, n in enumerate(counts, 2):
+            total[i] += n
+        if is_visible:
+            visible[1] += 1
+            visible_ids.add(key)
+            for i, n in enumerate(counts, 2):
+                visible[i] += n
+    return (total, visible, len(mesh_cache), len(visible_ids))
+
+def perf_view(context):
+    return context.area is not None and context.area.type == 'VIEW_3D'
+
+def perf_mode(context):
+    sh = context.space_data.shading
+    if sh.type == 'RENDERED':
+        return 'ULTRA'
+    if sh.type != 'SOLID' or sh.color_type != 'MATERIAL':
+        return 'CUSTOM'
+    if sh.show_shadows and sh.show_cavity:
+        return 'BALANCED'
+    if not sh.show_shadows and not sh.show_cavity:
+        return 'ECO'
+    return 'CUSTOM'
+
+class VMV_OT_perf_refresh(bpy.types.Operator):
+    bl_idname = 'vmv_city.perf_refresh'
+    bl_label = 'Medir escena'
+    bl_description = 'Cuenta las mallas base de la escena y de la vista, sin evaluar modificadores'
+    @classmethod
+    def poll(cls, context):
+        return perf_view(context) and not _busy
+    def execute(self, context):
+        try:
+            _perf_cache[perf_key(context)] = collect_performance(context)
+        except Exception as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        context.area.tag_redraw()
+        return {'FINISHED'}
+
+class VMV_OT_perf_mode(bpy.types.Operator):
+    bl_idname = 'vmv_city.perf_mode'
+    bl_label = 'Calidad de la vista'
+    bl_description = 'Cambia solo la visualizacion del visor, sin modificar la geometria ni el render final'
+    mode: bpy.props.EnumProperty(items=[
+        ('ECO','Economico','Solid sin sombras ni cavity'),
+        ('BALANCED','Equilibrado','Solid con sombras y cavity'),
+        ('ULTRA','Ultra','Rendered con el motor actual'),
+    ], default='ECO')
+    @classmethod
+    def poll(cls, context):
+        return perf_view(context) and not _busy
+    def execute(self, context):
+        sh = context.space_data.shading
+        if self.mode == 'ULTRA':
+            sh.type = 'RENDERED'
+        else:
+            sh.type = 'SOLID'
+            sh.color_type = 'MATERIAL'
+            sh.light = 'STUDIO'
+            sh.show_shadows = self.mode == 'BALANCED'
+            sh.show_cavity = self.mode == 'BALANCED'
+            if self.mode == 'BALANCED':
+                sh.cavity_type = 'WORLD'
+        # Do not change overlays, selection, materials, modifiers or render settings.
+        context.area.tag_redraw()
+        return {'FINISHED'}
+
+class VMV_PT_performance(bpy.types.Panel):
+    bl_label = 'Performance | Rendimiento'
+    bl_idname = 'VMV_PT_performance'
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'My City'
+    bl_parent_id = 'VMV_PT_city'
+    def draw(self, context):
+        layout = self.layout
+        active = perf_mode(context)
+        row = layout.row(align=True)
+        for mode,label in [('ECO','Eco'),('BALANCED','Equilibrado'),('ULTRA','Ultra')]:
+            op = row.operator('vmv_city.perf_mode', text=label, depress=active==mode)
+            op.mode = mode
+        layout.label(text='Ultra puede ralentizar el visor.')
+        layout.operator('vmv_city.perf_refresh',icon='FILE_REFRESH')
+        data = _perf_cache.get(perf_key(context))
+        if data is None:
+            layout.label(text='Pulsa Medir escena para empezar.')
+            return
+        total,visible,unique,unique_vis = data
+        box = layout.box()
+        row = box.row(align=True)
+        row.label(text='Metrica')
+        row.label(text='Total')
+        row.label(text='Visible')
+        for i,label in enumerate(('Objetos','Obj. malla','Vertices','Caras','Triangulos*')):
+            row = box.row(align=True)
+            row.label(text=label)
+            row.label(text=f'{total[i]:,}')
+            row.label(text=f'{visible[i]:,}')
+        row = box.row(align=True)
+        row.label(text='Mallas unicas')
+        row.label(text=f'{unique:,}')
+        row.label(text=f'{unique_vis:,}')
+        layout.label(text='*Estimacion de malla base.')
+        layout.label(text='Sin modificadores ni instancias GN.')
+        layout.label(text='Visible no significa dentro de camara.')
+        layout.label(text='Vuelve a medir tras cada cambio.')
+
+classes=(VMV_OT_sync,VMV_OT_build,VMV_OT_apply,VMV_PT_panel,VMV_OT_perf_refresh,VMV_OT_perf_mode,VMV_PT_performance)
 def register():
     for cls in classes: bpy.utils.register_class(cls)
     bpy.types.Scene.vmv_repo=bpy.props.StringProperty(name='Repositorio local',subtype='DIR_PATH')
     bpy.types.Scene.vmv_update=bpy.props.StringProperty(name='Archivo de actualización')
 def unregister():
+    _perf_cache.clear()
     if bpy.app.timers.is_registered(poll_git): bpy.app.timers.unregister(poll_git)
     del bpy.types.Scene.vmv_repo; del bpy.types.Scene.vmv_update
     for cls in reversed(classes): bpy.utils.unregister_class(cls)
