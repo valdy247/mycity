@@ -128,7 +128,8 @@ def collect_performance(context):
     visible_ids = set()
     for ob in context.scene.objects:
         total[0] += 1
-        is_visible = ob.visible_get(view_layer=context.view_layer, viewport=context.space_data)
+        is_visible = (context.view_layer.objects.get(ob.name) is not None and
+                      ob.visible_get(view_layer=context.view_layer, viewport=context.space_data))
         if is_visible:
             visible[0] += 1
         if ob.type != 'MESH' or ob.data is None:
