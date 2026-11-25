@@ -1,0 +1,6 @@
+*.blend
+*.blend[0-9]*
+__pycache__/
+*.pyc
+renders/
+.env
