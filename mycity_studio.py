@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """My City Studio: local Git synchronization and explicit scene operations."""
-bl_info = {'name':'My City Studio','author':'My City','version':(0,4,0),'blender':(4,2,0),'location':'View3D > Sidebar > My City','description':'Synchronize a local My City repository and apply reviewed scripts','category':'3D View'}
+bl_info = {'name':'My City Studio','author':'My City','version':(0,5,0),'blender':(4,2,0),'location':'View3D > Sidebar > My City','description':'Synchronize a local My City repository and apply reviewed scripts','category':'3D View'}
 import bpy
 from pathlib import Path
 import os, shutil, subprocess, threading, queue, runpy
@@ -830,7 +830,306 @@ class VMV_PT_planner(bpy.types.Panel):
         layout.operator('vmv_city.plan_export',icon='EXPORT')
         layout.label(text='Las guias no aparecen en el render.')
 
-classes=(VMV_OT_sync,VMV_OT_build,VMV_OT_apply,VMV_PT_panel,VMV_OT_perf_refresh,VMV_OT_perf_mode,VMV_PT_performance,VMV_OT_lod_toggle,VMV_OT_district_show,VMV_OT_system_measure,VMV_PT_worldperf,VMV_OT_plan_add,VMV_OT_plan_copy,VMV_OT_plan_export,VMV_PT_planner)
+
+# V0.5 - modular asset library and terrain-aware placement.
+from math import cos, sin, hypot, sqrt
+from mathutils.bvhtree import BVHTree
+
+_asset_catalog={}
+def _library_files(context):
+    # Refresh after a Git sync or when a different repository is selected.
+    key=(context.scene.vmv_repo,_status)
+    if key not in _asset_catalog:
+        try:
+            folder=root(context)/'assets'
+            result=tuple((p.stem,p.stem.replace('_',' ').capitalize())
+                         for p in sorted(folder.glob('*.py'))
+                         if p.stem.isidentifier() and not p.stem.startswith('_'))
+        except Exception:
+            result=()
+        _asset_catalog.clear()
+        _asset_catalog[key]=result
+    return _asset_catalog[key]
+
+def _asset_terrain(context):
+    ob=context.scene.objects.get('TERRENO | 160 x 220 m')
+    if not ob or ob.type!='MESH':
+        raise ValueError('Se necesita el terreno de la actualizacion 002.')
+    if ob.modifiers:
+        raise ValueError('Este terreno tiene modificadores; no se nivelara.')
+    return ob
+
+def _preview(context):
+    return next((ob for ob in context.scene.objects if ob.get('mycity_asset_state')=='PREVIEW'),None)
+
+def _surface(terrain):
+    mw=terrain.matrix_world.copy()
+    vertices=[mw@v.co for v in terrain.data.vertices]
+    faces=[tuple(p.vertices) for p in terrain.data.polygons]
+    if not vertices or not faces:raise ValueError('Terreno sin geometria.')
+    return vertices,BVHTree.FromPolygons(vertices,faces)
+
+def _ground(tree,x,y):
+    hit,_,_,_=tree.ray_cast(Vector((x,y,10000)),Vector((0,0,-1)),20000)
+    if hit is None:raise ValueError('La ubicacion esta fuera del terreno.')
+    return float(hit.z)
+
+def _asset_ready(context):
+    return perf_view(context) and context.mode=='OBJECT' and not _busy
+
+def _select_asset(context,ob):
+    for selected in context.selected_objects:selected.select_set(False)
+    context.view_layer.update()
+    ob.select_set(True);context.view_layer.objects.active=ob
+
+def _asset_template(context,asset_id):
+    if not asset_id.isidentifier() or asset_id.startswith('_'):
+        raise ValueError('Identificador de modelo no valido.')
+    folder=(root(context)/'assets').resolve()
+    file=(folder/(asset_id+'.py')).resolve()
+    if file.parent!=folder or not file.is_file():
+        raise ValueError('Modelo no encontrado. Sincroniza GitHub.')
+    module=runpy.run_path(str(file))
+    if module.get('ASSET_ID')!=asset_id or not callable(module.get('build')):
+        raise ValueError('Formato de modelo no valido.')
+    width,depth=map(float,module['SIZE'])
+    if not (0<width<=100 and 0<depth<=100):
+        raise ValueError('Dimensiones de modelo no validas.')
+    name=f'MYCITY TEMPLATE | {asset_id} v{int(module["VERSION"])}'
+    col=bpy.data.collections.get(name)
+    if col is None:
+        col=bpy.data.collections.new(name)
+        try:
+            module['build'](col)
+            if not col.objects:raise ValueError('El modelo no contiene geometria.')
+            col.use_fake_user=True
+        except Exception:
+            for ob in list(col.objects):
+                me=ob.data
+                bpy.data.objects.remove(ob,do_unlink=True)
+                if me and isinstance(me,bpy.types.Mesh) and me.users==0:bpy.data.meshes.remove(me)
+            bpy.data.collections.remove(col)
+            raise
+    return col,width,depth,str(module.get('LABEL',asset_id))
+
+class VMV_OT_asset_preview(bpy.types.Operator):
+    bl_idname='vmv_city.asset_preview'
+    bl_label='Previsualizar modelo'
+    bl_description='Carga un modelo sincronizado y lo coloca en el cursor, sin cambiar el suelo'
+    bl_options={'REGISTER','UNDO'}
+    asset_id:bpy.props.StringProperty()
+    @classmethod
+    def poll(cls,context):
+        return _asset_ready(context) and _preview(context) is None
+    def execute(self,context):
+        try:
+            terrain=_asset_terrain(context)
+            _,tree=_surface(terrain)
+            p=context.scene.cursor.location.copy()
+            p.z=_ground(tree,p.x,p.y)+.01
+            col,w,d,label=_asset_template(context,self.asset_id)
+            ob=bpy.data.objects.new(label+' | PREVIEW',None)
+            ob.instance_type='COLLECTION';ob.instance_collection=col
+            ob.empty_display_type='PLAIN_AXES';ob.empty_display_size=1.2
+            ob.show_name=True;ob.hide_render=True
+            ob['mycity_asset_state']='PREVIEW'
+            ob['mycity_asset_id']=self.asset_id
+            ob['mycity_width']=w;ob['mycity_depth']=d
+            context.scene.collection.objects.link(ob)
+            ob.location=p
+            ob.lock_rotation=(True,True,False)
+            _select_asset(context,ob)
+            _perf_cache.clear()
+            self.report({'INFO'},'Modelo listo. G X/Y, R Z; confirma para nivelar.')
+        except Exception as exc:
+            self.report({'ERROR'},str(exc));return {'CANCELLED'}
+        return {'FINISHED'}
+
+class VMV_OT_asset_snap(bpy.types.Operator):
+    bl_idname='vmv_city.asset_snap'
+    bl_label='Ajustar altura al suelo'
+    bl_description='Alinea la previsualizacion con el suelo bajo su centro, sin modificarlo'
+    bl_options={'REGISTER','UNDO'}
+    @classmethod
+    def poll(cls,context):return _asset_ready(context) and _preview(context) is not None
+    def execute(self,context):
+        try:
+            ob=_preview(context)
+            _,tree=_surface(_asset_terrain(context))
+            ob.location.z=_ground(tree,ob.location.x,ob.location.y)+.01
+            _select_asset(context,ob)
+        except Exception as exc:
+            self.report({'ERROR'},str(exc));return {'CANCELLED'}
+        return {'FINISHED'}
+
+def _overlap(a,b):
+    return a[0]<b[2] and a[2]>b[0] and a[1]<b[3] and a[3]>b[1]
+
+def _asset_grade(context,ob):
+    terrain=_asset_terrain(context)
+    context.view_layer.update()
+    if ob.parent or abs(ob.rotation_euler.x)>.001 or abs(ob.rotation_euler.y)>.001:
+        raise ValueError('Usa solo rotacion Z y un modelo sin padre.')
+    sx,sy,sz=ob.scale
+    if min(sx,sy,sz)<.5 or max(sx,sy,sz)>2 or max(sx,sy,sz)-min(sx,sy,sz)>.001:
+        raise ValueError('Usa escala uniforme entre 0.5 y 2.')
+    cx,cy=ob.location.x,ob.location.y
+    angle=ob.rotation_euler.z
+    c,s=cos(angle),sin(angle)
+    a=float(ob['mycity_width'])*sx/2;b=float(ob['mycity_depth'])*sy/2
+    verts,tree=_surface(terrain)
+    # Identify grid spacing so every face under the base becomes flat,
+    # including cells whose corners fall just outside the footprint.
+    xs=sorted(set(round(v.x,4) for v in verts))
+    ys=sorted(set(round(v.y,4) for v in verts))
+    if len(xs)*len(ys)!=len(verts) or len(xs)<2 or len(ys)<2:
+        raise ValueError('Se requiere la cuadricula regular de My City.')
+    cellx=max(y-x for x,y in zip(xs,xs[1:]))
+    celly=max(y-x for x,y in zip(ys,ys[1:]))
+    if max(cellx,celly)>2.1:raise ValueError('Cuadricula demasiado gruesa para nivelar.')
+    flat=hypot(cellx,celly)+.05
+    blend=4.0
+    margin=flat+blend
+    ex=abs(c)*(a+margin)+abs(s)*(b+margin)
+    ey=abs(s)*(a+margin)+abs(c)*(b+margin)
+    bounds=(cx-ex,cy-ey,cx+ex,cy+ey)
+    if bounds[0]<xs[0] or bounds[1]<ys[0] or bounds[2]>xs[-1] or bounds[3]>ys[-1]:
+        raise ValueError('Deja mas espacio entre el modelo y el borde de la ciudad.')
+    # Conservative XY protection: avoid existing built sectors, roads and
+    # grouped vegetation. False positives are intentional for this first release.
+    protected=[
+        (-15,ys[0],15,ys[-1],'Boulevard y casas'),
+        (-53,65,-26,86,'Lago'),
+        (-56,83,-29,100,'Parque'),
+    ]
+    for x0,y0,x1,y1,label in protected:
+        if _overlap(bounds,(x0,y0,x1,y1)):
+            raise ValueError('Zona protegida: '+label+'. Mueve el modelo mas lejos.')
+    for other in context.scene.objects:
+        if other==ob or other==terrain or _is_marker(other):continue
+        if other.get('mycity_asset_state')=='PLACED':
+            prior=other.get('mycity_grade_bounds')
+            if prior and _overlap(bounds,tuple(prior)):
+                raise ValueError('Demasiado cerca de '+other.name)
+        if other.type!='MESH':continue
+        corners=[other.matrix_world@Vector(p) for p in other.bound_box]
+        bb=(min(v.x for v in corners),min(v.y for v in corners),
+            max(v.x for v in corners),max(v.y for v in corners))
+        if _overlap(bounds,bb):
+            raise ValueError('Zona ocupada por '+other.name+'. Elige otro lugar.')
+    heights=[]
+    for i in range(5):
+        for j in range(5):
+            u=a*(i/2-1);v=b*(j/2-1)
+            heights.append(_ground(tree,cx+c*u-s*v,cy+s*u+c*v))
+    level=sum(heights)/len(heights)
+    inv=terrain.matrix_world.inverted()
+    changes=[]
+    for i,v in enumerate(verts):
+        dx,dy=v.x-cx,v.y-cy
+        u=abs(c*dx+s*dy);w=abs(-s*dx+c*dy)
+        distance=hypot(max(0,u-a),max(0,w-b))
+        if distance>=margin:continue
+        t=max(0,min(1,(distance-flat)/blend))
+        t=t*t*(3-2*t)
+        z=level*(1-t)+v.z*t
+        changes.append((i,inv@Vector((v.x,v.y,z))))
+    if not changes:raise ValueError('No se encontro superficie que nivelar.')
+    return terrain,changes,level,bounds
+
+class VMV_OT_asset_place(bpy.types.Operator):
+    bl_idname='vmv_city.asset_place'
+    bl_label='Construir y nivelar terreno'
+    bl_description='Confirma la posicion y crea una plataforma plana con transicion suave; Ctrl+Z deshace'
+    bl_options={'REGISTER','UNDO'}
+    @classmethod
+    def poll(cls,context):return _asset_ready(context) and _preview(context) is not None
+    def invoke(self,context,event):return context.window_manager.invoke_confirm(self,event)
+    def execute(self,context):
+        ob=_preview(context)
+        try:
+            if not bpy.data.filepath:raise ValueError('Guarda primero la ciudad en un archivo .blend.')
+            terrain,changes,level,bounds=_asset_grade(context,ob)
+        except Exception as exc:
+            self.report({'ERROR'},str(exc));return {'CANCELLED'}
+        # Preserve topology/materials and keep the original data until commit.
+        old=terrain.data
+        new=old.copy()
+        try:
+            for i,co in changes:new.vertices[i].co=co
+            new.update()
+        except Exception as exc:
+            bpy.data.meshes.remove(new)
+            self.report({'ERROR'},str(exc));return {'CANCELLED'}
+        new.name='Relieve | Plataforma '+ob['mycity_asset_id']
+        col=bpy.data.collections.new('DISTRITO | '+ob['mycity_asset_id'])
+        context.scene.collection.children.link(col)
+        col.objects.link(ob)
+        context.scene.collection.objects.unlink(ob)
+        terrain.data=new
+        ob.location.z=level+.008
+        ob.name=ob.name.replace(' | PREVIEW',' | Construido')
+        ob.hide_render=False;ob.show_name=False
+        ob['mycity_asset_state']='PLACED'
+        ob['mycity_grade_bounds']=list(bounds)
+        ob.lock_location=(True,True,True)
+        ob.lock_rotation=(True,True,True)
+        ob.lock_scale=(True,True,True)
+        if old.users==0:bpy.data.meshes.remove(old)
+        _perf_cache.clear()
+        self.report({'INFO'},'Construccion colocada. Guarda el archivo.')
+        return {'FINISHED'}
+
+class VMV_OT_asset_cancel(bpy.types.Operator):
+    bl_idname='vmv_city.asset_cancel'
+    bl_label='Cancelar previsualizacion'
+    bl_options={'REGISTER','UNDO'}
+    @classmethod
+    def poll(cls,context):return _asset_ready(context) and _preview(context) is not None
+    def execute(self,context):
+        bpy.data.objects.remove(_preview(context),do_unlink=True)
+        _perf_cache.clear()
+        return {'FINISHED'}
+
+class VMV_OT_asset_select(bpy.types.Operator):
+    bl_idname='vmv_city.asset_select'
+    bl_label='Seleccionar modelo'
+    @classmethod
+    def poll(cls,context):return _asset_ready(context) and _preview(context) is not None
+    def execute(self,context):
+        _select_asset(context,_preview(context))
+        return {'FINISHED'}
+
+class VMV_PT_library(bpy.types.Panel):
+    bl_label='Biblioteca de construcciones'
+    bl_idname='VMV_PT_library'
+    bl_space_type='VIEW_3D'
+    bl_region_type='UI'
+    bl_category='My City'
+    bl_parent_id='VMV_PT_city'
+    def draw(self,context):
+        layout=self.layout
+        ob=_preview(context)
+        if not ob:
+            layout.label(text='1. Coloca el cursor 3D en terreno libre.')
+            layout.label(text='Shift + clic derecho')
+            assets=_library_files(context)
+            if not assets:layout.label(text='Sin modelos. Sincroniza GitHub.')
+            for asset_id,label in assets:
+                op=layout.operator('vmv_city.asset_preview',text=label,icon='MESH_CUBE')
+                op.asset_id=asset_id
+        else:
+            layout.label(text='Previsualizacion: '+ob['mycity_asset_id'])
+            layout.operator('vmv_city.asset_select',icon='RESTRICT_SELECT_OFF')
+            layout.label(text='G X / G Y mover; R Z rotar; S escalar.')
+            layout.prop(ob,'location',text='Posicion')
+            layout.operator('vmv_city.asset_snap',icon='SNAP_FACE')
+            layout.operator('vmv_city.asset_place',icon='CHECKMARK')
+            layout.operator('vmv_city.asset_cancel',icon='X')
+            layout.label(text='Guarda una copia antes de construir.')
+        layout.label(text='Ctrl+Z revierte la ultima construccion.')
+
+classes=(VMV_OT_sync,VMV_OT_build,VMV_OT_apply,VMV_PT_panel,VMV_OT_perf_refresh,VMV_OT_perf_mode,VMV_PT_performance,VMV_OT_lod_toggle,VMV_OT_district_show,VMV_OT_system_measure,VMV_PT_worldperf,VMV_OT_plan_add,VMV_OT_plan_copy,VMV_OT_plan_export,VMV_PT_planner,VMV_OT_asset_preview,VMV_OT_asset_snap,VMV_OT_asset_place,VMV_OT_asset_cancel,VMV_OT_asset_select,VMV_PT_library)
 def register():
     for cls in classes: bpy.utils.register_class(cls)
     bpy.types.Scene.vmv_repo=bpy.props.StringProperty(name='Repositorio local',subtype='DIR_PATH')
