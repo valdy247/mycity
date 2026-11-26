@@ -66,6 +66,7 @@ func setup(controller) -> void:
 			var defaults := {"house":false,"project":"","projects":{},"inventory":{},"deliveries":[],"part":"","furniture":{},"held_furniture":"","parked":{},"trash":[]}
 			state[key] = defaults[key]
 	_prepare_progression()
+	_restart_carlos_once()
 	for key in {"paint_stock":{},"paint_order":{},"paint_carry":"","paint_active":"","paint_charge":0,"paint_cells":{},"wheel_tutorial":false}:
 		if not state.has(key):
 			state[key] = {"paint_stock":{},"paint_order":{},"paint_carry":"","paint_active":"","paint_charge":0,"paint_cells":{},"wheel_tutorial":false}[key]
@@ -137,10 +138,40 @@ func _prepare_progression() -> void:
 	if String(state.get("wanted","")).begins_with("bicicleta:"): state.wanted = ""
 	state.project = "bicicleta"
 
+# Replay requested for the revised painting mission. Apply once to each
+# existing save, before preview/parked vehicles are instantiated.
+func _restart_carlos_once() -> void:
+	var life: Dictionary = business.ledger.life_data
+	if int(life.get("carlos_replay_version",0))>=1: return
+	life.carlos_replay_version = 1
+	var old: Dictionary = life.get("carlos_paint",{})
+	var old_stage := int(old.get("stage",0))
+	if old_stage==0: return
+	var bike_complete := _complete("bicicleta")
+	var already_sold := int(state.get("vehicle_sales",{}).get("bicicleta",0))>0
+	var advanced := int(state.get("vehicle_level",0))>0
+	# Never dismantle a completed or sold vehicle, or lock earned tiers.
+	var preserve_unlock := old_stage>=5 and (bike_complete or already_sold or advanced)
+	var fresh := {"stage":0,"painted":{},"brush":false,"charge":0,"color":"blue","paint_version":2,"home_location_version":2,"replay_unlocked":preserve_unlock}
+	for key in ["home","customer"]:
+		if old.has(key): fresh[key] = old[key]
+	life.carlos_paint = fresh
+	if old_stage>=5:
+		if String(state.part)=="bicicleta:wheel_a": state.part = ""
+		if not preserve_unlock and state.projects.has("bicicleta"):
+			state.projects.bicicleta.erase("wheel_a")
+		if not preserve_unlock: state.wheel_tutorial = false
+	var gps: Dictionary = state.get("gps",{})
+	var label_value := String(gps.get("label","")).to_lower()
+	if label_value.contains("carlos") or label_value.contains("cliente") or (old_stage>=5 and label_value=="mi garaje"):
+		state.gps = {}
+	print("MyCity: misión de Carlos reiniciada una vez; saldo y demás progreso conservados.")
+	_save()
+
 func _unlocked(kind: String) -> bool:
 	var index := VEHICLE_ORDER.find(kind)
 	var mission: Dictionary = business.ledger.life_data.get("carlos_paint",{})
-	return index>=0 and index<=int(state.get("vehicle_level",0)) and int(mission.get("stage",0))>=5
+	return index>=0 and index<=int(state.get("vehicle_level",0)) and (int(mission.get("stage",0))>=5 or bool(mission.get("replay_unlocked",false)))
 
 func _listed(kind: String) -> bool:
 	return String(state.get("listing",{}).get("kind",""))==kind
@@ -155,6 +186,9 @@ func receive_paint_wheel() -> bool:
 	state.project = "bicicleta"
 	if not state.projects.has("bicicleta"): state.projects.bicicleta = {}
 	state.part = "bicicleta:wheel_a"
+	# A replay always allows the physical handoff, even if the player
+	# already has this wheel installed in a completed bicycle.
+	state.wheel_tutorial = false
 	_refresh_carried()
 	_refresh_preview()
 	return true
