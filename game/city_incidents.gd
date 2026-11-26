@@ -1792,7 +1792,8 @@ func _end_rescue(delivered: bool) -> void:
 	if delivered:
 		_remove_casualty_guard(victim)
 		person.set_meta("impact_immunity",Time.get_ticks_msec()+5000)
-		victim.agent.delivered = true
+		# A medical delivery is not a police detention of a vendor.
+		victim.agent.erase("delivered")
 		_release(victim.agent)
 		injured.erase(victim)
 	else:
@@ -1919,6 +1920,14 @@ func _release_emergency_carrier() -> void:
 
 func _emergency_abort(victim: Dictionary,person: Node3D) -> void:
 	var old: Transform3D = victim.old
+	# Restore the casualty at the nearest validated ground if the carry
+	# has already progressed, instead of snapping back across the road.
+	var ground := _foot(person.global_position)
+	if not ground.is_empty():
+		var candidate: Transform3D = old
+		candidate.origin = ground.p
+		if _casualty_vehicle_clear(candidate): old = candidate
+	victim.old = old
 	person.global_transform = old
 	person.rotation.x = -PI*.5
 	person.global_position.y += .13
@@ -2016,7 +2025,7 @@ func _emergency_arrivals(delta: float) -> void:
 		person.show()
 		person.set_meta("impact_immunity",Time.get_ticks_msec()+5000)
 		victim.in_transport = false
-		victim.agent.delivered = true
+		victim.agent.erase("delivered")
 		_release(victim.agent)
 		injured.erase(victim)
 		emergency_transits.remove_at(i)
@@ -2038,8 +2047,12 @@ func _tick_emergency(delta: float) -> void:
 		if not bool(victim.severe) or bool(victim.get("in_transport",false)) or bool(victim.get("evacuating",false)): continue
 		if float(victim.time)<EMERGENCY_AFTER and int(victim.get("pickup_failures",0))<2: continue
 		if scene.get("victim",{})==victim:
-			if String(scene.phase)=="approach" and float(scene.age)>25.0:
+			var aid: Dictionary = victim.get("first_aid",{})
+			if String(scene.phase)=="approach" and float(scene.age)>25.0 and bool(aid.get("arrived",false)):
 				_end_rescue(false)
+				# The failure rotates the queue, so do not continue iterating it.
+				_start_emergency(victim)
+				break
 			else:
 				continue
 		if _start_emergency(victim): break
