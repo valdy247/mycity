@@ -1196,6 +1196,7 @@ func _make_frontages() -> void:
 		_facade(lot,slots.size(),"")
 	_fill_monte_frontage_gaps()
 	_place_temporary_business()
+	_link_original_house()
 
 # Extrude the original OSM polygon, not a rectangular approximation.
 # Combine the visible meshes and collision by spatial tile for the iGPU.
@@ -1267,6 +1268,56 @@ func _monte_infill(lot: Dictionary,index: int) -> void:
 			_local_cube(c,basis,Vector3(x,y,4.53),Vector3(1.05,1.85,.08),door)
 			_local_cube(c,basis,Vector3(x,y-.96,4.68),Vector3(1.43,.14,.40),trim)
 	monte_walkways.append({"a":c+basis*Vector3(-w*.5+.15,0,2.85),"b":c+basis*Vector3(w*.5-.15,0,2.85),"door":c+basis*Vector3(0,0,2.10),"kind":"home"})
+
+# The original GPS fixes the frontage. Link an existing residential
+# threshold only; do not reserve a lot, create a facade or move a wall.
+func _link_original_house() -> void:
+	var pin := geography.project(23.1223007,-82.3668138)
+	var saved := _private_home_pin()
+	if saved.has("point"): pin = saved.point
+	var edge := _nearest_monte_street(pin,Vector3(sin(deg_to_rad(34.0)),0,-cos(deg_to_rad(34.0))))
+	if edge.is_empty(): edge = _nearest_street(pin)
+	# _nearest_monte_street returns a road dictionary; reject missing road.
+	if edge.is_empty() or not edge.has("a"):
+		edge = _nearest_street(pin)
+	if edge.is_empty():
+		garage_home_site = {}
+		home_gps_status = "Mi casa: no hay calle junto al GPS."
+		return
+	var a: Vector3 = edge.a
+	var b: Vector3 = edge.b
+	var axis := (b-a).normalized()
+	var road := Geometry3D.get_closest_point_to_segment(pin,a,b)
+	var toward := Vector3(-axis.z,0,axis.x)
+	if toward.dot(pin-road)<0.0: toward = -toward
+	var chosen: Dictionary = {}
+	var best := INF
+	for entry in npc_doorways:
+		if String(entry.kind)!="home": continue
+		var door: Vector3 = entry.threshold
+		var normal: Vector3 = entry.normal
+		if normal.dot(-toward)<.65 or (door-road).dot(toward)<0.0: continue
+		var along := absf((door-pin).dot(axis))
+		var across := absf((door-pin).dot(toward))
+		if along>6.0 or across>14.0: continue
+		var score := along*3.0+across
+		if score<best:
+			best = score
+			chosen = entry
+	if chosen.is_empty():
+		garage_home_site = {}
+		home_gps_status = "Mi casa: no se encontró puerta residencial en la fachada GPS."
+		push_warning(home_gps_status)
+		return
+	var door: Vector3 = chosen.threshold
+	var front: Vector3 = chosen.normal
+	var basis := Basis(Vector3.UP,atan2(front.x,front.z))
+	var nearest := _nearest_street(door)
+	if not nearest.is_empty(): edge = nearest
+	road = Geometry3D.get_closest_point_to_segment(door,edge.a,edge.b)
+	garage_home_site = {"id":"original_home","name":"Mi casa","center":door-front*2.0,"door":door,"basis":basis,"road":road,"edge":edge}
+	home_gps_status = "Mi casa: acceso interior en la fachada GPS."
+	print(home_gps_status)
 
 func _place_temporary_business() -> void:
 	var requested := home_spawn
