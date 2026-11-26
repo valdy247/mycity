@@ -134,7 +134,7 @@ func resolve(query: String,start: String) -> Dictionary:
 
 func lane(a: Vector3,b: Vector3) -> Vector3:
 	var d := (b-a).normalized()
-	return Vector3(-d.z,0,d.x)*1.10
+	return data.lane_offset(a,b,1.90)
 
 # Resolve a map click to an accessible road point, respecting one-way
 # edges. Prefer a real junction within 10 metres, otherwise use the
