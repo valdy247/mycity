@@ -836,6 +836,7 @@ func tick(delta: float) -> void:
 		body.set_meta("traffic_priority",BUS_LENGTH)
 		body.set_meta("traffic_servicing",not bus.active_stop.is_empty())
 		if not bus.active_stop.is_empty():
+			TrafficBypass.reset_watchdog(bus)
 			bus.traffic_stall = 0.0
 			bus.traffic_last = body.global_position
 			_transfer_tick(bus,delta)
