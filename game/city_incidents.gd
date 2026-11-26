@@ -332,6 +332,7 @@ func _police_start() -> void:
 				body.rotation.y = atan2(start.d.x,start.d.z)
 				scene = {"kind":"police","phase":"approach","trip":_new_trip(body,route),"berth":goal,"stall":stall,"center":center,"time":0.0,"age":0.0,"actors":[],"blue":blue,"red":red,"refuses":rng.randf()<.40}
 				stall.incident_busy = true
+				stall.person.set_meta("incident_role","intervencion_policial")
 				found = true
 				break
 			if found: break
@@ -433,10 +434,22 @@ func _police_tick(delta: float) -> void:
 			_say(seller,["Toma, pero déjame trabajar.","Está bien, aquí tienes.","Asere, no tengo mucho."].pick_random())
 			var wallets: Dictionary = market.state.get("vendor_cash",{})
 			var id := String(stall.id)
-			wallets[id] = maxi(0,int(wallets.get(id,600))-rng.randi_range(80,180))
+			var payment := mini(int(wallets.get(id,600)),rng.randi_range(80,180))
+			wallets[id] = int(wallets.get(id,600))-payment
+			if payment>0:
+				var officer: Person = scene.actors[0].node
+				var cash: MeshInstance3D = game.business._box(seller,Vector3(0,1.02,.33),Vector3(.10,.025,.065),Color("#a5b98b"))
+				seller.arms[0].rotation.x = -1.0
+				officer.arms[1].rotation.x = -1.0
+				get_tree().create_timer(1.0).timeout.connect(func():
+					if is_instance_valid(cash): cash.queue_free())
 			market.state.vendor_cash = wallets
 			game.business.ledger.save_game()
-			scene.phase = "return"
+			scene.phase = "payment"
+		scene.time = 0.0
+	elif phase=="payment" and elapsed>1.5:
+		seller.animate(.2,false)
+		scene.phase = "return"
 		scene.time = 0.0
 	elif phase=="confiscate":
 		# Each displayed merchandise node is lifted, carried, then loaded.
@@ -463,6 +476,7 @@ func _police_tick(delta: float) -> void:
 			item["display_position"] = model.position
 			model.reparent(carrier,true)
 			model.position = Vector3(0,.85,.35)
+			carrier.carried = model
 			carrier.arms[0].rotation.x = -.85
 			carrier.arms[1].rotation.x = -.85
 			scene.load_item = item
@@ -474,9 +488,12 @@ func _police_tick(delta: float) -> void:
 			if int(scene.load_index)>=scene.load_path.size():
 				var item: Dictionary = scene.load_item
 				var model: Node3D = item.node
-				model.reparent(stall.root,true)
-				model.position = item.get("display_position",Vector3(0,float(stall.surface)+.10,0))
+				carrier.carried = null
+				model.reparent(body,true)
+				model.position = Vector3(0,.78,-1.40)
 				model.hide()
+				if not scene.has("loaded_items"): scene.loaded_items = []
+				scene.loaded_items.append(item)
 				var cargo: Array = body.get_meta("seized_goods",[])
 				cargo.append({"product":String(item.key),"quantity":int(stall.stock[item.key])})
 				body.set_meta("seized_goods",cargo)
@@ -505,7 +522,8 @@ func _police_tick(delta: float) -> void:
 		if int(scene.escort_index)>=scene.escort_path.size():
 			seller.hide()
 			body.set_meta("detained_vendor",String(stall.id))
-			seller.position = Vector3(0,0,1.08)
+			seller.reparent(body,true)
+			seller.position = Vector3(0,.65,-.55)
 			stall.detained = true
 			stall.open = false
 			game.business.ledger.save_game()
@@ -523,7 +541,6 @@ func _police_tick(delta: float) -> void:
 		if ready or elapsed>16.0:
 			for actor in scene.actors: actor.node.queue_free()
 			scene.actors = []
-			stall.incident_busy = false
 			if bool(stall.get("detained",false)): stall.root.hide()
 			body.set_meta("traffic_servicing",false)
 			_depart_police()
@@ -537,6 +554,17 @@ func _finish_police(arrived: bool) -> void:
 	if scene.is_empty(): return
 	var stall: Dictionary = scene.stall
 	stall.incident_busy = false
+	var seller: Person = stall.person
+	seller.remove_meta("incident_role")
+	if seller.get_parent()!=stall.root: seller.reparent(stall.root,true)
+	seller.position = Vector3(0,0,1.08)
+	seller.rotation = Vector3(0,PI,0)
+	seller.visible = not bool(stall.get("detained",false))
+	for item in scene.get("loaded_items",[]):
+		var model: Node3D = item.node
+		model.reparent(stall.root,true)
+		model.position = item.display_position
+		model.hide()
 	if scene.has("load_item") and not scene.load_item.is_empty():
 		var item: Dictionary = scene.load_item
 		var node: Node3D = item.node
@@ -545,6 +573,7 @@ func _finish_police(arrived: bool) -> void:
 		node.visible = int(stall.stock.get(item.key,0))>0
 	for actor in scene.actors:
 		if is_instance_valid(actor.node): actor.node.queue_free()
+	game.business.ledger.save_game()
 	var body: CharacterBody3D = scene.trip.body
 	Bypass._junction_release(scene.trip,body,streets)
 	# Remove a completed patrol only at its destination. An interrupted
@@ -708,6 +737,8 @@ func _rescue_tick(delta: float) -> void:
 			actor.node.arms[1].rotation.x = -1.0
 		if int(scene.carry_index)>=path.size() and helper.global_position.distance_to(driver.global_position)<1.1:
 			person.hide()
+			person.reparent(body,true)
+			person.position = Vector3(0,.68,-.48)
 			_release(scene.actors[1].agent)
 			driver.queue_free()
 			scene.actors = []
@@ -721,6 +752,7 @@ func _rescue_tick(delta: float) -> void:
 			if ground.is_empty(): return
 			# Arrival at the existing hospital; recovery/treatment itself
 			# remains a future health-system feature.
+			person.reparent(router,true)
 			person.global_position = ground.p
 			person.rotation.x = 0.0
 			person.show()
@@ -747,6 +779,7 @@ func _end_rescue(delivered: bool) -> void:
 		injured.erase(victim)
 	else:
 		var base: Vector3 = person.global_position
+		if person.get_parent()!=router: person.reparent(router,true)
 		if not person.visible:
 			var nearest := _berths(body.global_position,18.0,body.global_transform.basis.z)
 			for berth in nearest:
