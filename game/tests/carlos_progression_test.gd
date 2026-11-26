@@ -54,6 +54,18 @@ func _initialize() -> void:
 	_check(garage._wheel_pending(),"reward wheel awaits physical garage arrival")
 	garage.state.wheel_tutorial = true
 	_check(not garage._wheel_pending(),"tutorial cannot be repeated")
+	# Replay keeps the wallet, other projects and any earned higher tiers.
+	var balance: int = business.ledger.cash
+	business.ledger.stage = 4
+	business.ledger.life_data.carlos_paint = {"stage":4,"painted":{"0:0:0":"blue"},"brush":true,"charge":7,"home":{"x":1,"z":2}}
+	garage._restart_carlos_once()
+	var replay: Dictionary = business.ledger.life_data.carlos_paint
+	_check(int(replay.stage)==0 and replay.painted.is_empty() and not bool(replay.brush),"painting replay begins from phone call")
+	_check(replay.has("home"),"saved Carlos location retained")
+	_check(business.ledger.cash==balance and business.ledger.stage==4,"wallet and Albertico remain unchanged")
+	replay.stage = 3
+	garage._restart_carlos_once()
+	_check(int(replay.stage)==3,"replay migration runs only once")
 	mission.free()
 	garage.free()
 	business.free()
