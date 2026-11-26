@@ -2712,6 +2712,7 @@ func tick(delta: float) -> void:
 		var advance := TrafficBypass.junction_advance(minf(float(entry.speed)*delta,distance),junction_limit)
 		if blocked: advance = minf(advance,maxf(0.0,free-.7))
 		if advance<.0001:
+			if junction_limit<0.0: TrafficBypass.align_if_clear(car,angle)
 			car.velocity = Vector3.ZERO
 			entry.speed = 0.0
 		elif not TrafficBypass.safe_step(car,d,advance,angle,delta): entry.speed = 0.0
