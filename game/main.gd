@@ -63,7 +63,10 @@ func _ready() -> void:
 		add_child(city_world)
 		city_world.setup(builder)
 		spawn_position = CityWorld.HOME_OUT
-		_make_demo_van()
+		_restore_original_vehicles()
+		if van == null:
+			_make_demo_van()
+			push_warning("MyCity: van original no disponible; exporta city.glb desde Blender.")
 		van.global_position = CityWorld.VAN_PARK + Vector3.UP * .055
 		van_home = van.global_transform
 		city_loaded = true
@@ -299,6 +302,30 @@ func _new_van_body(position_world: Vector3) -> CharacterBody3D:
 	add_child(car)
 	car.global_position = position_world + Vector3.UP * 0.04
 	return car
+
+# Reuse only the two original vehicles; do not attach the old city permanently.
+func _restore_original_vehicles() -> void:
+	if not ResourceLoader.exists(CITY_PATH):
+		push_warning("MyCity: falta game/city.glb. Exporta la ciudad original desde Blender.")
+		return
+	var packed := load(CITY_PATH) as PackedScene
+	if packed == null:
+		push_warning("MyCity: no se pudo cargar city.glb.")
+		return
+	var source := packed.instantiate()
+	add_child(source)
+	_install_city_van(source)
+	if van != null:
+		print("MyCity: van original recuperada.")
+	var school_bus := _find_named(source,"buscontrol")
+	if school_bus != null:
+		city_world.add_school_bus(school_bus)
+	else:
+		push_warning("MyCity: BUS | CONTROL no encontrado en city.glb.")
+	# Both vehicles have been reparented into the new world. Release the
+	# obsolete imported terrain and all other objects before the first frame.
+	remove_child(source)
+	source.queue_free()
 
 func _install_city_van(city: Node) -> void:
 	var original := _find_named(city, "vancontrol")
