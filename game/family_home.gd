@@ -112,7 +112,7 @@ func _build_exterior() -> void:
 	_solid(Vector3(7.82,1.76,0),Vector3(.16,3.4,7.2),white)
 	_solid(Vector3(-7.82,1.76,0),Vector3(.16,3.4,7.2),white)
 	# Front: broad glazing with opaque walls and a central entry at x=-4.
-	for section in [Vector2(-6.4,2.8),Vector2(1.8,9.0),Vector2(7.12,1.4)]:
+	for section in [Vector2(-6.35,3.10),Vector2(1.55,9.50),Vector2(7.10,1.60)]:
 		var span: Vector2 = section
 		_solid(Vector3(span.x,.31,3.60),Vector3(span.y,.50,.16),white)
 		_solid(Vector3(span.x,2.99,3.60),Vector3(span.y,.94,.16),white)
@@ -158,9 +158,9 @@ func _build_interior() -> void:
 	var teal := _mat("teal",Color("#477c7c"))
 	# Rooms: living room west, kitchen/dining middle, two bedrooms east.
 	# Bathroom opens onto common area; two bedroom doorways face corridor.
-	_solid(Vector3(2.15,1.70,-.85),Vector3(3.3,3.18,.13),white)
+	_solid(Vector3(1.98,1.70,-.85),Vector3(2.84,3.18,.13),white)
 	_solid(Vector3(.56,1.70,-2.20),Vector3(.13,3.18,2.7),white)
-	_solid(Vector3(3.73,1.70,-2.80),Vector3(.13,3.18,1.4),white)
+	_solid(Vector3(3.40,1.70,-2.80),Vector3(.13,3.18,1.4),white)
 	# Open bath door on east wall from z=-2.1 to -1.0.
 	_solid(Vector3(4.50,1.70,-3.10),Vector3(.13,3.18,.92),white)
 	_solid(Vector3(4.50,1.70,0),Vector3(.13,3.18,1.38),white)
@@ -192,7 +192,7 @@ void fragment(){
 		_box(Vector3(-3.72,.77,float(z)),Vector3(1.06,.26,.24),navy)
 	for z in [-.72,.72]:
 		_box(Vector3(-3.70,.83,float(z)),Vector3(.54,.18,.62),linen)
-		seats.append({"at":to_global(Vector3(-3.78,1.34,float(z))),"exit":to_global(Vector3(-4.63,1.04,float(z))),"yaw":-PI/2.0})
+		seats.append({"at":to_global(Vector3(-3.78,1.34,float(z))),"exit":to_global(Vector3(-4.63,1.04,float(z))),"yaw":-PI/2.0,"indoors":true})
 	_box(Vector3(-5.55,.12,0),Vector3(2.7,.035,3.0),_mat("rug",Color("#c6b8a4")))
 	_solid(Vector3(-5.48,.41,0),Vector3(.92,.50,1.48),wood)
 	_box(Vector3(-5.48,.69,0),Vector3(1.00,.08,1.56),marble)
@@ -214,7 +214,7 @@ void fragment(){
 	_box(Vector3(.85,1.04,1.38),Vector3(2.30,.10,1.14),marble)
 	for x in [.15,1.55]:
 		_solid(Vector3(float(x),.38,2.38),Vector3(.43,.54,.43),dark)
-		seats.append({"at":to_global(Vector3(float(x),1.26,2.38)),"exit":to_global(Vector3(float(x),1.03,3.05)),"yaw":PI})
+		seats.append({"at":to_global(Vector3(float(x),1.26,2.38)),"exit":to_global(Vector3(float(x),1.03,3.05)),"yaw":PI,"indoors":true})
 	# Two furnished bedrooms.
 	for room_z in [-1.83,1.83]:
 		var z: float = float(room_z)
@@ -234,10 +234,10 @@ void fragment(){
 	_solid(Vector3(2.13,.36,-3.08),Vector3(.48,.51,.65),white)
 	_sphere(Vector3(2.13,.66,-2.91),Vector3(.47,.18,.52),white)
 	_box(Vector3(2.13,.83,-3.31),Vector3(.44,.55,.21),white)
-	_box(Vector3(3.10,.15,-3.00),Vector3(1.02,.10,1.02),marble)
-	_box(Vector3(2.60,1.19,-3.00),Vector3(.045,2.0,1.0),_mat("shower",Color(0.68,.87,.91,.23),.2,true))
-	_box(Vector3(3.10,1.19,-3.50),Vector3(1.0,2.0,.045),steel)
-	_box(Vector3(3.12,2.11,-3.34),Vector3(.25,.04,.25),steel)
+	_box(Vector3(2.90,.15,-3.00),Vector3(.85,.10,1.02),marble)
+	_box(Vector3(2.48,1.19,-3.00),Vector3(.045,2.0,1.0),_mat("shower",Color(0.68,.87,.91,.23),.2,true))
+	_box(Vector3(2.90,1.19,-3.50),Vector3(.85,2.0,.045),steel)
+	_box(Vector3(2.92,2.11,-3.34),Vector3(.25,.04,.25),steel)
 	# Warm lights, no shadow maps.
 	for point in [Vector3(-5.1,3.15,0),Vector3(-.4,3.15,0),Vector3(6.2,3.15,-1.8),Vector3(6.2,3.15,1.8),Vector3(2.1,3.15,-2.2)]:
 		var p: Vector3 = point
@@ -280,7 +280,7 @@ func _build_pool() -> void:
 		_solid(Vector3(xx,.24,2.80),Vector3(1.24,.38,.76),white)
 		_box(Vector3(xx,.48,2.80),Vector3(1.17,.14,.70),_mat("navy",Color("#34556e")))
 		_box(Vector3(xx-.46,.68,2.80),Vector3(.24,.40,.70),_mat("navy",Color("#34556e")))
-		seats.append({"at":to_global(Vector3(xx,.99,2.80)),"exit":to_global(Vector3(xx,1.0,3.48)),"yaw":0.0})
+		seats.append({"at":to_global(Vector3(xx,.99,2.80)),"exit":to_global(Vector3(xx,1.0,3.48)),"yaw":0.0,"indoors":false})
 	_label("POOL",Vector3(12,1.10,-2.78),48,.008,Color("#f4ffff"))
 
 func interaction_text(at: Vector3) -> String:
