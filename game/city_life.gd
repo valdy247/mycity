@@ -29,6 +29,7 @@ var avatar_drink: Node3D
 var food_model := ""
 var drink_model := ""
 var bite_anim := 0.0
+var active_hand := -1
 var meal_arms: Array = []
 var last_first_person := true
 var save_clock := 0.0
@@ -56,7 +57,7 @@ func setup(mission) -> void:
 		var id := String(site.id)
 		sites[id] = site
 		if String(site.kind)=="cafe" and not state.cafes.has(id):
-			state.cafes[id] = {"harina":12,"queso":10,"tomate":12,"refresco":12,"perrito":8,"cash":2400}
+			state.cafes[id] = {"harina":8,"queso":4,"tomate":10,"refresco":12,"perrito":8,"cash":3600}
 		_make_site(site)
 	_make_hud()
 	meal_root = Node3D.new()
@@ -90,7 +91,7 @@ func pose_meal(first_person: bool,delta: float) -> void:
 		var held := not food_model.is_empty() if i==0 else not drink_model.is_empty()
 		if held:
 			var arm: Node3D = meal_arms[i]
-			arm.rotation.x = lerpf(arm.rotation.x,-1.80 if bite_anim>.05 else -.85,minf(1.0,delta*12.0))
+			arm.rotation.x = lerpf(arm.rotation.x,-1.80 if bite_anim>.05 and active_hand==i else -.85,minf(1.0,delta*12.0))
 
 func _make_hud() -> void:
 	fullness_bar = ProgressBar.new()
@@ -128,7 +129,7 @@ func _update_hud() -> void:
 	if fullness_bar==null: return
 	fullness_bar.value = float(state.fullness)
 	var minute := int(state.minutes)%1440
-	clock_label.text = "Saciedad %d%%   ·   %02d:%02d" % [roundi(float(state.fullness)),minute/60,minute%60]
+	clock_label.text = "Saciedad %d%%   ·   %02d:%02d" % [roundi(float(state.fullness)),floori(float(minute)/60.0),minute%60]
 
 func _person(site: Dictionary,role: String,style: int,local: Vector3) -> Person:
 	var person := Person.new()
@@ -153,13 +154,14 @@ func _make_site(site: Dictionary) -> void:
 	var root := Node3D.new()
 	add_child(root)
 	root.global_transform = Transform3D(basis,c)
-	var clerk := _person(site,"clerk",301+sites.size()*3,Vector3(0,.11,-1.25))
+	var clerk_style := 301+sites.size()*3 if String(site.kind)=="cafe" or String(site.contact)=="Lidia" else 300+sites.size()*3
+	var clerk := _person(site,"clerk",clerk_style,Vector3(0,.11,-1.25))
 	business._label(clerk,String(site.contact),Vector3(0,2.0,0),Color("#f4ecd8"))
 	if String(site.kind)=="wholesale":
 		racks[site.id] = root
 		_refresh_rack(String(site.id),root,false)
 	else:
-		_person(site,"owner",310+sites.size()*3,Vector3(2.45,.11,1.6))
+		_person(site,"owner",312+sites.size()*3,Vector3(2.45,.11,1.6))
 		for side in [-1.0,1.0]:
 			business._box(root,Vector3(float(side)*2.9,.40,1.1),Vector3(.80,.08,.80),Color("#bda37e"))
 			business._box(root,Vector3(float(side)*2.9,.22,1.1),Vector3(.10,.44,.10),Color("#77736b"))
@@ -331,29 +333,34 @@ func _draw_meal(root: Node3D,kind: String,count: int) -> void:
 		business._box(root,Vector3(0,.04,0),Vector3(.20*float(count)/3.0,.035,.04),Color("#a95644"))
 
 func _eat() -> void:
-	if bite_anim>0.0: return
-	bite_anim = .55
+	if bite_anim>0.0 or active_hand>=0: return
 	var meal: Dictionary = state.meal
-	var key := String(meal.get("key",""))
-	if not MENU.has(key): return
-	var item: Dictionary = MENU[key]
 	var bites := int(meal.get("food_bites",0))
 	var sips := int(meal.get("drink_sips",0))
+	if bites<=0 and sips<=0: return
+	active_hand = 0 if bites>0 and (bites>=sips or sips==0) else 1
+	bite_anim = .65
+
+func _finish_bite() -> void:
+	var meal: Dictionary = state.meal
+	var key := String(meal.get("key",""))
+	if not MENU.has(key):
+		active_hand = -1
+		return
+	var item: Dictionary = MENU[key]
 	var portions := 6.0 if not String(item.food).is_empty() and not String(item.drink).is_empty() else 3.0
 	var gain := float(item.fill)/portions
-	if bites>0:
-		meal.food_bites = bites-1
-		state.fullness = minf(100.0,float(state.fullness)+gain)
-		food_view.position.y = -.14
-	if sips>0:
-		meal.drink_sips = sips-1
-		state.fullness = minf(100.0,float(state.fullness)+gain)
-		drink_view.position.y = -.14
+	if active_hand==0:
+		meal.food_bites = maxi(0,int(meal.food_bites)-1)
+	else:
+		meal.drink_sips = maxi(0,int(meal.drink_sips)-1)
+	active_hand = -1
+	state.fullness = minf(100.0,float(state.fullness)+gain)
 	if int(meal.food_bites)<=0 and int(meal.drink_sips)<=0:
 		state.meal = {}
 		business._notify("Buen provecho · saciedad %d%%" % roundi(float(state.fullness)))
 	else:
-		business._notify("Ñam… · saciedad %d%%" % roundi(float(state.fullness)))
+		business._notify("Saciedad %d%% · E para continuar" % roundi(float(state.fullness)))
 	_refresh_meal()
 	ledger.save_game()
 
@@ -547,12 +554,13 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	if clock_label!=null: clock_label.visible = not editor
 	if editor: return
 	bite_anim = maxf(0.0,bite_anim-delta)
+	if active_hand>=0 and bite_anim<=0.0: _finish_bite()
 	state.minutes = fmod(float(state.minutes)+delta,1440.0)
 	state.fullness = maxf(0.0,float(state.fullness)-delta/9.0)
 	if meal_root!=null:
 		meal_root.visible = not in_vehicle and last_first_person and not state.meal.is_empty()
-		food_view.position.y = move_toward(food_view.position.y,-.36,delta*.5)
-		drink_view.position.y = move_toward(drink_view.position.y,-.36,delta*.5)
+		food_view.position.y = move_toward(food_view.position.y,-.12 if active_hand==0 else -.36,delta*1.2)
+		drink_view.position.y = move_toward(drink_view.position.y,-.12 if active_hand==1 else -.36,delta*1.2)
 	var order: Dictionary = state.order
 	if not order.is_empty():
 		order.remaining = maxf(0.0,float(order.remaining)-delta)
