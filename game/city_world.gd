@@ -13,6 +13,7 @@ var mats: Dictionary = {}
 var mesh_cache: Dictionary = {}
 var batches: Dictionary = {}
 var solid_body: StaticBody3D
+var road_ground: StaticBody3D
 var seats: Array = []
 var cars: Array = []
 var walkers: Array = []
@@ -35,6 +36,7 @@ func setup(builder: Builder) -> void:
 	ground.collision_layer = 2
 	ground.collision_mask = 0
 	add_child(ground)
+	road_ground = ground
 	_visual_box(ground, Vector3(0,-0.3,0), Vector3(SIZE,0.6,SIZE), _mat("grass",Color("#76a34f")))
 	_shape(ground,Vector3(0,-0.3,0),Vector3(SIZE,0.6,SIZE))
 	_make_roads()
@@ -115,6 +117,8 @@ func _make_roads() -> void:
 	# A connected network with full-width intersections. Sidewalks live
 	# inside the road tile, so a new 8 m road meets the existing grid.
 	for axis in ROAD_AXES:
+		_shape(road_ground,Vector3(float(axis),ROAD_Y/2,0),Vector3(8,ROAD_Y,392))
+		_shape(road_ground,Vector3(0,ROAD_Y/2,float(axis)),Vector3(392,ROAD_Y,8))
 		for k in range(-24,25):
 			_reserve(roundi(float(axis)/8.0),k,"road")
 			_reserve(k,roundi(float(axis)/8.0),"road")
@@ -133,6 +137,7 @@ func _make_roads() -> void:
 					_batch(Vector3(q,ROAD_Y+0.018,a+float(side)*3.65),Vector3(8,0.036,0.65),concrete)
 	# Local access streets connect the residential and commercial lots.
 	for lane_z in [-24,24]:
+		_shape(road_ground,Vector3(0,ROAD_Y/2,float(lane_z)),Vector3(128,ROAD_Y,8))
 		for cell_x in range(-7,8):
 			if cell_x == 0:
 				continue
@@ -145,8 +150,7 @@ func _make_roads() -> void:
 				_batch(Vector3(xx,ROAD_Y+.018,zz+float(side)*3.65),Vector3(8,.036,.65),concrete)
 		for main_x in [-64.0,0.0,64.0]:
 			_batch(Vector3(float(main_x),ROAD_Y+.043,float(lane_z)),Vector3(8,.016,6.5),asphalt)
-	# No separate road collision needed: the flat ground is 5.5 cm below
-	# the visual pavement. New streets use the same road elevation.
+	# Starter roads and new pieces use the same physical road elevation.
 	for xx in ROAD_AXES:
 		for zz in ROAD_AXES:
 			var x: float = float(xx)
@@ -162,12 +166,19 @@ func _make_roads() -> void:
 func _make_signal(x: float,z: float) -> void:
 	var pole := _mat("pole",Color("#414b52"))
 	var housing := _mat("signal",Color("#22282d"))
-	for axis in range(2):
-		var at := Vector3(x+3.5,0,z-3.5) if axis==0 else Vector3(x-3.5,0,z+3.5)
+	# Four visible heads, one for each approach, paired by direction.
+	for i in range(4):
+		var axis: int = i%2
+		var angle: float = float(i)*PI/2.0
+		var at: Vector3 = Vector3(3.5,0,-3.5).rotated(Vector3.UP,angle)+Vector3(x,0,z)
 		_batch(at+Vector3(0,1.4,0),Vector3(.13,2.8,.13),pole)
-		_batch(at+Vector3(0,2.9,0),Vector3(.34,.85,.34),housing)
-		var lamp := _visual_box(self,at+Vector3(0,3.0,.19),Vector3(.21,.21,.07),_mat("red",Color("#ff423c")))
-		signals.append({"lamp":lamp,"axis":axis})
+		var head := Node3D.new()
+		add_child(head)
+		head.position=at+Vector3(0,2.9,0)
+		head.rotation.y=angle
+		_visual_box(head,Vector3.ZERO,Vector3(.34,.85,.34),housing)
+		var lamp := _visual_box(head,Vector3(0,.10,-.19),Vector3(.21,.21,.07),_mat("red",Color("#ff423c")))
+		signals.append({"lamp":lamp,"axis":1-axis})
 
 func _starter(kind: String, x: int, z: int, turn: int) -> void:
 	_reserve(x,z)
@@ -348,7 +359,7 @@ func _phase() -> int:
 
 func _make_traffic() -> void:
 	# Four disjoint clockwise circuits: one car per circuit, right-hand lanes.
-	for p in [Vector2i(-128,-128),Vector2i(64,-128),Vector2i(-128,64),Vector2i(64,64)]:
+	for p in [Vector2i(0,0),Vector2i(-128,-128),Vector2i(64,-128),Vector2i(-128,64)]:
 		var x: float = float(p.x)
 		var z: float = float(p.y)
 		var route: Array[Vector3] = [Vector3(x+1.8,0,z+1.8),Vector3(x+64-1.8,0,z+1.8),Vector3(x+64-1.8,0,z+64-1.8),Vector3(x+1.8,0,z+64-1.8)]
@@ -378,8 +389,12 @@ func _make_pedestrians() -> void:
 	# Six people use sidewalk paths outside the traffic lanes; no random
 	# crossing or crowd simulation. Their routes stay within the same block.
 	for i in range(6):
-		var x: float = -60.3 if i<3 else 60.3
-		var z: float = -51.0+float(i%3)*12.0
+		var x: float = 3.65 if i<3 else 60.35
+		var z: float = 11.0+float(i%3)*17.0
+		if i%3==1:
+			z=36.0
+		elif i%3==2:
+			z=50.0
 		var person := Node3D.new()
 		add_child(person)
 		person.position = Vector3(x,.09,z)
@@ -438,7 +453,7 @@ func tick(delta: float) -> void:
 		var person: Node3D = entry.node
 		var origin: Vector3 = entry.origin
 		var phase_value: float = clock*.16+float(entry.phase)
-		person.position=origin+Vector3(0,0,sin(phase_value)*4.0)
+		person.position=origin+Vector3(0,0,sin(phase_value)*3.0)
 		person.rotation.y=0.0 if cos(phase_value)>0 else PI
 		var legs: Array=entry.legs
 		for i in range(legs.size()):
