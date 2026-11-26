@@ -8,6 +8,8 @@ var sidewalks: Array = []
 var road_index: Dictionary = {}
 var protected_index: Dictionary = {}
 var map_data: MapData
+var intersection_cells: Dictionary = {}
+var intersection_claims: Dictionary = {}
 
 func rect(a: Vector3,b: Vector3,width: float,extension: float = 0.0) -> PackedVector2Array:
 	var d := Vector2(b.x-a.x,b.z-a.z).normalized()
@@ -70,6 +72,7 @@ func _walk(poly: PackedVector2Array) -> void:
 
 func build(data: MapData) -> void:
 	map_data = data
+	_build_intersections(data)
 	for edge in data.roads:
 		_road(rect(edge.a,edge.b,float(edge.width),.04))
 	# Fill bends and intersections before cutting sidewalks.
@@ -186,3 +189,64 @@ func in_carriageway(p: Vector3,heading: Vector3,width: float,length: float) -> b
 	# Account for the entire rotating rectangle, not just its centre.
 	var half_extent := absf(facing.dot(right))*length*.5+absf(facing.dot(d))*width*.5
 	return lateral-half_extent>=.06 and lateral+half_extent<=float(lane.half)-.06
+
+# Only real road junctions and mapped signals, not every OSM geometry node.
+func _build_intersections(data: MapData) -> void:
+	intersection_cells.clear()
+	intersection_claims.clear()
+	for id in data.junctions:
+		var incident: Array = data.junctions[id]
+		var directions: Array = []
+		var half_width := 0.0
+		var p: Vector3 = data.points[id]
+		for edge in incident:
+			if not bool(edge.driveable): continue
+			var other: Vector3 = edge.b if String(edge.a_id)==String(id) else edge.a
+			var d := (other-p).normalized()
+			var duplicate := false
+			for direction in directions:
+				if d.dot(direction)>.96:
+					duplicate = true
+					break
+			if not duplicate: directions.append(d)
+			half_width = maxf(half_width,float(edge.width)*.5)
+		if directions.size()<3 and not data.signal_nodes.has(id): continue
+		if half_width<=0.0: continue
+		var radius := half_width+1.0
+		var item := {"id":String(id),"p":p,"radius":radius,"signal":data.signal_nodes.has(id)}
+		var cell := Vector2i(floori(p.x/CELL),floori(p.z/CELL))
+		if not intersection_cells.has(cell): intersection_cells[cell] = []
+		intersection_cells[cell].append(item)
+
+func intersections_near(p: Vector3,reach: float) -> Array:
+	var low := Vector2i(floori((p.x-reach)/CELL),floori((p.z-reach)/CELL))
+	var high := Vector2i(floori((p.x+reach)/CELL),floori((p.z+reach)/CELL))
+	var out: Array = []
+	for x in range(low.x,high.x+1):
+		for z in range(low.y,high.y+1):
+			for item in intersection_cells.get(Vector2i(x,z),[]):
+				var q: Vector3 = item.p
+				if Vector2(p.x-q.x,p.z-q.z).length_squared()<=reach*reach: out.append(item)
+	return out
+
+func intersection_clear_for_stop(p: Vector3,length: float,width: float = 2.0) -> bool:
+	var extent := Vector2(length,width).length()*.5+.6
+	for item in intersections_near(p,28.0):
+		var q: Vector3 = item.p
+		if Vector2(p.x-q.x,p.z-q.z).length()<float(item.radius)+extent: return false
+	return true
+
+# Move a requested stopping position to a nearby safe point on this edge.
+# Return the original point only if this entire edge has no safe berth.
+func safe_stop_on_edge(a: Vector3,b: Vector3,desired: Vector3,length: float,width: float) -> Vector3:
+	var d := (b-a).normalized()
+	var segment_length := a.distance_to(b)
+	var along := clampf((desired-a).dot(d),0.0,segment_length)
+	var lateral := desired-(a+d*along)
+	for shift in range(0,ceili(segment_length)+1):
+		for sign_value in [-1.0,1.0]:
+			var at := along+float(shift)*float(sign_value)
+			if at<length*.5 or at>segment_length-length*.5: continue
+			var p := a+d*at+lateral
+			if intersection_clear_for_stop(p,length,width): return p
+	return desired
