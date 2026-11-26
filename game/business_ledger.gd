@@ -47,7 +47,7 @@ func load_game() -> void:
 			for key in counts:
 				pending[key] = int(pending.get(key,0))+int(counts[key])
 		if not saved_cargo.is_empty():
-			add_message("Fábrica","Tus cajas que estaban en vehículos se guardaron en la fábrica al reiniciar.")
+			add_message("MIPYME","Tus cajas que estaban en vehículos se guardaron en la MIPYME al reiniciar.")
 	cargo = {}
 	sold = maxi(0,int(value.get("sold",0)))
 	revenue = maxi(0,int(value.get("revenue",0)))
@@ -92,7 +92,7 @@ func add_message(sender: String,body: String) -> void:
 func accept() -> void:
 	if stage!=0: return
 	stage = 1
-	add_message("Albertico","Asere, coge un taxi pa' la fábrica. Allí venden pollo, picadillo y perrito por cajas.")
+	add_message("Albertico","Asere, coge un taxi pa' la MIPYME. Allí venden pollo, picadillo y perrito por cajas.")
 	save_game()
 
 func factory_arrival() -> void:
