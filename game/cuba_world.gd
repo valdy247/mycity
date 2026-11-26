@@ -20,6 +20,7 @@ var map_surfaces: Dictionary = {}
 var map_collision: Dictionary = {}
 var kept_footprints: Array = []
 var market_drawn := false
+var market_block: PackedVector2Array = PackedVector2Array()
 var mapped_buildings := 0
 var plaque_count := 0
 var service_count := 0
@@ -254,6 +255,8 @@ func _make_frontages() -> void:
 			break
 		if not _lot_clear(lot.center,lot.front,lot.edge) or _overlaps_footprint(lot):
 			continue
+		if not market_block.is_empty() and not Geometry2D.intersect_polygons(market_block,_lot_polygon(lot)).is_empty():
+			continue
 		_add_lot(lot)
 		_facade(lot,slots.size(),"")
 	if home_root==null:
@@ -388,6 +391,60 @@ func _building_height(tags: Dictionary,index: int) -> float:
 		return clampf(float(levels)*3.25,3.0,80.0)
 	return float(1+index%3)*3.25
 
+func _market_corner(first: String,second: String,anchor: Vector3) -> Vector3:
+	var best := INF
+	var answer := Vector3(INF,0,INF)
+	for id in geography.junctions:
+		var p: Vector3 = geography.points[id]
+		if p.distance_to(anchor)>250.0:
+			continue
+		var has_first := false
+		var has_second := false
+		for edge in geography.junctions[id]:
+			var label: String = geography.normalized(String(edge.name))
+			if first=="monte" and geography.street_label(String(edge.name))=="MONTE":
+				has_first = true
+			elif label.contains(first):
+				has_first = true
+			if second=="monte" and geography.street_label(String(edge.name))=="MONTE":
+				has_second = true
+			elif label.contains(second) or (second=="cristina" and label.contains("mexico")):
+				has_second = true
+		if has_first and has_second and p.distance_to(anchor)<best:
+			best = p.distance_to(anchor)
+			answer = p
+	return answer
+
+func _market_from_intersections(anchor: Vector3) -> PackedVector2Array:
+	# A fallback based on all four actual shared street nodes; not a survey.
+	var corners: Array[Vector3] = [
+		_market_corner("monte","matadero",anchor),
+		_market_corner("matadero","cristina",anchor),
+		_market_corner("arroyo","cristina",anchor),
+		_market_corner("arroyo","monte",anchor)
+	]
+	var poly := PackedVector2Array()
+	for p in corners:
+		if not p.is_finite():
+			return PackedVector2Array()
+		poly.append(Vector2(p.x,p.z))
+	if Geometry2D.triangulate_polygon(poly).is_empty():
+		return PackedVector2Array()
+	var inset := Geometry2D.offset_polygon(poly,-6.5,Geometry2D.JOIN_MITER)
+	if inset.is_empty():
+		return PackedVector2Array()
+	var candidate: PackedVector2Array = inset[0]
+	if candidate.size()<3 or not Geometry2D.is_point_in_polygon(Vector2(anchor.x,anchor.z),candidate):
+		return PackedVector2Array()
+	for i in range(candidate.size()):
+		var a := candidate[i]
+		var b := candidate[(i+1)%candidate.size()]
+		for fraction in [0.0,.25,.5,.75]:
+			var v := a.lerp(b,float(fraction))
+			if not _street_clear(Vector3(v.x,0,v.y),.2):
+				return PackedVector2Array()
+	return candidate
+
 func _make_mapped_buildings(public_anchor: Vector3) -> void:
 	var palette: Array[Color] = [Color("#a5b2a5"),Color("#c3b49b"),Color("#a2b8ba"),Color("#b19a88"),Color("#c3bc9d"),Color("#a4a29a"),Color("#b8ad99")]
 	var market_pos: Vector3 = geography.project(23.1234716,-82.3659728)
@@ -406,6 +463,8 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		if inside and extent.x*extent.z>1500.0:
 			market_poly_id = String(fp.id)
 			break
+	if market_poly_id.is_empty():
+		market_block = _market_from_intersections(market_pos)
 	for fp in geography.footprints_near(public_anchor,20.0):
 		var front := _front_edge(fp.poly)
 		if front.is_empty():
@@ -419,6 +478,8 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		if _overlaps_game_lot(fp):
 			continue
 		var poly: PackedVector2Array = fp.poly
+		if not market_block.is_empty() and not Geometry2D.intersect_polygons(market_block,poly).is_empty():
+			continue
 		var center: Vector3 = fp.center
 		var tile := Vector2i(floori(center.x/96.0),floori(center.z/96.0))
 		var tags: Dictionary = fp.tags
@@ -455,10 +516,30 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 				var z: float = -2.18 if portal else .08
 				_label(name_value.to_upper(),m+n*z+Vector3.UP*2.85,.010,atan2(n.x,n.z),Color("#f5ead0"))
 	# Missing source polygon: never invent a market footprint or obstruct roads.
+	if not market_drawn and not market_block.is_empty():
+		var tile := Vector2i(floori(market_pos.x/96.0),floori(market_pos.z/96.0))
+		var wall := _mat("market_wall",Color("#ded4bc"))
+		wall.cull_mode = BaseMaterial3D.CULL_DISABLED
+		if _extrude(market_block,0.0,10.0,wall,tile):
+			var front := _front_edge(market_block)
+			if not front.is_empty():
+				_detail_front(front,10.0,0,false,true)
+				var m: Vector3 = front.mid
+				var n: Vector3 = front.normal
+				_label("PLAZA DE CUATRO CAMINOS",m+n*.15+Vector3.UP*3.15,.013,atan2(n.x,n.z),Color("#554d3e"))
+			market_drawn = true
+			print("Cuatro Caminos: approximate facade from four mapped intersections (not exact building footprint).")
 	if not market_drawn:
-		print("Cuatro Caminos: no verified market footprint in this OSM extract.")
+		print("Cuatro Caminos: no verified market footprint or four safe corners in this OSM extract.")
 	if alborada_poly_id.is_empty():
-		print("La Alborada: no matching mapped building footprint.")
+		var closest := _nearest_street(public_anchor)
+		if not closest.is_empty():
+			var a: Vector3 = closest.a
+			var b: Vector3 = closest.b
+			var q := Geometry3D.get_closest_point_to_segment(public_anchor,a,b)
+			var n := (q-public_anchor).normalized()
+			_label("LA ALBORADA",public_anchor+Vector3.UP*2.85,.010,atan2(n.x,n.z),Color("#f5ead0"))
+		print("La Alborada: named geographic point; building footprint unavailable.")
 
 func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool) -> void:
 	var a: Vector3 = front.a
@@ -556,6 +637,9 @@ func _make_corner_plaques() -> void:
 								continue
 							nearest = distance
 							pos = q+n*.13
+							var face := _front_edge(poly)
+							if not face.is_empty() and bool(face.road.portal) and n.dot(face.normal)>.8:
+								pos -= n*2.25
 							normal = n
 							mounted = true
 				var key := label+":"+str(Vector2i(roundi(pos.x/2.0),roundi(pos.z/2.0)))
