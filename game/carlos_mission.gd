@@ -33,6 +33,9 @@ var follow_path := PackedVector3Array()
 var follow_index := 0
 var was_vehicle := false
 var locate_wait := 0.0
+var locate_reported := false
+var paint_dirty := false
+var paint_save_clock := 0.0
 
 func setup(controller) -> void:
 	game = controller
@@ -107,13 +110,15 @@ func _locate() -> bool:
 	if home.is_empty():
 		var monte := _corners("flores","monte")
 		var esteves := _corners("flores","esteves")
-		if monte.is_empty() or esteves.is_empty(): return false
+		if monte.is_empty() or esteves.is_empty():
+			_location_notice("No se encontraron las dos esquinas de Flores en el mapa cargado.")
+			return false
 		var corner := Vector3.ZERO
 		var start := Vector3.ZERO
 		var best := INF
 		for a in monte:
 			for b in esteves:
-				var distance := a.distance_to(b)
+				var distance: float = a.distance_to(b)
 				if distance<2.0 or distance>=best: continue
 				best = distance
 				start = a
@@ -137,7 +142,9 @@ func _locate() -> bool:
 				if not site.is_empty(): choices.append({"site":site,"score":p.distance_to(corner)+maxf(0.0,(p-start).dot(travel)-best)*.5})
 				break
 		choices.sort_custom(func(a,b): return float(a.score)<float(b.score))
-		if choices.is_empty(): return false
+		if choices.is_empty():
+			_location_notice("Flores y Estévez localizado, pero falta una puerta residencial segura en el lado indicado.")
+			return false
 		home = choices[0].site
 		_remember("home",home)
 	if customer.is_empty():
@@ -159,9 +166,18 @@ func _locate() -> bool:
 			customer = site
 			_remember("customer",customer)
 			break
-	if customer.is_empty(): return false
+	if customer.is_empty():
+		_location_notice("Casa de Carlos localizada, pero no hay una casa cercana conectada por la red peatonal.")
+		return false
+	locate_reported = false
 	_save()
 	return true
+
+func _location_notice(message: String) -> void:
+	if locate_reported: return
+	locate_reported = true
+	print("Misión Carlos: "+message)
+	business._notify(message)
 
 func _spawn_carlos(at: Vector3) -> void:
 	if not is_instance_valid(carlos):
@@ -212,7 +228,9 @@ func objective() -> String:
 		2: return "Busca a Carlos en Flores y Estévez."
 		3: return "Ve con Carlos a casa del cliente."
 		4: return "Pinta todas las paredes · %d%%" % roundi(100.0*float(state.painted.size())/float(TOTAL))
-		5: return "Misión cumplida · instala la goma en tu garaje."
+		5:
+			if String(game.garage.state.part)=="bicicleta:wheel_a": return "Misión cumplida · instala la goma en tu garaje."
+			return ""
 	return ""
 
 func _aim_node(node: Node3D,center: Vector3,extent: Vector3,reach: float = 3.0) -> bool:
@@ -357,6 +375,12 @@ func _make_room() -> void:
 	business._label(room,"SALIR · E",Vector3(0,2.55,2.87)).rotation.y = PI
 	_spawn_carlos(ROOM+Vector3(-2.8,0,-1.9))
 	carlos.rotation.y = -PI*.5
+	var worker_brush := Node3D.new()
+	room.add_child(worker_brush)
+	worker_brush.name = "CarlosBrush"
+	worker_brush.position = Vector3(-3.35,1.1,-1.9)
+	worker_brush.rotation.y = PI*.5
+	_make_brush(worker_brush)
 	_refresh_hand()
 	_refresh_client()
 
@@ -441,6 +465,7 @@ func _paint_cell(wall: int,x: int,y: int) -> bool:
 	var key := _cell_key(wall,x,y)
 	if state.painted.has(key): return false
 	state.painted[key] = true
+	paint_dirty = true
 	images[wall].set_pixel(x,y,NEW_PAINT)
 	textures[wall].update(images[wall])
 	return true
@@ -461,7 +486,7 @@ func _paint() -> void:
 	var y := clampi(floori((.5-local.y/quad.size.y)*ROWS),0,ROWS-1)
 	if _paint_cell(wall,x,y):
 		state.charge = int(state.charge)-1
-		_save()
+		if is_instance_valid(hand): hand.rotation.x = -.5+sin(float(state.painted.size())*1.8)*.22
 
 func _refresh_client() -> void:
 	if state.painted.size()<TOTAL or is_instance_valid(client): return
@@ -469,7 +494,7 @@ func _refresh_client() -> void:
 	add_child(client)
 	client.setup(945)
 	client.remove_from_group("social_people")
-	client.global_position = ROOM+Vector3(1.4,0,1.7)
+	client.global_position = ROOM+Vector3(0,0,2.4)
 	business._label(client,"Cliente",Vector3(0,2.03,0))
 	business._notify("Cliente: ¡Quedó buenísima! Ven para pagarte.")
 	_refresh_hand()
@@ -485,6 +510,7 @@ func _accept_wheel() -> void:
 		business._notify("Libera las manos para recibir la goma.")
 		return
 	state.stage = 5
+	game.garage._refresh_preview()
 	state.brush = false
 	state.charge = 0
 	_save()
@@ -557,6 +583,12 @@ func tick(delta: float) -> void:
 		if business.modal_open() or _stage()!=4: return
 		work_clock += delta
 		brush_clock += delta
+		paint_save_clock += delta
+		if paint_dirty and paint_save_clock>=2.0:
+			paint_dirty = false
+			paint_save_clock = 0.0
+			_save()
+		if is_instance_valid(client): client.walk_to(ROOM+Vector3(1.4,0,1.7),delta,1.4)
 		# Carlos paints one wall independently; the player finishes the rest.
 		if work_clock>=2.0:
 			work_clock = 0.0
@@ -565,13 +597,20 @@ func tick(delta: float) -> void:
 				for x in range(COLS):
 					if _paint_cell(2,x,y):
 						done = true
-						_save()
+						# Move Carlos along the wall as he finishes each section.
+						var z := -2.45+float(x)*.70
+						carlos.global_position = ROOM+Vector3(-3.0,0,z)
+						var prop := room.get_node_or_null("CarlosBrush") as Node3D
+						if prop!=null: prop.position = Vector3(-3.65,2.45-float(y)*.65,z)
 						break
 				if done: break
-			if is_instance_valid(carlos): carlos.arms[1].rotation.x = -1.1
+			if is_instance_valid(carlos): carlos.arms[1].rotation.x = -1.1 if state.painted.size()<TOTAL else 0.0
 		if brush_clock>=.13 and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
 			brush_clock = 0.0
 			_paint()
+		if state.painted.size()>=TOTAL and paint_dirty:
+			paint_dirty = false
+			_save()
 		_refresh_client()
 	elif _stage() in [3,4] and not game.garage.inside and not game.bus_riding and not game.garage.riding:
 		_follow(delta)
