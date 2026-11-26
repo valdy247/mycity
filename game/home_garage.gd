@@ -246,7 +246,7 @@ func _exit() -> void:
 	var destination := Vector3.ZERO
 	var found := false
 	for offset in [Vector2(0,.75),Vector2(-.75,.90),Vector2(.75,.90),Vector2(0,1.50)]:
-		var at := door+basis.x*offset.x+basis.z*offset.y
+		var at: Vector3 = door+basis.x*offset.x+basis.z*offset.y
 		var ground := space.intersect_ray(PhysicsRayQueryParameters3D.create(at+Vector3.UP*1.8,at-Vector3.UP*.4,1|2))
 		if ground.is_empty() or ground.normal.y<.65: continue
 		var point: Vector3 = ground.position+Vector3.UP*.86
@@ -505,11 +505,11 @@ func _show_map(point: Vector3,label_value: String) -> void:
 	business.content.add_child(map)
 	map.custom_minimum_size = Vector2(390,240)
 	map.setup(world.geography)
-	var from: Vector3 = world.garage_home_site.road if inside else game.player.global_position
-	map.reset(from)
+	var origin_point: Vector3 = world.garage_home_site.road if inside else game.player.global_position
+	map.reset(origin_point)
 	map.show_route([],point)
-	map.center = Vector2((from.x+point.x)*.5,(from.z+point.z)*.5)
-	map.zoom = clampf(280.0/maxf(100.0,from.distance_to(point)),.15,1.0)
+	map.center = Vector2((origin_point.x+point.x)*.5,(origin_point.z+point.z)*.5)
+	map.zoom = clampf(280.0/maxf(100.0,origin_point.distance_to(point)),.15,1.0)
 	map.queue_redraw()
 	business._button("Cerrar",business.close)
 
