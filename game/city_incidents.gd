@@ -15,6 +15,7 @@ var streets
 var data
 var scene: Dictionary = {}
 var injured: Array = []
+var returning: Array = []
 var crowd: Array = []
 var police_wait := 35.0
 var crowd_clock := 0.0
@@ -96,6 +97,8 @@ func _crowd_tick(center: Vector3,delta: float) -> void:
 	if crowd_clock>=1.2 and crowd.size()<8:
 		crowd_clock = 0.0
 		var candidates: Array = _walkers(center,22.0)
+		# Leave the nearest available citizen free to help the driver.
+		if String(scene.get("kind",""))=="rescue" and String(scene.get("phase",""))=="approach" and not candidates.is_empty(): candidates.pop_front()
 		for agent in candidates:
 			if crowd.size()>=8: break
 			var p: Person = agent.node
@@ -108,6 +111,9 @@ func _crowd_tick(center: Vector3,delta: float) -> void:
 				for other in crowd:
 					if spot.distance_to(other.target)<1.15: free = false
 				if not free: continue
+				var eye := spot+Vector3.UP*1.5
+				var look := PhysicsRayQueryParameters3D.create(eye,center+Vector3.UP*.6,1|16)
+				if not get_world_3d().direct_space_state.intersect_ray(look).is_empty(): continue
 				var path := _ped_path(p.global_position,spot)
 				if path.is_empty(): continue
 				_lock(agent,"curioso")
@@ -471,6 +477,9 @@ func _police_tick(delta: float) -> void:
 				model.reparent(stall.root,true)
 				model.position = item.get("display_position",Vector3(0,float(stall.surface)+.10,0))
 				model.hide()
+				var cargo: Array = body.get_meta("seized_goods",[])
+				cargo.append({"product":String(item.key),"quantity":int(stall.stock[item.key])})
+				body.set_meta("seized_goods",cargo)
 				stall.stock[item.key] = 0
 				scene.load_item = {}
 				scene.load_path = _ped_path(carrier.global_position,seller.global_position-stall.root.global_transform.basis.z*.9)
@@ -495,6 +504,7 @@ func _police_tick(delta: float) -> void:
 		scene.escort_index = _advance_actor(seller,scene.escort_path,int(scene.escort_index),delta,1.3)
 		if int(scene.escort_index)>=scene.escort_path.size():
 			seller.hide()
+			body.set_meta("detained_vendor",String(stall.id))
 			seller.position = Vector3(0,0,1.08)
 			stall.detained = true
 			stall.open = false
@@ -564,7 +574,7 @@ func vehicle_motion(body: CharacterBody3D,before: Transform3D,speed: float,width
 	for agent in _walkers(center,length+2.0):
 		var person: Person = agent.node
 		var p := person.global_position
-		if absf(p.y-end.y)>.75: continue
+		if absf(p.y-end.y)>.75 or Time.get_ticks_msec()<int(person.get_meta("impact_immunity",0)): continue
 		var near := Geometry3D.get_closest_point_to_segment(_flat(p),_flat(start),_flat(end))
 		var offset := _flat(p)-near
 		if absf(offset.dot(side))>width*.5+.20 or absf(offset.dot(axis))>length*.5+.17: continue
@@ -590,7 +600,10 @@ func _injury_tick(delta: float) -> void:
 		victim.time = float(victim.time)+delta
 		if float(victim.time)<5.0: continue
 		var p: Person = victim.agent.node
-		p.global_transform = victim.old
+		var old: Transform3D = victim.old
+		if _foot(old.origin).is_empty(): continue
+		p.global_transform = old
+		p.set_meta("impact_immunity",Time.get_ticks_msec()+2500)
 		_release(victim.agent)
 		injured.remove_at(i)
 
@@ -603,7 +616,7 @@ func _rescue_start(victim: Dictionary) -> void:
 	for car in municipal.vehicles:
 		if bool(car.truck) or bool(car.get("incident_hold",false)): continue
 		var body: CharacterBody3D = car.body
-		if not is_instance_valid(body) or body.name.begins_with("Patrulla") or body.global_position.distance_to(center)>125.0: continue
+		if not is_instance_valid(body) or String(body.name).begins_with("Patrulla") or body.global_position.distance_to(center)>125.0: continue
 		if not streets.intersection_clear_for_stop(body.global_position,LENGTH,WIDTH): continue
 		candidates.append(car)
 	candidates.shuffle()
@@ -725,34 +738,70 @@ func _end_rescue(delivered: bool) -> void:
 	Bypass._junction_release(scene.trip,body,streets)
 	body.set_meta("traffic_servicing",false)
 	body.set_meta("junction_guard",false)
-	car.incident_hold = false
 	car.detour = []
 	car.speed = 0.0
-	# Resume the closest reachable portion of the car's original loop.
-	var route: Array = car.route
-	var best := INF
-	var choice := int(car.index)
-	for i in range(route.size()):
-		var p: Vector3 = route[i].p
-		var diff := p-body.global_position
-		if diff.normalized().dot(body.global_transform.basis.z)<.3: continue
-		if diff.length_squared()<best:
-			best = diff.length_squared()
-			choice = i
-	car.index = choice
+	_rejoin_car(car)
 	if delivered:
+		person.set_meta("impact_immunity",Time.get_ticks_msec()+5000)
 		_release(victim.agent)
 		injured.erase(victim)
 	else:
-		person.show()
-		person.global_transform = victim.old
+		var base: Vector3 = person.global_position
+		if not person.visible:
+			var nearest := _berths(body.global_position,18.0,body.global_transform.basis.z)
+			for berth in nearest:
+				var ground := _sidewalk(berth,body.global_position)
+				if not ground.is_empty():
+					base = ground.p
+					break
+		else:
+			base.y = float(victim.old.origin.y)
+		var old: Transform3D = victim.old
+		old.origin = base
+		victim.old = old
+		person.global_transform = old
 		person.rotation.x = -PI*.5
 		person.global_position.y += .13
+		person.show()
 		victim.retry = 8.0
 	_crowd_clear()
 	scene = {}
 
+func _rejoin_car(car: Dictionary) -> void:
+	var body: CharacterBody3D = car.body
+	var original: Array = car.route
+	var candidates: Array = []
+	for i in range(original.size()):
+		var p: Vector3 = original[i].p
+		if not streets.intersection_clear_for_stop(p,LENGTH,WIDTH): continue
+		candidates.append({"index":i,"p":p,"distance":p.distance_squared_to(body.global_position)})
+	candidates.sort_custom(func(a,b): return float(a.distance)<float(b.distance))
+	for candidate in candidates.slice(0,8):
+		var route := _car_trip(body,candidate.p)
+		if route.is_empty(): continue
+		var berth_point: Vector3 = route.berth.p
+		if berth_point.distance_to(candidate.p)>6.0: continue
+		returning.append({"car":car,"trip":route.trip,"index":int(candidate.index),"time":0.0})
+		return
+	car.incident_hold = false
+	if not candidates.is_empty(): car.index = int(candidates[0].index)
+
+func _tick_returning(delta: float) -> void:
+	for i in range(returning.size()-1,-1,-1):
+		var entry: Dictionary = returning[i]
+		var car: Dictionary = entry.car
+		entry.time = float(entry.time)+delta
+		var arrived := _drive_trip(entry.trip,delta)
+		if not arrived and float(entry.time)<90.0: continue
+		Bypass._junction_release(entry.trip,car.body,streets)
+		car.body.set_meta("junction_guard",false)
+		car.incident_hold = false
+		car.index = int(entry.index)
+		car.speed = 0.0
+		returning.remove_at(i)
+
 func tick(delta: float) -> void:
+	_tick_returning(delta)
 	_injury_tick(delta)
 	for victim in injured:
 		victim.retry = maxf(0.0,float(victim.retry)-delta)
@@ -772,7 +821,7 @@ func tick(delta: float) -> void:
 	scene.time = float(scene.time)+delta
 	scene.age = float(scene.age)+delta
 	var phase := String(scene.phase)
-	if phase not in ["approach","depart","depart_retry","hospital"]:
+	if phase not in ["depart","depart_retry","hospital"] and (phase!="approach" or String(scene.kind)=="rescue"):
 		_crowd_tick(scene.center,delta)
 	if String(scene.kind)=="police":
 		_police_tick(delta)
