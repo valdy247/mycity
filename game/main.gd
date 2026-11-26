@@ -8,6 +8,10 @@ const PilarEditor = preload("res://pilar_editor.gd")
 const TaxiService = preload("res://taxi_service.gd")
 const UrbanBuses = preload("res://urban_buses.gd")
 const BusinessMission = preload("res://business_mission.gd")
+const MontePedestrians = preload("res://monte_pedestrians.gd")
+const MonteServices = preload("res://monte_services.gd")
+var monte_pedestrians: MontePedestrians
+var monte_services: MonteServices
 var business: BusinessMission
 var cargo_requested := false
 var urban_buses: UrbanBuses
@@ -137,6 +141,15 @@ func _ready() -> void:
 		business = BusinessMission.new()
 		add_child(business)
 		business.setup(cuba_world,taxis,player,van,play_camera)
+		for bus in urban_buses.buses:
+			var body: CharacterBody3D = bus.body
+			avoid.append(body.global_position)
+		monte_services = MonteServices.new()
+		add_child(monte_services)
+		monte_services.setup(cuba_world,cuba_world.home_spawn,avoid)
+		monte_pedestrians = MontePedestrians.new()
+		add_child(monte_pedestrians)
+		monte_pedestrians.setup(cuba_world,urban_buses)
 		first_person = true
 		_face_cuba_home()
 		_apply_camera_mode()
@@ -933,6 +946,10 @@ func _physics_process(delta: float) -> void:
 		cuba_world.tick(delta)
 		if urban_buses!=null:
 			urban_buses.tick(delta)
+		if monte_services!=null:
+			monte_services.tick(delta)
+		if monte_pedestrians!=null:
+			monte_pedestrians.tick(delta)
 		if interact_requested:
 			taxis.request_stop()
 		interact_requested = false
@@ -979,6 +996,10 @@ func _physics_process(delta: float) -> void:
 		city_world.tick(delta)
 	if urban_buses!=null:
 		urban_buses.tick(delta)
+	if monte_services!=null:
+		monte_services.tick(delta)
+	if monte_pedestrians!=null:
+		monte_pedestrians.tick(delta)
 	if van != null and not van_ground_initialized:
 		if _support_van():
 			van_home = van.global_transform
