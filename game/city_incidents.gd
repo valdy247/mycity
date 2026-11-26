@@ -63,7 +63,6 @@ func _release(agent: Dictionary) -> void:
 		p.add_to_group("bus_yield_walkers")
 		agent.incident_replan = true
 	elif source=="business":
-		var life = game.business.life
 		var owner: Dictionary = agent.owner
 		owner.path = PackedVector3Array()
 		owner.index = 0
@@ -79,7 +78,7 @@ func _release(agent: Dictionary) -> void:
 			stall.open = false
 			stall.root.hide()
 			p.position = Vector3(0,0,1.08)
-		elif not bool(stall.detained if stall.has("detained") else false):
+		elif not bool(stall.get("detained",false)):
 			p.show()
 
 # Accident detection uses every visible social actor, not just walkers.
@@ -672,7 +671,7 @@ func vehicle_motion(body: CharacterBody3D,before: Transform3D,speed: float,width
 		# the person, not a long ray through the van and nearby signposts.
 		var edge: Vector3 = contact.surface
 		var target := p+Vector3.UP*.65
-		if edge.distance_to(target)>.30:
+		if edge.distance_to(target)>.025:
 			var ray := PhysicsRayQueryParameters3D.create(edge,target,1|4|16)
 			ray.exclude = [body.get_rid(),game.player.get_rid()]
 			if not get_world_3d().direct_space_state.intersect_ray(ray).is_empty(): continue
@@ -706,7 +705,11 @@ func _injury_tick(delta: float) -> void:
 					var angle := float(n)*TAU/8.0
 					var candidate := old.origin+Vector3(cos(angle),0,sin(angle))*float(distance)
 					safe = _foot(candidate)
-					if not safe.is_empty(): break
+					if not safe.is_empty():
+						var safe_point: Vector3 = safe.p
+						var check := PhysicsRayQueryParameters3D.create(old.origin+Vector3.UP*.65,safe_point+Vector3.UP*.65,1|16)
+						if get_world_3d().direct_space_state.intersect_ray(check).is_empty(): break
+						safe = {}
 				if not safe.is_empty(): break
 			if safe.is_empty(): continue
 			old.origin = safe.p
@@ -761,6 +764,9 @@ func _rescue_tick(delta: float) -> void:
 		var spawn: Vector3 = ground.p
 		var helper: Dictionary = {}
 		var victim_point: Vector3 = victim.old.origin
+		if _foot(victim_point).is_empty():
+			_end_rescue(false)
+			return
 		for agent in _walkers(victim_point,22.0):
 			var p: Person = agent.node
 			var path := _ped_path(p.global_position,victim_point)
