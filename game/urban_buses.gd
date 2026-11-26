@@ -599,7 +599,7 @@ func tick(delta: float) -> void:
 		# Hard safety cap: the bus cannot move into its stopping gap even
 		# when a player suddenly drives across its route.
 		if blocked:
-			bus.speed = minf(float(bus.speed),safe_speed,maxf(0.0,free-BUS_SAFE_GAP)/maxf(delta,.001))
+			bus.speed = minf(minf(float(bus.speed),safe_speed),maxf(0.0,free-BUS_SAFE_GAP)/maxf(delta,.001))
 		var angle := lerp_angle(body.rotation.y,atan2(d.x,d.z),minf(delta*3.5,1.0))
 		if not _safe_turn(body,angle):
 			body.velocity = Vector3.ZERO
