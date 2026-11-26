@@ -215,7 +215,13 @@ static func clear_distance(body: CharacterBody3D,d: Vector3,reach: float,width: 
 	query.collision_mask = 1|4|8
 	query.exclude = [body.get_rid()]
 	var space := body.get_world_3d().direct_space_state
-	if not space.intersect_shape(query,1).is_empty(): return 0.0
+	if not space.intersect_shape(query,1).is_empty():
+		# An inflated lookahead can graze a curbside object. Test the
+		# real collision body before declaring that it has zero clearance.
+		var collision := KinematicCollision3D.new()
+		if body.test_move(body.global_transform,d*reach,collision,.001):
+			return clampf(collision.get_travel().dot(d),0.0,reach)
+		return reach
 	query.motion = d*reach
 	var result := space.cast_motion(query)
 	return reach*result[0] if result.size()>=2 else 0.0
