@@ -62,6 +62,7 @@ var kept_footprints: Array = []
 var market_drawn := false
 var market_block: PackedVector2Array = PackedVector2Array()
 var market_reservation: PackedVector2Array = PackedVector2Array()
+var market_topology: Dictionary = {}
 var mapped_buildings := 0
 var plaque_count := 0
 var service_count := 0
@@ -108,6 +109,11 @@ func setup(builder: Builder) -> void:
 		if String(place.id)=="5233654525":
 			texture_anchor = place.position
 			break
+	# Locate the block before rendering roads so internal dead-end access
+	# cannot split the market footprint or remain in the vehicle graph.
+	market_topology = geography.market_street_block(texture_market)
+	if not market_topology.is_empty():
+		geography.remove_market_spurs(market_topology)
 	street_geometry.build(geography)
 	var street_ms := Time.get_ticks_msec()
 	_load_map_edits()
@@ -1194,7 +1200,7 @@ func _make_frontages() -> void:
 			break
 		if not _lot_clear(lot.center,lot.front,lot.edge) or _overlaps_footprint(lot):
 			continue
-		if not market_block.is_empty() and not Geometry2D.intersect_polygons(market_block,_lot_polygon(lot)).is_empty():
+		if _market_reserved(_lot_polygon(lot)):
 			continue
 		_add_lot(lot)
 		_facade(lot,slots.size(),"")
@@ -1831,7 +1837,10 @@ func _market_from_intersections(anchor: Vector3) -> PackedVector2Array:
 		if not p.is_finite(): return PackedVector2Array()
 		poly.append(Vector2(p.x,p.z))
 	if Geometry2D.triangulate_polygon(poly).is_empty(): return PackedVector2Array()
-	if not Geometry2D.is_point_in_polygon(Vector2(anchor.x,anchor.z),poly): return PackedVector2Array()
+	if geography._market_face_distance(poly,Vector2(anchor.x,anchor.z))>35.0: return PackedVector2Array()
+	var block_center := Vector3.ZERO
+	for corner in corners: block_center += corner
+	block_center /= 4.0
 	var safe := poly.duplicate()
 	var terms := ["matadero","cristina","arroyo","monte"]
 	for i in range(4):
@@ -1840,7 +1849,7 @@ func _market_from_intersections(anchor: Vector3) -> PackedVector2Array:
 		var mid := (a+b)*.5
 		var t := (b-a).normalized()
 		var n := Vector3(-t.z,0,t.x)
-		if n.dot(anchor-mid)>0.0: n = -n
+		if n.dot(block_center-mid)>0.0: n = -n
 		var width := 0.0
 		for edge in geography.roads_near(mid,a.distance_to(b)*.5+10.0):
 			if not bool(edge.driveable) or not _market_named(edge,String(terms[i])): continue
@@ -1862,8 +1871,7 @@ func _market_from_intersections(anchor: Vector3) -> PackedVector2Array:
 		var inner: Array[PackedVector2Array] = Geometry2D.offset_polygon(piece,-.35,Geometry2D.JOIN_MITER)
 		for candidate in inner:
 			if candidate.size()<3 or not street_geometry.clear(candidate): continue
-			if not Geometry2D.is_point_in_polygon(Vector2(anchor.x,anchor.z),candidate): continue
-			var area := street_geometry.bounds(candidate).get_area()
+			var area := absf(geography._market_area(candidate))
 			if area>best:
 				best = area
 				result = candidate
@@ -1871,8 +1879,33 @@ func _market_from_intersections(anchor: Vector3) -> PackedVector2Array:
 	market_reservation = poly
 	return result
 
+func _market_from_topology() -> PackedVector2Array:
+	if market_topology.is_empty(): return PackedVector2Array()
+	var block: PackedVector2Array = market_topology.poly
+	# Setback from the actual road centerlines. The pin is only a locator:
+	# it need not be inside the final building (it may mark an entrance).
+	var safe := PackedVector2Array()
+	var best := 0.0
+	var distance := float(market_topology.width)*.5+1.95
+	for inset in Geometry2D.offset_polygon(block,-distance,Geometry2D.JOIN_MITER):
+		if inset.size()<3: continue
+		var parts: Array = [inset] if street_geometry.clear(inset) else street_geometry.subtract(inset,street_geometry.protected_index)
+		for part in parts:
+			for candidate in Geometry2D.offset_polygon(part,-.35,Geometry2D.JOIN_MITER):
+				if candidate.size()<3 or not street_geometry.clear(candidate): continue
+				var area := absf(geography._market_area(candidate))
+				if area>best:
+					best = area
+					safe = candidate
+	if best<700.0: return PackedVector2Array()
+	market_reservation = block
+	print("Cuatro Caminos: manzana topológica; área=",market_topology.area," m², edificio=",best," m², calles reconocidas=",market_topology.terms.keys())
+	return safe
+
 func _reserve_market_block() -> void:
 	var anchor := geography.project(23.1234716,-82.3659728)
+	market_block = _market_from_topology()
+	if not market_block.is_empty(): return
 	market_block = _market_from_intersections(anchor)
 	if not market_block.is_empty():
 		print("Cuatro Caminos: manzana completa Monte / Matadero / Cristina / Arroyo reservada.")
