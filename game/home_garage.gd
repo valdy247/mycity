@@ -783,7 +783,7 @@ func _traffic_tick(delta: float) -> void:
 		entry.cooldown = maxf(0.0,float(entry.cooldown)-delta)
 		var speed := minf(3.2 if active else float(spec.speed)*.65,maxf(.75,distance))
 		if blocked: speed = minf(speed,sqrt(10.0*maxf(0.0,free-.55)))
-		if float(entry.get("retreat_remaining",0.0))<=0.0 and stalled>.8 and float(entry.cooldown)<=0.0:
+		if float(entry.get("retreat_remaining",0.0))<=0.0 and (stalled>.8 or (not active and Bypass.early_lane_pass(body,world.street_geometry,blocked,free))) and float(entry.cooldown)<=0.0:
 			entry.cooldown = 1.6
 			if active:
 				entry.detour = []
