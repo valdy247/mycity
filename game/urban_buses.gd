@@ -470,7 +470,7 @@ func _person(style: int) -> Node3D:
 func _queue_position(stop: Dictionary,index: int) -> Vector3:
 	var base: Vector3 = stop.wait
 	var d: Vector3 = stop.direction
-	return base+d*(-2.3+float(index)*1.45)
+	return base+d*(2.3-float(index)*1.45)
 
 func _add_waiter(stop: Dictionary) -> void:
 	var queue: Array = stop.queue
@@ -538,64 +538,125 @@ func _start_stop(bus: Dictionary,stop: Dictionary) -> void:
 	var door: Node3D = bus.door
 	_set_bus_door(door,true)
 
+# The doorway is on the right (local -X), at Z=3.52. The floor
+# surfaces are at .395, .665, .925 and .98 metres above the bus root.
+# Align outside the shell before climbing; never cut diagonally through
+# the door leaves, side panels, wheel arch or chassis.
+func _transfer_ground(body: CharacterBody3D,point: Vector3) -> Vector3:
+	var ray := PhysicsRayQueryParameters3D.create(point+Vector3.UP*1.2,point-Vector3.UP*.8,2)
+	ray.exclude = [body.get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(ray)
+	if not hit.is_empty():
+		var ground: Vector3 = hit.position
+		return ground
+	return Vector3(point.x,.065,point.z)
+
+func _door_transfer_path(body: CharacterBody3D,stop: Dictionary) -> PackedVector3Array:
+	var wait: Vector3 = stop.wait
+	var local_wait := body.to_local(wait)
+	var curb_x := minf(-1.85,local_wait.x)
+	var align := _transfer_ground(body,body.to_global(Vector3(curb_x,0,3.52)))
+	var outside := _transfer_ground(body,body.to_global(Vector3(-1.65,0,3.52)))
+	# Each riser is approached at its actual top height. The final point
+	# is entirely inside the aisle before the passenger model disappears.
+	return PackedVector3Array([align,outside,
+		body.to_global(Vector3(-1.27,.395,3.52)),
+		body.to_global(Vector3(-.98,.665,3.52)),
+		body.to_global(Vector3(-.71,.925,3.52)),
+		body.to_global(Vector3(-.22,.98,3.52)),
+		body.to_global(Vector3(.04,.98,3.52))])
+
+func _alighting_exit(body: CharacterBody3D,stop: Dictionary,person: Node3D = null) -> Vector3:
+	var wait: Vector3 = stop.wait
+	var d: Vector3 = stop.direction
+	for offset in [4.0,3.4,5.0,-3.5,-4.5]:
+		var candidate := wait+d*float(offset)
+		if not _on_sidewalk(candidate): continue
+		candidate = _transfer_ground(body,candidate)
+		if pedestrian_world!=null:
+			if not pedestrian_world.call("pedestrian_space_clear",person,candidate,.7,false): continue
+			if not pedestrian_world.call("pedestrian_segment_clear",candidate,candidate): continue
+		return candidate
+	return Vector3.INF
+
+func _finish_alighting(stop: Dictionary,person: Node3D,exit_point: Vector3) -> void:
+	person.remove_meta("bus_transfer")
+	person.set("social_context","street")
+	var accepted := false
+	if alight_handler.is_valid(): accepted = bool(alight_handler.call(person))
+	if not accepted:
+		var d: Vector3 = stop.direction
+		stop.departing.append({"node":person,"time":12.0,"target":exit_point+d*5.0})
+
 func _transfer_tick(bus: Dictionary,delta: float) -> void:
 	var stop: Dictionary = bus.active_stop
 	var body: CharacterBody3D = bus.body
 	var onboard: Array = bus.onboard
 	var transfer: Dictionary = bus.transfer
-	var door_point := body.to_global(Vector3(-.59,.89,3.52))
-	var stop_direction: Vector3 = stop.direction
-	var wait_point: Vector3 = stop.wait
-	var exit_point: Vector3 = wait_point+stop_direction*2.3
 	if not transfer.is_empty():
 		var person: Node3D = transfer.node
-		var target: Vector3 = transfer.target
-		transfer.elapsed = float(transfer.get("elapsed",0.0))+delta
 		if not is_instance_valid(person):
 			bus.transfer = {}
 			return
-		# A greeting or an unreachable passenger cannot hold the whole route.
-		if float(transfer.elapsed)>12.0:
-			person.remove_meta("conversation_until")
-			if bool(transfer.board):
-				person.set("social_context","bus_wait")
-				stop.queue.append({"node":person,"style":int(transfer.style)})
-				bus.served = 3
-			else:
-				var accepted := false
-				if alight_handler.is_valid(): accepted = bool(alight_handler.call(person))
-				if not accepted:
-					person.set("social_context","street")
-					stop.departing.append({"node":person,"time":12.0,"target":exit_point+stop_direction*8.0})
-			bus.transfer = {}
-			return
-		if _walk(person,target,delta):
-			if bool(transfer.board):
+		person.remove_meta("conversation_until")
+		var path: PackedVector3Array = transfer.path
+		var index := int(transfer.index)
+		transfer.elapsed = float(transfer.get("elapsed",0.0))+delta
+		if index<path.size():
+			var target := path[index]
+			# Step slowly at the entrance and raise the root with each tread.
+			var local := body.to_local(person.global_position)
+			var stairs := local.x> -1.70 and local.x<-.15 and absf(local.z-3.52)<.65
+			var speed := .9 if stairs else 1.6
+			if person is StreetPerson and (person as StreetPerson).walk_to(target,delta,speed):
+				transfer.index = index+1
+			if int(transfer.index)<path.size() and float(transfer.elapsed)<24.0: return
+		if bool(transfer.board):
+			var local := body.to_local(person.global_position)
+			if int(transfer.index)>=path.size() or local.x> -1.0:
+				person.hide()
 				onboard.append({"style":int(transfer.style),"remaining":int(transfer.remaining)})
 				person.queue_free()
 				bus.served = int(bus.served)+1
 			else:
-				var accepted := false
-				if alight_handler.is_valid():
-					accepted = bool(alight_handler.call(person))
-				if not accepted:
-					person.set("social_context","street")
-					var departing: Array = stop.departing
-					departing.append({"node":person,"time":12.0,"target":exit_point+stop_direction*8.0})
-			bus.transfer = {}
+				# A timed-out passenger outside the cabin returns to the
+				# queue; never close doors on a person in the stairwell.
+				var safe := _queue_position(stop,stop.queue.size())
+				person.global_position = _transfer_ground(body,safe)
+				person.remove_meta("bus_transfer")
+				person.set("social_context","bus_wait")
+				stop.queue.append({"node":person,"style":int(transfer.style)})
+				bus.served = 3
+		else:
+			var exit_point: Vector3 = transfer.exit
+			if int(transfer.index)<path.size():
+				# Last-resort recovery after the bounded animation timeout.
+				person.global_position = exit_point
+			_finish_alighting(stop,person,exit_point)
+		bus.transfer = {}
 		return
-	# Alight passengers whose destination was this stop before boarding.
+	# Alight one passenger at a time, only when a sidewalk exit is free.
 	for i in range(onboard.size()):
 		if int(onboard[i].remaining)<=0:
+			var exit_point := _alighting_exit(body,stop)
+			if not exit_point.is_finite(): break
 			var passenger_data: Dictionary = onboard.pop_at(i)
+			var path := _door_transfer_path(body,stop)
+			path.reverse()
 			var person := _person(int(passenger_data.style))
-			person.position = door_point
-			bus.transfer = {"node":person,"target":exit_point,"board":false}
+			person.global_position = path[0]
+			person.rotation.y = atan2(-body.global_basis.x.x,-body.global_basis.x.z)
+			person.set_meta("bus_transfer",true)
+			path.append(exit_point)
+			bus.transfer = {"node":person,"path":path,"index":1,"board":false,"exit":exit_point,"elapsed":0.0}
 			return
 	var queue: Array = stop.queue
 	if not queue.is_empty() and onboard.size()<(MAX_PASSENGERS-1 if bus==player_bus else MAX_PASSENGERS) and int(bus.served)<3:
 		var waiting: Dictionary = queue.pop_front()
-		bus.transfer = {"node":waiting.node,"target":door_point,"board":true,"style":waiting.style,"remaining":2+posmod(int(waiting.style),3)}
+		var person: Node3D = waiting.node
+		if not is_instance_valid(person): return
+		person.set_meta("bus_transfer",true)
+		bus.transfer = {"node":person,"path":_door_transfer_path(body,stop),"index":0,"board":true,"style":waiting.style,"remaining":2+posmod(int(waiting.style),3),"elapsed":0.0}
 		return
 	if bus==player_bus and player_exit_requested and stop!=player_board_stop and float(bus.get("exit_wait",0.0))<8.0:
 		bus.exit_wait = float(bus.get("exit_wait",0.0))+delta
