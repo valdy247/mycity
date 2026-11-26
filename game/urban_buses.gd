@@ -8,6 +8,9 @@ var alight_handler: Callable
 const BUS_LENGTH := 9.4
 const BUS_WIDTH := 2.45
 const MAX_PASSENGERS := 18
+const BUS_SAFE_GAP := 1.0
+const BUS_BRAKE := 6.0
+var safety_shape := BoxShape3D.new()
 var data: MapData
 var streets: StreetGeometry
 var planner := Planner.new()
@@ -21,6 +24,7 @@ var pedestrian_update := 0.0
 func setup(map_data: MapData,street_geometry: StreetGeometry,anchor: Vector3,avoid: Array) -> void:
 	data = map_data
 	streets = street_geometry
+	safety_shape.size = Vector3(BUS_WIDTH+.12,2.96,BUS_LENGTH+.12)
 	planner.setup(data)
 	for line in ["MONTE","CERRO"]:
 		var route := planner.plan(line,anchor)
@@ -481,6 +485,47 @@ func _transfer_tick(bus: Dictionary,delta: float) -> void:
 	bus.index = (int(bus.index)+1)%route.size()
 	stop.cooldown = 8.0
 
+# Use the entire bus envelope, not a centre ray that misses a van
+# at one corner or starts beyond the obstacle when already close.
+func _safety_query(body: CharacterBody3D,at: Vector3,angle: float) -> PhysicsShapeQueryParameters3D:
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = safety_shape
+	query.transform = Transform3D(Basis(Vector3.UP,angle),at+Vector3.UP*1.54)
+	query.collision_mask = 1|4
+	query.exclude = [body.get_rid()]
+	query.margin = .025
+	return query
+
+func _clear_distance(body: CharacterBody3D,d: Vector3,reach: float) -> float:
+	var space := get_world_3d().direct_space_state
+	var query := _safety_query(body,body.global_position,body.global_rotation.y)
+	if not space.intersect_shape(query,1).is_empty():
+		return 0.0
+	query.motion = d*reach
+	var fractions := space.cast_motion(query)
+	if fractions.size()<2: return 0.0
+	return reach*fractions[0]
+
+func _safe_turn(body: CharacterBody3D,angle: float) -> bool:
+	var query := _safety_query(body,body.global_position,angle)
+	return get_world_3d().direct_space_state.intersect_shape(query,1).is_empty()
+
+func _back_up(bus: Dictionary,body: CharacterBody3D,delta: float) -> bool:
+	# A bus already stopped too close to an obstacle can create room
+	# for a bypass, but only with clear asphalt behind its full body.
+	var remaining := 5.5-float(bus.get("backed_up",0.0))
+	if remaining<=0.0: return false
+	var forward := body.global_transform.basis.z.normalized()
+	var step := minf(.85*delta,remaining)
+	var destination := body.global_position-forward*step
+	if not TrafficBypass._on_road(streets,destination,forward,BUS_WIDTH,BUS_LENGTH): return false
+	if body.test_move(body.global_transform,-forward*(step+.45)): return false
+	if not _safe_turn(body,body.global_rotation.y): return false
+	body.velocity = -forward*(step/maxf(delta,.001))
+	body.move_and_slide()
+	bus.backed_up = float(bus.get("backed_up",0.0))+step
+	return true
+
 func tick(delta: float) -> void:
 	for bus in buses:
 		var body: CharacterBody3D = bus.body
@@ -517,32 +562,59 @@ func tick(delta: float) -> void:
 		var next_dir := (next_target-target).normalized()
 		if next_dir.length_squared()>.1 and d.dot(next_dir)<.85:
 			speed = minf(speed,maxf(1.1,distance*.7))
-		var ray := PhysicsRayQueryParameters3D.create(body.position+Vector3.UP*.95+d*(BUS_LENGTH*.5+.15),body.position+Vector3.UP*.95+d*(BUS_LENGTH*.5+1.2+float(bus.speed)*.8),1|4)
-		ray.exclude = [body.get_rid()]
-		var blocked := not get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
-		if not blocked:
-			var low_ray := PhysicsRayQueryParameters3D.create(ray.from-Vector3.UP*.68,ray.to-Vector3.UP*.68,1|4)
-			low_ray.exclude = [body.get_rid()]
-			blocked = not get_world_3d().direct_space_state.intersect_ray(low_ray).is_empty()
+		var current_speed := float(bus.speed)
+		var reach := maxf(14.0,current_speed*current_speed/(2.0*BUS_BRAKE)+5.0)
+		if detouring: reach = maxf(2.0,current_speed*current_speed/(2.0*BUS_BRAKE)+1.2)
+		elif next_dir.length_squared()>.1 and d.dot(next_dir)<.85:
+			reach = minf(reach,distance+2.0)
+		var free := _clear_distance(body,d,reach)
+		var blocked := free<reach-.05
+		var safe_speed := sqrt(2.0*BUS_BRAKE*maxf(0.0,free-BUS_SAFE_GAP))
+		if blocked:
+			speed = minf(speed,safe_speed)
 		bus.bypass_cooldown = maxf(0.0,float(bus.get("bypass_cooldown",0.0))-delta)
 		if blocked:
 			bus.blocked = float(bus.blocked)+delta
-			speed = 0.0
-			if not detouring and float(bus.blocked)>1.7 and float(bus.bypass_cooldown)<=0.0:
-				bus.bypass_cooldown = 4.0
+			if not detouring and float(bus.blocked)>.35 and float(bus.bypass_cooldown)<=0.0:
+				bus.bypass_cooldown = 1.5
 				var choice := TrafficBypass.find(body,original,index,streets,BUS_WIDTH,BUS_LENGTH,data.signal_nodes)
 				if not choice.is_empty():
 					bus.detour = choice.path
 					bus.detour_index = 0
 					bus.resume_index = int(choice.resume)
 					bus.blocked = 0.0
+					bus.backed_up = 0.0
+					bus.speed = minf(current_speed,2.0)
+					body.velocity = Vector3.ZERO
+					continue
+			if not detouring and free<BUS_SAFE_GAP+.3 and current_speed<.1 and float(bus.blocked)>2.0:
+				if _back_up(bus,body,delta):
+					bus.speed = 0.0
 					continue
 		else:
 			bus.blocked = 0.0
+			bus.backed_up = 0.0
 		if detouring: speed = minf(speed,3.5)
-		bus.speed = move_toward(float(bus.speed),speed,delta*(7.0 if speed<float(bus.speed) else 2.5))
-		body.rotation.y = lerp_angle(body.rotation.y,atan2(d.x,d.z),minf(delta*3.5,1.0))
-		body.velocity = d*minf(float(bus.speed),distance/maxf(delta,.001))
+		bus.speed = move_toward(current_speed,speed,delta*(BUS_BRAKE if speed<current_speed else 2.5))
+		# Hard safety cap: the bus cannot move into its stopping gap even
+		# when a player suddenly drives across its route.
+		if blocked:
+			bus.speed = minf(float(bus.speed),safe_speed,maxf(0.0,free-BUS_SAFE_GAP)/maxf(delta,.001))
+		var angle := lerp_angle(body.rotation.y,atan2(d.x,d.z),minf(delta*3.5,1.0))
+		if not _safe_turn(body,angle):
+			body.velocity = Vector3.ZERO
+			bus.speed = 0.0
+			continue
+		var old_angle := body.rotation.y
+		body.rotation.y = angle
+		var advance := d*minf(float(bus.speed)*delta,distance)
+		# Test the real body before moving; avoid slide/push on contact.
+		if body.test_move(body.global_transform,advance):
+			body.rotation.y = old_angle
+			body.velocity = Vector3.ZERO
+			bus.speed = 0.0
+			continue
+		body.velocity = advance/maxf(delta,.001)
 		body.move_and_slide()
 	pedestrian_update += delta
 	if pedestrian_update<.10: return
