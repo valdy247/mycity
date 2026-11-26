@@ -8,6 +8,7 @@ var life: CityLife
 var garage_market: Callable
 var street_inventory: Callable
 var backpack_inventory: Callable
+var phone_position: Callable
 var ledger := Ledger.new()
 var world: World
 var taxis: Taxi
@@ -814,8 +815,7 @@ func _phone_thread(name_value: String) -> void:
 func open_phone_gps() -> void:
 	phone_mode = true
 	_open("GPS","Coordenadas del mapa de la ciudad")
-	var at := player.global_position
-	if van!=null and player.global_position.distance_to(van.global_position)<3.0: at = player.global_position
+	var at: Vector3 = phone_position.call() if phone_position.is_valid() else player.global_position
 	var current := world.geography.coordinate_text(at)
 	_phone_metric("Ubicación actual",current)
 	_button("Copiar coordenadas",_copy_phone_gps.bind(current))
