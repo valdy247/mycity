@@ -5,6 +5,7 @@ const Taxi = preload("res://taxi_service.gd")
 const Person = preload("res://street_person.gd")
 const CityLife = preload("res://city_life.gd")
 var life: CityLife
+var garage_market: Callable
 var ledger := Ledger.new()
 var world: World
 var taxis: Taxi
@@ -519,6 +520,7 @@ func open_phone_home() -> void:
 	_phone_tile(apps,"Mensajes · "+str(ledger.unread),open_messages)
 	if life!=null: _phone_tile(apps,"Contactos",life.open_contacts)
 	_phone_tile(apps,"Mi negocio",open_business_summary)
+	if garage_market.is_valid(): _phone_tile(apps,"Marketplace",garage_market)
 	_phone_tile(apps,"Cerrar",close)
 
 func _phone_tile(root: Control,label_value: String,callback: Callable) -> void:
