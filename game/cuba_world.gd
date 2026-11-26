@@ -67,6 +67,7 @@ var mapped_buildings := 0
 var plaque_count := 0
 var service_count := 0
 var public_rooms: Array = []
+var incident_services: Dictionary = {}
 var current_room := -1
 var upstairs := false
 var prompt := ""
@@ -2633,6 +2634,8 @@ func _label(words: String,at: Vector3,pixel: float,angle: float,color: Color) ->
 func _facade(lot: Dictionary,index: int,service: String) -> void:
 	var c: Vector3 = lot.center
 	var front: Vector3 = lot.front
+	if service.begins_with("HOSPITAL") or service=="PNR":
+		incident_services["hospital" if service.begins_with("HOSPITAL") else "police"] = c+front*4.8
 	var angle := atan2(front.x,front.z)
 	var basis := Basis(Vector3.UP,angle)
 	var palette: Array[Color] = [Color("#9bafa3"),Color("#b4ab92"),Color("#8eabb1"),Color("#b69883"),Color("#c1b995"),Color("#92918b"),Color("#a8a18c")]
