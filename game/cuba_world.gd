@@ -926,7 +926,18 @@ func _place_temporary_business() -> void:
 			best = score
 			chosen = {"p":p,"front":toward,"door":door,"a":a,"b":b}
 	if chosen.is_empty():
-		return
+		# Maps without usable portal polygons still have a temporary
+		# sidewalk spawn. Do not re-create the removed house.
+		if home_edge.is_empty(): home_edge = _nearest_street(requested)
+		if home_edge.is_empty(): return
+		var ra: Vector3 = home_edge.a
+		var rb: Vector3 = home_edge.b
+		var d := (rb-ra).normalized()
+		var q := Geometry3D.get_closest_point_to_segment(requested,ra,rb)
+		var outward := Vector3(-d.z,0,d.x)
+		if outward.dot(requested-q)<0.0: outward = -outward
+		var sidewalk := q+outward*(float(home_edge.width)*.5+.70)
+		chosen = {"p":sidewalk,"front":-outward}
 	var front: Vector3 = chosen.front
 	var p: Vector3 = chosen.p
 	# Invisible interaction reference, not a dwelling or lot reservation.
