@@ -7,6 +7,7 @@ const EDIT_FILE := "user://pilar_atares_edits_v1.json"
 var map_edits: Dictionary = {}
 var editable_buildings: Dictionary = {}
 var original_footprints: Dictionary = {}
+var suppressed_infill: Array = []
 var home_defaults: Dictionary = {}
 var home_building := false
 var home_cutaway: Array = []
@@ -222,6 +223,9 @@ func _lot_polygon(lot: Dictionary) -> PackedVector2Array:
 func _overlaps_footprint(lot: Dictionary) -> bool:
 	var shape := _lot_polygon(lot)
 	for fp in geography.footprints_near(lot.center,9.0):
+		if not Geometry2D.intersect_polygons(shape,fp.poly).is_empty():
+			return true
+	for fp in suppressed_infill:
 		if not Geometry2D.intersect_polygons(shape,fp.poly).is_empty():
 			return true
 	return false
@@ -528,6 +532,8 @@ func _load_map_edits() -> void:
 		var id := String(original.id)
 		original_footprints[id] = original.duplicate(true)
 		var changes: Dictionary = map_edits.get(id,{})
+		if bool(changes.get("deleted",false)) or absf(float(changes.get("dx",0.0)))>.001 or absf(float(changes.get("dz",0.0)))>.001 or absf(float(changes.get("angle",0.0)))>.001:
+			suppressed_infill.append(original)
 		if bool(changes.get("deleted",false)):
 			continue
 		var fp: Dictionary = original.duplicate(true)
