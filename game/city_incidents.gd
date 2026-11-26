@@ -235,6 +235,7 @@ func _route(start: Dictionary,finish: Dictionary,origin: Vector3) -> Array:
 		raw.append({"p":end,"node":""})
 		return raw
 	var ids: Array = data._path(String(start.last),String(finish.first),String(start.first),String(start.last))
+	if ids.is_empty(): ids = data._path(String(start.last),String(finish.first),"","")
 	if ids.is_empty(): return []
 	var first_point := b+right*float(start.offset)
 	if (first_point-origin).dot(d)>.3: raw.append({"p":first_point,"node":String(start.last)})
@@ -326,11 +327,11 @@ func _drive_trip(trip: Dictionary,delta: float) -> bool:
 	return false
 
 func _car_trip(body: CharacterBody3D,at: Vector3) -> Dictionary:
-	var start: Array = _berths(body.global_position,8.0,body.global_transform.basis.z,false)
-	var goals: Array = _berths(at,32.0)
-	for goal in goals.slice(0,6):
+	var start: Array = _berths(body.global_position,11.0,body.global_transform.basis.z,false)
+	var goals: Array = _berths(at,38.0)
+	for goal in goals.slice(0,12):
 		if not _clear_pose(body,goal): continue
-		for origin in start.slice(0,2):
+		for origin in start.slice(0,4):
 			var route := _route(origin,goal,body.global_position)
 			if not route.is_empty(): return {"trip":_new_trip(body,route),"berth":goal}
 	return {}
@@ -413,9 +414,13 @@ func _destination(kind: String) -> Dictionary:
 	if world.incident_services.has(kind):
 		return {"p":world.incident_services[kind]}
 	if kind=="hospital":
+		if world.incident_services.has("clinic"): return {"p":world.incident_services.clinic}
 		for room in world.public_rooms:
 			if String(room.name).begins_with("HOSPITAL"):
 				return {"p":room.center+room.basis.z*4.8}
+		for fp in world.original_footprints.values():
+			var tags: Dictionary = fp.tags
+			if String(tags.get("amenity",""))=="hospital" and not _berths(fp.center,45.0).is_empty(): return {"p":fp.center}
 	return {}
 
 func _depart_police() -> void:
@@ -718,37 +723,103 @@ func _injury_tick(delta: float) -> void:
 		_release(victim.agent)
 		injured.remove_at(i)
 
+func _rescue_log(victim: Dictionary,message: String) -> void:
+	if String(victim.get("rescue_status",""))==message: return
+	victim.rescue_status = message
+	print("Rescate: ",message)
+
+func _assign_rescue(victim: Dictionary,car: Dictionary,approach: Dictionary) -> void:
+	var body: CharacterBody3D = car.body
+	Bypass._junction_release(car,body,streets)
+	car.incident_hold = true
+	car.detour = []
+	car.speed = 0.0
+	var person: Node3D = victim.agent.node
+	scene = {"kind":"rescue","phase":"approach","trip":approach.trip,"berth":approach.berth,"car":car,"victim":victim,"center":person.global_position,"time":0.0,"age":0.0,"actors":[]}
+	_rescue_log(victim,"automóvil asignado: "+String(body.name))
+
+func _reserve_responder(victim: Dictionary,center: Vector3) -> bool:
+	# One supplementary civilian, only on a free road away from the event.
+	# It has the same geometry and navigation rules as ordinary traffic.
+	for car in municipal.vehicles:
+		if bool(car.get("rescue_extra",false)): return false
+	if municipal.civilian_route.size()<2: return false
+	var goals := _berths(center,38.0)
+	if goals.is_empty(): return false
+	var tested: Dictionary = {}
+	for edge in data.roads_near(center,100.0):
+		if not bool(edge.driveable): continue
+		var key := String(edge.a_id)+":"+String(edge.b_id)
+		if tested.has(key): continue
+		tested[key] = true
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		for fraction in [.25,.5,.75]:
+			var sample := a.lerp(b,float(fraction))
+			if sample.distance_to(center)<32.0 or sample.distance_to(center)>100.0: continue
+			for start in _berths(sample,9.0,Vector3.ZERO,false):
+				var p: Vector3 = start.p
+				var d: Vector3 = start.d
+				if not streets.intersection_clear_for_stop(p,LENGTH,WIDTH): continue
+				if not municipal._free_box(p,d,Vector3(WIDTH,HEIGHT,LENGTH)): continue
+				for goal in goals.slice(0,8):
+					if not municipal._free_box(goal.p,goal.d,Vector3(WIDTH,HEIGHT,LENGTH)): continue
+					var route := _route(start,goal,p)
+					if route.is_empty(): continue
+					var body: CharacterBody3D = municipal._body(false,10)
+					body.global_position = p+Vector3.UP*.04
+					body.rotation.y = atan2(d.x,d.z)
+					var car := {"body":body,"route":municipal.civilian_route,"index":0,"speed":0.0,"truck":false,"crew":[],"site":{},"blocked":0.0,"cooldown":0.0,"detour":[],"detour_index":0,"resume":0,"rescue_extra":true}
+					municipal.vehicles.append(car)
+					_assign_rescue(victim,car,{"trip":_new_trip(body,route),"berth":goal})
+					return true
+		if tested.size()>=32: break
+	return false
+
 func _rescue_start(victim: Dictionary) -> void:
-	var dest := _destination("hospital")
-	if dest.is_empty(): return
 	var person: Node3D = victim.agent.node
 	var center := person.global_position
 	var candidates: Array = []
 	for car in municipal.vehicles:
 		if bool(car.truck) or bool(car.get("incident_hold",false)): continue
 		var body: CharacterBody3D = car.body
-		if not is_instance_valid(body) or String(body.name).begins_with("Patrulla") or body.global_position.distance_to(center)>125.0: continue
+		if not is_instance_valid(body) or String(body.name).begins_with("Patrulla") or body.global_position.distance_to(center)>240.0: continue
 		if not streets.intersection_clear_for_stop(body.global_position,LENGTH,WIDTH): continue
 		candidates.append(car)
-	candidates.shuffle()
-	for car in candidates.slice(0,5):
+	candidates.sort_custom(func(a,b): return (a.body as Node3D).global_position.distance_squared_to(center)<(b.body as Node3D).global_position.distance_squared_to(center))
+	for car in candidates.slice(0,8):
 		var body: CharacterBody3D = car.body
 		var approach := _car_trip(body,center)
 		if approach.is_empty(): continue
-		var hospital: Array = _berths(dest.p,35.0)
-		var outbound: Array = []
-		var end: Dictionary = {}
-		for berth in hospital.slice(0,5):
-			var route := _route(approach.berth,berth,approach.berth.p)
-			if not route.is_empty():
-				outbound = route
-				end = berth
-				break
-		if outbound.is_empty(): continue
-		Bypass._junction_release(car,body,streets)
-		car.incident_hold = true
-		scene = {"kind":"rescue","phase":"approach","trip":approach.trip,"berth":approach.berth,"hospital_route":outbound,"hospital_berth":end,"car":car,"victim":victim,"center":center,"time":0.0,"age":0.0,"actors":[]}
+		_assign_rescue(victim,car,approach)
 		return
+	if _reserve_responder(victim,center): return
+	_rescue_log(victim,"esperando automóvil con acceso seguro; reintentando.")
+
+# Find a reachable approach beside the casualty instead of insisting on
+# the exact foot position, which may overlap a pole or parked vehicle.
+func _rescue_access(from: Vector3,at: Vector3) -> Dictionary:
+	var candidates: Array = [at]
+	for radius in [.65,1.15,1.75,2.4]:
+		for i in range(8):
+			var angle := float(i)*TAU/8.0
+			candidates.append(at+Vector3(cos(angle),0,sin(angle))*float(radius))
+	for candidate in candidates:
+		var ground := _foot(candidate)
+		if ground.is_empty(): continue
+		var p: Vector3 = ground.p
+		var path := _ped_path(from,p)
+		if not path.is_empty(): return {"p":p,"path":path}
+	return {}
+
+func _hospital_trip(body: CharacterBody3D) -> Dictionary:
+	var dest := _destination("hospital")
+	if not dest.is_empty():
+		var trip := _car_trip(body,dest.p)
+		if not trip.is_empty(): return trip
+	if world.incident_services.has("clinic"):
+		return _car_trip(body,world.incident_services.clinic)
+	return {}
 
 func _rescue_tick(delta: float) -> void:
 	var victim: Dictionary = scene.victim
@@ -763,17 +834,32 @@ func _rescue_tick(delta: float) -> void:
 			return
 		var spawn: Vector3 = ground.p
 		var helper: Dictionary = {}
-		var victim_point: Vector3 = victim.old.origin
-		if _foot(victim_point).is_empty():
+		var casualty: Vector3 = victim.old.origin
+		var access := _rescue_access(spawn,casualty)
+		if access.is_empty():
+			_rescue_log(victim,"sin acceso peatonal seguro al herido; reintentando.")
 			_end_rescue(false)
 			return
-		for agent in _walkers(victim_point,22.0):
+		var victim_point: Vector3 = access.p
+		for agent in _walkers(victim_point,32.0):
 			var p: Person = agent.node
 			var path := _ped_path(p.global_position,victim_point)
 			if path.is_empty(): continue
 			helper = {"agent":agent,"node":p,"path":path,"index":0}
 			break
 		if helper.is_empty():
+			# Free the nearest curious walker for assistance when no other
+			# citizen has a reachable route.
+			for i in range(crowd.size()):
+				var agent: Dictionary = crowd[i].agent
+				var p: Person = agent.node
+				var path := _ped_path(p.global_position,victim_point)
+				if path.is_empty(): continue
+				crowd.remove_at(i)
+				helper = {"agent":agent,"node":p,"path":path,"index":0}
+				break
+		if helper.is_empty():
+			_rescue_log(victim,"el conductor espera un ayudante con acceso seguro.")
 			_end_rescue(false)
 			return
 		var driver := Person.new()
@@ -781,7 +867,7 @@ func _rescue_tick(delta: float) -> void:
 		driver.setup(rng.randi_range(1200,1290))
 		driver.remove_from_group("social_people")
 		driver.global_position = spawn
-		var path := _ped_path(spawn,victim_point)
+		var path: PackedVector3Array = access.path
 		if path.is_empty():
 			driver.queue_free()
 			_end_rescue(false)
@@ -789,6 +875,7 @@ func _rescue_tick(delta: float) -> void:
 		_lock(helper.agent,"auxilio")
 		scene.actors = [{"node":driver,"path":path,"index":0},helper]
 		scene.pickup_point = spawn
+		scene.access_point = victim_point
 		scene.phase = "help"
 		scene.time = 0.0
 		body.set_meta("traffic_servicing",true)
@@ -799,7 +886,7 @@ func _rescue_tick(delta: float) -> void:
 			actor.index = _advance_actor(actor.node,actor.path,int(actor.index),delta,1.6)
 			if int(actor.index)<actor.path.size(): ready = false
 		if not ready: return
-		var path := _ped_path(victim.old.origin,scene.pickup_point)
+		var path := _ped_path(scene.access_point,scene.pickup_point)
 		if path.is_empty():
 			_end_rescue(false)
 			return
@@ -821,13 +908,20 @@ func _rescue_tick(delta: float) -> void:
 			actor.node.arms[0].rotation.x = -1.0
 			actor.node.arms[1].rotation.x = -1.0
 		if int(scene.carry_index)>=path.size() and helper.global_position.distance_to(driver.global_position)<1.1:
+			var transfer := _hospital_trip(body)
+			if transfer.is_empty():
+				_rescue_log(victim,"sin ruta a un centro médico desde esta calle; reintentando.")
+				_end_rescue(false)
+				return
 			person.hide()
 			person.reparent(body,true)
 			person.position = Vector3(0,.68,-.48)
 			_release(scene.actors[1].agent)
 			driver.queue_free()
 			scene.actors = []
-			scene.trip = _new_trip(body,scene.hospital_route)
+			scene.trip = transfer.trip
+			scene.hospital_berth = transfer.berth
+			_rescue_log(victim,"herido a bordo; rumbo al centro médico.")
 			scene.phase = "hospital"
 			scene.time = 0.0
 			_crowd_clear()
@@ -929,7 +1023,7 @@ func tick(delta: float) -> void:
 	if scene.is_empty():
 		for victim in injured:
 			if bool(victim.severe) and float(victim.retry)<=0.0:
-				victim.retry = 6.0
+				victim.retry = 3.0
 				_rescue_start(victim)
 				if not scene.is_empty(): break
 		if scene.is_empty() and not injured.is_empty():
