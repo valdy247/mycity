@@ -835,8 +835,8 @@ func _make_frontages() -> void:
 		_add_lot(lot)
 		_facade(lot,slots.size(),service_names[service_count])
 		service_count += 1
-	_reserve_garage_sites(proposals)
 	_reserve_commerce(proposals)
+	_reserve_garage_sites(proposals)
 	# Geographic footprints are authoritative; procedural infill is secondary.
 	_make_mapped_buildings(legacy_anchor)
 	proposals.sort_custom(func(a,b): return a.center.length_squared()<b.center.length_squared())
@@ -1081,7 +1081,7 @@ func _reserve_garage_sites(proposals: Array) -> void:
 					_local_cube(c,basis,Vector3(float(side)*3.4,1.6,4.2),Vector3(1.7,3.2,.24),wall,true)
 				_local_cube(c,basis,Vector3(0,.51,.2),Vector3(3.2,1.02,.75),trim,true)
 			_local_cube(c,basis,Vector3(0,3.24,0),Vector3(8.9,.20,9.0),wall,true)
-			_label(String(spec.name),c+basis*Vector3(0,2.75,4.5),.008,atan2(front.x,front.z),Color("#f8efd9"))
+			if not is_home: _label(String(spec.name),c+basis*Vector3(0,2.75,4.5),.008,atan2(front.x,front.z),Color("#f8efd9"))
 			break
 
 func _reserve_commerce(proposals: Array) -> void:
