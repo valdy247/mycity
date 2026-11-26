@@ -18,6 +18,7 @@ var traffic_phase := 0
 var traffic_serial := 0
 var indicator_clock := 0.0
 var indicator_phase := false
+var horn_stream: AudioStreamWAV
 var main_links: Dictionary = {}
 var neighborhood_links: Dictionary = {}
 var neighborhood_candidates: Array = []
@@ -858,6 +859,31 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 		vehicle.stalled = maxf(0.0,stalled-delta*2.0)
 		if not blocked: vehicle.backed_up = 0.0
 
+func _traffic_horn(body: CharacterBody3D) -> void:
+	if horn_stream==null:
+		horn_stream = AudioStreamWAV.new()
+		horn_stream.format = AudioStreamWAV.FORMAT_16_BITS
+		horn_stream.mix_rate = 22050
+		var samples := PackedByteArray()
+		samples.resize(13230)
+		for i in range(6615):
+			var t := float(i)/22050.0
+			var envelope := minf(t/.02,1.0)*clampf((.30-t)/.055,0.0,1.0)
+			var wave := sin(t*TAU*390.0)*.65+sin(t*TAU*495.0)*.35
+			samples.encode_s16(i*2,int(wave*envelope*10000.0))
+		horn_stream.data = samples
+	var audio := body.get_node_or_null("ClaxonCivil") as AudioStreamPlayer3D
+	if audio==null:
+		audio = AudioStreamPlayer3D.new()
+		audio.name = "ClaxonCivil"
+		audio.stream = horn_stream
+		audio.unit_size = 6.0
+		audio.max_distance = 45.0
+		audio.volume_db = -12.0
+		body.add_child(audio)
+		audio.position = Vector3(0,.8,1.9)
+	audio.play()
+
 func _update_indicators(delta: float) -> void:
 	indicator_clock += delta
 	if indicator_clock<.4: return
@@ -867,11 +893,17 @@ func _update_indicators(delta: float) -> void:
 		var body: CharacterBody3D = vehicle.body
 		if not body.has_meta("turn_lamps"): continue
 		var signal := int(vehicle.get("turn_signal",0))
+		# Only audible nearby, physically blocked cars may honk, at most once every 12 seconds.
+		if not bool(vehicle.get("incident_hold",false)) and not bool(body.get_meta("junction_guard",false)) and camera!=null and body.global_position.distance_squared_to(camera.global_position)<1600.0:
+			var threshold := 4.0+float(body.get_meta("driver_style",1))*2.0
+			if float(vehicle.get("stalled",0.0))>threshold and Time.get_ticks_msec()>=int(vehicle.get("next_horn",0)):
+				vehicle.next_horn = Time.get_ticks_msec()+12000
+				_traffic_horn(body)
 		if vehicle.detour.is_empty(): signal = 0
 		var pairs: Array = body.get_meta("turn_lamps")
 		for i in range(2):
 			for lamp in pairs[i]:
-				lamp.visible = indicator_phase and signal==(-1 if i==0 else 1)
+				lamp.visible = indicator_phase and signal==(1 if i==0 else -1)
 
 func tick(delta: float) -> void:
 	_update_indicators(delta)
