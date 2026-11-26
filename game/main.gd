@@ -6,6 +6,8 @@ const CityWorld = preload("res://city_world.gd")
 const CubaWorld = preload("res://cuba_world.gd")
 const PilarEditor = preload("res://pilar_editor.gd")
 const TaxiService = preload("res://taxi_service.gd")
+const UrbanBuses = preload("res://urban_buses.gd")
+var urban_buses: UrbanBuses
 var taxis: TaxiService
 var taxi_riding := false
 var taxi_previous_first := false
@@ -121,6 +123,13 @@ func _ready() -> void:
 		taxis = TaxiService.new()
 		add_child(taxis)
 		taxis.setup(cuba_world.geography,cuba_world.street_geometry,cuba_world.home_spawn,van.global_position)
+		urban_buses = UrbanBuses.new()
+		add_child(urban_buses)
+		var avoid: Array = [van.global_position,player.global_position]
+		for taxi in taxis.taxis:
+			var body: CharacterBody3D = taxi.body
+			avoid.append(body.global_position)
+		urban_buses.setup(cuba_world.geography,cuba_world.street_geometry,cuba_world.home_spawn,avoid)
 		first_person = true
 		_face_cuba_home()
 		_apply_camera_mode()
@@ -378,6 +387,9 @@ func _unhandled_input(event: InputEvent) -> void:
 				interact_requested = true
 			elif event.keycode==KEY_R:
 				taxi_reset_requested = true
+			elif event.keycode==KEY_T:
+				taxis.cycle_speed()
+				_update_hud()
 		if event is InputEventMouseMotion and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED:
 			yaw -= event.relative.x*.003
 			pitch = clampf(pitch-event.relative.y*.003,-.95,.30)
@@ -791,7 +803,7 @@ func _update_hud() -> void:
 	if status == null:
 		return
 	if taxi_riding:
-		status.text = "TAXI | "+taxis.ride_status+"\nE: bajar detenido | R: volver a casa si te bloqueas\n© OpenStreetMap contributors | ODbL"
+		status.text = "TAXI | "+taxis.ride_status+"\n"+taxis.speed_description()+" | T: cambiar velocidad\nE: bajar detenido | R: volver a casa si te bloqueas\n© OpenStreetMap contributors | ODbL"
 		return
 	var title := "PILAR-ATARÉS | La Habana" if cuba_world != null else ("VALDY JR TV | Ciudad 2.0" if native_city else "VALDY JR TV | Ciudad original")
 	if not city_loaded:
@@ -890,6 +902,8 @@ func _physics_process(delta: float) -> void:
 			_leave_taxi(true)
 			return
 		cuba_world.tick(delta)
+		if urban_buses!=null:
+			urban_buses.tick(delta)
 		taxis.tick(delta,cuba_world.cuba_clock)
 		var taxi: CharacterBody3D = taxis.passenger.body
 		player.global_position = taxi.global_position+Vector3.UP*.8
@@ -935,6 +949,8 @@ func _physics_process(delta: float) -> void:
 		reset_requested = false
 	if city_world != null:
 		city_world.tick(delta)
+	if urban_buses!=null:
+		urban_buses.tick(delta)
 	if van != null and not van_ground_initialized:
 		if _support_van():
 			van_home = van.global_transform
