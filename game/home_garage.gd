@@ -28,6 +28,8 @@ const FLOOR_ROWS := 48
 const PAPER_POS := Vector3(5.35,.042,3.9)
 const BROOM_POS := Vector3(6.35,0,5.25)
 var paper: MeshInstance3D
+var paper_image: Image
+var paper_texture: ImageTexture
 var resting_brush: Node3D
 var resting_tip: MeshInstance3D
 var resting_broom: Node3D
@@ -96,6 +98,8 @@ func setup(controller) -> void:
 	state.paint_tool = ""
 	if not state.has("paper_color"): state.paper_color = ""
 	if not state.has("floor_marks"): state.floor_marks = {}
+	if not state.has("paper_marks"): state.paper_marks = []
+	if state.paper_marks.is_empty() and PAINT_COLORS.has(String(state.paper_color)): state.paper_marks.append(String(state.paper_color))
 	if bool(state.projects.get("bicicleta",{}).get("wheel_a",false)) or int(state.vehicle_sales.get("bicicleta",0))>0: state.wheel_tutorial = true
 	for id in FURNITURE:
 		if not state.furniture.has(id): state.furniture[id] = {"p":FURNITURE[id].p.duplicate(),"removed":false}
@@ -1269,6 +1273,24 @@ func _brush_color() -> Color:
 
 func _build_house_tools() -> void:
 	paper = business._box(paint_station,PAPER_POS,Vector3(.65,.008,.47),Color("#e9e6dd"))
+	# A small texture holds stains on the paper rather than coloring the
+	# entire sheet. The brush remains a separate physical prop.
+	paper_image = Image.create(16,12,false,Image.FORMAT_RGB8)
+	paper_image.fill(Color("#e9e6dd"))
+	paper_texture = ImageTexture.create_from_image(paper_image)
+	var sheet := QuadMesh.new()
+	sheet.size = Vector2(.63,.45)
+	var paper_top := MeshInstance3D.new()
+	paper_top.mesh = sheet
+	paper_top.position = PAPER_POS+Vector3.UP*.006
+	paper_top.rotation.x = -PI*.5
+	paper_top.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var paper_mat := StandardMaterial3D.new()
+	paper_mat.albedo_texture = paper_texture
+	paper_mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	paper_top.material_override = paper_mat
+	paint_station.add_child(paper_top)
+	_refresh_paper()
 	resting_brush = Node3D.new()
 	paint_station.add_child(resting_brush)
 	resting_brush.position = PAPER_POS+Vector3.UP*.04
@@ -1277,7 +1299,7 @@ func _build_house_tools() -> void:
 	paint_station.add_child(resting_broom)
 	resting_broom.position = BROOM_POS
 	resting_broom.rotation.z = -.12
-	floor_image = Image.create(FLOOR_COLS,FLOOR_ROWS,false,Image.FORMAT_RGBA8)
+	floor_image = Image.create(FLOOR_COLS*3,FLOOR_ROWS*3,false,Image.FORMAT_RGBA8)
 	floor_image.fill(Color(0,0,0,0))
 	floor_texture = ImageTexture.create_from_image(floor_image)
 	var quad := QuadMesh.new()
@@ -1302,11 +1324,25 @@ func _refresh_tools() -> void:
 	resting_brush.visible = tool!="brush"
 	resting_broom.visible = tool!="broom"
 	resting_tip.material_override = business._mat(_brush_color())
-	paper.material_override = business._mat(Color(PAINT_COLORS.get(String(state.paper_color),"#e9e6dd")))
+	_refresh_paper()
 	if is_instance_valid(paint_brush):
 		paint_brush.visible = inside and tool=="brush"
 		paint_tip.material_override = business._mat(_brush_color())
 	if is_instance_valid(held_broom): held_broom.visible = inside and tool=="broom"
+
+func _refresh_paper() -> void:
+	if paper_image==null: return
+	paper_image.fill(Color("#e9e6dd"))
+	var marks: Array = state.paper_marks
+	for i in range(marks.size()):
+		var color := Color(PAINT_COLORS.get(String(marks[i]),"#e9e6dd"))
+		var x := 4+posmod(i*5,8)
+		var y := 3+posmod(i*3,6)
+		for dy in range(-2,3):
+			for dx in range(-3,4):
+				if abs(dx)+abs(dy)>4: continue
+				paper_image.set_pixel(clampi(x+dx,0,15),clampi(y+dy,0,11),color)
+	paper_texture.update(paper_image)
 
 func _refresh_paint_station() -> void:
 	if not is_instance_valid(paint_station): return
@@ -1437,7 +1473,7 @@ func _dip_home_brush(color: String) -> void:
 	_save()
 
 func _paint_shop(local_shop: bool) -> void:
-	business._open("Pintura para tu casa","Elige un color. "+("Lleva la lata a tu casa." if local_shop else "Entrega de Facebook simulada: recoge la lata en la zona de pintura de tu casa."))
+	business._open("Pintura para tu casa","Elige un color. "+("Lleva la lata a tu casa." if local_shop else "Entrega de Facebook simulada: la lata aparecerá en el suelo junto a tu brocha."))
 	for color in PAINT_COLORS:
 		var price := PAINT_PRICE if local_shop else PAINT_PRICE+60
 		business._button(String(color).capitalize()+" · "+str(price)+" CUP",_buy_paint.bind(String(color),local_shop),business.ledger.cash<price or (not _free_hands() if local_shop else not state.paint_order.is_empty()))
@@ -1458,7 +1494,7 @@ func _buy_paint(color: String,local_shop: bool) -> void:
 	business.ledger.spend(price)
 	_refresh_carried()
 	business.close()
-	business._notify("Lleva la lata a casa y déjala en el suelo junto a la brocha." if local_shop else "Pedido de pintura realizado. Llegará a tu casa.")
+	business._notify("Lleva la lata a casa y déjala en el suelo junto a la brocha." if local_shop else "Pedido de pintura realizado. Llegará a tu casa junto a la brocha.")
 
 func _tick_paint_order(delta: float) -> void:
 	var order: Dictionary = state.paint_order
@@ -1477,6 +1513,9 @@ func _stop_home_paint() -> void:
 	if tool.is_empty(): return
 	if tool=="brush" and not String(state.paint_active).is_empty():
 		state.paper_color = String(state.paint_active)
+		if state.paper_marks.is_empty() or String(state.paper_marks.back())!=String(state.paint_active):
+			state.paper_marks.append(String(state.paint_active))
+			if state.paper_marks.size()>8: state.paper_marks.pop_front()
 	state.paint_tool = ""
 	game.first_person = paint_previous_first
 	game._apply_camera_mode()
@@ -1499,19 +1538,24 @@ func _refresh_floor_marks() -> void:
 		var kind := String(state.floor_marks[key])
 		var color := Color(PAINT_COLORS.get(kind,"#655548"))
 		color.a = .84 if PAINT_COLORS.has(kind) else .52
-		floor_image.set_pixel(index%FLOOR_COLS,floori(float(index)/FLOOR_COLS),color)
+		var x := (index%FLOOR_COLS)*3
+		var y := floori(float(index)/FLOOR_COLS)*3
+		# Irregular low-resolution splashes, not square floor tiles.
+		floor_image.set_pixel(x+1,y+1,color)
+		floor_image.set_pixel(x+posmod(index,2),y+1,color)
+		floor_image.set_pixel(x+1,y+posmod(index,3),color)
+		if posmod(index,3)!=0: floor_image.set_pixel(x+2,y+2,color)
+		if PAINT_COLORS.has(kind): floor_image.set_pixel(x+2,y,color)
 	floor_texture.update(floor_image)
 
 func _floor_mark(at: Vector3,color: String) -> void:
 	var key := _floor_key(at)
 	if key.is_empty() or String(state.floor_marks.get(key,""))==color: return
-	if state.floor_marks.size()>=160 and not state.floor_marks.has(key): return
 	state.floor_marks[key] = color
 	_refresh_floor_marks()
 	home_paint_dirty = true
 
 func _tick_dirt(delta: float) -> void:
-	if not inside: return
 	dirt_clock += delta
 	if dirt_clock<45.0: return
 	dirt_clock = 0.0
@@ -1584,9 +1628,8 @@ func _tick_home_paint(delta: float) -> void:
 	state.paint_charge = int(state.paint_charge)-1
 	home_paint_dirty = true
 	stroke_count += 1
-	if stroke_count%3==0:
-		var drip: Vector3 = hit.position+normal*.28
-		_floor_mark(drip,color)
+	var drip: Vector3 = hit.position+normal*(.20+float(stroke_count%3)*.12)
+	_floor_mark(drip,color)
 	if is_instance_valid(paint_brush): paint_brush.rotation.x = -.5+sin(float(state.paint_charge)*1.8)*.22
 	if int(state.paint_charge)==0:
 		_save()
