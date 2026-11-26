@@ -430,6 +430,7 @@ func join_stop(stop: Dictionary,person: Node3D) -> bool:
 
 func _start_stop(bus: Dictionary,stop: Dictionary) -> void:
 	bus.active_stop = stop
+	bus["exit_wait"] = 0.0
 	bus.dwell = 4.0
 	bus.served = 0
 	bus.speed = 0.0
@@ -480,7 +481,8 @@ func _transfer_tick(bus: Dictionary,delta: float) -> void:
 		var waiting: Dictionary = queue.pop_front()
 		bus.transfer = {"node":waiting.node,"target":door_point,"board":true,"style":waiting.style,"remaining":2+posmod(int(waiting.style),3)}
 		return
-	if bus==player_bus and player_exit_requested and stop!=player_board_stop:
+	if bus==player_bus and player_exit_requested and stop!=player_board_stop and float(bus.get("exit_wait",0.0))<8.0:
+		bus.exit_wait = float(bus.get("exit_wait",0.0))+delta
 		return
 	bus.dwell = float(bus.dwell)-delta
 	if float(bus.dwell)>0.0: return
