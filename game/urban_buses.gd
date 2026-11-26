@@ -841,6 +841,14 @@ func tick(delta: float) -> void:
 			_transfer_tick(bus,delta)
 			continue
 		var original: Array = bus.route
+		var watch_index := int(bus.get("resume_index",0)) if not bus.get("detour",[]).is_empty() else int(bus.index)
+		var restored := TrafficBypass.watchdog(bus,body,streets,original,watch_index,BUS_WIDTH,BUS_LENGTH,2.96,delta)
+		if restored>=0:
+			bus.index = restored
+			bus.detour = []
+			bus.detour_index = 0
+			bus.blocked_stop_wait = 0.0
+			continue
 		var detour: Array = bus.get("detour",[])
 		var detouring := not detour.is_empty()
 		var route: Array = detour if detouring else original
