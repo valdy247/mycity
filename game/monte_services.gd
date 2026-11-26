@@ -7,6 +7,7 @@ var world: World
 var planner := Planner.new()
 var anchor := Vector3.ZERO
 var avoid: Array = []
+var bus_berths: Array = []
 var sites: Array = []
 var vehicles: Array = []
 var initialized := false
@@ -22,12 +23,13 @@ var mesh := BoxMesh.new()
 var bag_mesh := SphereMesh.new()
 var wheel_mesh := CylinderMesh.new()
 
-func setup(city: World,home: Vector3,occupied: Array,actor: CharacterBody3D,view: Camera3D) -> void:
+func setup(city: World,home: Vector3,occupied: Array,actor: CharacterBody3D,view: Camera3D,stops: Array = []) -> void:
 	player = actor
 	camera = view
 	world = city
 	anchor = home
 	avoid = occupied.duplicate()
+	bus_berths = stops.duplicate()
 	mesh.size = Vector3.ONE
 	bag_mesh.radius = .5
 	bag_mesh.height = 1.0
@@ -76,6 +78,9 @@ func _new_site(p: Vector3,d: Vector3,width: float,edge: Dictionary) -> Dictionar
 	if not Bypass._on_road(world.street_geometry,parking,d,2.3,6.2): return {}
 	if not world.street_geometry.intersection_clear_for_stop(parking,6.2,2.3): return {}
 	if curb.distance_to(anchor)<24.0: return {}
+	for stop in bus_berths:
+		var berth: Vector3 = stop.position
+		if berth.distance_to(parking)<17.0 or berth.distance_to(curb)<12.0: return {}
 	for previous in sites:
 		var old: Vector3 = previous.curb
 		if old.distance_to(curb)<65.0: return {}
@@ -109,11 +114,18 @@ func _fill(site: Dictionary) -> void:
 		var p := Vector3.ZERO
 		if i<6:
 			p = Vector3(.02,.99+float(i%2)*.16,-.93+floorf(float(i)/2.0)*.57)
-		elif i<13:
-			p = Vector3(.32+float(i%2)*.25,.23,-1.48+float(i-6)*.45)
 		else:
-			# Extra bags form a mound over the curb and in the outer lane.
-			p = Vector3(.85+float((i-13)%3)*.65,.24+float((i-13)%2)*.20,-1.68+floorf(float(i-13)/3.0)*.70)
+			# Local +X points TOWARD the road. Keep the overflow within
+			# the bins' curbside footprint; stack higher instead of wider.
+			var slot := i-6
+			p = Vector3(-.16+float(slot%2)*.29,1.18+float(floori(float(slot)/8.0))*.39,-.91+float(floori(float(slot%8)/2.0))*.59)
+		# The whole bag, including its collision sphere, must clear asphalt.
+		var safe := true
+		for x in [-.28,.28]:
+			for z in [-.28,.28]:
+				if world.street_geometry.point_on_road(root.to_global(p+Vector3(float(x),0,float(z)))):
+					safe = false
+		if not safe: continue
 		var bag := StaticBody3D.new()
 		bag.collision_layer = 1
 		bag.collision_mask = 0
@@ -138,7 +150,7 @@ func add_discarded_furniture(site: Dictionary,id: String,size_value: Vector3,col
 	var root: Node3D = site.root
 	var object := Node3D.new()
 	root.add_child(object)
-	object.position = Vector3(.0,.45,-1.40-float(site.bags.size()%3)*.36)
+	object.position = Vector3(-.05,1.25,-.65)
 	_part(object,Vector3.ZERO,Vector3(minf(size_value.x,1.35),minf(size_value.y,.80),minf(size_value.z,.65)),color)
 	object.set_meta("discarded_furniture",id)
 	site.bags.append(object)
@@ -213,7 +225,7 @@ func return_player_bag() -> void:
 		bag.collision_layer = 1
 		bag.collision_mask = 0
 		root.add_child(bag)
-		bag.position = Vector3(.55,.23,-1.1)
+		bag.position = Vector3(0,1.35,-.65)
 		_part(bag,Vector3.ZERO,Vector3(.5,.45,.5),Color("#353935"),bag_mesh)
 		var bags: Array = player_site.bags
 		bags.append(bag)
