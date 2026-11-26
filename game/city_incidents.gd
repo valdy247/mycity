@@ -16,6 +16,10 @@ var streets
 var data
 var scene: Dictionary = {}
 var injured: Array = []
+# Keep pickups independent of hospital journeys, with a strict budget.
+const MAX_MEDICAL_TRANSFERS := 2
+var medical_transfers: Array = []
+var dispatch_wait := 0.0
 var returning: Array = []
 var crowd: Array = []
 var police_wait := 35.0
@@ -948,7 +952,7 @@ func _injury_tick(delta: float) -> void:
 			_remove_casualty_guard(victim)
 			injured.remove_at(i)
 			continue
-		var being_carried: bool = String(scene.get("kind",""))=="rescue" and scene.get("victim",{})==victim and String(scene.get("phase","")) in ["lift","carry","load","hospital","hospital_retry","hospital_reposition"]
+		var being_carried: bool = bool(victim.get("in_transport",false)) or String(scene.get("kind",""))=="rescue" and scene.get("victim",{})==victim and String(scene.get("phase","")) in ["lift","carry","load","hospital","hospital_retry","hospital_reposition"]
 		if not being_carried: _protect_casualty(victim)
 		if bool(victim.severe):
 			victim.time = float(victim.time)+delta
@@ -1073,6 +1077,9 @@ func _first_aid_start(victim: Dictionary) -> bool:
 	return false
 
 func _first_aid_tick(victim: Dictionary,delta: float) -> void:
+	if bool(victim.get("in_transport",false)): return
+	var casualty: Node3D = victim.agent.node
+	if not is_instance_valid(casualty) or not casualty.is_visible_in_tree(): return
 	# Every fallen person gets assistance. Physical guard insertion is
 	# independent; access candidates still require a clear walking path.
 	if String(scene.get("kind",""))=="rescue" and scene.get("victim",{})==victim and String(scene.phase)!="approach":
@@ -1488,6 +1495,7 @@ func _carry_pose(person: Node3D,driver: Person,helper: Person,_delta: float,blen
 		for arm in casualty.arms: arm.rotation = Vector3.ZERO
 
 func _begin_transport(victim: Dictionary,person: Node3D,body: CharacterBody3D) -> void:
+	victim.in_transport = true
 	# The patient belongs to the vehicle before any hospital-route lookup.
 	# A routing failure no longer returns the patient to the street.
 	person.reparent(body,true)
@@ -1725,6 +1733,8 @@ func _rescue_tick(delta: float) -> void:
 func _end_rescue(delivered: bool) -> void:
 	var car: Dictionary = scene.car
 	var victim: Dictionary = scene.victim
+	var was_transport: bool = bool(victim.get("in_transport",false))
+	victim.in_transport = false
 	var person: Node3D = victim.agent.node
 	for actor in scene.actors:
 		if actor.has("agent"):
@@ -1776,7 +1786,7 @@ func _end_rescue(delivered: bool) -> void:
 		failed[body.get_instance_id()] = Time.get_ticks_msec()+30000
 		victim.failed_cars = failed
 		_rescue_log(victim,"cambiando automóvil o acceso; rescate sigue pendiente.")
-	if delivered: _crowd_clear()
+	if delivered and not was_transport: _crowd_clear()
 	scene = {}
 
 func _rejoin_car(car: Dictionary) -> void:
@@ -1812,8 +1822,31 @@ func _tick_returning(delta: float) -> void:
 		car.speed = 0.0
 		returning.remove_at(i)
 
+func _detach_medical_transfer() -> void:
+	if scene.is_empty() or medical_transfers.size()>=MAX_MEDICAL_TRANSFERS: return
+	if String(scene.get("kind",""))!="rescue": return
+	if String(scene.get("phase","")) not in ["hospital","hospital_retry","hospital_reposition"]: return
+	medical_transfers.append(scene)
+	scene = {}
+
+func _tick_medical_transfers(delta: float) -> void:
+	var foreground: Dictionary = scene
+	for i in range(medical_transfers.size()-1,-1,-1):
+		scene = medical_transfers[i]
+		scene.time = float(scene.time)+delta
+		scene.age = float(scene.age)+delta
+		_rescue_tick(delta)
+		if scene.is_empty():
+			medical_transfers.remove_at(i)
+		else:
+			medical_transfers[i] = scene
+	scene = foreground
+
 func tick(delta: float) -> void:
 	_tick_returning(delta)
+	_tick_medical_transfers(delta)
+	_detach_medical_transfer()
+	dispatch_wait = maxf(0.0,dispatch_wait-delta)
 	_injury_tick(delta)
 	for victim in injured:
 		victim.retry = maxf(0.0,float(victim.retry)-delta)
@@ -1823,22 +1856,24 @@ func tick(delta: float) -> void:
 	# Medical rescue has priority over a patrol that has not begun loading.
 	if String(scene.get("kind",""))=="police" and String(scene.get("phase","")) in ["approach","walk","ask"]:
 		for victim in injured:
-			if bool(victim.severe):
+			if bool(victim.severe) and not bool(victim.get("in_transport",false)):
 				_finish_police(false)
 				break
-	if scene.is_empty():
+	if scene.is_empty() and dispatch_wait<=0.0:
 		for victim in injured:
-			if bool(victim.severe) and float(victim.retry)<=0.0:
+			if bool(victim.severe) and not bool(victim.get("in_transport",false)) and float(victim.retry)<=0.0:
+				dispatch_wait = .65
 				victim.retry = 4.0
 				_rescue_start(victim)
 				if not scene.is_empty(): break
 				# One expensive vehicle search per frame, not one per casualty.
 				break
 		if scene.is_empty() and not injured.is_empty():
-			var victim: Dictionary = injured[0]
-			var center: Vector3 = victim.old.origin
-			_crowd_tick(center,delta)
-			return
+			for victim in injured:
+				if bool(victim.get("in_transport",false)): continue
+				var center: Vector3 = victim.old.origin
+				_crowd_tick(center,delta)
+				return
 		if scene.is_empty():
 			if not crowd.is_empty(): _crowd_clear()
 			police_wait -= delta
@@ -1856,6 +1891,7 @@ func tick(delta: float) -> void:
 		if not scene.is_empty() and float(scene.age)>155.0: _finish_police(false)
 	else:
 		_rescue_tick(delta)
+		_detach_medical_transfer()
 		if not scene.is_empty() and float(scene.age)>55.0 and String(scene.phase)=="approach":
 			_end_rescue(false)
 		elif not scene.is_empty() and float(scene.age)>150.0 and String(scene.phase) not in ["hospital","hospital_retry","hospital_reposition","load"]:
