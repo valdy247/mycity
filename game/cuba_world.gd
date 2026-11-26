@@ -1291,12 +1291,13 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		wall.cull_mode = BaseMaterial3D.CULL_DISABLED
 		var portal := false
 		var portal_depth := 2.85 if monte else 2.25
-		if not front.is_empty() and bool(edit.get("portal",front.road.portal or monte)) and h>3.8:
+		var portal_ceiling := minf(3.4,h-.26) if monte else 3.4
+		if not front.is_empty() and bool(edit.get("portal",front.road.portal or monte)) and h>(3.10 if monte else 3.8):
 			var clipped := _clip_inward(poly,front,portal_depth)
 			# Fall back to the mapped solid if the inset is too small/invalid.
 			if clipped.size()>=3 and not Geometry2D.triangulate_polygon(clipped).is_empty():
-				portal = _extrude(clipped,0.0,3.4,wall,tile)
-		var ok := _extrude(poly,3.4 if portal else 0.0,h,wall,tile)
+				portal = _extrude(clipped,0.0,portal_ceiling,wall,tile)
+		var ok := _extrude(poly,portal_ceiling if portal else 0.0,h,wall,tile)
 		if not ok:
 			continue
 		mapped_buildings += 1
@@ -1305,7 +1306,7 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		if not front.is_empty():
 			_detail_front(front,h,idx,portal,market,monte,portal_depth)
 			if monte and portal:
-				_monte_portal(front,poly,portal_depth,idx,base_color)
+				_monte_portal(front,poly,portal_depth,portal_ceiling,idx,base_color)
 			if market:
 				_market_side_details(poly,front,h)
 			var name_value := String(tags.get("name",""))
@@ -1443,7 +1444,7 @@ func _flush_monte_columns() -> void:
 		node.position = entry.origin
 	monte_columns.clear()
 
-func _monte_portal(front: Dictionary,poly: PackedVector2Array,depth: float,idx: int,paint: Color) -> void:
+func _monte_portal(front: Dictionary,poly: PackedVector2Array,depth: float,ceiling: float,idx: int,paint: Color) -> void:
 	var a: Vector3 = front.a
 	var b: Vector3 = front.b
 	var n: Vector3 = front.normal
@@ -1462,14 +1463,14 @@ func _monte_portal(front: Dictionary,poly: PackedVector2Array,depth: float,idx: 
 	for i in range(count):
 		var p := a+t*(float(i)+.17)*step-n*.26
 		if Geometry2D.is_point_in_polygon(Vector2(p.x,p.z),poly):
-			_monte_column(p,3.4,mat,angle)
+			_monte_column(p,ceiling,mat,angle)
 		var door := a+t*(float(i)+.5)*step-n*(depth-.40)
 		var run_a := a+t*float(i)*step-n*1.37
 		var run_b := a+t*float(i+1)*step-n*1.37
 		if Geometry2D.is_point_in_polygon(Vector2(door.x,door.z),poly):
 			monte_walkways.append({"a":run_a,"b":run_b,"door":door,"kind":"shop" if (idx+i)%3==0 else "home"})
-	_cube((a+b)*.5-n*.07+Vector3.UP*3.37,Vector3(length,.22,.27),trim,angle)
-	_cube((a+b)*.5-n*.07+Vector3.UP*3.58,Vector3(length,.14,.21),trim,angle)
+	_cube((a+b)*.5-n*.07+Vector3.UP*(ceiling-.03),Vector3(length,.22,.27),trim,angle)
+	_cube((a+b)*.5-n*.07+Vector3.UP*(ceiling+.18),Vector3(length,.14,.21),trim,angle)
 
 func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool,monte: bool = false,portal_depth: float = 2.25) -> void:
 	var a: Vector3 = front.a
