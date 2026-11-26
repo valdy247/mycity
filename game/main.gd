@@ -23,6 +23,7 @@ var bus_riding := false
 var bus_previous_first := false
 var bus_reset_requested := false
 var social_cooldown := 0.0
+var chatting_with: Node3D
 var taxi_previous_first := false
 var taxi_reset_requested := false
 var taxi_exit_retry := 0.0
@@ -1045,7 +1046,11 @@ func _greet_person() -> bool:
 	var answer := recognition if not recognition.is_empty() else String(replies.pick_random())
 	exit_message = "Tú: "+String(greetings.pick_random())+"\n"+name_value+": "+answer
 	message_time = 5.0
-	social_cooldown = 1.0
+	if is_instance_valid(chatting_with): chatting_with.remove_meta("conversation_until")
+	chatting_with = person
+	person.set_meta("conversation_until",Time.get_ticks_msec()+4000)
+	person.set_meta("conversation_at",player.global_position)
+	social_cooldown = 4.0
 	_update_hud()
 	return true
 
@@ -1157,6 +1162,14 @@ func _physics_process(delta: float) -> void:
 	if player == null:
 		return
 	social_cooldown = maxf(0.0,social_cooldown-delta)
+	if is_instance_valid(chatting_with):
+		if Time.get_ticks_msec()>=int(chatting_with.get_meta("conversation_until",0)) or player.global_position.distance_to(chatting_with.global_position)>4.5:
+			chatting_with.remove_meta("conversation_until")
+			chatting_with = null
+			social_cooldown = 0.0
+		else:
+			var facing := player.global_position-chatting_with.global_position
+			chatting_with.rotation.y = lerp_angle(chatting_with.rotation.y,atan2(facing.x,facing.z),minf(1.0,delta*10.0))
 	if garage!=null and not building_mode and not business.modal_open() and not (taxis!=null and taxis.dialog.visible):
 		garage.tick(delta)
 	if garage!=null and garage.riding:
