@@ -27,6 +27,7 @@ var phone_ring: AudioStreamPlayer
 var stock_display: Node3D
 var cargo_views: Dictionary = {}
 var hud: Label
+var hud_expanded := false
 var panel: PanelContainer
 var content: VBoxContainer
 var layer: CanvasLayer
@@ -250,7 +251,8 @@ func _make_ui() -> void:
 	hud.offset_right = 540
 	hud.offset_bottom = -10
 	hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	hud.add_theme_font_size_override("font_size",16)
+	hud.add_theme_font_size_override("font_size",14)
+	hud.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
 	hud.add_theme_color_override("font_shadow_color",Color.BLACK)
 	hud.add_theme_constant_override("shadow_offset_x",2)
 	hud.add_theme_constant_override("shadow_offset_y",2)
@@ -549,7 +551,10 @@ func _update_hud() -> void:
 	var carrying := " | Caja: "+_product_name(ledger.carry) if not ledger.carry.is_empty() else ""
 	var phone := "P: teléfono"
 	if ledger.unread>0: phone += " (%d nuevos)" % ledger.unread
-	hud.text = "%d CUP%s\n%s\n%s | G: cargar / descargar" % [ledger.cash,carrying,_objective(),phone]
+	if hud_expanded:
+		hud.text = "%d CUP%s\n%s\n%s | G: cargar / descargar" % [ledger.cash,carrying,_objective(),phone]
+	else:
+		hud.text = "%d CUP%s | %s" % [ledger.cash,carrying,phone]
 	if toast_time>0: hud.text += "\n"+toast
 
 # Sales and stock remain independent of the visual customer. If no
