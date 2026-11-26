@@ -213,6 +213,7 @@ func _build() -> void:
 	print("Monte: ",graph.get_point_count()," pedestrian waypoints, ",destinations.size()," destinations; carga distribuida ",Time.get_ticks_msec()-started," ms.")
 	for dest in destinations:
 		if String(dest.kind)=="home": home_destinations.append(dest)
+	_restore_profiles()
 	initialized = true
 	building_graph = false
 	_populate()
@@ -311,6 +312,41 @@ func _nearest(p: Vector3,radius: float) -> int:
 
 # Profiles stay in memory after the visual actor is streamed out.
 # Homes are verified doorway destinations, not guessed coordinates.
+# Save only compact JSON-compatible data, never graph objects or nodes.
+# Rebind a saved home only when its position still matches the rebuilt graph.
+func _restore_profiles() -> void:
+	if life==null: return
+	var saved: Dictionary = life.state.get("resident_profiles",{})
+	var homes: Dictionary = {}
+	for dest in home_destinations: homes[str(dest.id)] = dest
+	var workplaces: Dictionary = {}
+	for dest in commerce_destinations: workplaces[String(dest.site)] = dest
+	for key in saved.keys().slice(0,MAX_PROFILES):
+		var row: Dictionary = saved[key]
+		var home: Dictionary = homes.get(String(row.get("home_id","")),{}).duplicate()
+		if not home.is_empty():
+			var p := graph.get_point_position(int(home.id))
+			if absf(p.x-float(row.get("home_x",INF)))>.5 or absf(p.z-float(row.get("home_z",INF)))>.5: home = {}
+		if home.is_empty(): continue
+		var workplace: Dictionary = workplaces.get(String(row.get("workplace","")),{})
+		var style := int(key)
+		profiles[String(key)] = {"id":"resident_"+String(key),"style":style,"name":String(row.name),"home":home,"workplace":workplace,"money":maxi(0,int(row.money)),"activity":"street","job":String(row.job),"last_work":-1000.0,"last_purchase":-1000.0,"active":false}
+		serial = maxi(serial,style)
+	# Rewrite only successfully rebound profiles on the next normal save.
+	life.state.resident_profiles = {}
+	for key in profiles: _save_profile(profiles[key])
+
+func _save_profile(profile: Dictionary) -> void:
+	if life==null: return
+	var key := str(int(profile.style))
+	if not profiles.has(key): return
+	if not life.state.has("resident_profiles"): life.state.resident_profiles = {}
+	var home: Dictionary = profile.home
+	if home.is_empty(): return
+	var p := graph.get_point_position(int(home.id))
+	var workplace: Dictionary = profile.workplace
+	life.state.resident_profiles[key] = {"name":profile.name,"job":profile.job,"money":int(profile.money),"home_id":str(home.id),"home_x":p.x,"home_z":p.z,"workplace":String(workplace.get("site",""))}
+
 func _profile_for(style: int,at: Vector3) -> Dictionary:
 	var first_names: Array[String] = ["Rafael","Yunier","Carlos","Maritza","Yanelis","Lidia","Omar","Ernesto","Dailen","Marta","Luis","Alina"]
 	var surnames: Array[String] = ["Pérez","García","Rodríguez","Hernández","Díaz","Martínez"]
@@ -327,13 +363,16 @@ func _profile_for(style: int,at: Vector3) -> Dictionary:
 	var job: String = ["comercio","servicios","oficio","estudio"][posmod(style,4)]
 	var workplace: Dictionary = {}
 	if not commerce_destinations.is_empty(): workplace = commerce_destinations[posmod(style,commerce_destinations.size())]
-	var profile := {"id":"resident_"+key,"name":first_names[posmod(style,first_names.size())]+" "+surnames[posmod(floori(float(style)/3.0),surnames.size())],"home":home,"workplace":workplace,"money":200+posmod(style*37,800),"activity":"street","job":job,"last_work":-1000.0,"last_purchase":-1000.0}
+	var profile := {"id":"resident_"+key,"style":style,"name":first_names[posmod(style,first_names.size())]+" "+surnames[posmod(floori(float(style)/3.0),surnames.size())],"home":home,"workplace":workplace,"money":200+posmod(style*37,800),"activity":"street","job":job,"last_work":-1000.0,"last_purchase":-1000.0}
 	if profiles.size()>=MAX_PROFILES:
 		for old_key in profiles.keys():
 			if not bool(profiles[old_key].get("active",false)):
 				profiles.erase(old_key)
+				if life!=null and life.state.has("resident_profiles"): life.state.resident_profiles.erase(old_key)
 				break
-	if profiles.size()<MAX_PROFILES: profiles[key] = profile
+	if profiles.size()<MAX_PROFILES:
+		profiles[key] = profile
+		_save_profile(profile)
 	return profile
 
 func _attach_profile(agent: Dictionary) -> void:
@@ -590,6 +629,7 @@ func tick(delta: float) -> void:
 				if String(profile.activity)=="work":
 					profile.last_work = resident_clock
 					profile.money = int(profile.money)+35
+					_save_profile(profile)
 					profile.activity = "working"
 					agent.pause = 20.0
 					person.social_context = "worker"
@@ -598,6 +638,7 @@ func tick(delta: float) -> void:
 					var spent: int = life.citizen_purchase(String(dest.site),int(profile.money))
 					if spent>0:
 						profile.money = int(profile.money)-spent
+						_save_profile(profile)
 						profile.last_purchase = resident_clock
 						person.social_context = "shopping"
 						agent.pause = 5.0
