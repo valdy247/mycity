@@ -76,7 +76,7 @@ func setup(data: MapData,street_geometry: Streets,anchor: Vector3,van_pos: Vecto
 			var b: Vector3 = data.points[b_id]
 			var d := (b-a).normalized()
 			var body := _make_taxi(taxis.size())
-			body.position = p+router.lane(a,b)+Vector3.UP*.065
+			body.position = p+geography.lane_offset(a,b,1.90,true)+Vector3.UP*.065
 			body.rotation.y = atan2(d.x,d.z)
 			taxis.append({"body":body,"next_node":b_id,"path":[],"index":0,"speed":0.0,"blocked":0.0,"goal":"","label":"","note":""})
 			break
@@ -213,8 +213,8 @@ func _make_dialog() -> void:
 	factory_button.pressed.connect(func(): _business_destination(business_factory,"Fábrica de alimentos"))
 	places.add_child(factory_button)
 	home_button = Button.new()
-	home_button.text = "Mi casa"
-	home_button.pressed.connect(func(): _business_destination(business_home,"Mi casa"))
+	home_button.text = "Puesto de Albertico"
+	home_button.pressed.connect(func(): _business_destination(business_home,"Puesto de Albertico"))
 	places.add_child(home_button)
 	factory_button.hide()
 	home_button.hide()
@@ -346,6 +346,18 @@ func prepare_trip() -> bool:
 	var start: Vector3 = geography.points[ids[0]]
 	var forward := body.global_transform.basis.z.normalized()
 	var first_offset := Vector3(-forward.z,0,forward.x)*1.10
+	var current_road: Dictionary = {}
+	var closest := INF
+	for edge in geography.roads_near(body.position,12.0):
+		if not bool(edge.driveable): continue
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		if absf((b-a).normalized().dot(forward))<.85: continue
+		var dist := Geometry3D.get_closest_point_to_segment(body.position,a,b).distance_to(body.position)
+		if dist<closest:
+			closest = dist
+			current_road = edge
+	first_offset = Vector3(-forward.z,0,forward.x)*geography.lane_distance(current_road,1.90)
 	# Approach the next directed graph node from the current lane.
 	var first_stop := start+first_offset
 	var partial: bool = bool(result.get("partial",false))
@@ -364,7 +376,7 @@ func prepare_trip() -> bool:
 			waypoints.append({"p":a+d*minf(3.0,length*.25)+lane_offset,"node":""})
 		var end := b+lane_offset
 		if i==ids.size()-2 and not partial:
-			end -= d*minf(4.5,length*.35)
+			end = b-d*minf(4.5,length*.35)+geography.lane_offset(a,b,1.90,true)
 		waypoints.append({"p":end,"node":ids[i+1]})
 	if partial:
 		var entry: Vector3 = geography.points[String(result.entry)]
@@ -374,7 +386,7 @@ func prepare_trip() -> bool:
 		var direction := (exit_point-entry).normalized()
 		if entry.distance_to(target)>4.0:
 			waypoints.append({"p":entry+direction*2.0+lane_offset,"node":""})
-		waypoints.append({"p":target+lane_offset,"node":""})
+		waypoints.append({"p":target+geography.lane_offset(entry,exit_point,1.90,true),"node":""})
 	selected.path = _smooth_route(waypoints,body.global_position)
 	stop_requested = false
 	selected.index = 0
