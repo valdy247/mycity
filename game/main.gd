@@ -9,6 +9,7 @@ const TaxiService = preload("res://taxi_service.gd")
 var taxis: TaxiService
 var taxi_riding := false
 var taxi_previous_first := false
+var taxi_reset_requested := false
 var pilar_editor: PilarEditor
 var context_requested := false
 var cuba_world: CubaWorld
@@ -343,8 +344,11 @@ func _unhandled_input(event: InputEvent) -> void:
 			taxis.close_dialog()
 		return
 	if taxi_riding:
-		if event is InputEventKey and event.pressed and not event.echo and event.keycode==KEY_E:
-			interact_requested = true
+		if event is InputEventKey and event.pressed and not event.echo:
+			if event.keycode==KEY_E:
+				interact_requested = true
+			elif event.keycode==KEY_R:
+				taxi_reset_requested = true
 		if event is InputEventMouseMotion and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED:
 			yaw -= event.relative.x*.003
 			pitch = clampf(pitch-event.relative.y*.003,-.95,.30)
@@ -750,7 +754,7 @@ func _update_hud() -> void:
 	if status == null:
 		return
 	if taxi_riding:
-		status.text = "TAXI | "+taxis.ride_status+"\nE: bajar cuando esté detenido\n© OpenStreetMap contributors | ODbL"
+		status.text = "TAXI | "+taxis.ride_status+"\nE: bajar detenido | R: volver a casa si te bloqueas\n© OpenStreetMap contributors | ODbL"
 		return
 	var title := "PILAR-ATARÉS | La Habana" if cuba_world != null else ("VALDY JR TV | Ciudad 2.0" if native_city else "VALDY JR TV | Ciudad original")
 	if not city_loaded:
@@ -801,8 +805,8 @@ func _start_taxi_ride() -> void:
 	arm.spring_length = 5.5
 	_update_hud()
 
-func _leave_taxi() -> bool:
-	var result := taxis.stop_position(player,player_shape.shape)
+func _leave_taxi(emergency: bool = false) -> bool:
+	var result: Dictionary = {"position":spawn_position} if emergency else taxis.stop_position(player,player_shape.shape)
 	if result.is_empty():
 		return false
 	var taxi: CharacterBody3D = taxis.passenger.body
@@ -840,6 +844,10 @@ func _physics_process(delta: float) -> void:
 			_start_taxi_ride()
 		return
 	if taxi_riding:
+		if taxi_reset_requested:
+			taxi_reset_requested = false
+			_leave_taxi(true)
+			return
 		cuba_world.tick(delta)
 		taxis.tick(delta,cuba_world.cuba_clock)
 		var taxi: CharacterBody3D = taxis.passenger.body
