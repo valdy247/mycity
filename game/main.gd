@@ -39,6 +39,8 @@ var cuba_world: CubaWorld
 var first_person := false
 var reticle: Label
 var performance_label: Label
+var diagnostics_panel: PanelContainer
+var diagnostics_text: Label
 var gps_label: Label
 var low_graphics := true
 var hud_time := 0.0
@@ -377,6 +379,26 @@ func _make_hud() -> void:
 	performance_label.add_theme_constant_override("shadow_offset_x",2)
 	performance_label.add_theme_constant_override("shadow_offset_y",2)
 	performance_label.visible = false
+	diagnostics_panel = PanelContainer.new()
+	canvas.add_child(diagnostics_panel)
+	diagnostics_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	diagnostics_panel.offset_left = -355
+	diagnostics_panel.offset_right = -12
+	diagnostics_panel.offset_top = 42
+	var debug_style := StyleBoxFlat.new()
+	debug_style.bg_color = Color(0.035,0.065,0.085,.92)
+	debug_style.set_corner_radius_all(8)
+	debug_style.content_margin_left = 12
+	debug_style.content_margin_right = 12
+	debug_style.content_margin_top = 9
+	debug_style.content_margin_bottom = 9
+	diagnostics_panel.add_theme_stylebox_override("panel",debug_style)
+	diagnostics_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	diagnostics_text = Label.new()
+	diagnostics_text.add_theme_font_size_override("font_size",13)
+	diagnostics_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	diagnostics_panel.add_child(diagnostics_text)
+	diagnostics_panel.hide()
 	gps_label = Label.new()
 	gps_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	canvas.add_child(gps_label)
@@ -421,10 +443,49 @@ func _apply_performance_mode() -> void:
 	if pilar_editor != null:
 		pilar_editor.camera.far = 1000.0 if low_graphics else 1800.0
 
+func _refresh_diagnostics() -> void:
+	if diagnostics_text==null or cuba_world==null: return
+	var lines: PackedStringArray = ["MYCITY · DIAGNÓSTICO  |  F8"]
+	lines.append("%d FPS · %.1f ms · RAM %.0f MB" % [Engine.get_frames_per_second(),1000.0/maxf(1.0,Engine.get_frames_per_second()),Performance.get_monitor(Performance.MEMORY_STATIC)/1048576.0])
+	lines.append("Nodos %d · Draw calls %d" % [int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT)),int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME))])
+	if monte_pedestrians!=null:
+		lines.append("Peatones %d · red %s (%d)" % [monte_pedestrians.walkers.size(),"lista" if monte_pedestrians.initialized else "cargando",monte_pedestrians.graph.get_point_count()])
+	if monte_services!=null:
+		var stopped := 0
+		var detours := 0
+		var nearest: Dictionary = {}
+		var best := INF
+		for car in monte_services.vehicles:
+			if float(car.get("stalled",0.0))>1.0: stopped += 1
+			if not car.get("detour",[]).is_empty(): detours += 1
+			var body: Node3D = car.body
+			if not is_instance_valid(body): continue
+			var distance := body.global_position.distance_squared_to(play_camera.global_position)
+			if distance<best:
+				best = distance
+				nearest = car
+		lines.append("Tráfico %d · bloqueados %d · rodeos %d" % [monte_services.vehicles.size(),stopped,detours])
+		if not nearest.is_empty():
+			lines.append("Cercano: %.1f km/h · espera %.1fs" % [float(nearest.get("speed",0.0))*3.6,float(nearest.get("stalled",0.0))])
+	if incidents!=null:
+		lines.append("Heridos %d · %s / %s" % [incidents.injured.size(),String(incidents.scene.get("kind","sin incidente")),String(incidents.scene.get("phase",""))])
+		if not incidents.injured.is_empty():
+			var victim: Dictionary = incidents.injured[0]
+			lines.append("Rescate %.0fs · ayuda %s" % [float(victim.time),"asignada" if victim.has("first_aid") else "pendiente"])
+			var message := String(victim.get("rescue_status",""))
+			if not message.is_empty(): lines.append(message.left(45))
+	if business!=null and business.life!=null:
+		for id in business.life.state.cafes:
+			var cafe: Dictionary = business.life.state.cafes[id]
+			lines.append("%s · %d CUP · deuda %d" % [String(id),int(cafe.cash),int(cafe.get("supplier_debt",0))])
+			lines.append(" H%d Q%d T%d R%d P%d" % [int(cafe.get("harina",0)),int(cafe.get("queso",0)),int(cafe.get("tomate",0)),int(cafe.get("refresco",0)),int(cafe.get("perrito",0))])
+	diagnostics_text.text = "\n".join(lines)
+
 func _process(delta: float) -> void:
 	fps_time += delta
 	if fps_time>=.5:
 		fps_time = 0.0
+		if diagnostics_panel!=null and diagnostics_panel.visible: _refresh_diagnostics()
 		if performance_label != null and cuba_world != null and performance_label.visible:
 			performance_label.text = "%d FPS | %s | F6" % [Engine.get_frames_per_second(),"Rendimiento" if low_graphics else "Normal"]
 			if gps_label!=null and player!=null:
@@ -453,6 +514,10 @@ func _apply_camera_mode() -> void:
 		reticle.visible = first_person and not driving and not building_mode and not (garage!=null and garage.riding)
 
 func _unhandled_input(event: InputEvent) -> void:
+	if cuba_world!=null and diagnostics_panel!=null and event is InputEventKey and event.pressed and not event.echo and event.keycode==KEY_F8:
+		diagnostics_panel.visible = not diagnostics_panel.visible
+		if diagnostics_panel.visible: _refresh_diagnostics()
+		return
 	if street_market!=null and not street_market.active.is_empty():
 		street_market.handle(event)
 		return
