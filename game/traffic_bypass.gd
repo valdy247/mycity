@@ -179,3 +179,20 @@ static func reverse_clear(body: CharacterBody3D,streets: Streets,width: float,le
 	body.velocity = -direction*.8
 	body.move_and_slide()
 	return true
+
+# Keep reverse manoeuvres active across frames. Otherwise a few centimetres
+# of reverse progress reset the stall detector and cause forward/reverse loops.
+static func retreat(state: Dictionary,body: CharacterBody3D,streets: Streets,width: float,length: float,delta: float,requested: bool) -> bool:
+	var remaining := float(state.get("retreat_remaining",0.0))
+	if remaining<=0.0:
+		if not requested or float(state.get("backed_up",0.0))>=5.5: return false
+		remaining = minf(3.5,5.5-float(state.get("backed_up",0.0)))
+	if not reverse_clear(body,streets,width,length,delta):
+		state.retreat_remaining = 0.0
+		return false
+	var step := .8*delta
+	state.retreat_remaining = maxf(0.0,remaining-step)
+	state.backed_up = float(state.get("backed_up",0.0))+step
+	state.traffic_last = body.global_position
+	state.traffic_stall = 4.0
+	return true
