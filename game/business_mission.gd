@@ -17,6 +17,9 @@ var crate_rack: Node3D
 var buyer: Node3D
 var buyer_origin := Vector3.ZERO
 var buyer_time := 0.0
+var phone_ring: AudioStreamPlayer
+var stock_display: Node3D
+var cargo_views: Dictionary = {}
 var hud: Label
 var panel: PanelContainer
 var content: VBoxContainer
@@ -43,7 +46,7 @@ func setup(city: World,taxi_service: Taxi,actor: CharacterBody3D,vehicle: Charac
 	if world.food_factory.is_empty() or world.home_root==null:
 		_notify("La primera misión requiere una casa y una parcela libre para la fábrica.")
 	else:
-		taxis.set_business_points(world.food_factory.road,world.home_edge.get("a",world.home_spawn),true)
+		taxis.set_business_points(world.food_factory.road,world.van_spawn,ledger.stage>=1)
 
 func _mat(color: Color) -> StandardMaterial3D:
 	var key := color.to_html()
@@ -139,6 +142,8 @@ func _make_scene() -> void:
 		for z in [-.23,.23]:
 			_box(stand,Vector3(float(x),.39,float(z)),Vector3(.075,.78,.075),Color("#725f47"))
 	_label(stand,"VENTA DE ALIMENTOS",Vector3(0,1.33,0))
+	stock_display = Node3D.new()
+	stand.add_child(stock_display)
 	buyer_origin = home.to_global(Vector3(2.5,.105,3.15))
 	buyer = _person(self,Color("#a19bca"))
 	buyer.position = buyer_origin
@@ -195,6 +200,21 @@ func _make_ui() -> void:
 	content.add_theme_constant_override("separation",9)
 	margin.add_child(content)
 	panel.hide()
+	phone_ring = AudioStreamPlayer.new()
+	add_child(phone_ring)
+	var audio := AudioStreamWAV.new()
+	audio.format = AudioStreamWAV.FORMAT_16_BITS
+	audio.mix_rate = 22050
+	var samples := PackedByteArray()
+	samples.resize(22050*2)
+	for i in range(22050):
+		var t := float(i)/22050.0
+		var gate := 1.0 if t<.22 or (t>.36 and t<.60) else 0.0
+		var value := int(sin(t*TAU*740.0)*sin(t*TAU*4.0)*gate*2200.0)
+		samples.encode_s16(i*2,value)
+	audio.data = samples
+	phone_ring.stream = audio
+	phone_ring.volume_db = -7.0
 
 func modal_open() -> bool:
 	return panel!=null and panel.visible
@@ -404,8 +424,8 @@ func _sync_visuals() -> void:
 	if arrow==null: return
 	arrow.visible = ledger.stage==0 or ledger.stage==3
 	factory_arrow.visible = ledger.stage in [1,2]
-	stand.visible = ledger.stage>=3 and ledger.total(ledger.stock)>0
-	for root in [crate_rack,crate_view]:
+	stand.visible = ledger.stage==4 or (ledger.stage==3 and ledger.total(ledger.stock)>0)
+	for root in [crate_rack,crate_view,stock_display]:
 		for child in root.get_children():
 			root.remove_child(child)
 			child.queue_free()
@@ -415,10 +435,36 @@ func _sync_visuals() -> void:
 			if slot>=9: break
 			_crate(crate_rack,Vector3(-.58+float(slot%3)*.58,.17+floorf(float(slot)/3.0)*.35,0),String(key))
 			slot += 1
+	var product_slot := 0
+	for key in Ledger.PRODUCTS:
+		if int(ledger.stock.get(key,0))>0:
+			_crate(stock_display,Vector3(-.48+float(product_slot)*.48,1.01,0),String(key))
+			product_slot += 1
 	if not ledger.carry.is_empty():
 		_crate(crate_view,Vector3.ZERO,ledger.carry)
 	crate_view.visible = not ledger.carry.is_empty()
+	_sync_cargo_views()
 	taxis.business_enabled = ledger.stage>=1
+
+func _sync_cargo_views() -> void:
+	# Crate count labels above the actual carrying vehicle, independent of
+	# the imported vehicle mesh or whether its trunk can be animated.
+	for key in cargo_views:
+		var old: Label3D = cargo_views[key]
+		if is_instance_valid(old): old.queue_free()
+	cargo_views.clear()
+	for key in ledger.cargo:
+		var count := ledger.total(ledger.cargo[key])
+		if count<=0: continue
+		var body: CharacterBody3D = null
+		if key=="van":
+			body = van
+		elif String(key).begins_with("taxi_"):
+			var index := int(String(key).trim_prefix("taxi_"))
+			if index>=0 and index<taxis.taxis.size():
+				body = taxis.taxis[index].body
+		if body==null: continue
+		cargo_views[key] = _label(body,"%d cajas · G" % count,Vector3(0,2.65,0),Color("#ffe19a"))
 
 func _objective() -> String:
 	if albertico==null: return "Misión no disponible: falta la fábrica o vivienda."
@@ -455,16 +501,18 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 			var sale := ledger.sell_one()
 			if not sale.is_empty():
 				_notify("Albertico vendió "+String(sale.product)+" · +%d CUP" % int(sale.net))
-				if ledger.unread>before: _notify("Mensaje de Albertico · P para leer")
+				if ledger.unread>before:
+					_notify("Albertico te llama · P para leer su mensaje")
+					phone_ring.play()
 				if buyer!=null:
-					buyer_time = 4.0
+					buyer_time = 8.0
 					buyer.position = buyer_origin
 					buyer.show()
 				_sync_visuals()
 	if buyer!=null and buyer_time>0.0:
 		buyer_time -= delta
 		var target := stand.position+world.home_root.transform.basis.x*.9
-		if buyer_time<1.5: target = buyer_origin
+		if buyer_time<3.0: target = buyer_origin
 		buyer.position = buyer.position.move_toward(target,delta*1.5)
 		var direction := target-buyer.position
 		if direction.length()>.1: buyer.rotation.y = atan2(direction.x,direction.z)
