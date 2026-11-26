@@ -1,0 +1,367 @@
+extends Node3D
+const Routes = preload("res://taxi_routes.gd")
+const MapData = preload("res://pilar_map.gd")
+const Streets = preload("res://street_geometry.gd")
+var router := Routes.new()
+var geography: MapData
+var streets: Streets
+var taxis: Array = []
+var selected: Dictionary = {}
+var passenger: Dictionary = {}
+var pending_query := ""
+var ride_status := ""
+var dialog: PanelContainer
+var destination: LineEdit
+var feedback: Label
+var arrived := false
+var mats: Dictionary = {}
+var meshes: Dictionary = {}
+
+func setup(data: MapData,street_geometry: Streets,anchor: Vector3,van_pos: Vector3) -> void:
+	geography = data
+	streets = street_geometry
+	router.setup(data)
+	_make_dialog()
+	var candidates: Array = []
+	for edge in data.roads:
+		if not bool(edge.driveable) or float(edge.width)<5.0:
+			continue
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		if a.distance_to(b)<18.0:
+			continue
+		var p := (a+b)*.5
+		if p.distance_to(van_pos)<12.0:
+			continue
+		candidates.append({"edge":edge,"point":p})
+	var anchors: Array[Vector3] = [anchor,anchor+Vector3(210,0,0),anchor+Vector3(-180,0,160),anchor+Vector3(0,0,-210)]
+	for target in anchors:
+		candidates.sort_custom(func(a,b): return target.distance_squared_to(a.point)<target.distance_squared_to(b.point))
+		for candidate in candidates:
+			var p: Vector3 = candidate.point
+			var free := true
+			for taxi in taxis:
+				var node: CharacterBody3D = taxi.body
+				if node.position.distance_to(p)<32.0:
+					free = false
+					break
+			if not free: continue
+			var edge: Dictionary = candidate.edge
+			var a_id := String(edge.a_id)
+			var b_id := String(edge.b_id)
+			if not geography.graph.get(a_id,[]).has(b_id):
+				var swap := a_id
+				a_id = b_id
+				b_id = swap
+			if not geography.graph.get(a_id,[]).has(b_id): continue
+			var a: Vector3 = data.points[a_id]
+			var b: Vector3 = data.points[b_id]
+			var d := (b-a).normalized()
+			var body := _make_taxi(taxis.size())
+			body.position = p+router.lane(a,b)+Vector3.UP*.065
+			body.rotation.y = atan2(d.x,d.z)
+			taxis.append({"body":body,"next_node":b_id,"path":[],"index":0,"speed":0.0,"blocked":0.0,"goal":"","label":"","note":""})
+			break
+
+func _material(color: Color) -> StandardMaterial3D:
+	var key := color.to_html()
+	if not mats.has(key):
+		var m := StandardMaterial3D.new()
+		m.albedo_color = color
+		m.roughness = .72
+		mats[key] = m
+	return mats[key] as StandardMaterial3D
+
+func _part(root: Node3D,p: Vector3,size: Vector3,color: Color) -> void:
+	if not meshes.has(size):
+		var mesh := BoxMesh.new()
+		mesh.size = size
+		meshes[size] = mesh
+	var view := MeshInstance3D.new()
+	view.mesh = meshes[size] as BoxMesh
+	view.material_override = _material(color)
+	view.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	root.add_child(view)
+	view.position = p
+
+func _make_taxi(index: int) -> CharacterBody3D:
+	var body := CharacterBody3D.new()
+	body.name = "TaxiClasico_"+str(index+1)
+	body.motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
+	body.collision_layer = 1
+	body.collision_mask = 1|4
+	add_child(body)
+	var colors: Array[Color] = [Color("#d3a843"),Color("#73a69c"),Color("#a44f49"),Color("#9ab0bd")]
+	var paint: Color = colors[index%colors.size()]
+	var ivory := Color("#e8e1ca")
+	var chrome := Color("#b9c2bd")
+	var glass := Color("#587078")
+	var rubber := Color("#292b2b")
+	# 1950s-inspired Cuban almendrón: long hood, trunk, rounded-looking
+	# stepped fenders, two-tone roof and chrome trim. +Z is forward.
+	_part(body,Vector3(0,.68,0),Vector3(1.83,.65,4.65),paint)
+	_part(body,Vector3(0,.92,1.36),Vector3(1.65,.20,1.70),paint)
+	_part(body,Vector3(0,.90,-1.55),Vector3(1.65,.20,1.30),paint)
+	_part(body,Vector3(0,1.19,-.28),Vector3(1.48,.60,2.0),glass)
+	_part(body,Vector3(0,1.54,-.30),Vector3(1.55,.17,1.95),ivory)
+	for side in [-1.0,1.0]:
+		var x: float = float(side)
+		_part(body,Vector3(x*.75,1.18,-.29),Vector3(.08,.62,.11),ivory)
+		_part(body,Vector3(x*.88,.78,0),Vector3(.055,.10,4.35),ivory)
+		_part(body,Vector3(x*.80,.84,-1.75),Vector3(.20,.29,1.12),paint)
+		_part(body,Vector3(x*.79,.83,1.43),Vector3(.22,.30,1.24),paint)
+		_part(body,Vector3(x*.70,.81,2.35),Vector3(.28,.24,.06),Color("#f6e9b9"))
+		_part(body,Vector3(x*.70,.76,-2.35),Vector3(.18,.24,.06),Color("#b33133"))
+		for z in [-1.46,1.43]:
+			var wheel := MeshInstance3D.new()
+			var cylinder := CylinderMesh.new()
+			cylinder.top_radius = .34
+			cylinder.bottom_radius = .34
+			cylinder.height = .22
+			cylinder.radial_segments = 12
+			wheel.mesh = cylinder
+			wheel.material_override = _material(rubber)
+			wheel.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			body.add_child(wheel)
+			wheel.rotation.z = PI*.5
+			wheel.position = Vector3(x*.86,.34,float(z))
+			_part(body,Vector3(x*1.0,.34,float(z)),Vector3(.025,.28,.28),chrome)
+	for z in [-2.35,2.35]:
+		_part(body,Vector3(0,.43,float(z)),Vector3(1.92,.14,.12),chrome)
+	_part(body,Vector3(0,.72,2.35),Vector3(1.10,.23,.07),chrome)
+	_part(body,Vector3(0,1.73,-.30),Vector3(.71,.23,.34),Color("#e6bb46"))
+	for side in [-1.0,1.0]:
+		var sign_label := Label3D.new()
+		sign_label.text = "TAXI"
+		sign_label.font_size = 48
+		sign_label.pixel_size = .003
+		sign_label.modulate = Color("#222222")
+		sign_label.outline_size = 0
+		body.add_child(sign_label)
+		sign_label.position = Vector3(0,1.73,-.30+float(side)*.18)
+		sign_label.rotation.y = 0.0 if float(side)>0 else PI
+	var col := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(1.90,1.55,4.80)
+	col.shape = shape
+	body.add_child(col)
+	col.position.y = .82
+	return body
+
+func _make_dialog() -> void:
+	var layer := CanvasLayer.new()
+	layer.layer = 18
+	add_child(layer)
+	dialog = PanelContainer.new()
+	layer.add_child(dialog)
+	dialog.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	dialog.offset_left = -220
+	dialog.offset_right = 220
+	dialog.offset_top = -110
+	dialog.offset_bottom = 110
+	var margin := MarginContainer.new()
+	for side in ["left","right","top","bottom"]:
+		margin.add_theme_constant_override("margin_"+side,18)
+	dialog.add_child(margin)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation",10)
+	margin.add_child(col)
+	var title := Label.new()
+	title.text = "TAXI • ¿A dónde vamos?"
+	title.add_theme_font_size_override("font_size",22)
+	col.add_child(title)
+	destination = LineEdit.new()
+	destination.placeholder_text = "Pila y Matadero"
+	destination.max_length = 100
+	destination.custom_minimum_size.x = 340
+	col.add_child(destination)
+	destination.text_submitted.connect(_submit)
+	feedback = Label.new()
+	feedback.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	feedback.text = "Escribe una calle o dos calles."
+	col.add_child(feedback)
+	var buttons := HBoxContainer.new()
+	col.add_child(buttons)
+	var go := Button.new()
+	go.text = "Ir al destino"
+	go.pressed.connect(func(): _submit(destination.text))
+	buttons.add_child(go)
+	var cancel := Button.new()
+	cancel.text = "Cancelar"
+	cancel.pressed.connect(close_dialog)
+	buttons.add_child(cancel)
+	dialog.hide()
+
+func nearby(at: Vector3) -> Dictionary:
+	var closest: Dictionary = {}
+	var best := 3.7*3.7
+	for taxi in taxis:
+		var body: CharacterBody3D = taxi.body
+		if taxi==passenger or not taxi.path.is_empty(): continue
+		var d := at.distance_squared_to(body.position+Vector3.UP*.8)
+		if d<best:
+			best = d
+			closest = taxi
+	return closest
+
+func open_dialog(at: Vector3) -> bool:
+	selected = nearby(at)
+	if selected.is_empty(): return false
+	destination.clear()
+	feedback.text = "Ejemplo: Pila y Matadero. También puedes escribir una sola calle."
+	dialog.show()
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	destination.grab_focus()
+	return true
+
+func close_dialog() -> void:
+	dialog.hide()
+	selected = {}
+	pending_query = ""
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+func _submit(value: String) -> void:
+	if not value.strip_edges().is_empty():
+		pending_query = value.strip_edges()
+
+func prepare_trip() -> bool:
+	if pending_query.is_empty() or selected.is_empty(): return false
+	var query := pending_query
+	pending_query = ""
+	var result := router.resolve(query,String(selected.next_node))
+	if result.has("error"):
+		feedback.text = String(result.error)
+		return false
+	var ids: Array[String] = result.path
+	var body: CharacterBody3D = selected.body
+	var waypoints: Array = []
+	var start: Vector3 = geography.points[ids[0]]
+	var forward := body.global_transform.basis.z.normalized()
+	var first_offset := Vector3(-forward.z,0,forward.x)*1.10
+	# Approach the next directed graph node from the current lane.
+	var first_stop := start+first_offset
+	if ids.size()==1:
+		var remaining := body.position.distance_to(first_stop)
+		first_stop -= forward*minf(4.5,remaining*.5)
+	waypoints.append({"p":first_stop,"node":ids[0]})
+	for i in range(ids.size()-1):
+		var a: Vector3 = geography.points[ids[i]]
+		var b: Vector3 = geography.points[ids[i+1]]
+		var d := (b-a).normalized()
+		var lane_offset := router.lane(a,b)
+		var length := a.distance_to(b)
+		# Leave room before the last corner for passenger drop-off.
+		if length>8.0:
+			waypoints.append({"p":a+d*minf(3.0,length*.25)+lane_offset,"node":""})
+		var end := b+lane_offset
+		if i==ids.size()-2:
+			end -= d*minf(4.5,length*.35)
+		waypoints.append({"p":end,"node":ids[i+1]})
+	selected.path = waypoints
+	selected.index = 0
+	selected.goal = String(result.id)
+	selected.label = String(result.label)
+	selected.note = String(result.note)
+	selected.speed = 0.0
+	selected.blocked = 0.0
+	selected.signal_wait = 0.0
+	selected.signal_seen = ""
+	selected.next_node = String(result.id)
+	passenger = selected
+	selected = {}
+	dialog.hide()
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	arrived = false
+	ride_status = String(passenger.note) if not String(passenger.note).is_empty() else "Destino: "+String(passenger.label)
+	return true
+
+func tick(delta: float,clock: float) -> void:
+	if passenger.is_empty() or arrived: return
+	var body: CharacterBody3D = passenger.body
+	var waypoints: Array = passenger.path
+	var index: int = int(passenger.index)
+	if index>=waypoints.size():
+		arrived = true
+		ride_status = "Llegaste a "+String(passenger.label)+"."
+		body.velocity = Vector3.ZERO
+		passenger.speed = 0.0
+		return
+	var item: Dictionary = waypoints[index]
+	var target: Vector3 = item.p
+	target.y = body.position.y
+	var diff := target-body.position
+	var distance := diff.length()
+	if distance<.24:
+		passenger.index = index+1
+		return
+	var d := diff.normalized()
+	var speed := minf(8.0,maxf(.9,distance*2.0))
+	var node_id := String(item.node)
+	# Stop briefly at mapped traffic signals. No fictional green signal state
+	# is asserted; the existing Cuban city has no coordinated signal controller.
+	if geography.signal_nodes.has(node_id) and distance<7.0 and String(passenger.signal_seen)!=node_id:
+		passenger.signal_seen = node_id
+		passenger.signal_wait = 2.0
+	passenger.signal_wait = maxf(0.0,float(passenger.signal_wait)-delta)
+	if float(passenger.signal_wait)>0.0:
+		speed = 0.0
+	var ray := PhysicsRayQueryParameters3D.create(body.position+Vector3.UP*.85+d*2.5,body.position+Vector3.UP*.85+d*6.5,1|4)
+	ray.exclude = [body.get_rid()]
+	var blocked := not get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
+	if blocked:
+		speed = 0.0
+	passenger.speed = move_toward(float(passenger.speed),speed,delta*4.5)
+	body.rotation.y = lerp_angle(body.rotation.y,atan2(d.x,d.z),minf(delta*6.0,1.0))
+	body.velocity = d*minf(float(passenger.speed),distance/maxf(delta,.001))
+	body.move_and_slide()
+	if blocked or body.get_slide_collision_count()>0:
+		passenger.blocked = float(passenger.blocked)+delta
+		if float(passenger.blocked)>12.0:
+			ride_status = "El taxi está bloqueado. Pulsa E para bajar o espera a que se despeje."
+	else:
+		passenger.blocked = 0.0
+
+func stop_position(player: CharacterBody3D,shape: Shape3D) -> Dictionary:
+	if passenger.is_empty(): return {}
+	var body: CharacterBody3D = passenger.body
+	var space := get_world_3d().direct_space_state
+	for side in [1.0,-1.0]:
+		for distance in [2.6,3.5,4.4]:
+			for along in [0.0,1.2,-1.2]:
+				var p := body.to_global(Vector3(-float(side)*float(distance),0,float(along)))
+				if streets.point_on_road(p): continue
+				var ground_ray := PhysicsRayQueryParameters3D.create(p+Vector3.UP*2.0,p-Vector3.UP*1.0,2)
+				var hit := space.intersect_ray(ground_ray)
+				if hit.is_empty(): continue
+				var at: Vector3 = hit.position+Vector3.UP*.90
+				var query := PhysicsShapeQueryParameters3D.new()
+				query.shape = shape
+				query.transform = Transform3D(Basis.IDENTITY,at)
+				query.collision_mask = 1|4
+				query.exclude = [body.get_rid(),player.get_rid()]
+				if space.intersect_shape(query,1).is_empty():
+					return {"position":at}
+	return {}
+
+func finish_trip() -> void:
+	if passenger.is_empty(): return
+	var body: CharacterBody3D = passenger.body
+	body.velocity = Vector3.ZERO
+	passenger.path = []
+	passenger.speed = 0.0
+	# A premature stop is not necessarily at the planned goal. Find the
+	# closest forward graph node before allowing another fare.
+	if not arrived:
+		var best := INF
+		var direction := body.global_transform.basis.z
+		for edge in geography.roads_near(body.position,20.0):
+			if not bool(edge.driveable): continue
+			for id in [edge.a_id,edge.b_id]:
+				var p: Vector3 = geography.points[id]
+				if (p-body.position).dot(direction)<0.0: continue
+				var distance := body.position.distance_squared_to(p)
+				if distance<best:
+					best = distance
+					passenger.next_node = String(id)
+	passenger = {}
+	arrived = false
