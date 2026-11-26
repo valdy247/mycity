@@ -20,6 +20,9 @@ var business_factory := Vector3.ZERO
 var business_home := Vector3.ZERO
 var factory_button: Button
 var home_button: Button
+var garage_button: Button
+var garage_target := Vector3.ZERO
+var garage_label := ""
 var ride_status := ""
 var dialog: PanelContainer
 var destination: LineEdit
@@ -216,6 +219,11 @@ func _make_dialog() -> void:
 	home_button.text = "Puesto de Albertico"
 	home_button.pressed.connect(func(): _business_destination(business_home,"Puesto de Albertico"))
 	places.add_child(home_button)
+	garage_button = Button.new()
+	garage_button.text = "Repuestos / casa"
+	garage_button.pressed.connect(func(): _business_destination(garage_target,garage_label))
+	places.add_child(garage_button)
+	garage_button.hide()
 	factory_button.hide()
 	home_button.hide()
 	map_view = TaxiMap.new()
@@ -266,6 +274,8 @@ func open_dialog(at: Vector3) -> bool:
 	map_view.reset(body.global_position)
 	factory_button.visible = business_enabled
 	home_button.visible = business_enabled
+	garage_button.visible = not garage_label.is_empty()
+	garage_button.text = garage_label if not garage_label.is_empty() else "Repuestos / casa"
 	map_view.set_business_markers(business_factory,business_home,business_enabled)
 	feedback.text = "Clic: marcar destino · Arrastrar: mover mapa · Rueda: acercar"
 	dialog.show()
@@ -288,6 +298,10 @@ func set_business_points(factory: Vector3,home: Vector3,enabled: bool) -> void:
 	business_factory = factory
 	business_home = home
 	business_enabled = enabled
+
+func set_garage_destination(point: Vector3,label_value: String) -> void:
+	garage_target = point
+	garage_label = label_value
 
 func _business_destination(point: Vector3,label_value: String) -> void:
 	if selected.is_empty(): return
