@@ -2,6 +2,7 @@ extends Node3D
 const MapData = preload("res://pilar_map.gd")
 const StreetGeometry = preload("res://street_geometry.gd")
 const Planner = preload("res://urban_bus_routes.gd")
+const TrafficBypass = preload("res://traffic_bypass.gd")
 const StreetPerson = preload("res://street_person.gd")
 var alight_handler: Callable
 const BUS_LENGTH := 9.4
@@ -486,8 +487,11 @@ func tick(delta: float) -> void:
 		if not bus.active_stop.is_empty():
 			_transfer_tick(bus,delta)
 			continue
-		var route: Array = bus.route
-		var index := int(bus.index)
+		var original: Array = bus.route
+		var detour: Array = bus.get("detour",[])
+		var detouring := not detour.is_empty()
+		var route: Array = detour if detouring else original
+		var index := int(bus.get("detour_index",0)) if detouring else int(bus.index)
 		var item: Dictionary = route[index]
 		var target: Vector3 = item.p
 		target.y = body.position.y
@@ -497,6 +501,11 @@ func tick(delta: float) -> void:
 			body.velocity = Vector3.ZERO
 			if item.has("stop"):
 				_start_stop(bus,item.stop)
+			elif detouring:
+				bus.detour_index = index+1
+				if int(bus.detour_index)>=detour.size():
+					bus.detour = []
+					bus.index = int(bus.resume_index)
 			else:
 				bus.index = (index+1)%route.size()
 			continue
@@ -504,14 +513,29 @@ func tick(delta: float) -> void:
 		var speed := minf(8.5,maxf(.75,sqrt(2.0*3.5*distance)))
 		if item.has("stop"):
 			speed = minf(speed,maxf(.75,distance*.75))
-		var next_target: Vector3 = route[(index+1)%route.size()].p
+		var next_target: Vector3 = original[int(bus.get("resume_index",0))].p if detouring and index==route.size()-1 else route[(index+1)%route.size()].p
 		var next_dir := (next_target-target).normalized()
 		if next_dir.length_squared()>.1 and d.dot(next_dir)<.85:
 			speed = minf(speed,maxf(1.1,distance*.7))
 		var ray := PhysicsRayQueryParameters3D.create(body.position+Vector3.UP*.95+d*(BUS_LENGTH*.5+.15),body.position+Vector3.UP*.95+d*(BUS_LENGTH*.5+1.2+float(bus.speed)*.8),1|4)
 		ray.exclude = [body.get_rid()]
-		if not get_world_3d().direct_space_state.intersect_ray(ray).is_empty():
+		var blocked := not get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
+		bus.bypass_cooldown = maxf(0.0,float(bus.get("bypass_cooldown",0.0))-delta)
+		if blocked:
+			bus.blocked = float(bus.blocked)+delta
 			speed = 0.0
+			if not detouring and float(bus.blocked)>1.7 and float(bus.bypass_cooldown)<=0.0:
+				bus.bypass_cooldown = 4.0
+				var choice := TrafficBypass.find(body,original,index,streets,BUS_WIDTH,BUS_LENGTH,data.signal_nodes)
+				if not choice.is_empty():
+					bus.detour = choice.path
+					bus.detour_index = 0
+					bus.resume_index = int(choice.resume)
+					bus.blocked = 0.0
+					continue
+		else:
+			bus.blocked = 0.0
+		if detouring: speed = minf(speed,3.5)
 		bus.speed = move_toward(float(bus.speed),speed,delta*(7.0 if speed<float(bus.speed) else 2.5))
 		body.rotation.y = lerp_angle(body.rotation.y,atan2(d.x,d.z),minf(delta*3.5,1.0))
 		body.velocity = d*minf(float(bus.speed),distance/maxf(delta,.001))
