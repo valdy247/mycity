@@ -39,6 +39,9 @@ var drag_origin := Vector3.ZERO
 var initial_angle := 0.0
 var roof_hidden := false
 var reference_pending := false
+var preview_key := ""
+var preview_reason := ""
+var refresh_time := 0.0
 var colors: Array[String] = ["#b5b39f","#92a9a4","#b69a84","#a3b5bd","#c6b58e","#b7a1a0"]
 var sizes: Dictionary = {
 	"Casa":Vector3(5.5,3.2,6.0),"Edificio":Vector3(7.0,6.4,7.5),
@@ -151,6 +154,7 @@ func close() -> void:
 	menu.hide()
 	file_dialog.hide()
 	mode = ""
+	preview_key = ""
 	measuring = false
 
 func _cycle_view() -> void:
@@ -306,13 +310,24 @@ func tick(delta: float) -> void:
 		focus.x = clampf(focus.x,-1250.0,1250.0)
 		focus.z = clampf(focus.z,-1250.0,1250.0)
 		_update_camera()
+	# Rebuild previews only when a snapped position, angle, selection or
+	# operation actually changes. Confirm clicks still run the full check.
+	refresh_time += delta
+	if refresh_time<.08:
+		return
+	refresh_time = 0.0
 	cursor_world = _snap(_point(get_viewport().get_mouse_position()))
 	var reason := ""
 	if mode in ["place","move","mapped_move"]:
-		var poly := _target_poly(cursor_world)
-		reason = _allowed(poly,cursor_world)
-		_show_preview(poly,cursor_world,reason.is_empty())
+		var key := str(cursor_world)+":"+str(angle)+":"+mode+":"+kind+":"+selected_id
+		if key!=preview_key:
+			preview_key = key
+			var poly := _target_poly(cursor_world)
+			preview_reason = _allowed(poly,cursor_world)
+			_show_preview(poly,cursor_world,preview_reason.is_empty())
+		reason = preview_reason
 	else:
+		preview_key = ""
 		preview.hide()
 	var view_names: Array[String] = ["Aérea","Perspectiva","Calle"]
 	hint.text = "%s | %.2f m | Nivel %.1f m\n%s\nWASD: mover vista · rueda: zoom\nClic derecho: opciones · clic izq.: aplicar\nV: vista · G: precisión · M: medir\nH: techo · F: piso · Q/E: girar · B: salir" % [view_names[view_mode],snaps[step_index],elevation,mode if not mode.is_empty() else "Seleccionar"]
