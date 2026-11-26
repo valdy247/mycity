@@ -12,6 +12,8 @@ const HomeGarage = preload("res://home_garage.gd")
 var garage: HomeGarage
 const CarlosMission = preload("res://carlos_mission.gd")
 var carlos_mission: CarlosMission
+const YordiMission = preload("res://yordi_mission.gd")
+var yordi_mission: YordiMission
 const CityNavigation = preload("res://city_navigation.gd")
 var city_navigation: CityNavigation
 const StreetMarket = preload("res://street_market.gd")
@@ -198,6 +200,11 @@ func _ready() -> void:
 		carlos_mission.setup(self)
 		business.carlos_call = carlos_mission.open_call
 		business.carlos_objective = carlos_mission.objective
+		yordi_mission = YordiMission.new()
+		add_child(yordi_mission)
+		yordi_mission.setup(self)
+		business.yordi_call = yordi_mission.open_call
+		business.yordi_objective = yordi_mission.objective
 		city_navigation = CityNavigation.new()
 		add_child(city_navigation)
 		city_navigation.setup(self)
@@ -974,6 +981,7 @@ func _face_cuba_home() -> void:
 	pivot.rotation = Vector3(pitch,yaw,0)
 
 func _reset_player() -> void:
+	if yordi_mission!=null and yordi_mission.checkpoint_reset(): return
 	if carlos_mission!=null: carlos_mission.reset()
 	if garage!=null: garage.reset()
 	if monte_services!=null:
@@ -1064,7 +1072,8 @@ func _update_hud() -> void:
 		status.text += "\nW/S: acelerar y retroceder | A/D: girar | Espacio: frenar\nE: salir detenido | R: reiniciar | Esc: liberar mouse"
 	else:
 		status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
-		var action := carlos_mission.action_text() if carlos_mission!=null else ""
+		var action := yordi_mission.action_text() if yordi_mission!=null else ""
+		if action.is_empty() and carlos_mission!=null: action = carlos_mission.action_text()
 		if action.is_empty() and backpack!=null: action = backpack.action_text()
 		if action.is_empty(): action = _albertico_action()
 		if action.is_empty() and garage!=null: action = garage.action_text(player.global_position)
@@ -1122,7 +1131,8 @@ func _update_compact_hud() -> void:
 	elif driving:
 		lines.append("%d km/h · [E] Bajar detenido" % roundi(absf(drive_speed)*3.6))
 	else:
-		var action := carlos_mission.action_text() if carlos_mission!=null else ""
+		var action := yordi_mission.action_text() if yordi_mission!=null else ""
+		if action.is_empty() and carlos_mission!=null: action = carlos_mission.action_text()
 		if action.is_empty() and backpack!=null: action = backpack.action_text()
 		if action.is_empty(): action = _albertico_action()
 		if action.is_empty() and garage!=null: action = garage.action_text(player.global_position)
@@ -1285,15 +1295,17 @@ func _leave_taxi(emergency: bool = false) -> bool:
 	player.global_position = result.position
 	player.velocity = Vector3.ZERO
 	player_shape.set_deferred("disabled",false)
+	var mission_ride: bool = yordi_mission!=null and yordi_mission.owns_passenger_trip()
 	taxi_riding = false
 	first_person = taxi_previous_first
 	yaw = taxi.rotation.y+PI
 	pitch = -.20
 	pivot.rotation = Vector3(pitch,yaw,0)
-	if business!=null and not emergency:
+	if business!=null and not emergency and not mission_ride:
 		business.taxi_arrival(player.global_position)
 	taxis.finish_trip()
 	_apply_camera_mode()
+	if mission_ride: yordi_mission.on_ride_end(emergency)
 	exit_message = "Viaje en taxi terminado."
 	message_time = 3.0
 	_update_hud()
@@ -1325,6 +1337,7 @@ func _physics_process(delta: float) -> void:
 		player.velocity = Vector3.ZERO
 		return
 	if carlos_mission!=null and not building_mode: carlos_mission.tick(delta)
+	if yordi_mission!=null and not building_mode: yordi_mission.tick(delta)
 	if incidents!=null and not building_mode and not business.modal_open(): incidents.tick(delta)
 	if backpack!=null and not building_mode: backpack.tick(delta)
 	if street_market!=null:
@@ -1412,7 +1425,7 @@ func _physics_process(delta: float) -> void:
 			monte_services.tick(delta)
 		if monte_pedestrians!=null:
 			monte_pedestrians.tick(delta)
-		if interact_requested:
+		if interact_requested and not (yordi_mission!=null and yordi_mission.owns_passenger_trip()):
 			taxis.request_stop()
 		interact_requested = false
 		taxis.tick(delta,cuba_world.cuba_clock)
@@ -1486,6 +1499,10 @@ func _physics_process(delta: float) -> void:
 			elif not _safe_exit():
 				exit_message = "No hay espacio para salir. Mueve la van."
 				message_time = 2.0
+		elif yordi_mission!=null and yordi_mission.interact():
+			player.velocity = Vector3.ZERO
+			_update_hud()
+			return
 		elif carlos_mission!=null and carlos_mission.interact():
 			player.velocity = Vector3.ZERO
 			_update_hud()
