@@ -47,7 +47,7 @@ static func find(body: CharacterBody3D,route: Array,index: int,streets: Streets,
 	var shape := BoxShape3D.new()
 	shape.size = Vector3(width+.25,1.45,length+.25)
 	var steps := ceili(max_distance/.75)
-	for side in [1.0,-1.0]:
+	for side in [-1.0,1.0]:
 		for amount in [width+.55,width+1.0,width+1.55]:
 			var shift := float(side)*float(amount)
 			var points: Array = []
