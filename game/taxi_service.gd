@@ -115,7 +115,7 @@ func _make_taxi(index: int) -> CharacterBody3D:
 	body.name = "TaxiClasico_"+str(index+1)
 	body.motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
 	body.collision_layer = 1
-	body.collision_mask = 1|4|8
+	body.collision_mask = 1|4|8|32
 	add_child(body)
 	var colors: Array[Color] = [Color("#d3a843"),Color("#73a69c"),Color("#a44f49"),Color("#9ab0bd")]
 	var paint: Color = colors[index%colors.size()]
