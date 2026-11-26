@@ -910,7 +910,9 @@ func _first_aid_access(from: Vector3,center: Vector3) -> Dictionary:
 		for i in range(8):
 			var angle := float(i)*TAU/8.0
 			var ground := _foot(center+Vector3(cos(angle),0,sin(angle))*float(radius))
-			if not ground.is_empty(): targets.append(ground.p)
+			if not ground.is_empty():
+				var point: Vector3 = ground.p
+				if point.distance_to(from)<.15 or world.pedestrian_space_clear(null,point,.65,false): targets.append(point)
 	targets.sort_custom(func(a,b): return from.distance_squared_to(a)<from.distance_squared_to(b))
 	for target in targets:
 		if world.pedestrian_segment_clear(from,target):
@@ -1158,8 +1160,8 @@ func _rescue_foot_access(berth: Dictionary,at: Vector3) -> Dictionary:
 	return {}
 
 func _rescue_access(from: Vector3,at: Vector3) -> Dictionary:
-	var candidates: Array = [at]
-	for radius in [.65,1.15,1.75,2.4]:
+	var candidates: Array = []
+	for radius in [1.05,1.65,2.3,2.8]:
 		for i in range(8):
 			var angle := float(i)*TAU/8.0
 			candidates.append(at+Vector3(cos(angle),0,sin(angle))*float(radius))
@@ -1168,6 +1170,7 @@ func _rescue_access(from: Vector3,at: Vector3) -> Dictionary:
 		var ground := _foot(candidate)
 		if ground.is_empty(): continue
 		var p: Vector3 = ground.p
+		if p.distance_to(from)>.15 and not world.pedestrian_space_clear(null,p,.65,false): continue
 		if world.pedestrian_segment_clear(from,p):
 			return {"p":p,"path":PackedVector3Array([p])}
 		valid.append(p)
@@ -1236,6 +1239,7 @@ func _rescue_parked(victim: Dictionary,body: CharacterBody3D) -> bool:
 	var target: Vector3 = access.p
 	var helper_target := Vector3.INF
 	var axis := _flat(target-casualty).normalized()
+	if axis.length_squared()<.01: axis = Vector3.FORWARD
 	for angle in [PI*.5,-PI*.5,PI,PI*.25,-PI*.25]:
 		var candidate := casualty+axis.rotated(Vector3.UP,float(angle))*1.6
 		var ground := _foot(candidate)
