@@ -412,7 +412,7 @@ func _car_trip(body: CharacterBody3D,at: Vector3,radius: float = 38.0,exclude: D
 			var d: Vector3 = goal.d
 			for distance in [-16.0,16.0,-8.0,8.0]:
 				var candidate: Dictionary = goal.duplicate()
-				var q := streets.safe_stop_on_edge(goal.a,goal.b,p+d*float(distance),LENGTH,WIDTH)
+				var q: Vector3 = streets.safe_stop_on_edge(goal.a,goal.b,p+d*float(distance),LENGTH,WIDTH)
 				if q.distance_to(at)>radius or not streets.intersection_clear_for_stop(q,LENGTH,WIDTH): continue
 				if not Bypass._on_road(streets,q,d,WIDTH,LENGTH): continue
 				candidate.p = q
@@ -844,7 +844,11 @@ func _reserve_responder(victim: Dictionary,center: Vector3) -> bool:
 	for car in municipal.vehicles:
 		if bool(car.get("rescue_extra",false)): return false
 	if municipal.civilian_route.size()<2: return false
-	var goals := _berths(center,RESCUE_WALK_RANGE)
+	var goals: Array = []
+	for goal in _berths(center,RESCUE_WALK_RANGE).slice(0,24):
+		var ground := _sidewalk(goal,center)
+		if ground.is_empty() or _rescue_access(ground.p,center).is_empty(): continue
+		goals.append(goal)
 	if goals.is_empty(): return false
 	var tested: Dictionary = {}
 	for edge in data.roads_near(center,100.0):
@@ -856,7 +860,7 @@ func _reserve_responder(victim: Dictionary,center: Vector3) -> bool:
 		var b: Vector3 = edge.b
 		for fraction in [.25,.5,.75]:
 			var sample := a.lerp(b,float(fraction))
-			if sample.distance_to(center)<32.0 or sample.distance_to(center)>100.0: continue
+			if sample.distance_to(center)<22.0 or sample.distance_to(center)>100.0: continue
 			for start in _berths(sample,9.0,Vector3.ZERO,false):
 				var p: Vector3 = start.p
 				var d: Vector3 = start.d
