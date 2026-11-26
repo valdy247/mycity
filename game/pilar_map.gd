@@ -258,6 +258,7 @@ func load_map() -> bool:
 			if not one in ["yes","1","true"]:
 				graph[b_id].append(a_id)
 	_mark_monte_corridor()
+	_configure_calzada_lanes()
 	print("Pilar-Atarés OSM: ",roads.size()," road segments; ",names.size()," street names; ",building_count," building ways in source.")
 	return roads.size()>=20
 
@@ -411,10 +412,30 @@ func _mark_monte_corridor() -> void:
 			edge.portal = true
 	print("Monte-Infanta: ",chosen.size()," connected Cerro nodes included in arcade corridor.")
 
+# Gameplay corridor: two independent lanes per direction. Keep original
+# OSM nodes and source widths; all rendered surfaces use the game width.
+func _configure_calzada_lanes() -> void:
+	road_cells.clear()
+	for edge in roads:
+		if bool(edge.driveable) and (bool(edge.get("monte_corridor",false)) or _named_edge(edge,"monte")):
+			edge["source_width"] = float(edge.width)
+			edge["width"] = maxf(12.8,float(edge.width))
+			edge["lanes_per_direction"] = 2
+			var a_id := String(edge.a_id)
+			var b_id := String(edge.b_id)
+			if not graph[a_id].has(b_id): graph[a_id].append(b_id)
+			if not graph[b_id].has(a_id): graph[b_id].append(a_id)
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		var radius := float(edge.width)*.5+3.0
+		_index(road_cells,a.min(b)-Vector3(radius,0,radius),a.max(b)+Vector3(radius,0,radius),edge)
+
 # Right-hand lane centres, based on each segment's actual width.
 func lane_distance(edge: Dictionary,vehicle_width: float,curbside: bool = false) -> float:
 	var width := float(edge.get("width",6.4))
 	var maximum := maxf(0.0,width*.5-vehicle_width*.5-.20)
+	if int(edge.get("lanes_per_direction",1))==2:
+		return minf(width*.375 if curbside else width*.125,maximum)
 	return maximum if curbside else minf(width*.25,maximum)
 
 func lane_offset(a: Vector3,b: Vector3,vehicle_width: float,curbside: bool = false) -> Vector3:
