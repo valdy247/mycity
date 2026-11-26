@@ -35,6 +35,15 @@ var hud: Label
 var hud_expanded := false
 var panel: PanelContainer
 var content: VBoxContainer
+var dialog_content: VBoxContainer
+var phone_panel: PanelContainer
+var phone_content: VBoxContainer
+var phone_scroll: ScrollContainer
+var phone_clock: Label
+var phone_title: Label
+var phone_mode := false
+var phone_icons: Dictionary = {}
+var phone_balance: Label
 var layer: CanvasLayer
 var toast := ""
 var toast_time := 0.0
@@ -290,7 +299,9 @@ func _make_ui() -> void:
 	content = VBoxContainer.new()
 	content.add_theme_constant_override("separation",9)
 	margin.add_child(content)
+	dialog_content = content
 	panel.hide()
+	_make_phone()
 	phone_ring = AudioStreamPlayer.new()
 	add_child(phone_ring)
 	var audio := AudioStreamWAV.new()
@@ -308,32 +319,49 @@ func _make_ui() -> void:
 	phone_ring.volume_db = -7.0
 
 func modal_open() -> bool:
-	return panel!=null and panel.visible
+	return (panel!=null and panel.visible) or (phone_panel!=null and phone_panel.visible)
 
 func close() -> void:
 	panel.hide()
+	if phone_panel!=null: phone_panel.hide()
+	phone_mode = false
+	phone_balance = null
+	content = dialog_content
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 func _open(title: String,body: String = "") -> void:
+	content = phone_content if phone_mode else dialog_content
+	phone_balance = null
 	for child in content.get_children():
 		content.remove_child(child)
 		child.queue_free()
-	var heading := Label.new()
-	heading.text = title
-	heading.add_theme_font_size_override("font_size",23)
-	content.add_child(heading)
+	if phone_mode:
+		phone_title.text = title
+		phone_scroll.scroll_vertical = 0
+		panel.hide()
+		phone_panel.show()
+		_update_phone_status()
+	else:
+		var heading := Label.new()
+		heading.text = title
+		heading.add_theme_font_size_override("font_size",23)
+		content.add_child(heading)
+		panel.show()
 	if not body.is_empty():
 		var description := Label.new()
 		description.text = body
 		description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		description.custom_minimum_size.x = 390
+		description.custom_minimum_size.x = 390 if not phone_mode else 0
+		if phone_mode: description.add_theme_color_override("font_color",Color("#b3c4d6"))
 		content.add_child(description)
-	panel.show()
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 func _button(text_value: String,callback: Callable,disabled_value: bool = false) -> void:
 	var button := Button.new()
 	button.text = text_value
+	if phone_mode:
+		button.custom_minimum_size.y = 44
+		button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	button.disabled = disabled_value
 	button.pressed.connect(callback)
 	content.add_child(button)
@@ -499,73 +527,308 @@ func open_phone() -> void:
 	open_phone_home()
 
 func open_phone_home() -> void:
-	_open("Mi teléfono","")
-	var skin := StyleBoxFlat.new()
-	skin.bg_color = Color("#172432")
-	skin.border_color = Color("#475867")
-	skin.set_border_width_all(2)
-	skin.set_corner_radius_all(24)
-	skin.content_margin_left = 12
-	skin.content_margin_right = 12
-	skin.content_margin_top = 12
-	skin.content_margin_bottom = 12
-	panel.add_theme_stylebox_override("panel",skin)
-	var balance := Label.new()
-	balance.text = "%s CUP" % str(ledger.cash)
-	balance.add_theme_font_size_override("font_size",28)
-	content.add_child(balance)
+	phone_mode = true
+	_open("Inicio")
+	var greeting := Label.new()
+	greeting.text = "LA HABANA  /  MYCITY"
+	greeting.add_theme_font_size_override("font_size",12)
+	greeting.add_theme_color_override("font_color",Color("#93b2c7"))
+	content.add_child(greeting)
+	var wallet := PanelContainer.new()
+	wallet.add_theme_stylebox_override("panel",_phone_style(Color("#173b41"),18,Color("#396b6c"),1,14))
+	content.add_child(wallet)
+	var stack := VBoxContainer.new()
+	stack.add_theme_constant_override("separation",3)
+	wallet.add_child(stack)
+	var caption := Label.new()
+	caption.text = "DINERO DISPONIBLE"
+	caption.add_theme_font_size_override("font_size",12)
+	caption.add_theme_color_override("font_color",Color("#a5d5cd"))
+	stack.add_child(caption)
+	phone_balance = Label.new()
+	phone_balance.add_theme_font_size_override("font_size",32)
+	stack.add_child(phone_balance)
+	_update_phone_status()
 	var apps := GridContainer.new()
-	apps.columns = 2
-	apps.add_theme_constant_override("h_separation",12)
-	apps.add_theme_constant_override("v_separation",12)
+	apps.columns = 3
+	apps.add_theme_constant_override("h_separation",9)
+	apps.add_theme_constant_override("v_separation",9)
 	content.add_child(apps)
-	_phone_tile(apps,"Mensajes · "+str(ledger.unread),open_messages)
-	if life!=null: _phone_tile(apps,"Contactos",life.open_contacts)
-	_phone_tile(apps,"Mi negocio",open_business_summary)
-	if garage_market.is_valid(): _phone_tile(apps,"Marketplace",garage_market)
-	if street_inventory.is_valid(): _phone_tile(apps,"Mis compras",street_inventory)
-	if backpack_inventory.is_valid(): _phone_tile(apps,"Mochila",backpack_inventory)
-	_phone_tile(apps,"Cerrar",close)
+	_phone_tile(apps,"Mensajes",open_messages,"message",Color("#247a63"),ledger.unread)
+	if life!=null: _phone_tile(apps,"Contactos",life.open_contacts,"contact",Color("#3d6dba"))
+	_phone_tile(apps,"Mi negocio",open_business_summary,"business",Color("#b77a38"))
+	if garage_market.is_valid(): _phone_tile(apps,"Marketplace",garage_market,"shop",Color("#6d58ad"))
+	if street_inventory.is_valid(): _phone_tile(apps,"Mis compras",street_inventory,"bag",Color("#a85875"))
+	if backpack_inventory.is_valid(): _phone_tile(apps,"Mochila",backpack_inventory,"pack",Color("#587d64"))
+	_phone_tile(apps,"GPS",open_phone_gps,"pin",Color("#397c96"))
+	var footer := Label.new()
+	footer.text = "P / Esc · Guardar teléfono"
+	footer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	footer.add_theme_color_override("font_color",Color("#8799ad"))
+	footer.add_theme_font_size_override("font_size",12)
+	content.add_child(footer)
 
-func _phone_tile(root: Control,label_value: String,callback: Callable) -> void:
+func _phone_tile(root: Control,label_value: String,callback: Callable,key: String,color: Color,count: int = 0) -> void:
 	var tile := Button.new()
-	tile.text = label_value
-	tile.custom_minimum_size = Vector2(184,76)
+	tile.custom_minimum_size = Vector2(0,103)
 	tile.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color("#304b62")
-	style.set_corner_radius_all(15)
-	tile.add_theme_stylebox_override("normal",style)
+	tile.add_theme_stylebox_override("normal",_phone_style(Color("#202c3d"),15,Color("#344558"),1,5))
+	tile.add_theme_stylebox_override("hover",_phone_style(Color("#2d3e52"),15,Color("#7494ac"),1,5))
+	tile.add_theme_stylebox_override("pressed",_phone_style(Color("#344b60"),15,Color("#7494ac"),1,5))
 	tile.pressed.connect(callback)
 	root.add_child(tile)
+	var stack := VBoxContainer.new()
+	tile.add_child(stack)
+	stack.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	stack.offset_top = 9
+	stack.offset_bottom = -8
+	stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stack.alignment = BoxContainer.ALIGNMENT_CENTER
+	stack.add_theme_constant_override("separation",5)
+	var icon := TextureRect.new()
+	icon.texture = _phone_icon(key,color)
+	icon.custom_minimum_size = Vector2(46,46)
+	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	icon.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stack.add_child(icon)
+	var name_label := Label.new()
+	name_label.text = label_value
+	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_label.add_theme_font_size_override("font_size",13)
+	name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stack.add_child(name_label)
+	if count>0:
+		var badge := Label.new()
+		badge.text = str(mini(99,count))
+		badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		badge.add_theme_font_size_override("font_size",12)
+		badge.add_theme_stylebox_override("normal",_phone_style(Color("#c44955"),10,Color.TRANSPARENT,0,3))
+		badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		tile.add_child(badge)
+		badge.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+		badge.offset_left = -31
+		badge.offset_right = -6
+		badge.offset_top = 5
+		badge.offset_bottom = 25
 
 func open_business_summary() -> void:
-	_open("MI NEGOCIO","Billetera: %d CUP\\nVendidas: %d | Ingresos: %d CUP | Comisión: %d CUP\\nStock: %s" % [ledger.cash,ledger.sold,ledger.revenue,ledger.wages,_stock_text()])
+	_open("Mi negocio","Resumen de tu actividad comercial")
+	_phone_metric("Dinero disponible","%d CUP" % ledger.cash)
+	_phone_metric("Ventas realizadas",str(ledger.sold))
+	_phone_metric("Ingresos acumulados","%d CUP" % ledger.revenue)
+	_phone_metric("Comisiones pagadas","%d CUP" % ledger.wages)
+	_phone_metric("Mercancía disponible",_stock_text())
 	_button("Inicio",open_phone_home)
 
 func open_messages() -> void:
+	phone_mode = true
 	ledger.unread = 0
 	ledger.save_game()
-	_open("TELÉFONO · Mensajes","Billetera: %d CUP\nVendidas: %d | Ingresos: %d CUP | Comisión: %d CUP\nStock: %s" % [ledger.cash,ledger.sold,ledger.revenue,ledger.wages,_stock_text()])
-	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(390,205)
-	content.add_child(scroll)
-	var list := VBoxContainer.new()
-	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(list)
-	if ledger.messages.is_empty():
-		var empty := Label.new()
-		empty.text = "No tienes mensajes."
-		list.add_child(empty)
+	_open("Mensajes","Conversaciones")
+	var threads: Dictionary = {}
+	var order: Array = []
 	for i in range(ledger.messages.size()-1,-1,-1):
-		var message: Dictionary = ledger.messages[i]
-		var entry := Label.new()
-		entry.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		entry.custom_minimum_size.x = 365
-		entry.text = String(message.sender)+"\n"+String(message.body)+"\n"
-		list.add_child(entry)
+		var item: Dictionary = ledger.messages[i]
+		var sender := String(item.get("sender",""))
+		var name_value := sender.trim_prefix("Tú → ") if sender.begins_with("Tú → ") else sender
+		if not threads.has(name_value):
+			threads[name_value] = String(item.get("body","")).replace("\n"," ")
+			order.append(name_value)
+	for name_value in order:
+		var preview := String(threads[name_value])
+		if preview.length()>60: preview = preview.left(60)+"…"
+		var row := Button.new()
+		row.text = String(name_value)+"\n"+preview
+		row.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		row.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		row.custom_minimum_size.y = 70
+		row.icon = _phone_icon("contact",Color("#46647f"))
+		row.add_theme_constant_override("icon_max_width",38)
+		row.pressed.connect(_phone_thread.bind(String(name_value)))
+		content.add_child(row)
+	if order.is_empty(): _phone_metric("No tienes mensajes","Las conversaciones aparecerán aquí.")
+
+# The phone is its own canvas panel; in-world menus retain their original layout.
+func _phone_style(color: Color,radius: int,border: Color = Color.TRANSPARENT,width: int = 0,pad: int = 8) -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = color
+	style.border_color = border
+	style.set_border_width_all(width)
+	style.set_corner_radius_all(radius)
+	style.content_margin_left = pad
+	style.content_margin_right = pad
+	style.content_margin_top = pad
+	style.content_margin_bottom = pad
+	return style
+
+func _make_phone() -> void:
+	phone_panel = PanelContainer.new()
+	layer.add_child(phone_panel)
+	phone_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_RIGHT)
+	phone_panel.offset_left = -465
+	phone_panel.offset_right = -24
+	phone_panel.offset_top = -318
+	phone_panel.offset_bottom = 318
+	var frame := _phone_style(Color("#101822"),30,Color("#5b6877"),3,16)
+	frame.shadow_color = Color(0,0,0,.45)
+	frame.shadow_size = 12
+	phone_panel.add_theme_stylebox_override("panel",frame)
+	var theme := Theme.new()
+	theme.default_font_size = 15
+	theme.set_color("font_color","Label",Color("#edf4fa"))
+	theme.set_color("font_color","Button",Color("#f3f7fa"))
+	theme.set_color("font_hover_color","Button",Color.WHITE)
+	theme.set_color("font_disabled_color","Button",Color("#758596"))
+	theme.set_stylebox("normal","Button",_phone_style(Color("#243449"),12,Color("#394c60"),1,10))
+	theme.set_stylebox("hover","Button",_phone_style(Color("#31485d"),12,Color("#6c879c"),1,10))
+	theme.set_stylebox("pressed","Button",_phone_style(Color("#3b586c"),12,Color("#7d9ab1"),1,10))
+	theme.set_stylebox("disabled","Button",_phone_style(Color("#1b2634"),12,Color("#273849"),1,10))
+	theme.set_stylebox("focus","Button",_phone_style(Color.TRANSPARENT,12,Color("#9ac6da"),2,0))
+	phone_panel.theme = theme
+	var shell := VBoxContainer.new()
+	shell.add_theme_constant_override("separation",9)
+	phone_panel.add_child(shell)
+	var top := HBoxContainer.new()
+	top.alignment = BoxContainer.ALIGNMENT_CENTER
+	shell.add_child(top)
+	phone_clock = Label.new()
+	phone_clock.text = "08:00"
+	phone_clock.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	phone_clock.add_theme_font_size_override("font_size",14)
+	top.add_child(phone_clock)
+	var camera_cutout := PanelContainer.new()
+	camera_cutout.custom_minimum_size = Vector2(68,17)
+	camera_cutout.add_theme_stylebox_override("panel",_phone_style(Color("#05090e"),10,Color("#25313d"),1,0))
+	top.add_child(camera_cutout)
+	var network := Label.new()
+	network.text = "MyCity"
+	network.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	network.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	network.add_theme_font_size_override("font_size",12)
+	top.add_child(network)
+	var nav := HBoxContainer.new()
+	shell.add_child(nav)
+	var home := Button.new()
+	home.text = "Inicio"
+	home.pressed.connect(open_phone_home)
+	nav.add_child(home)
+	phone_title = Label.new()
+	phone_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	phone_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	phone_title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	phone_title.add_theme_font_size_override("font_size",18)
+	nav.add_child(phone_title)
+	var quit := Button.new()
+	quit.text = "×"
+	quit.custom_minimum_size.x = 42
+	quit.pressed.connect(close)
+	nav.add_child(quit)
+	phone_scroll = ScrollContainer.new()
+	phone_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	phone_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	shell.add_child(phone_scroll)
+	phone_content = VBoxContainer.new()
+	phone_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	phone_content.add_theme_constant_override("separation",10)
+	phone_scroll.add_child(phone_content)
+	var bar := Button.new()
+	bar.text = "━━━━━━"
+	bar.custom_minimum_size.y = 29
+	bar.flat = true
+	bar.add_theme_color_override("font_color",Color("#b4c4d2"))
+	bar.pressed.connect(open_phone_home)
+	shell.add_child(bar)
+	phone_panel.hide()
+
+func _update_phone_status() -> void:
+	if not phone_mode or not is_instance_valid(phone_clock): return
+	var minute := int(life.state.get("minutes",480))%1440 if life!=null else 480
+	phone_clock.text = "%02d:%02d" % [floori(float(minute)/60.0),minute%60]
+	if is_instance_valid(phone_balance): phone_balance.text = "%d CUP" % ledger.cash
+
+func _phone_icon(key: String,color: Color) -> Texture2D:
+	var cache_key := key+color.to_html()
+	if phone_icons.has(cache_key): return phone_icons[cache_key]
+	var paths := {
+		"message":"<path d='M12 13h24v17H22l-7 6v-6h-3z'/><path d='M18 20h12M18 25h8'/>",
+		"contact":"<circle cx='24' cy='17' r='6'/><path d='M13 35v-3a11 11 0 0 1 22 0v3z'/>",
+		"business":"<path d='M12 35h24M15 31V22M23 31V14M31 31V18'/><path d='M13 17l9-6 8 2 6-5'/>",
+		"shop":"<path d='M12 20h24l-3-9H15zM15 20v16h18V20M20 36V25h8v11'/>",
+		"bag":"<path d='M13 18h22l2 19H11zM19 18v-4a5 5 0 0 1 10 0v4'/>",
+		"pack":"<rect x='13' y='15' width='22' height='23' rx='5'/><path d='M20 15v-3h8v3M17 27h14v7H17z'/>",
+		"pin":"<path d='M24 39s-12-13-12-21a12 12 0 0 1 24 0c0 8-12 21-12 21z'/><circle cx='24' cy='18' r='4'/>"
+	}
+	var svg := "<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 48 48'><rect width='48' height='48' rx='12' fill='#"+color.to_html(false)+"'/><g fill='none' stroke='white' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round'>"+String(paths.get(key,paths.contact))+"</g></svg>"
+	var img := Image.new()
+	img.load_svg_from_string(svg,2.0)
+	var texture := ImageTexture.create_from_image(img)
+	phone_icons[cache_key] = texture
+	return texture
+
+func _phone_metric(label_value: String,value: String) -> void:
+	var card := PanelContainer.new()
+	card.add_theme_stylebox_override("panel",_phone_style(Color("#1b2a39"),13,Color("#34485c"),1,12))
+	content.add_child(card)
+	var stack := VBoxContainer.new()
+	card.add_child(stack)
+	var label := Label.new()
+	label.text = label_value
+	label.add_theme_color_override("font_color",Color("#a4bed0"))
+	label.add_theme_font_size_override("font_size",12)
+	stack.add_child(label)
+	var result := Label.new()
+	result.text = value
+	result.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	result.add_theme_font_size_override("font_size",20)
+	stack.add_child(result)
+
+func _phone_thread(name_value: String) -> void:
+	phone_mode = true
+	_open(name_value,"Historial de conversación")
+	for item in ledger.messages:
+		var sender := String(item.get("sender",""))
+		var outgoing := sender.begins_with("Tú → ")
+		var other := sender.trim_prefix("Tú → ") if outgoing else sender
+		if other!=name_value: continue
+		var bubble := PanelContainer.new()
+		bubble.size_flags_horizontal = Control.SIZE_SHRINK_END if outgoing else Control.SIZE_SHRINK_BEGIN
+		bubble.custom_minimum_size.x = 280
+		bubble.add_theme_stylebox_override("panel",_phone_style(Color("#245b51") if outgoing else Color("#25374b"),15,Color.TRANSPARENT,0,11))
+		content.add_child(bubble)
+		var message := Label.new()
+		message.text = String(item.get("body",""))
+		message.custom_minimum_size.x = 280
+		message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		bubble.add_child(message)
+	if life!=null:
+		for id in life.state.contacts:
+			if life.sites.has(id) and String(life.sites[id].contact)==name_value:
+				_button("Preguntar qué tiene disponible",life._ask_stock.bind(String(id)))
+				_button("Ver contacto",life._contact_page.bind(String(id)))
+				break
+	_button("Volver a mensajes",open_messages)
+	phone_scroll.set_deferred("scroll_vertical",100000)
+
+func open_phone_gps() -> void:
+	phone_mode = true
+	_open("GPS","Coordenadas del mapa de la ciudad")
+	var at := player.global_position
+	if van!=null and player.global_position.distance_to(van.global_position)<3.0: at = player.global_position
+	var current := world.geography.coordinate_text(at)
+	_phone_metric("Ubicación actual",current)
+	_button("Copiar coordenadas",_copy_phone_gps.bind(current))
+	if not world.garage_home_site.is_empty():
+		var door: Vector3 = world.garage_home_site.door
+		var home := world.geography.coordinate_text(door)
+		_phone_metric("Mi casa",home)
+		_button("Copiar ubicación de casa",_copy_phone_gps.bind(home))
 	_button("Inicio",open_phone_home)
-	_button("Cerrar",close)
+
+func _copy_phone_gps(value: String) -> void:
+	DisplayServer.clipboard_set(value)
+	_notify("Coordenadas copiadas.")
 
 func _sync_visuals() -> void:
 	if arrow==null: return
@@ -715,3 +978,4 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	if refresh>=.18:
 		refresh = 0.0
 		_update_hud()
+		_update_phone_status()
