@@ -440,6 +440,7 @@ func _apply_performance_mode() -> void:
 	window.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
 	window.content_scale_size = Vector2i(960,540) if low_graphics else Vector2i(1280,720)
 	play_camera.far = 320.0 if low_graphics else 550.0
+	if cuba_world!=null: cuba_world.set_detail_quality(low_graphics)
 	if pilar_editor != null:
 		pilar_editor.camera.far = 1000.0 if low_graphics else 1800.0
 
