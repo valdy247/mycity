@@ -681,15 +681,26 @@ func _make_frontages() -> void:
 				pair = _pair_at_parked_van(candidate)
 				break
 	if pair.size()==2:
-		var residence: Dictionary = pair[0]
-		alborada_lot = pair[1]
+		# Swap the existing premises, not the geographic anchors.
+		# Both lots have already passed the same street/sidewalk checks.
+		var former_home: Dictionary = pair[0]
+		var former_shop: Dictionary = pair[1]
+		var residence: Dictionary = former_shop.duplicate(true)
+		alborada_lot = former_home.duplicate(true)
+		residence.landmark = "home"
+		alborada_lot.landmark = "alborada"
+		var prior_front: Vector3 = former_home.front
+		var prior_center: Vector3 = former_home.center
+		old_home_transform = Transform3D(Basis(Vector3.UP,atan2(prior_front.x,prior_front.z)),prior_center)
+		old_home_found = true
 		_add_lot(residence)
 		_make_humble_home(residence)
 		_add_lot(alborada_lot)
 		_facade(alborada_lot,7,"LA ALBORADA")
 		paired_landmarks = true
 		home_relocated = true
-		print("Monte: vivienda en la antigua fachada de La Alborada; tienda a la derecha. Fuente OSM: ",original_shop_id)
+		home_gps_status = "Casa y La Alborada: parcelas intercambiadas."
+		print(home_gps_status)
 	elif pair.size()==1:
 		var residence: Dictionary = pair[0]
 		_add_lot(residence)
