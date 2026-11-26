@@ -146,7 +146,7 @@ func _ready() -> void:
 			avoid.append(body.global_position)
 		monte_services = MonteServices.new()
 		add_child(monte_services)
-		monte_services.setup(cuba_world,cuba_world.home_spawn,avoid)
+		monte_services.setup(cuba_world,cuba_world.home_spawn,avoid,player,play_camera)
 		monte_pedestrians = MontePedestrians.new()
 		add_child(monte_pedestrians)
 		monte_pedestrians.setup(cuba_world,urban_buses)
@@ -779,6 +779,8 @@ func _face_cuba_home() -> void:
 	pivot.rotation = Vector3(pitch,yaw,0)
 
 func _reset_player() -> void:
+	if monte_services!=null:
+		monte_services.return_player_bag()
 	if city_world != null:
 		city_world.reset_interaction(avatar,limb_legs)
 		_apply_camera_mode()
@@ -844,7 +846,9 @@ func _update_hud() -> void:
 		status.text += "\nW/S: acelerar y retroceder | A/D: girar | Espacio: frenar\nE: salir detenido | R: reiniciar | Esc: liberar mouse"
 	else:
 		status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
-		var action := business.action_text(player.global_position) if business!=null else ""
+		var action := monte_services.action_text(player.global_position) if monte_services!=null and (business==null or business.ledger.carry.is_empty()) else ""
+		if action.is_empty() and business!=null:
+			action = business.action_text(player.global_position)
 		if action.is_empty() and city_world!=null:
 			action = city_world.interaction_text(player.global_position)
 		var aimed: String = cuba_world.aimed_text(play_camera,player) if cuba_world != null and action.is_empty() else ""
@@ -871,6 +875,8 @@ func _update_hud() -> void:
 			status.text += "\nLa Alborada: falta espacio junto a la casa."
 		if cuba_world.prompt_time > 0.0:
 			status.text += "\n"+cuba_world.prompt
+	if monte_services!=null and monte_services.notice_time>0.0:
+		status.text += "\n"+monte_services.notice
 	if message_time > 0.0:
 		status.text += "\n" + exit_message
 
@@ -1009,7 +1015,7 @@ func _physics_process(delta: float) -> void:
 		_reset_player()
 	if cargo_requested:
 		cargo_requested = false
-		if business!=null and not driving and not taxi_riding and not building_mode:
+		if business!=null and not driving and not taxi_riding and not building_mode and (monte_services==null or monte_services.player_bag==null):
 			business.cargo_action(player.global_position)
 			_update_hud()
 	if interact_requested:
@@ -1021,6 +1027,12 @@ func _physics_process(delta: float) -> void:
 			elif not _safe_exit():
 				exit_message = "No hay espacio para salir. Mueve la van."
 				message_time = 2.0
+		elif monte_services!=null and (business==null or business.ledger.carry.is_empty()) and monte_services.interact(player.global_position):
+			player.velocity = Vector3.ZERO
+			return
+		elif monte_services!=null and monte_services.player_bag!=null:
+			exit_message = "Entrega la bolsa al camión antes de hacer otra actividad."
+			message_time = 2.0
 		elif business!=null and business.interact(player.global_position):
 			player.velocity = Vector3.ZERO
 			return
