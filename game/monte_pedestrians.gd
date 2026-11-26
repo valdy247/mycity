@@ -26,9 +26,13 @@ var shape := CapsuleShape3D.new()
 var profiles: Dictionary = {}
 var resident_clock := 480.0
 var home_destinations: Array = []
+var commerce_destinations: Array = []
+var life
+var profile_clock := 0.0
 const MAX_PROFILES := 180
 
-func setup(city: World,bus_service: UrbanBuses) -> void:
+func setup(city: World,bus_service: UrbanBuses,city_life = null) -> void:
+	life = city_life
 	world = city
 	world.pedestrian_router = self
 	buses = bus_service
@@ -184,6 +188,18 @@ func _build() -> void:
 				graph.connect_points(id,int(other),true)
 				break
 	await _register_doors()
+	for site in world.commerce_sites:
+		var entrance: Vector3 = site.entrance
+		var nearest := _nearest(entrance,7.0)
+		if nearest<0: continue
+		var link := graph.get_point_position(nearest)
+		if not world.pedestrian_segment_clear(entrance,link): continue
+		var id := _add(entrance,SIDEWALK_COST,.20)
+		if id<0: continue
+		if id!=nearest and not graph.are_points_connected(id,nearest): graph.connect_points(id,nearest,true)
+		var destination := {"id":id,"kind":"shop","site":String(site.id),"business_kind":String(site.kind)}
+		commerce_destinations.append(destination)
+		destinations.append(destination)
 	if buses!=null:
 		for stop in buses.stops:
 			var p: Vector3 = stop.wait
@@ -308,7 +324,10 @@ func _profile_for(style: int,at: Vector3) -> Dictionary:
 		if distance<best:
 			best = distance
 			home = dest
-	var profile := {"id":"resident_"+key,"name":first_names[posmod(style,first_names.size())]+" "+surnames[posmod(floori(float(style)/3.0),surnames.size())],"home":home,"money":200+posmod(style*37,800),"activity":"street","job":["comercio","servicios","oficio","estudio"][posmod(style,4)],"last_day":-1}
+	var job: String = ["comercio","servicios","oficio","estudio"][posmod(style,4)]
+	var workplace: Dictionary = {}
+	if not commerce_destinations.is_empty(): workplace = commerce_destinations[posmod(style,commerce_destinations.size())]
+	var profile := {"id":"resident_"+key,"name":first_names[posmod(style,first_names.size())]+" "+surnames[posmod(floori(float(style)/3.0),surnames.size())],"home":home,"workplace":workplace,"money":200+posmod(style*37,800),"activity":"street","job":job,"last_work":-1000.0,"last_purchase":-1000.0}
 	if profiles.size()>=MAX_PROFILES:
 		for old_key in profiles.keys():
 			if not bool(profiles[old_key].get("active",false)):
@@ -357,6 +376,17 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 				person.social_context = "homeward"
 				return true
 		if hour>=7.0 and hour<17.0 and not force_non_bus:
+			var workplace: Dictionary = profile.get("workplace",{})
+			if not workplace.is_empty() and resident_clock-float(profile.last_work)>=180.0:
+				var work_path := graph.get_point_path(start,int(workplace.id))
+				if work_path.size()>=2 and origin.distance_to(graph.get_point_position(int(workplace.id)))<155.0:
+					agent.path = work_path
+					agent.index = 0
+					agent.destination = workplace
+					agent.pause = 0.0
+					profile.activity = "work"
+					person.social_context = "workward"
+					return true
 			nearby.sort_custom(func(a,b): return int(String(a.kind)=="shop")>int(String(b.kind)=="shop"))
 	# A quarter of residents actively seek a bus stop rather than leaving
 	# all transport demand to random selection among hundreds of doors.
@@ -403,6 +433,18 @@ func accept_alighting(node: Node3D) -> bool:
 func agent_has_profile(agent: Dictionary) -> bool:
 	return agent.has("profile") and not agent.profile.is_empty()
 
+func _resident_style(at: Vector3) -> int:
+	# Reuse the same identity when its neighborhood streams back in.
+	for key in profiles:
+		var profile: Dictionary = profiles[key]
+		if bool(profile.get("active",false)): continue
+		var home: Dictionary = profile.home
+		if home.is_empty(): continue
+		if graph.get_point_position(int(home.id)).distance_squared_to(at)<1225.0:
+			return int(key)
+	serial += 1
+	return serial
+
 func _populate() -> void:
 	var camera := get_viewport().get_camera_3d()
 	if camera==null: return
@@ -433,10 +475,10 @@ func _populate() -> void:
 		if not safe: continue
 		var person := Person.new()
 		add_child(person)
-		serial += 1
-		person.setup(serial,false,true)
+		var style := _resident_style(p)
+		person.setup(style,false,true)
 		person.global_position = p
-		var agent := {"node":person,"path":PackedVector3Array(),"index":0,"destination":{},"pause":0.0,"speed":1.12+float(posmod(serial,7))*.065}
+		var agent := {"node":person,"path":PackedVector3Array(),"index":0,"destination":{},"pause":0.0,"speed":1.12+float(posmod(style,7))*.065}
 		_attach_profile(agent)
 		agent.speed = float(agent.speed)*person.gait
 		if _choose_route(agent):
@@ -474,7 +516,14 @@ func yield_to_bus(stop: Dictionary,bus: CharacterBody3D) -> void:
 				break
 
 func tick(delta: float) -> void:
+	# Keep a monotonic schedule for elapsed work and purchase cooldowns.
 	resident_clock += delta
+	if life!=null:
+		var clock: float = float(life.state.minutes)
+		var current := fmod(resident_clock,1440.0)
+		var day_offset := resident_clock-current
+		if current-clock>720.0: day_offset += 1440.0
+		resident_clock = day_offset+clock
 	if not initialized:
 		if building_graph: return
 		build_wait -= delta
@@ -539,9 +588,26 @@ func tick(delta: float) -> void:
 			if String(dest.get("kind",""))=="bus" and buses!=null:
 				if buses.join_stop(dest.stop,person):
 					person.remove_from_group("bus_yield_walkers")
-					if agent_has_profile(agent): agent.profile.active = false
+					# Keep identity reserved while the person is on a bus.
 					walkers.remove_at(i)
 					continue
+			if agent_has_profile(agent) and dest.has("site"):
+				var profile: Dictionary = agent.profile
+				if String(profile.activity)=="work":
+					profile.last_work = resident_clock
+					profile.money = int(profile.money)+35
+					profile.activity = "working"
+					agent.pause = 20.0
+					person.social_context = "worker"
+					continue
+				if life!=null and String(dest.get("business_kind",""))=="cafe" and resident_clock-float(profile.last_purchase)>60.0:
+					var spent: int = life.citizen_purchase(String(dest.site),int(profile.money))
+					if spent>0:
+						profile.money = int(profile.money)-spent
+						profile.last_purchase = resident_clock
+						person.social_context = "shopping"
+						agent.pause = 5.0
+						continue
 			# Simulated indoor visits are only allowed at a verified door.
 			if bool(dest.get("door",false)) and person.global_position.distance_to(graph.get_point_position(int(dest.id)))<.14:
 				var normal: Vector3 = dest.normal
