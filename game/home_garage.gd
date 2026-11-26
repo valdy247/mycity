@@ -807,6 +807,7 @@ func _traffic_tick(delta: float) -> void:
 		var advance := Bypass.junction_advance(minf(float(entry.speed)*delta,distance),junction_limit)
 		if blocked: advance = minf(advance,maxf(0.0,free-.55))
 		if advance<.0001:
+			if junction_limit<0.0: Bypass.align_if_clear(body,angle)
 			body.velocity = Vector3.ZERO
 			entry.speed = 0.0
 		elif not Bypass.safe_step(body,d,advance,angle,delta): entry.speed = 0.0
