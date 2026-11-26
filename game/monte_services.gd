@@ -225,7 +225,7 @@ func _body(truck: bool,index: int) -> CharacterBody3D:
 	body.name = "Camion_Comunales" if truck else "Auto_Monte_"+str(index)
 	body.motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
 	body.collision_layer = 1
-	body.collision_mask = 1|4
+	body.collision_mask = 1|4|8
 	add_child(body)
 	var paint: Color = Color("#537c72") if truck else [Color("#a47155"),Color("#6990a1"),Color("#a7a19a")][index%3]
 	var black := Color("#303538")
@@ -347,6 +347,7 @@ func _initialize() -> void:
 
 func _begin_collection(vehicle: Dictionary,site: Dictionary) -> void:
 	vehicle.site = site
+	vehicle["collection_wait"] = 0.0
 	vehicle.speed = 0.0
 	var body: CharacterBody3D = vehicle.body
 	body.velocity = Vector3.ZERO
@@ -401,11 +402,64 @@ func _collect(vehicle: Dictionary,delta: float) -> void:
 				if person.walk_to(cab,delta,1.7):
 					person.hide()
 					worker.state = "idle"
+	# A player holding the last bag cannot hold the route indefinitely.
+	if done and player_site==site and bags.is_empty():
+		vehicle.collection_wait = float(vehicle.get("collection_wait",0.0))+delta
+		if float(vehicle.collection_wait)>25.0:
+			return_player_bag()
+			notice = "El camión debe continuar; la bolsa volvió al basurero."
+			notice_time = 4.0
+			vehicle.collection_wait = 0.0
+	else:
+		vehicle.collection_wait = 0.0
 	if done and player_site!=site and bags.is_empty():
 		site.refill = 170.0
 		vehicle.site = {}
 		var route: Array = vehicle.route
 		vehicle.index = (int(vehicle.index)+1)%route.size()
+
+# Short checked recovery arcs for tight corners and curb approaches.
+# Preserve the pending collection stop and never teleport the truck.
+func _local_recovery(body: CharacterBody3D,target: Vector3,width: float,length: float,height: float) -> Array:
+	var origin := body.global_position
+	var heading := body.global_transform.basis.z.normalized()
+	var left := Vector3(heading.z,0,-heading.x)
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(width+.06,height,length+.06)
+	var space := get_world_3d().direct_space_state
+	for advance in [4.0,6.0,8.0,10.0]:
+		for shift in [1.5,2.3,3.0,-1.5,-2.3,0.0]:
+			var goal := origin+heading*float(advance)+left*float(shift)
+			if goal.distance_to(target)>origin.distance_to(target)+1.0: continue
+			var points: Array = []
+			var previous := origin
+			var valid := true
+			var steps := ceili(float(advance)/.55)
+			for j in range(1,steps+1):
+				var t := float(j)/float(steps)
+				var p := origin+heading*float(advance)*t+left*float(shift)*smoothstep(0.0,1.0,t)
+				var d := (p-previous).normalized()
+				if not Bypass._on_road(world.street_geometry,p,d,width,length):
+					valid = false
+					break
+				var q := PhysicsShapeQueryParameters3D.new()
+				q.shape = shape
+				q.transform = Transform3D(Basis(Vector3.UP,atan2(d.x,d.z)),p+Vector3.UP*(height*.5+.08))
+				q.collision_mask = 1|4|8
+				q.exclude = [body.get_rid()]
+				if not space.intersect_shape(q,1).is_empty():
+					valid = false
+					break
+				q.transform = Transform3D(Basis(Vector3.UP,atan2(d.x,d.z)),previous+Vector3.UP*(height*.5+.08))
+				q.motion = p-previous
+				var sweep := space.cast_motion(q)
+				if sweep.size()<2 or sweep[0]<.999:
+					valid = false
+					break
+				points.append({"p":p,"bypass":true})
+				previous = p
+			if valid and not points.is_empty(): return points
+	return []
 
 func _drive(vehicle: Dictionary,delta: float) -> void:
 	var body: CharacterBody3D = vehicle.body
@@ -423,6 +477,8 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 	var diff := target-body.position
 	var distance := diff.length()
 	if distance<.30:
+		vehicle.stalled = 0.0
+		vehicle.backed_up = 0.0
 		body.velocity = Vector3.ZERO
 		if active:
 			vehicle.detour_index = index+1
@@ -444,37 +500,57 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 	var half := 3.1 if bool(vehicle.truck) else 2.125
 	var width := 2.3 if bool(vehicle.truck) else 1.83
 	var height := 2.8 if bool(vehicle.truck) else 1.65
-	var reach := minf(maxf(5.0,float(vehicle.speed)*float(vehicle.speed)/12.0+3.0),distance+1.5)
+	var gap := .65
+	var reach := minf(maxf(5.0,float(vehicle.speed)*float(vehicle.speed)/12.0+3.0),distance+gap)
 	var free := Bypass.clear_distance(body,direction,reach,width,half*2.0,height)
 	var blocked := free<reach-.05
+	var safe_speed := sqrt(12.0*maxf(0.0,free-gap)) if blocked else speed
+	speed = minf(speed,safe_speed)
 	vehicle.cooldown = maxf(0.0,float(vehicle.cooldown)-delta)
-	if blocked:
-		speed = 0.0
-		vehicle.blocked = float(vehicle.blocked)+delta
-		if not active and float(vehicle.blocked)>.4 and float(vehicle.cooldown)<=0.0:
-			vehicle.cooldown = 1.5
-			var choice := Bypass.find(body,original,index,world.street_geometry,2.3 if bool(vehicle.truck) else 1.83,half*2.0,world.geography.signal_nodes)
-			if not choice.is_empty():
-				vehicle.detour = choice.path
+	var stalled := float(vehicle.get("stalled",0.0))
+	if stalled>.8 and float(vehicle.cooldown)<=0.0:
+		vehicle.cooldown = 1.6
+		if active:
+			# An interrupted detour is not permanent. Replan from here.
+			vehicle.detour = []
+			vehicle.index = int(vehicle.resume)
+			return
+		var choice := Bypass.find(body,original,index,world.street_geometry,width,half*2.0,world.geography.signal_nodes)
+		if not choice.is_empty():
+			vehicle.detour = choice.path
+			vehicle.detour_index = 0
+			vehicle.resume = int(choice.resume)
+			vehicle.stalled = 0.0
+			return
+		if bool(vehicle.truck) and stalled>2.5:
+			var recovery := _local_recovery(body,target,width,half*2.0,height)
+			if not recovery.is_empty():
+				vehicle.detour = recovery
 				vehicle.detour_index = 0
-				vehicle.resume = int(choice.resume)
-				vehicle.blocked = 0.0
+				vehicle.resume = index
+				vehicle.stalled = 0.0
 				return
-		if not active and float(vehicle.blocked)>2.0 and free<1.1 and float(vehicle.speed)<.1 and float(vehicle.get("backed_up",0.0))<4.0:
-			if Bypass.reverse_clear(body,world.street_geometry,width,half*2.0,delta):
-				vehicle.backed_up = float(vehicle.get("backed_up",0.0))+.8*delta
-				return
-	else:
-		vehicle.blocked = 0.0
-		vehicle.backed_up = 0.0
+	if not active and stalled>3.0 and float(vehicle.speed)<.12 and float(vehicle.get("backed_up",0.0))<5.5:
+		if Bypass.reverse_clear(body,world.street_geometry,width,half*2.0,delta):
+			vehicle.backed_up = float(vehicle.get("backed_up",0.0))+.8*delta
+			vehicle.speed = 0.0
+			return
 	vehicle.speed = move_toward(float(vehicle.speed),speed,delta*(7.0 if speed<float(vehicle.speed) else 3.5))
-	if float(vehicle.speed)<.04:
-		body.velocity = Vector3.ZERO
-		return
 	var angle := lerp_angle(body.rotation.y,atan2(direction.x,direction.z),1.0-exp(-delta*4.5))
-	var advance := minf(minf(float(vehicle.speed)*delta,distance),maxf(0.0,free-.7))
-	if not Bypass.safe_step(body,direction,advance,angle,delta):
+	var advance := minf(float(vehicle.speed)*delta,distance)
+	if blocked: advance = minf(advance,maxf(0.0,free-gap))
+	var previous := body.global_position
+	if advance>.0001:
+		if not Bypass.safe_step(body,direction,advance,angle,delta):
+			vehicle.speed = 0.0
+	else:
+		body.velocity = Vector3.ZERO
 		vehicle.speed = 0.0
+	if body.global_position.distance_to(previous)<.10*delta:
+		vehicle.stalled = stalled+delta
+	else:
+		vehicle.stalled = maxf(0.0,stalled-delta*2.0)
+		if not blocked: vehicle.backed_up = 0.0
 
 func tick(delta: float) -> void:
 	notice_time = maxf(0.0,notice_time-delta)
