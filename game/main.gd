@@ -147,6 +147,7 @@ func _ready() -> void:
 		business = BusinessMission.new()
 		add_child(business)
 		business.setup(cuba_world,taxis,player,van,play_camera)
+		business.life.attach_avatar(limb_arms)
 		for bus in urban_buses.buses:
 			var body: CharacterBody3D = bus.body
 			avoid.append(body.global_position)
@@ -899,6 +900,7 @@ func _update_hud() -> void:
 	else:
 		status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
 		var action := business.aimed_text(player.global_position) if business!=null else ""
+		if action.is_empty() and business!=null and business.life!=null: action = business.life.action_text(player.global_position)
 		if action.is_empty() and _aimed_person()!=null: action = "[E] Saludar"
 		if action.is_empty() and urban_buses!=null and not urban_buses.nearby_boarding(player.global_position).is_empty(): action = "[E] Subir a la guagua"
 		if action.is_empty(): action = monte_services.action_text(player.global_position) if monte_services!=null and (business==null or business.ledger.carry.is_empty()) else ""
@@ -948,6 +950,7 @@ func _update_compact_hud() -> void:
 		lines.append("%d km/h · [E] Bajar detenido" % roundi(absf(drive_speed)*3.6))
 	else:
 		var action := business.aimed_text(player.global_position) if business!=null else ""
+		if action.is_empty() and business!=null and business.life!=null: action = business.life.action_text(player.global_position)
 		if action.is_empty() and _aimed_person()!=null: action = "[E] Saludar"
 		if action.is_empty() and urban_buses!=null and not urban_buses.nearby_boarding(player.global_position).is_empty(): action = "[E] Subir a la guagua"
 		if action.is_empty() and monte_services!=null and (business==null or business.ledger.carry.is_empty()):
@@ -1005,7 +1008,10 @@ func _greet_person() -> bool:
 		replies = ["Voy a comprar algo de comida.","Voy a ver qué tiene Albertico.","Aquí buscando algo pa' la casa.","Voy a resolver la comida de hoy.","De compras, tú sabes, en la lucha."]
 	elif context=="worker":
 		replies = ["Aquí trabajando, tú sabes.","En la faena, asere.","Resolviendo el trabajo de hoy.","Aquí, cumpliendo con lo mío.","En la lucha, como siempre."]
-	exit_message = "Tú: "+String(greetings.pick_random())+"\nVecino: "+String(replies.pick_random())
+	var name_value := String(person.get_meta("citizen_name","Vecino"))
+	var recognition := business.life.greet(person) if business!=null and business.life!=null else ""
+	var answer := recognition if not recognition.is_empty() else String(replies.pick_random())
+	exit_message = "Tú: "+String(greetings.pick_random())+"\n"+name_value+": "+answer
 	message_time = 5.0
 	social_cooldown = 1.0
 	_update_hud()
@@ -1218,8 +1224,14 @@ func _physics_process(delta: float) -> void:
 			elif not _safe_exit():
 				exit_message = "No hay espacio para salir. Mueve la van."
 				message_time = 2.0
+		elif business!=null and business.life!=null and not business.life.state.meal.is_empty():
+			business.life.interact(player.global_position)
+			return
 		elif business!=null and business.take_aimed(player.global_position):
 			_update_hud()
+			return
+		elif business!=null and business.life!=null and (monte_services==null or monte_services.player_bag==null) and business.life.interact(player.global_position):
+			player.velocity = Vector3.ZERO
 			return
 		elif _greet_person():
 			return
@@ -1267,6 +1279,7 @@ func _physics_process(delta: float) -> void:
 		player.move_and_slide()
 		if not first_person:
 			_animate_avatar(delta, Vector2(player.velocity.x, player.velocity.z).length())
+		if business!=null and business.life!=null: business.life.pose_meal(first_person,delta)
 		if player.global_position.y < -15 or absf(player.global_position.x) > (1255.0 if cuba_world != null else (258.0 if native_city else 90.0)) or absf(player.global_position.z) > (1255.0 if cuba_world != null else (258.0 if native_city else 120.0)):
 			_reset_player()
 		# Parked vehicle stays grounded; no dynamic vertical collision recovery.
