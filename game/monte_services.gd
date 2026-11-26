@@ -227,6 +227,7 @@ func _body(truck: bool,index: int) -> CharacterBody3D:
 	body.collision_layer = 1
 	body.collision_mask = 1|4|8
 	add_child(body)
+	body.add_to_group("autonomous_traffic")
 	var paint: Color = Color("#537c72") if truck else [Color("#a47155"),Color("#6990a1"),Color("#a7a19a")][index%3]
 	var black := Color("#303538")
 	var glass := Color("#587681")
@@ -515,14 +516,14 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 			vehicle.detour = []
 			vehicle.index = int(vehicle.resume)
 			return
-		var choice := Bypass.find(body,original,index,world.street_geometry,width,half*2.0,world.geography.signal_nodes)
+		var choice := Bypass.recover(body,original,index,world.street_geometry,width,half*2.0,world.geography.signal_nodes,height)
 		if not choice.is_empty():
 			vehicle.detour = choice.path
 			vehicle.detour_index = 0
 			vehicle.resume = int(choice.resume)
 			vehicle.stalled = 0.0
 			return
-		if bool(vehicle.truck) and stalled>2.5:
+		if stalled>2.5:
 			var recovery := _local_recovery(body,target,width,half*2.0,height)
 			if not recovery.is_empty():
 				vehicle.detour = recovery
