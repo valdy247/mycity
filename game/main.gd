@@ -10,6 +10,8 @@ const UrbanBuses = preload("res://urban_buses.gd")
 const BusinessMission = preload("res://business_mission.gd")
 const HomeGarage = preload("res://home_garage.gd")
 var garage: HomeGarage
+const StreetMarket = preload("res://street_market.gd")
+var street_market: StreetMarket
 const MontePedestrians = preload("res://monte_pedestrians.gd")
 const MonteServices = preload("res://monte_services.gd")
 var monte_pedestrians: MontePedestrians
@@ -169,6 +171,10 @@ func _ready() -> void:
 		add_child(garage)
 		garage.setup(self)
 		business.garage_market = garage.open_phone_market
+		street_market = StreetMarket.new()
+		add_child(street_market)
+		street_market.setup(self)
+		business.street_inventory = street_market.open_inventory
 		first_person = true
 		_face_cuba_home()
 		_apply_camera_mode()
@@ -432,6 +438,9 @@ func _apply_camera_mode() -> void:
 		reticle.visible = first_person and not driving and not building_mode and not (garage!=null and garage.riding)
 
 func _unhandled_input(event: InputEvent) -> void:
+	if street_market!=null and not street_market.active.is_empty():
+		street_market.handle(event)
+		return
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode==KEY_H and not building_mode and not (business!=null and business.modal_open()) and not (taxis!=null and taxis.dialog.visible):
 		controls_expanded = not controls_expanded
 		_update_hud()
@@ -930,6 +939,7 @@ func _update_hud() -> void:
 	else:
 		status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
 		var action := garage.action_text(player.global_position) if garage!=null else ""
+		if action.is_empty() and street_market!=null: action = street_market.action_text()
 		if action.is_empty() and business!=null: action = business.aimed_text(player.global_position)
 		if action.is_empty() and business!=null and business.life!=null: action = business.life.action_text(player.global_position)
 		if action.is_empty() and _aimed_person()!=null: action = "[E] Saludar"
@@ -983,6 +993,7 @@ func _update_compact_hud() -> void:
 		lines.append("%d km/h · [E] Bajar detenido" % roundi(absf(drive_speed)*3.6))
 	else:
 		var action := garage.action_text(player.global_position) if garage!=null else ""
+		if action.is_empty() and street_market!=null: action = street_market.action_text()
 		if action.is_empty() and business!=null: action = business.aimed_text(player.global_position)
 		if action.is_empty() and business!=null and business.life!=null: action = business.life.action_text(player.global_position)
 		if action.is_empty() and _aimed_person()!=null: action = "[E] Saludar"
@@ -1163,6 +1174,16 @@ func _bus_priority_notice(stop: Dictionary,bus: CharacterBody3D) -> void:
 func _physics_process(delta: float) -> void:
 	if player == null:
 		return
+	if street_market!=null:
+		if not building_mode: street_market.tick(delta)
+		if not street_market.active.is_empty():
+			player.velocity = Vector3.ZERO
+			cuba_world.tick(delta)
+			urban_buses.tick(delta)
+			taxis.tick(delta,cuba_world.cuba_clock)
+			monte_services.tick(delta)
+			monte_pedestrians.tick(delta)
+			return
 	social_cooldown = maxf(0.0,social_cooldown-delta)
 	if is_instance_valid(chatting_with):
 		if Time.get_ticks_msec()>=int(chatting_with.get_meta("conversation_until",0)) or player.global_position.distance_to(chatting_with.global_position)>4.5:
@@ -1317,6 +1338,9 @@ func _physics_process(delta: float) -> void:
 			return
 		elif garage!=null and (not String(garage.state.held_furniture).is_empty() or not String(garage.state.part).is_empty()) and business!=null and not business.aimed_text(player.global_position).is_empty():
 			business._notify("Primero deja el mueble o la pieza en casa.")
+			return
+		elif street_market!=null and street_market.interact():
+			player.velocity = Vector3.ZERO
 			return
 		elif business!=null and business.take_aimed(player.global_position):
 			_update_hud()
