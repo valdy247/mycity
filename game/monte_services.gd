@@ -249,7 +249,8 @@ func _collect(vehicle: Dictionary,delta: float) -> void:
 	for i in range(crew.size()):
 		var worker: Dictionary = crew[i]
 		var person: Person = worker.node
-		var pickup := curb+direction*(-.95+float(i)*1.90)
+		var right := Vector3(-direction.z,0,direction.x)
+		var pickup := curb-right*.55+direction*(-.95+float(i)*1.90)
 		var hopper := body.to_global(Vector3(-1.38,0,-2.7-float(i)*.23))
 		var cab := body.to_global(Vector3(-1.38,0,1.9-float(i)*.75))
 		match String(worker.state):
