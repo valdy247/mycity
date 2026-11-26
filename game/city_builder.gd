@@ -445,7 +445,7 @@ func _road_mesh(parent: Node3D, samples: Array, base_y: float, grid_x: int, turn
 		for side in [-1.0,1.0]:
 			for k in range(4):
 				var x := -1.5 + k
-				var z := side * 3.0
+				var z: float = float(side) * 3.0
 				_quad(markings,Vector3(x-.22,_road_height(samples,x-.22,z-.38)-base_y+.025,z-.38),Vector3(x+.22,_road_height(samples,x+.22,z-.38)-base_y+.025,z-.38),Vector3(x-.22,_road_height(samples,x-.22,z+.38)-base_y+.025,z+.38),Vector3(x+.22,_road_height(samples,x+.22,z+.38)-base_y+.025,z+.38))
 	markings.generate_normals()
 	var paint := MeshInstance3D.new()
