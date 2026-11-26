@@ -10,6 +10,7 @@ var avoid: Array = []
 var bus_berths: Array = []
 var sites: Array = []
 var vehicles: Array = []
+var civilian_route: Array = []
 var initialized := false
 var player: CharacterBody3D
 var camera: Camera3D
@@ -418,6 +419,7 @@ func _initialize() -> void:
 	if route.size()<5: return
 	if not sites.is_empty(): _make_vehicle(route,true,0)
 	car_route = _civilian_route(car_route)
+	civilian_route = car_route
 	for i in range(8):
 		_make_vehicle(car_route,false,i)
 	print("Monte: ",sites.size()," garbage collection points; ",vehicles.size()," municipal/ordinary vehicles.")
