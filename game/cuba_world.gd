@@ -2,6 +2,7 @@ extends "res://city_world.gd"
 # Real road centerlines; reconstructed facades and gameplay premises.
 const MapData = preload("res://pilar_map.gd")
 const StreetGeometry = preload("res://street_geometry.gd")
+const TrafficBypass = preload("res://traffic_bypass.gd")
 const HavanaTextures = preload("res://havana_textures.gd")
 var havana_textures := HavanaTextures.new()
 var texture_anchor := Vector3.ZERO
@@ -1015,7 +1016,7 @@ func _reserve_food_factory(proposals: Array) -> void:
 			if not _lot_clear(c,front,edge) or _overlaps_footprint(lot): continue
 			var basis := Basis(Vector3.UP,atan2(front.x,front.z))
 			_add_lot(lot)
-			food_factory = {"center":c,"basis":basis,"counter":c+basis*Vector3(-1.6,.96,2.95),"pickup":c+basis*Vector3(1.55,.96,2.95),"road":lot.curb,"name":"Fábrica de alimentos"}
+			food_factory = {"center":c,"basis":basis,"counter":c+basis*Vector3(-1.6,.96,2.95),"pickup":c+basis*Vector3(1.55,.96,2.95),"road":lot.curb,"name":"MIPYME de alimentos"}
 			var wall := _mat("factory_wall",Color("#c8c3ae"))
 			var trim := _mat("factory_trim",Color("#638795"))
 			var floor_mat := _mat("public_floor",Color("#b9b5a5"))
@@ -1029,7 +1030,7 @@ func _reserve_food_factory(proposals: Array) -> void:
 			_local_cube(c,basis,Vector3(0,3.25,4.28),Vector3(6.3,.55,.18),trim)
 			_local_cube(c,basis,Vector3(-1.6,.56,1.58),Vector3(2.5,1.02,.78),dark,true)
 			_local_cube(c,basis,Vector3(1.55,.43,1.60),Vector3(2.0,.78,.80),trim,true)
-			_label("FÁBRICA DE ALIMENTOS",c+basis*Vector3(0,3.26,4.40),.010,atan2(front.x,front.z),Color("#fff4d7"))
+			_label("MIPYME DE ALIMENTOS",c+basis*Vector3(0,3.26,4.40),.010,atan2(front.x,front.z),Color("#fff4d7"))
 			return
 	push_warning("Misión: no se encontró parcela libre para la fábrica de alimentos.")
 
@@ -1874,6 +1875,9 @@ func _citizen(lot: Dictionary,index: int,sitting: bool) -> Node3D:
 	add_child(npc)
 	npc.position = p
 	npc.rotation.y = atan2(f.x,f.z)
+	npc.add_to_group("social_people")
+	npc.set_meta("female",posmod(index,3)==1)
+	npc.set_meta("social_context","worker" if sitting else "street")
 	var skin := _mat("skin_cuba"+str(index%3),[Color("#bc8b65"),Color("#896044"),Color("#d1a47f")][index%3])
 	var shirt := _mat("shirt_cuba"+str(index%4),[Color("#77939d"),Color("#ad8954"),Color("#8e6661"),Color("#b9b4a5")][index%4])
 	var pants := _mat("pants_cuba",Color("#4d555b"))
@@ -2208,27 +2212,55 @@ func tick(delta: float) -> void:
 		var car: CharacterBody3D = entry.node
 		var route: Array = entry.route
 		var next: int = int(entry.next)
-		var target: Vector3 = route[next]+Vector3.UP*.055
+		var detour: Array = entry.get("detour",[])
+		var active := not detour.is_empty()
+		var detour_index := int(entry.get("detour_index",0))
+		var target: Vector3 = detour[detour_index].p if active else route[next]
+		target.y = car.position.y
 		var diff := target-car.position
-		diff.y=0.0
 		var distance := diff.length()
 		if distance<.28:
-			entry.next = (next+1)%route.size()
-			entry.stop = .7
+			if active:
+				entry.detour_index = detour_index+1
+				if int(entry.detour_index)>=detour.size():
+					entry.detour = []
+					entry.next = int(entry.resume)
+			else:
+				entry.next = (next+1)%route.size()
+				entry.stop = .7
 			continue
 		entry.stop = maxf(0.0,float(entry.stop)-delta)
 		var d := diff.normalized()
-		var speed := minf(5.0,maxf(1.2,distance*1.5))
-		if float(entry.stop)>0.0:
+		var speed := minf(3.0 if active else 5.0,maxf(1.2,distance*1.5))
+		if float(entry.stop)>0.0: speed = 0.0
+		var reach := minf(9.0,distance+1.5)
+		var free := TrafficBypass.clear_distance(car,d,reach,2.35,7.65,2.8)
+		entry.cooldown = maxf(0.0,float(entry.get("cooldown",0.0))-delta)
+		if free<reach-.05:
 			speed = 0.0
-		var ray := PhysicsRayQueryParameters3D.create(car.position+Vector3.UP*.75,car.position+Vector3.UP*.75+d*7.0,1|4)
-		ray.exclude = [car.get_rid()]
-		if not get_world_3d().direct_space_state.intersect_ray(ray).is_empty():
-			speed = 0.0
-		entry.speed = move_toward(float(entry.speed),speed,delta*4.0)
-		car.rotation.y = lerp_angle(car.rotation.y,atan2(d.x,d.z),minf(delta*4.0,1.0))
-		car.velocity = d*minf(float(entry.speed),distance/maxf(delta,.001))
-		car.move_and_slide()
+			entry.blocked = float(entry.get("blocked",0.0))+delta
+			if not active and float(entry.blocked)>.5 and float(entry.cooldown)<=0.0:
+				entry.cooldown = 1.5
+				var ordered: Array = []
+				for i in range(route.size()):
+					ordered.append({"p":route[(next+i)%route.size()]})
+				var choice := TrafficBypass.find(car,ordered,0,street_geometry,2.35,7.65,geography.signal_nodes)
+				if not choice.is_empty():
+					entry.detour = choice.path
+					entry.detour_index = 0
+					entry.resume = (next+int(choice.resume))%route.size()
+					continue
+			if not active and float(entry.blocked)>2.0 and free<1.1 and float(entry.speed)<.1 and float(entry.get("backed_up",0.0))<4.0:
+				if TrafficBypass.reverse_clear(car,street_geometry,2.35,7.65,delta):
+					entry.backed_up = float(entry.get("backed_up",0.0))+.8*delta
+					continue
+		else:
+			entry.blocked = 0.0
+			entry.backed_up = 0.0
+		entry.speed = move_toward(float(entry.speed),speed,delta*5.0)
+		var angle := lerp_angle(car.rotation.y,atan2(d.x,d.z),minf(delta*4.0,1.0))
+		var advance := minf(minf(float(entry.speed)*delta,distance),maxf(0.0,free-.7))
+		if not TrafficBypass.safe_step(car,d,advance,angle,delta): entry.speed = 0.0
 	npc_update_time += delta
 	if npc_update_time < .10:
 		return
