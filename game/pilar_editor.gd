@@ -438,6 +438,9 @@ func _context(p: Vector3,screen: Vector2i) -> void:
 	elif selected_type=="lot":
 		menu.add_item("Adjuntar foto para corregir",6)
 		menu.add_item("Copiar identificador",9)
+	if selected_type in ["ground","lot","mapped","street"] and elevation==0.0:
+		menu.add_separator("Mi vivienda")
+		menu.add_item("Ubicar mi casa aquí en Monte",10)
 	menu.add_item("Cancelar",0)
 	menu.position = screen
 	menu.popup()
@@ -507,6 +510,15 @@ func _menu_action(id: int) -> void:
 		9:
 			DisplayServer.clipboard_set(selected_id)
 			message = "Identificador copiado: "+selected_id
+		10:
+			var reason: String = world.request_home_placement(click_world)
+			if reason.is_empty():
+				# Record the old home transform before the scene changes, so
+				# saved furniture is moved together with the dwelling.
+				_save_objects()
+				get_tree().call_deferred("reload_current_scene")
+			else:
+				message = reason
 		0: pass
 
 func _set_edit(key: String,value: Variant) -> void:
