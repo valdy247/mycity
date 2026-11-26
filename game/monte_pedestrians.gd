@@ -23,6 +23,10 @@ var elapsed := 0.0
 var population_clock := 0.0
 var serial := 200
 var shape := CapsuleShape3D.new()
+var profiles: Dictionary = {}
+var resident_clock := 480.0
+var home_destinations: Array = []
+const MAX_PROFILES := 180
 
 func setup(city: World,bus_service: UrbanBuses) -> void:
 	world = city
@@ -191,6 +195,8 @@ func _build() -> void:
 			destinations.append({"id":nearest,"kind":"bus","stop":stop})
 		buses.alight_handler = Callable(self,"accept_alighting")
 	print("Monte: ",graph.get_point_count()," pedestrian waypoints, ",destinations.size()," destinations; carga distribuida ",Time.get_ticks_msec()-started," ms.")
+	for dest in destinations:
+		if String(dest.kind)=="home": home_destinations.append(dest)
 	initialized = true
 	building_graph = false
 	_populate()
@@ -287,6 +293,38 @@ func _nearest(p: Vector3,radius: float) -> int:
 			found = int(id)
 	return found
 
+# Profiles stay in memory after the visual actor is streamed out.
+# Homes are verified doorway destinations, not guessed coordinates.
+func _profile_for(style: int,at: Vector3) -> Dictionary:
+	var first_names: Array[String] = ["Rafael","Yunier","Carlos","Maritza","Yanelis","Lidia","Omar","Ernesto","Dailen","Marta","Luis","Alina"]
+	var surnames: Array[String] = ["Pérez","García","Rodríguez","Hernández","Díaz","Martínez"]
+	var key := str(style)
+	if profiles.has(key): return profiles[key]
+	var home: Dictionary = {}
+	var best := INF
+	for dest in home_destinations:
+		var p := graph.get_point_position(int(dest.id))
+		var distance := p.distance_squared_to(at)
+		if distance<best:
+			best = distance
+			home = dest
+	var profile := {"id":"resident_"+key,"name":first_names[posmod(style,first_names.size())]+" "+surnames[posmod(floori(float(style)/3.0),surnames.size())],"home":home,"money":200+posmod(style*37,800),"activity":"street","job":["comercio","servicios","oficio","estudio"][posmod(style,4)],"last_day":-1}
+	if profiles.size()>=MAX_PROFILES:
+		for old_key in profiles.keys():
+			if not bool(profiles[old_key].get("active",false)):
+				profiles.erase(old_key)
+				break
+	profiles[key] = profile
+	return profile
+
+func _attach_profile(agent: Dictionary) -> void:
+	var person: Person = agent.node
+	var profile := _profile_for(person.style_id,person.global_position)
+	profile.active = true
+	agent.profile = profile
+	person.set_meta("citizen_name",profile.name)
+	person.set_meta("resident_job",profile.job)
+
 func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 	var person: Person = agent.node
 	var start := _nearest(person.global_position,6.0)
@@ -303,6 +341,23 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 			if stop.queue.size()>=4: continue
 		nearby.append(dest)
 	nearby.shuffle()
+	var profile: Dictionary = agent.get("profile",{})
+	var hour := fmod(resident_clock,1440.0)/60.0
+	if not profile.is_empty():
+		var home: Dictionary = profile.home
+		# In the evening favor the resident's own doorway if reachable.
+		if (hour>=19.0 or hour<6.0) and not home.is_empty():
+			var home_path := graph.get_point_path(start,int(home.id))
+			if home_path.size()>=2:
+				agent.path = home_path
+				agent.index = 0
+				agent.destination = home
+				agent.pause = 0.0
+				profile.activity = "home"
+				person.social_context = "homeward"
+				return true
+		if hour>=7.0 and hour<17.0 and not force_non_bus:
+			nearby.sort_custom(func(a,b): return int(String(a.kind)=="shop")>int(String(b.kind)=="shop"))
 	# A quarter of residents actively seek a bus stop rather than leaving
 	# all transport demand to random selection among hundreds of doors.
 	if not force_non_bus and posmod(person.style_id,4)==0:
@@ -315,6 +370,7 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 		agent.index = 0
 		agent.destination = dest
 		person.social_context = "shopping" if String(dest.kind)=="shop" else "street"
+		if not profile.is_empty(): profile.activity = String(dest.kind)
 		agent.pause = 0.0
 		return true
 	var neighbors := graph.get_point_connections(start)
@@ -334,12 +390,18 @@ func accept_alighting(node: Node3D) -> bool:
 	var start := _nearest(at,7.0)
 	if start<0 or not _clear(at,graph.get_point_position(start)): return false
 	var agent := {"node":person,"path":PackedVector3Array(),"index":0,"destination":{},"pause":0.0,"speed":1.35}
-	if not _choose_route(agent,true): return false
+	_attach_profile(agent)
+	if not _choose_route(agent,true):
+		agent.profile.active = false
+		return false
 	person.reparent(self,true)
 	person.show()
 	person.add_to_group("bus_yield_walkers")
 	walkers.append(agent)
 	return true
+
+func agent_has_profile(agent: Dictionary) -> bool:
+	return agent.has("profile") and not agent.profile.is_empty()
 
 func _populate() -> void:
 	var camera := get_viewport().get_camera_3d()
@@ -349,6 +411,7 @@ func _populate() -> void:
 		var person: Person = walkers[i].node
 		if person.has_meta("incident_role"): continue
 		if person.global_position.distance_to(at)>190.0:
+			if agent_has_profile(walkers[i]): walkers[i].profile.active = false
 			person.queue_free()
 			walkers.remove_at(i)
 	var candidates := _near_ids(at,100.0)
@@ -371,14 +434,17 @@ func _populate() -> void:
 		var person := Person.new()
 		add_child(person)
 		serial += 1
-		person.setup(serial)
+		person.setup(serial,false,true)
 		person.global_position = p
 		var agent := {"node":person,"path":PackedVector3Array(),"index":0,"destination":{},"pause":0.0,"speed":1.12+float(posmod(serial,7))*.065}
+		_attach_profile(agent)
+		agent.speed = float(agent.speed)*person.gait
 		if _choose_route(agent):
 			person.add_to_group("bus_yield_walkers")
 			walkers.append(agent)
 			added += 1
 		else:
+			agent.profile.active = false
 			person.queue_free()
 
 # A horn gives a walker a checked path out of the bus lane, not a
@@ -408,6 +474,7 @@ func yield_to_bus(stop: Dictionary,bus: CharacterBody3D) -> void:
 				break
 
 func tick(delta: float) -> void:
+	resident_clock += delta
 	if not initialized:
 		if building_graph: return
 		build_wait -= delta
@@ -433,21 +500,29 @@ func tick(delta: float) -> void:
 			agent.erase("yield_target")
 			agent.pause = 0.0
 			if not _choose_route(agent,true): agent.pause = .5
-		person.visible = not bool(agent.get("indoors",false)) and (camera==null or person.global_position.distance_squared_to(camera.global_position)<14400.0)
+		var distance_sq := person.global_position.distance_squared_to(camera.global_position) if camera!=null else 0.0
+		person.visible = not bool(agent.get("indoors",false)) and distance_sq<14400.0
+		# Far pedestrians retain their route but use fewer collision/animation
+		# updates. Near the player and during incidents the full rate remains.
+		agent.lod_dt = float(agent.get("lod_dt",0.0))+dt
+		if distance_sq>4900.0 and float(agent.lod_dt)<.20 and not agent.has("yield_target"): continue
+		var actor_dt: float = agent.lod_dt
+		agent.lod_dt = 0.0
+		person.phone_idle = float(agent.pause)>0.0 and not bool(agent.get("indoors",false)) and distance_sq<900.0
 		if agent.has("yield_target"):
 			var safe: Vector3 = agent.yield_target
-			var step := person.global_position.move_toward(safe,1.8*dt)
+			var step := person.global_position.move_toward(safe,1.8*actor_dt)
 			if world.pedestrian_segment_clear(person.global_position,step):
-				if person.walk_to(safe,dt,1.8):
+				if person.walk_to(safe,actor_dt,1.8):
 					agent.erase("yield_target")
 					agent.pause = 6.0
 			else:
 				agent.erase("yield_target")
 			continue
-		if person.conversation_active(dt): continue
+		if person.conversation_active(actor_dt): continue
 		if float(agent.pause)>0.0:
-			agent.pause = maxf(0.0,float(agent.pause)-dt)
-			person.animate(dt,false)
+			agent.pause = maxf(0.0,float(agent.pause)-actor_dt)
+			person.animate(actor_dt,false)
 			if float(agent.pause)<=0.0:
 				if bool(agent.get("indoors",false)):
 					if not world.pedestrian_segment_clear(person.global_position,person.global_position):
@@ -464,6 +539,7 @@ func tick(delta: float) -> void:
 			if String(dest.get("kind",""))=="bus" and buses!=null:
 				if buses.join_stop(dest.stop,person):
 					person.remove_from_group("bus_yield_walkers")
+					if agent_has_profile(agent): agent.profile.active = false
 					walkers.remove_at(i)
 					continue
 			# Simulated indoor visits are only allowed at a verified door.
@@ -473,25 +549,26 @@ func tick(delta: float) -> void:
 				agent.indoors = true
 				person.hide()
 				agent.pause = 3.0+float(posmod(person.style_id,8))
+				if agent_has_profile(agent) and String(agent.profile.activity)=="home": agent.pause = 25.0
 			else:
 				agent.pause = .5
 			continue
 		var p: Vector3 = path[index]
 		# Recheck the live scene: walkers use scripted movement rather than
 		# CharacterBody3D, so never advance into a new obstacle.
-		var step := person.global_position.move_toward(p,maxf(.12,float(agent.speed)*dt))
+		var step := person.global_position.move_toward(p,maxf(.12,float(agent.speed)*actor_dt))
 		# Always sweep the actual next step; the longer preview only needs
 		# refreshing when the waypoint changes or every quarter second.
 		var preview_due := int(agent.get("preview_index",-1))!=index or float(agent.get("preview_wait",0.0))<=0.0
-		agent.preview_wait = float(agent.get("preview_wait",0.0))-dt
+		agent.preview_wait = float(agent.get("preview_wait",0.0))-actor_dt
 		var route_clear := true
 		if preview_due:
 			agent.preview_index = index
 			agent.preview_wait = .25
 			route_clear = person.global_position.distance_to(p)<=.12 or _clear(person.global_position,p)
 		if not world.pedestrian_segment_clear(person.global_position,step) or not route_clear:
-			person.animate(dt,false)
-			agent["blocked_time"] = float(agent.get("blocked_time",0.0))+dt
+			person.animate(actor_dt,false)
+			agent["blocked_time"] = float(agent.get("blocked_time",0.0))+actor_dt
 			if float(agent.blocked_time)>=.65:
 				agent.blocked_time = 0.0
 				var from_id := -1
@@ -503,5 +580,5 @@ func tick(delta: float) -> void:
 				if disconnected: graph.connect_points(from_id,to_id,true)
 			continue
 		agent["blocked_time"] = 0.0
-		if person.walk_to(p,dt,float(agent.speed)):
+		if person.walk_to(p,actor_dt,float(agent.speed)):
 			agent.index = index+1
