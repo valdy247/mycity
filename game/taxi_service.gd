@@ -209,8 +209,8 @@ func _make_dialog() -> void:
 	var places := HBoxContainer.new()
 	col.add_child(places)
 	factory_button = Button.new()
-	factory_button.text = "Fábrica de alimentos"
-	factory_button.pressed.connect(func(): _business_destination(business_factory,"Fábrica de alimentos"))
+	factory_button.text = "MIPYME de alimentos"
+	factory_button.pressed.connect(func(): _business_destination(business_factory,"MIPYME de alimentos"))
 	places.add_child(factory_button)
 	home_button = Button.new()
 	home_button.text = "Puesto de Albertico"
@@ -556,10 +556,12 @@ func tick(delta: float,_clock: float) -> void:
 	if bool(waypoints[index].get("bypass",false)): speed = minf(speed,4.0)
 	passenger.signal_wait = maxf(0.0,float(passenger.signal_wait)-delta)
 	if float(passenger.signal_wait)>0.0: speed = 0.0
-	var blocked := _route_blocked(body,waypoints,index)
+	var reach := maxf(5.0,float(passenger.speed)*float(passenger.speed)/(2.0*BRAKE)+3.0)
+	var free := TrafficBypass.clear_distance(body,d,minf(reach,distance+1.5),1.90,4.80)
+	var blocked := _route_blocked(body,waypoints,index) or free<minf(reach,distance+1.5)-.05
 	passenger.bypass_cooldown = maxf(0.0,float(passenger.get("bypass_cooldown",0.0))-delta)
-	if blocked and not stop_requested and float(passenger.blocked)>1.3 and float(passenger.bypass_cooldown)<=0.0:
-		passenger.bypass_cooldown = 3.0
+	if blocked and not stop_requested and float(passenger.blocked)>.4 and float(passenger.bypass_cooldown)<=0.0:
+		passenger.bypass_cooldown = 1.5
 		var bypass := TrafficBypass.find(body,waypoints,index,streets,1.90,4.80,geography.signal_nodes)
 		if not bypass.is_empty():
 			var changed: Array = waypoints.slice(0,index)
@@ -570,23 +572,28 @@ func tick(delta: float,_clock: float) -> void:
 			ride_status = "Bordeando el atasco · "+String(passenger.label)
 			return
 	if blocked or stop_requested: speed = 0.0
+	else: passenger["backed_up"] = 0.0
 	passenger.speed = move_toward(float(passenger.speed),speed,delta*(BRAKE if speed<float(passenger.speed) else ACCEL))
 	if float(passenger.speed)<.10 and (stop_requested or blocked or float(passenger.signal_wait)>0.0):
 		passenger.speed = 0.0
 		body.velocity = Vector3.ZERO
 		if blocked and not stop_requested:
 			passenger.blocked = float(passenger.blocked)+delta
+			if float(passenger.blocked)>2.0 and free<1.1 and float(passenger.get("backed_up",0.0))<4.0:
+				if TrafficBypass.reverse_clear(body,streets,1.90,4.80,delta):
+					passenger.backed_up = float(passenger.get("backed_up",0.0))+.8*delta
 			if float(passenger.blocked)>5.0:
-				ride_status = "Taxi bloqueado. Pulsa E para bajar."
+				ride_status = "Buscando paso seguro · "+String(passenger.label)
 		return
 	# Smooth yaw while the body follows the rounded lane exactly.
-	body.rotation.y = lerp_angle(body.rotation.y,atan2(d.x,d.z),1.0-exp(-delta*8.0))
-	body.velocity = d*minf(float(passenger.speed),distance/maxf(delta,.001))
-	body.move_and_slide()
-	if blocked or body.get_slide_collision_count()>0:
+	var angle := lerp_angle(body.rotation.y,atan2(d.x,d.z),1.0-exp(-delta*8.0))
+	var advance := minf(minf(float(passenger.speed)*delta,distance),maxf(0.0,free-.7))
+	var moved := TrafficBypass.safe_step(body,d,advance,angle,delta)
+	if not moved: passenger.speed = 0.0
+	if blocked or not moved or advance<=.001 or body.get_slide_collision_count()>0:
 		passenger.blocked = float(passenger.blocked)+delta
 		if float(passenger.blocked)>5.0 and not stop_requested:
-			ride_status = "Taxi bloqueado. Pulsa E para bajar."
+			ride_status = "Buscando paso seguro. E para bajar."
 	else:
 		passenger.blocked = 0.0
 
