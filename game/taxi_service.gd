@@ -82,6 +82,8 @@ func setup(data: MapData,street_geometry: Streets,anchor: Vector3,van_pos: Vecto
 			var body := _make_taxi(taxis.size())
 			body.position = p+geography.lane_offset(a,b,1.90,true)+Vector3.UP*.065
 			body.rotation.y = atan2(d.x,d.z)
+			body.add_to_group("traffic_parked")
+			body.set_meta("traffic_priority",4.8)
 			taxis.append({"body":body,"next_node":b_id,"path":[],"index":0,"speed":0.0,"blocked":0.0,"goal":"","label":"","note":""})
 			break
 
@@ -255,7 +257,7 @@ func nearby(at: Vector3) -> Dictionary:
 	var best := 3.7*3.7
 	for taxi in taxis:
 		var body: CharacterBody3D = taxi.body
-		if taxi==passenger or not taxi.path.is_empty() or not (taxi.get("yield_path",[]) as Array).is_empty(): continue
+		if taxi==passenger or not taxi.path.is_empty() or not (taxi.get("yield_path",[]) as Array).is_empty() or not (taxi.get("cooperative_path",[]) as Array).is_empty(): continue
 		var d := at.distance_squared_to(body.position+Vector3.UP*.8)
 		if d<best:
 			best = d
@@ -418,6 +420,7 @@ func prepare_trip() -> bool:
 	selected.signal_seen = ""
 	selected.next_node = String(result.id)
 	passenger = selected
+	body.remove_from_group("traffic_parked")
 	body.add_to_group("autonomous_traffic")
 	selected = {}
 	dialog.hide()
@@ -550,7 +553,7 @@ func yield_to_bus(stop: Dictionary,bus: CharacterBody3D) -> void:
 	var approach := maxf(0.0,(center-bus.global_position).dot(direction))
 	for taxi in taxis:
 		if taxi==passenger or taxi==selected or not taxi.path.is_empty(): continue
-		if not (taxi.get("yield_path",[]) as Array).is_empty(): continue
+		if not (taxi.get("yield_path",[]) as Array).is_empty() or not (taxi.get("cooperative_path",[]) as Array).is_empty(): continue
 		var body: CharacterBody3D = taxi.body
 		var offset := body.global_position-center
 		if absf(offset.dot(side))>2.30 or offset.dot(direction)<-approach-2.5 or offset.dot(direction)>8.5: continue
@@ -599,6 +602,26 @@ func yield_to_bus(stop: Dictionary,bus: CharacterBody3D) -> void:
 
 func _tick_yielding_taxis(delta: float) -> void:
 	for taxi in taxis:
+		if taxi==passenger or taxi==selected: continue
+		var parked: CharacterBody3D = taxi.body
+		var requested := Time.get_ticks_msec()<int(parked.get_meta("traffic_yield_until",0))
+		if requested or not (taxi.get("cooperative_path",[]) as Array).is_empty() or Time.get_ticks_msec()<int(taxi.get("cooperative_hold",0)):
+			if TrafficBypass.cooperate(taxi,parked,streets,1.90,4.80,1.8,delta,0.0,parked.global_position+parked.global_transform.basis.z*5.0):
+				taxi.yield_path = []
+				continue
+		if bool(taxi.get("cooperative_rejoin",false)):
+			taxi.cooperative_rejoin = false
+			var best := INF
+			var direction := parked.global_transform.basis.z
+			for edge in geography.roads_near(parked.position,20.0):
+				if not bool(edge.driveable): continue
+				for id in [edge.a_id,edge.b_id]:
+					var p: Vector3 = geography.points[id]
+					if (p-parked.position).dot(direction)<0.0: continue
+					var dist := parked.position.distance_squared_to(p)
+					if dist<best:
+						best = dist
+						taxi.next_node = String(id)
 		var path: Array = taxi.get("yield_path",[])
 		if path.is_empty(): continue
 		var body: CharacterBody3D = taxi.body
@@ -758,6 +781,9 @@ func finish_trip() -> void:
 	if passenger.is_empty(): return
 	var body: CharacterBody3D = passenger.body
 	body.remove_from_group("autonomous_traffic")
+	body.add_to_group("traffic_parked")
+	body.set_meta("traffic_servicing",false)
+	passenger.cooperative_path = []
 	body.velocity = Vector3.ZERO
 	passenger.path = []
 	passenger.speed = 0.0
