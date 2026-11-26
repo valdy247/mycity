@@ -731,6 +731,7 @@ func _init_traffic() -> void:
 			body.global_position = p+Vector3.UP*.055
 			body.rotation.y = atan2(d.x,d.z)
 			_make_rider(body,kind,600+i)
+			body.add_to_group("autonomous_traffic")
 			traffic.append({"body":body,"kind":kind,"route":route,"index":i+1,"speed":0.0,"blocked":0.0,"cooldown":0.0,"detour":[],"detour_index":0,"resume":0})
 			break
 
@@ -755,27 +756,42 @@ func _traffic_tick(delta: float) -> void:
 			else: entry.index = (index+1)%route.size()
 			continue
 		var d := diff.normalized()
-		var reach := minf(7.0,distance+1.0)
-		var free := Bypass.clear_distance(body,d,reach,float(spec.width),float(spec.length),2.0)
+		var width := float(spec.width)
+		var length := float(spec.length)
+		var height := maxf(1.8,float(spec.height))
+		var reach := minf(7.0,distance+.6)
+		var free := Bypass.clear_distance(body,d,reach,width,length,height)
 		var blocked := free<reach-.05
+		var stalled := Bypass.stalled(entry,body,delta)
 		entry.cooldown = maxf(0.0,float(entry.cooldown)-delta)
 		var speed := minf(3.2 if active else float(spec.speed)*.65,maxf(.75,distance))
-		if blocked:
-			entry.blocked = float(entry.blocked)+delta
-			speed = 0.0
-			if not active and float(entry.blocked)>.6 and float(entry.cooldown)<=0.0:
-				entry.cooldown = 2.0
-				var choice := Bypass.find(body,route,index,world.street_geometry,float(spec.width),float(spec.length),world.geography.signal_nodes)
-				if not choice.is_empty():
-					entry.detour = choice.path
-					entry.detour_index = 0
-					entry.resume = int(choice.resume)
-					continue
-		else: entry.blocked = 0.0
+		if blocked: speed = minf(speed,sqrt(10.0*maxf(0.0,free-.55)))
+		if stalled>.8 and float(entry.cooldown)<=0.0:
+			entry.cooldown = 1.6
+			if active:
+				entry.detour = []
+				entry.index = int(entry.resume)
+				continue
+			var choice := Bypass.recover(body,route,index,world.street_geometry,width,length,world.geography.signal_nodes,height)
+			if not choice.is_empty():
+				entry.detour = choice.path
+				entry.detour_index = 0
+				entry.resume = int(choice.resume)
+				entry.traffic_stall = 0.0
+				continue
+		if not active and stalled>3.5 and float(entry.speed)<.12 and float(entry.get("backed_up",0.0))<4.5:
+			if Bypass.reverse_clear(body,world.street_geometry,width,length,delta):
+				entry.backed_up = float(entry.get("backed_up",0.0))+.8*delta
+				continue
+		if stalled<.1: entry.backed_up = 0.0
 		entry.speed = move_toward(float(entry.speed),speed,delta*5)
 		var angle := lerp_angle(body.rotation.y,atan2(d.x,d.z),minf(delta*5.0,1.0))
-		var advance := minf(minf(float(entry.speed)*delta,distance),maxf(0.0,free-.55))
-		if not Bypass.safe_step(body,d,advance,angle,delta): entry.speed = 0.0
+		var advance := minf(float(entry.speed)*delta,distance)
+		if blocked: advance = minf(advance,maxf(0.0,free-.55))
+		if advance<.0001:
+			body.velocity = Vector3.ZERO
+			entry.speed = 0.0
+		elif not Bypass.safe_step(body,d,advance,angle,delta): entry.speed = 0.0
 
 func tick(delta: float) -> void:
 	if not traffic_ready:
