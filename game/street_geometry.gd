@@ -7,6 +7,7 @@ var roads: Array = []
 var sidewalks: Array = []
 var road_index: Dictionary = {}
 var protected_index: Dictionary = {}
+var map_data: MapData
 
 func rect(a: Vector3,b: Vector3,width: float,extension: float = 0.0) -> PackedVector2Array:
 	var d := Vector2(b.x-a.x,b.z-a.z).normalized()
@@ -68,6 +69,7 @@ func _walk(poly: PackedVector2Array) -> void:
 	_register(protected_index,poly)
 
 func build(data: MapData) -> void:
+	map_data = data
 	for edge in data.roads:
 		_road(rect(edge.a,edge.b,float(edge.width),.04))
 	# Fill bends and intersections before cutting sidewalks.
@@ -145,3 +147,42 @@ func point_on_road(p: Vector3) -> bool:
 		if Geometry2D.is_point_in_polygon(q,item.poly):
 			return true
 	return false
+
+# Find an actual directed four-lane carriageway. This is separate from
+# point_on_road, which intentionally includes intersections and both sides.
+func four_lane_at(p: Vector3,heading: Vector3) -> Dictionary:
+	if map_data==null: return {}
+	var best := INF
+	var result: Dictionary = {}
+	var h := heading
+	h.y = 0.0
+	if h.length_squared()<.01: return {}
+	h = h.normalized()
+	for edge in map_data.roads_near(p,3.0):
+		if int(edge.get("lanes_per_direction",1))!=2: continue
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		var d := (b-a).normalized()
+		var alignment := d.dot(h)
+		if absf(alignment)<.80: continue
+		if alignment<0.0: d = -d
+		var flat := Vector3(p.x,0,p.z)
+		var center := Geometry3D.get_closest_point_to_segment(flat,a,b)
+		var distance := flat.distance_squared_to(center)
+		var half := float(edge.width)*.5
+		if distance>pow(half+1.0,2.0) or distance>=best: continue
+		best = distance
+		var right := Vector3(-d.z,0,d.x)
+		result = {"edge":edge,"direction":d,"right":right,"center":center,"lateral":(flat-center).dot(right),"half":half}
+	return result
+
+func in_carriageway(p: Vector3,heading: Vector3,width: float,length: float) -> bool:
+	var lane := four_lane_at(p,heading)
+	if lane.is_empty(): return false
+	var d: Vector3 = lane.direction
+	var right: Vector3 = lane.right
+	var facing := heading.normalized()
+	var lateral := float(lane.lateral)
+	# Account for the entire rotating rectangle, not just its centre.
+	var half_extent := absf(facing.dot(right))*length*.5+absf(facing.dot(d))*width*.5
+	return lateral-half_extent>=.06 and lateral+half_extent<=float(lane.half)-.06
