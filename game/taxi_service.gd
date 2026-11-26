@@ -267,6 +267,8 @@ func nearby(at: Vector3) -> Dictionary:
 	return closest
 
 func open_dialog(at: Vector3) -> bool:
+	# The route executor can also be reserved by a story vehicle.
+	if not passenger.is_empty(): return false
 	selected = nearby(at)
 	if selected.is_empty(): return false
 	destination.clear()
@@ -377,7 +379,7 @@ func _ensure_safe_arrival(waypoints: Array,ids: Array[String],result: Dictionary
 	return true
 
 func prepare_trip() -> bool:
-	if selected.is_empty(): return false
+	if selected.is_empty() or not passenger.is_empty(): return false
 	if not pending_query.is_empty():
 		var query := pending_query
 		pending_query = ""
