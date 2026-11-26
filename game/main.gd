@@ -1026,6 +1026,7 @@ func _update_hud() -> void:
 	else:
 		status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
 		var action := backpack.action_text() if backpack!=null else ""
+		if action.is_empty(): action = _albertico_action()
 		if action.is_empty() and garage!=null: action = garage.action_text(player.global_position)
 		if action.is_empty() and street_market!=null: action = street_market.action_text()
 		if action.is_empty() and business!=null: action = business.aimed_text(player.global_position)
@@ -1082,6 +1083,7 @@ func _update_compact_hud() -> void:
 		lines.append("%d km/h · [E] Bajar detenido" % roundi(absf(drive_speed)*3.6))
 	else:
 		var action := backpack.action_text() if backpack!=null else ""
+		if action.is_empty(): action = _albertico_action()
 		if action.is_empty() and garage!=null: action = garage.action_text(player.global_position)
 		if action.is_empty() and street_market!=null: action = street_market.action_text()
 		if action.is_empty() and business!=null: action = business.aimed_text(player.global_position)
@@ -1104,6 +1106,14 @@ func _update_compact_hud() -> void:
 	status.text = "\n".join(lines)
 
 # The reticle selects a nearby visible NPC; walls occlude greetings.
+func _albertico_action() -> String:
+	if business==null or player==null: return ""
+	if garage!=null and (garage.inside or garage.riding or not String(garage.state.part).is_empty() or not String(garage.state.held_furniture).is_empty()): return ""
+	if backpack!=null and not backpack.empty_hands(): return ""
+	if monte_services!=null and monte_services.player_bag!=null: return ""
+	if business.life!=null and not business.life.state.meal.is_empty(): return ""
+	return business.aimed_albertico_text(player.global_position)
+
 func _aimed_person() -> Node3D:
 	if play_camera==null or player==null or cuba_world==null: return null
 	var origin := play_camera.global_position
@@ -1434,6 +1444,11 @@ func _physics_process(delta: float) -> void:
 		elif backpack!=null and backpack.interact():
 			player.velocity = Vector3.ZERO
 			return
+		elif not _albertico_action().is_empty():
+			if business.interact_albertico(player.global_position):
+				player.velocity = Vector3.ZERO
+				_update_hud()
+				return
 		elif garage!=null and garage.interact(player.global_position):
 			player.velocity = Vector3.ZERO
 			_update_hud()
