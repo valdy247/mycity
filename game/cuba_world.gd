@@ -23,6 +23,7 @@ var alborada_lot: Dictionary = {}
 var old_home_transform: Transform3D = Transform3D.IDENTITY
 var old_home_found := false
 var paired_landmarks := false
+var home_relocated := false
 var home_spawn := Vector3.ZERO
 var van_spawn := Vector3.ZERO
 var van_angle := 0.0
@@ -391,6 +392,8 @@ func _saved_home_anchor() -> Dictionary:
 func _monte_pair(anchor: Vector3,manual: bool = false) -> Array:
 	var best: Array = []
 	var best_score := INF
+	var best_home: Dictionary = {}
+	var best_home_score := INF
 	# Find the nearest Monte frontage first. The selected point determines
 	# the side of the avenue, and the viewer-facing right is +local X.
 	var nearest: Dictionary = {}
@@ -444,6 +447,7 @@ func _monte_pair(anchor: Vector3,manual: bool = false) -> Array:
 			var home := {"center":curb+offset,"front":front,"edge":nearest,"curb":curb,"outward":outward,"d":road_dir,"portal":true,"landmark":"home"}
 			var shop := {"center":shop_curb+offset,"front":front,"edge":nearest,"curb":shop_curb,"outward":outward,"d":road_dir,"portal":true,"landmark":"alborada"}
 			var safe := true
+			var home_safe := false
 			for lot in [home,shop]:
 				var poly := _lot_polygon(lot)
 				if not street_geometry.clear(poly):
@@ -459,7 +463,9 @@ func _monte_pair(anchor: Vector3,manual: bool = false) -> Array:
 						safe = false
 						break
 				if not safe: break
-			if not safe:
+				if String(lot.landmark)=="home":
+					home_safe = true
+			if not home_safe:
 				continue
 			var score := absf(float(shift))*100.0+float(setback)*.6
 			if not manual and not original_shop_front.is_empty():
@@ -467,9 +473,16 @@ func _monte_pair(anchor: Vector3,manual: bool = false) -> Array:
 				var center: Vector3 = home.center
 				var facade_mid := center+front*4.5
 				score += facade_mid.distance_to(original_mid)*2.0
-			if score<best_score:
+			if score<best_home_score:
+				best_home_score = score
+				best_home = home
+			if safe and score<best_score:
 				best_score = score
 				best = [home,shop]
+	# The house is the fixed landmark. Never move it several metres just
+	# to make the neighboring store fit. Manual placement still requires both.
+	if not manual and not best_home.is_empty() and (best.is_empty() or best_score>best_home_score+105.0):
+		return [best_home]
 	return best
 
 func request_home_placement(at: Vector3) -> String:
@@ -542,7 +555,14 @@ func _make_frontages() -> void:
 		_add_lot(alborada_lot)
 		_facade(alborada_lot,7,"LA ALBORADA")
 		paired_landmarks = true
+		home_relocated = true
 		print("Monte: vivienda en la antigua fachada de La Alborada; tienda a la derecha. Fuente OSM: ",original_shop_id)
+	elif pair.size()==1:
+		var residence: Dictionary = pair[0]
+		_add_lot(residence)
+		_make_humble_home(residence)
+		home_relocated = true
+		push_warning("Casa ubicada en la antigua fachada. La Alborada necesita una parcela segura a su derecha.")
 	elif old_home_found:
 		for lot in home_candidates:
 			var center: Vector3 = lot.center
@@ -942,8 +962,8 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 				name_value = "PLAZA DE CUATRO CAMINOS"
 				market_drawn = true
 			elif String(fp.id)==alborada_poly_id:
-				name_value = "" if paired_landmarks else "LA ALBORADA"
-			if paired_landmarks and geography.normalized(name_value).contains("alborada"):
+				name_value = "" if home_relocated else "LA ALBORADA"
+			if home_relocated and geography.normalized(name_value).contains("alborada"):
 				name_value = ""
 			if not name_value.is_empty() and (market or String(fp.id)==alborada_poly_id or tags.has("amenity") or tags.has("shop")):
 				var m: Vector3 = front.mid
@@ -967,7 +987,7 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 			print("Cuatro Caminos: approximate facade from four mapped intersections (not exact building footprint).")
 	if not market_drawn:
 		print("Cuatro Caminos: no verified market footprint or four safe corners in this OSM extract.")
-	if alborada_poly_id.is_empty() and not paired_landmarks:
+	if alborada_poly_id.is_empty() and not home_relocated:
 		var closest := _nearest_street(public_anchor)
 		if not closest.is_empty():
 			var a: Vector3 = closest.a
