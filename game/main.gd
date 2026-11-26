@@ -12,6 +12,8 @@ const HomeGarage = preload("res://home_garage.gd")
 var garage: HomeGarage
 const StreetMarket = preload("res://street_market.gd")
 var street_market: StreetMarket
+const Backpack = preload("res://backpack.gd")
+var backpack: Backpack
 const MontePedestrians = preload("res://monte_pedestrians.gd")
 const MonteServices = preload("res://monte_services.gd")
 var monte_pedestrians: MontePedestrians
@@ -175,6 +177,10 @@ func _ready() -> void:
 		add_child(street_market)
 		street_market.setup(self)
 		business.street_inventory = street_market.open_inventory
+		backpack = Backpack.new()
+		add_child(backpack)
+		backpack.setup(self)
+		business.backpack_inventory = backpack.open_inventory
 		first_person = true
 		_face_cuba_home()
 		_apply_camera_mode()
@@ -459,6 +465,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			pivot.rotation = Vector3(pitch,yaw,0)
 		return
 	if business!=null and not bus_riding and not building_mode and not (taxis!=null and taxis.dialog.visible) and event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode==KEY_I and backpack!=null and not driving and not taxi_riding and not (garage!=null and garage.riding):
+			backpack.open_inventory()
+			return
 		if event.keycode==KEY_P:
 			business.open_phone()
 			return
@@ -938,7 +947,8 @@ func _update_hud() -> void:
 		status.text += "\nW/S: acelerar y retroceder | A/D: girar | Espacio: frenar\nE: salir detenido | R: reiniciar | Esc: liberar mouse"
 	else:
 		status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
-		var action := garage.action_text(player.global_position) if garage!=null else ""
+		var action := backpack.action_text() if backpack!=null else ""
+		if action.is_empty() and garage!=null: action = garage.action_text(player.global_position)
 		if action.is_empty() and street_market!=null: action = street_market.action_text()
 		if action.is_empty() and business!=null: action = business.aimed_text(player.global_position)
 		if action.is_empty() and business!=null and business.life!=null: action = business.life.action_text(player.global_position)
@@ -992,7 +1002,8 @@ func _update_compact_hud() -> void:
 	elif driving:
 		lines.append("%d km/h · [E] Bajar detenido" % roundi(absf(drive_speed)*3.6))
 	else:
-		var action := garage.action_text(player.global_position) if garage!=null else ""
+		var action := backpack.action_text() if backpack!=null else ""
+		if action.is_empty() and garage!=null: action = garage.action_text(player.global_position)
 		if action.is_empty() and street_market!=null: action = street_market.action_text()
 		if action.is_empty() and business!=null: action = business.aimed_text(player.global_position)
 		if action.is_empty() and business!=null and business.life!=null: action = business.life.action_text(player.global_position)
@@ -1174,6 +1185,7 @@ func _bus_priority_notice(stop: Dictionary,bus: CharacterBody3D) -> void:
 func _physics_process(delta: float) -> void:
 	if player == null:
 		return
+	if backpack!=null and not building_mode: backpack.tick(delta)
 	if street_market!=null:
 		if not building_mode: street_market.tick(delta)
 		if not street_market.active.is_empty():
@@ -1331,6 +1343,9 @@ func _physics_process(delta: float) -> void:
 			elif not _safe_exit():
 				exit_message = "No hay espacio para salir. Mueve la van."
 				message_time = 2.0
+		elif backpack!=null and backpack.interact():
+			player.velocity = Vector3.ZERO
+			return
 		elif garage!=null and garage.interact(player.global_position):
 			player.velocity = Vector3.ZERO
 			_update_hud()
@@ -1340,6 +1355,9 @@ func _physics_process(delta: float) -> void:
 			return
 		elif garage!=null and (not String(garage.state.held_furniture).is_empty() or not String(garage.state.part).is_empty()) and business!=null and not business.aimed_text(player.global_position).is_empty():
 			business._notify("Primero deja el mueble o la pieza en casa.")
+			return
+		elif backpack!=null and not backpack.empty_hands() and not (street_market!=null and not street_market.action_text().is_empty()):
+			business._notify("Usa I para guardar, usar o dejar el objeto que llevas en la mano.")
 			return
 		elif street_market!=null and street_market.interact():
 			player.velocity = Vector3.ZERO
