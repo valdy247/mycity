@@ -330,12 +330,19 @@ func _aimed_home(at: Vector3) -> bool:
 	var cam: Camera3D = game.play_camera
 	var origin := cam.global_position
 	var direction := -cam.global_transform.basis.z
-	var center := door+Vector3.UP*1.1
-	var depth := (center-origin).dot(direction)
+	# Intersect the real door plane instead of projecting its centre
+	# onto an oblique view ray (which also selected adjacent people).
+	var inverse := basis.inverse()
+	var local_origin := inverse*(origin-door)
+	var local_direction := inverse*direction
+	if local_direction.z>=-.001: return false
+	var depth := -local_origin.z/local_direction.z
 	if depth<=0.0 or depth>8.0: return false
-	var local := basis.inverse()*(origin+direction*depth-center)
-	if absf(local.x)>.65 or absf(local.y)>1.1: return false
-	var ray := PhysicsRayQueryParameters3D.create(origin,origin+direction*maxf(.05,depth-.35),1|4|16)
+	var hit := local_origin+local_direction*depth
+	var half_width := float(site.get("door_width",1.15))*.5
+	if absf(hit.x)>half_width or hit.y<.03 or hit.y>2.20: return false
+	# Stop before the thin facade itself, but reject intervening objects.
+	var ray := PhysicsRayQueryParameters3D.create(origin,origin+direction*maxf(.01,depth-.12),1|4|8|16|32)
 	ray.exclude = [game.player.get_rid()]
 	return get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
 
