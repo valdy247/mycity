@@ -50,6 +50,7 @@ func setup(builder: Builder) -> void:
 	_shape(road_ground,Vector3(0,-.25,0),Vector3(2520,.50,2520))
 	_load_inventory()
 	_make_osm_streets()
+	_join_road_surfaces()
 	_make_frontages()
 	_make_corner_plaques()
 	_flush_city_boxes()
@@ -124,6 +125,46 @@ func _make_osm_streets() -> void:
 					_line(p+Vector3(float(offset),0,0),end+Vector3(float(offset),0,0),.026,.026,5.04,wires)
 
 
+func _join_road_surfaces() -> void:
+	# Centerline coordinates remain unchanged. Fill estimated carriageway
+	# joins from the incident widths, not from a synthetic street grid.
+	var asphalt := _mat("asphalt_cuba",Color("#555653"))
+	asphalt.cull_mode = BaseMaterial3D.CULL_DISABLED
+	for node_id in geography.junctions:
+		var incident: Array = geography.junctions[node_id]
+		if incident.size()<2:
+			continue
+		var p: Vector3 = geography.points[node_id]
+		var corners := PackedVector2Array()
+		for edge in incident:
+			if not bool(edge.driveable):
+				continue
+			var other: Vector3 = edge.b if edge.a_id==node_id else edge.a
+			var d := (other-p).normalized()
+			var side := Vector3(-d.z,0,d.x)*float(edge.width)*.5
+			var a := p+side+d*.45
+			var b := p-side+d*.45
+			corners.append(Vector2(a.x,a.z))
+			corners.append(Vector2(b.x,b.z))
+		if corners.size()<4:
+			continue
+		var hull := Geometry2D.convex_hull(corners)
+		if hull.size()>3 and hull[0].is_equal_approx(hull[hull.size()-1]):
+			hull.remove_at(hull.size()-1)
+		var tris := Geometry2D.triangulate_polygon(hull)
+		var tile := Vector2i(floori(p.x/96.0),floori(p.z/96.0))
+		var key := "road_join:"+str(tile)
+		if not map_surfaces.has(key):
+			var surface := SurfaceTool.new()
+			surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+			surface.set_material(asphalt)
+			map_surfaces[key] = surface
+		var st: SurfaceTool = map_surfaces[key]
+		for idx in tris:
+			var v := hull[idx]
+			st.set_normal(Vector3.UP)
+			st.add_vertex(Vector3(v.x,.061,v.y))
+
 func _street_clear(p: Vector3,padding: float,ignore: Dictionary = {}) -> bool:
 	for e in geography.roads_near(p,padding+1.0):
 		if not ignore.is_empty() and e.a_id==ignore.a_id and e.b_id==ignore.b_id:
@@ -194,6 +235,20 @@ func _overlaps_game_lot(fp: Dictionary) -> bool:
 					return true
 	return false
 
+func _home_score(lot: Dictionary,anchor: Vector3) -> float:
+	var c: Vector3 = lot.center
+	var f: Vector3 = lot.front
+	var curb: Vector3 = lot.curb
+	var side := Vector3(f.z,0,-f.x)
+	var result := c.distance_to(anchor)
+	if geography.street_label(String(lot.edge.name))!="MONTE":
+		result += 250.0
+	if (anchor-curb).dot(-f)<0.0:
+		result += 75.0
+	if (c-anchor).dot(side)<0.0:
+		result += 45.0
+	return result
+
 func _make_frontages() -> void:
 	var proposals: Array = []
 	var public_anchor: Vector3 = geography.project(23.12230,-82.36677)
@@ -220,16 +275,18 @@ func _make_frontages() -> void:
 				proposals.append({"center":center,"front":-outward,"edge":edge,"curb":p,"outward":outward,"d":d,"portal":bool(edge.portal)})
 	# Use a public landmark as a general neighborhood reference. The game
 	# residence is fictional; do not encode a private dwelling's address.
-	proposals.sort_custom(func(a,b): return a.center.distance_squared_to(public_anchor)<b.center.distance_squared_to(public_anchor))
-	for lot in proposals:
+	var home_candidates: Array = proposals.duplicate()
+	home_candidates.sort_custom(func(a,b): return _home_score(a,public_anchor)<_home_score(b,public_anchor))
+	for lot in home_candidates:
 		var c: Vector3 = lot.center
-		if not bool(lot.portal) or not _lot_clear(c,lot.front,lot.edge):
+		if not bool(lot.portal) or c.distance_to(public_anchor)<10.0 or not _lot_clear(c,lot.front,lot.edge):
 			continue
 		# Do not replace the market or a large mapped complex with a house.
 		var huge := false
 		for fp in geography.footprints_near(c,10.0):
 			var extent: Vector3 = fp.high-fp.low
-			if extent.x*extent.z>380.0 and not Geometry2D.intersect_polygons(_lot_polygon(lot),fp.poly).is_empty():
+			var contains_shop := Geometry2D.is_point_in_polygon(Vector2(public_anchor.x,public_anchor.z),fp.poly)
+			if (extent.x*extent.z>380.0 or contains_shop) and not Geometry2D.intersect_polygons(_lot_polygon(lot),fp.poly).is_empty():
 				huge = true
 				break
 		if huge: continue
@@ -237,6 +294,7 @@ func _make_frontages() -> void:
 		_make_humble_home(lot)
 		break
 	# Keep special interiors from the prototype in small unrecorded lots.
+	proposals.sort_custom(func(a,b): return a.center.distance_squared_to(public_anchor)<b.center.distance_squared_to(public_anchor))
 	for lot in proposals:
 		if service_count>=service_names.size():
 			break
