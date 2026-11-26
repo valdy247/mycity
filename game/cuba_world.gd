@@ -2331,7 +2331,7 @@ func tick(delta: float) -> void:
 		var stalled := TrafficBypass.stalled(entry,car,delta)
 		entry.cooldown = maxf(0.0,float(entry.get("cooldown",0.0))-delta)
 		if blocked: speed = minf(speed,sqrt(12.0*maxf(0.0,free-.7)))
-		if stalled>1.0 and float(entry.stop)<=0.0 and float(entry.cooldown)<=0.0:
+		if float(entry.get("retreat_remaining",0.0))<=0.0 and stalled>1.0 and float(entry.stop)<=0.0 and float(entry.cooldown)<=0.0:
 			entry.cooldown = 1.8
 			if active:
 				entry.detour = []
@@ -2347,10 +2347,9 @@ func tick(delta: float) -> void:
 				entry.resume = (next+int(choice.resume))%route.size()
 				entry.traffic_stall = 0.0
 				continue
-		if not active and stalled>3.5 and float(entry.speed)<.12 and float(entry.get("backed_up",0.0))<5.5:
-			if TrafficBypass.reverse_clear(car,street_geometry,2.35,7.65,delta):
-				entry.backed_up = float(entry.get("backed_up",0.0))+.8*delta
-				continue
+		if not active and TrafficBypass.retreat(entry,car,street_geometry,2.35,7.65,delta,stalled>3.5 and float(entry.speed)<.12):
+			entry.speed = 0.0
+			continue
 		if stalled<.1: entry.backed_up = 0.0
 		entry.speed = move_toward(float(entry.speed),speed,delta*5.0)
 		var angle := lerp_angle(car.rotation.y,atan2(d.x,d.z),minf(delta*4.0,1.0))
