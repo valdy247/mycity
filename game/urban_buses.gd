@@ -279,8 +279,9 @@ func _make_bus(line: String,index: int) -> Dictionary:
 	body.name = "Guagua_"+line
 	body.motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
 	body.collision_layer = 1
-	body.collision_mask = 1|4
+	body.collision_mask = 1|4|8
 	add_child(body)
+	body.add_to_group("autonomous_traffic")
 	var white := Color("#e5e4db")
 	var blue := Color("#2986bc")
 	var pale_blue := Color("#65afd1")
@@ -595,7 +596,7 @@ func _safety_query(body: CharacterBody3D,at: Vector3,angle: float) -> PhysicsSha
 	var query := PhysicsShapeQueryParameters3D.new()
 	query.shape = safety_shape
 	query.transform = Transform3D(Basis(Vector3.UP,angle),at+Vector3.UP*1.54)
-	query.collision_mask = 1|4
+	query.collision_mask = 1|4|8
 	query.exclude = [body.get_rid()]
 	query.margin = .025
 	return query
@@ -634,6 +635,8 @@ func tick(delta: float) -> void:
 	for bus in buses:
 		var body: CharacterBody3D = bus.body
 		if not bus.active_stop.is_empty():
+			bus.traffic_stall = 0.0
+			bus.traffic_last = body.global_position
 			_transfer_tick(bus,delta)
 			continue
 		var original: Array = bus.route
@@ -646,6 +649,7 @@ func tick(delta: float) -> void:
 		target.y = body.position.y
 		var diff := target-body.position
 		var distance := diff.length()
+		var stalled := TrafficBypass.stalled(bus,body,delta)
 		bus.horn_cooldown = maxf(0.0,float(bus.get("horn_cooldown",0.0))-delta)
 		var priority_stop: Dictionary = {}
 		if not detouring:
@@ -680,6 +684,7 @@ func tick(delta: float) -> void:
 					bus.speed = 0.0
 					continue
 		if distance<.30:
+			bus.traffic_stall = 0.0
 			body.velocity = Vector3.ZERO
 			if item.has("stop"):
 				_start_stop(bus,item.stop)
@@ -704,34 +709,35 @@ func tick(delta: float) -> void:
 		if detouring: reach = maxf(2.0,current_speed*current_speed/(2.0*BUS_BRAKE)+1.2)
 		elif next_dir.length_squared()>.1 and d.dot(next_dir)<.85:
 			reach = minf(reach,distance+2.0)
-		if approaching_stop: reach = minf(reach,distance+.30)
+		if approaching_stop: reach = minf(reach,distance+BUS_SAFE_GAP)
 		var free := _clear_distance(body,d,reach)
 		var blocked := free<reach-.05
 		var safe_speed := sqrt(2.0*BUS_BRAKE*maxf(0.0,free-BUS_SAFE_GAP))
 		if blocked:
 			speed = minf(speed,safe_speed)
 		bus.bypass_cooldown = maxf(0.0,float(bus.get("bypass_cooldown",0.0))-delta)
-		if blocked:
-			bus.blocked = float(bus.blocked)+delta
-			if not approaching_stop and not detouring and float(bus.blocked)>.35 and float(bus.bypass_cooldown)<=0.0:
-				bus.bypass_cooldown = 1.5
-				var choice := TrafficBypass.find(body,original,index,streets,BUS_WIDTH,BUS_LENGTH,data.signal_nodes)
-				if not choice.is_empty():
-					bus.detour = choice.path
-					bus.detour_index = 0
-					bus.resume_index = int(choice.resume)
-					bus.blocked = 0.0
-					bus.backed_up = 0.0
-					bus.speed = minf(current_speed,2.0)
-					body.velocity = Vector3.ZERO
-					continue
-			if not approaching_stop and not detouring and free<BUS_SAFE_GAP+.3 and current_speed<.1 and float(bus.blocked)>2.0:
-				if _back_up(bus,body,delta):
-					bus.speed = 0.0
-					continue
-		else:
-			bus.blocked = 0.0
-			bus.backed_up = 0.0
+		if stalled>1.0 and float(bus.bypass_cooldown)<=0.0:
+			bus.bypass_cooldown = 1.8
+			if detouring:
+				bus.detour = []
+				bus.index = int(bus.resume_index)
+				continue
+			# A stop remains the destination; the recovery may approach
+			# it from the opposing lane but may not skip the boarding.
+			var choice := TrafficBypass.recover(body,original,index,streets,BUS_WIDTH,BUS_LENGTH,data.signal_nodes,2.96)
+			if not choice.is_empty():
+				bus.detour = choice.path
+				bus.detour_index = 0
+				bus.resume_index = int(choice.resume)
+				bus.traffic_stall = 0.0
+				bus.speed = minf(current_speed,2.0)
+				body.velocity = Vector3.ZERO
+				continue
+		if not detouring and stalled>3.5 and current_speed<.12:
+			if _back_up(bus,body,delta):
+				bus.speed = 0.0
+				continue
+		if stalled<.1 and not blocked: bus.backed_up = 0.0
 		if detouring: speed = minf(speed,3.5)
 		bus.speed = move_toward(current_speed,speed,delta*(BUS_BRAKE if speed<current_speed else 2.5))
 		# Hard safety cap: the bus cannot move into its stopping gap even
