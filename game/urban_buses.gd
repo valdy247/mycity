@@ -246,7 +246,7 @@ func _make_bus(line: String,index: int) -> Dictionary:
 	# Side skins segmented around both wheel openings and front entrance.
 	for side in [-1.0,1.0]:
 		var x := float(side)*side_x
-		var cuts: Array[float] = [-half,-3.46,-2.18,-.82,.60,2.18,3.46,half]
+		var cuts: Array[float] = [-half,-3.46,-2.18,-.82,.60,1.51,2.79,half]
 		# Right side uses a forward door; other side remains continuous.
 		if side<0.0:
 			cuts.append(2.92)
@@ -257,7 +257,7 @@ func _make_bus(line: String,index: int) -> Dictionary:
 			var hi: float = cuts[k+1]
 			var mid := (lo+hi)*.5
 			if side<0.0 and mid>2.92 and mid<4.12: continue
-			var arch := absf(absf(mid)-2.82)<.64
+			var arch := absf(mid+2.82)<.64 or absf(mid-2.15)<.64
 			var bottom := 1.09 if arch else .39
 			_bus_strip(body,x,lo,hi,(bottom+1.46)*.5,1.46-bottom,white)
 			_bus_strip(body,x+float(side)*.037,lo,hi,1.28,.30,blue)
@@ -276,15 +276,16 @@ func _make_bus(line: String,index: int) -> Dictionary:
 			_bus_strip(body,x,lo,hi,1.49,.10,dark)
 			_bus_glass(body,Vector3(x,2.045,(lo+hi)*.5),Vector3(.025,1.0,maxf(.04,hi-lo-.09)))
 		_bus_strip(body,x,4.53,4.68,2.03,1.16,dark)
-		for z in [-2.82,2.82]:
+		for z in [-2.82,2.15]:
 			_bus_wheel(body,float(side)*1.07,float(z),rubber,metal)
 		# Wheel wells protrude slightly into the cabin above the wheels.
-		for z in [-2.82,2.82]:
+		for z in [-2.82,2.15]:
 			_part(body,Vector3(float(side)*.89,1.02,float(z)),Vector3(.57,.35,1.18),dark)
 	# Two visible entry steps and a separate sliding pair of door leaves.
 	_part(body,Vector3(-.89,.33,3.52),Vector3(.60,.13,1.18),dark)
 	_part(body,Vector3(-.67,.60,3.52),Vector3(.76,.13,1.18),floor_color)
 	_part(body,Vector3(-.49,.86,3.52),Vector3(.65,.13,1.18),floor_color)
+	_part(body,Vector3(-side_x,2.65,3.52),Vector3(.10,.16,1.20),white)
 	var door := Node3D.new()
 	body.add_child(door)
 	door.position = Vector3(-BUS_WIDTH*.5-.045,1.53,3.52)
@@ -293,12 +294,12 @@ func _make_bus(line: String,index: int) -> Dictionary:
 		door.add_child(leaf)
 		leaf.position.z = float(side)*.30
 		leaf.set_meta("closed_z",leaf.position.z)
-		_part(leaf,Vector3(0,-.60,0),Vector3(.06,.86,.57),white)
+		_part(leaf,Vector3(0,-.60,0),Vector3(.06,1.08,.57),white)
 		_part(leaf,Vector3(-.04,-.35,0),Vector3(.035,.24,.57),blue)
-		_part(leaf,Vector3(0,.50,0),Vector3(.06,.10,.57),dark)
+		_part(leaf,Vector3(0,1.05,0),Vector3(.06,.10,.57),dark)
 		for edge in [-.265,.265]:
-			_part(leaf,Vector3(0,.06,float(edge)),Vector3(.06,1.00,.05),dark)
-		_bus_glass(leaf,Vector3(0,.05,0),Vector3(.025,.91,.48))
+			_part(leaf,Vector3(0,.49,float(edge)),Vector3(.06,1.10,.05),dark)
+		_bus_glass(leaf,Vector3(0,.49,0),Vector3(.025,1.06,.48))
 	# Front fascia: large dark destination board over a split windshield.
 	_part(body,Vector3(0,1.05,half-.035),Vector3(BUS_WIDTH-.05,1.24,.09),white)
 	_part(body,Vector3(0,1.19,half+.025),Vector3(BUS_WIDTH-.06,.30,.05),blue)
@@ -335,6 +336,15 @@ func _make_bus(line: String,index: int) -> Dictionary:
 	fleet.outline_size = 0
 	body.add_child(fleet)
 	fleet.position = Vector3(.70,1.57,half+.075)
+	var side_id := Label3D.new()
+	side_id.text = "TRANSPORTE URBANO"
+	side_id.font_size = 36
+	side_id.pixel_size = .0030
+	side_id.modulate = Color("#e9e9e1")
+	side_id.outline_size = 0
+	side_id.rotation.y = -PI*.5
+	body.add_child(side_id)
+	side_id.position = Vector3(-side_x-.046,1.28,-.65)
 	# Rear panel and tail lamps.
 	_part(body,Vector3(0,1.0,-half+.03),Vector3(BUS_WIDTH-.05,1.28,.09),white)
 	_part(body,Vector3(0,1.22,-half-.025),Vector3(BUS_WIDTH-.06,.30,.05),blue)
