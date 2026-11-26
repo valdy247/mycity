@@ -3156,6 +3156,7 @@ func tick(delta: float) -> void:
 	var cam := get_viewport().get_camera_3d()
 	for resident in residents:
 		var person: Node3D = resident.node
+		if person.has_meta("incident_role"): continue
 		var near := cam == null or person.global_position.distance_squared_to(cam.global_position)<14400.0
 		person.visible = near
 		if not near or bool(resident.sitting) or Time.get_ticks_msec()<int(person.get_meta("conversation_until",0)):
