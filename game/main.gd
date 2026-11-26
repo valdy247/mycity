@@ -7,6 +7,9 @@ const CubaWorld = preload("res://cuba_world.gd")
 const PilarEditor = preload("res://pilar_editor.gd")
 const TaxiService = preload("res://taxi_service.gd")
 const UrbanBuses = preload("res://urban_buses.gd")
+const BusinessMission = preload("res://business_mission.gd")
+var business: BusinessMission
+var cargo_requested := false
 var urban_buses: UrbanBuses
 var taxis: TaxiService
 var taxi_riding := false
@@ -130,6 +133,9 @@ func _ready() -> void:
 			var body: CharacterBody3D = taxi.body
 			avoid.append(body.global_position)
 		urban_buses.setup(cuba_world.geography,cuba_world.street_geometry,cuba_world.home_spawn,avoid)
+		business = BusinessMission.new()
+		add_child(business)
+		business.setup(cuba_world,taxis,player,van,play_camera)
 		first_person = true
 		_face_cuba_home()
 		_apply_camera_mode()
@@ -371,6 +377,17 @@ func _apply_camera_mode() -> void:
 		reticle.visible = first_person and not driving and not building_mode
 
 func _unhandled_input(event: InputEvent) -> void:
+	if business!=null and business.modal_open():
+		if event is InputEventKey and event.pressed and not event.echo and event.keycode in [KEY_ESCAPE,KEY_P]:
+			business.close()
+		return
+	if business!=null and not building_mode and not (taxis!=null and taxis.dialog.visible) and event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode==KEY_P:
+			business.open_phone()
+			return
+		if event.keycode==KEY_G and not driving and not taxi_riding and not city_world.seated:
+			cargo_requested = true
+			return
 	if cuba_world!=null and player!=null and event is InputEventKey and event.pressed and not event.echo and event.keycode==KEY_F9 and not (pilar_editor!=null and pilar_editor.active) and not (taxis!=null and taxis.dialog.visible):
 		var at := van.global_position if driving and van!=null else player.global_position
 		DisplayServer.clipboard_set(cuba_world.geography.coordinate_text(at))
@@ -813,7 +830,9 @@ func _update_hud() -> void:
 		status.text += "\nW/S: acelerar y retroceder | A/D: girar | Espacio: frenar\nE: salir detenido | R: reiniciar | Esc: liberar mouse"
 	else:
 		status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
-		var action := city_world.interaction_text(player.global_position) if city_world != null else ""
+		var action := business.action_text(player.global_position) if business!=null else ""
+		if action.is_empty() and city_world!=null:
+			action = city_world.interaction_text(player.global_position)
 		var aimed: String = cuba_world.aimed_text(play_camera,player) if cuba_world != null and action.is_empty() else ""
 		if action != "":
 			status.text += "\n" + action
@@ -874,6 +893,8 @@ func _leave_taxi(emergency: bool = false) -> bool:
 	yaw = taxi.rotation.y+PI
 	pitch = -.20
 	pivot.rotation = Vector3(pitch,yaw,0)
+	if business!=null and not emergency:
+		business.taxi_arrival(player.global_position)
 	taxis.finish_trip()
 	_apply_camera_mode()
 	exit_message = "Viaje en taxi terminado."
@@ -891,6 +912,11 @@ func _open_pilar_editor(at: Vector3,context: bool) -> void:
 func _physics_process(delta: float) -> void:
 	if player == null:
 		return
+	if business!=null:
+		business.tick(delta,driving or taxi_riding,building_mode)
+		if business.modal_open():
+			player.velocity = Vector3.ZERO
+			return
 	if taxis != null and taxis.dialog.visible:
 		player.velocity = Vector3.ZERO
 		if taxis.prepare_trip():
@@ -958,6 +984,11 @@ func _physics_process(delta: float) -> void:
 	if reset_requested:
 		reset_requested = false
 		_reset_player()
+	if cargo_requested:
+		cargo_requested = false
+		if business!=null and not driving and not taxi_riding and not building_mode:
+			business.cargo_action(player.global_position)
+			_update_hud()
 	if interact_requested:
 		interact_requested = false
 		if driving:
@@ -967,6 +998,9 @@ func _physics_process(delta: float) -> void:
 			elif not _safe_exit():
 				exit_message = "No hay espacio para salir. Mueve la van."
 				message_time = 2.0
+		elif business!=null and business.interact(player.global_position):
+			player.velocity = Vector3.ZERO
+			return
 		elif cuba_world != null and cuba_world.inspect_product(play_camera,player):
 			pass
 		elif city_world != null and city_world.interact(player,avatar,limb_legs,limb_arms):
