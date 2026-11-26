@@ -4,6 +4,9 @@ const CITY_PATH = "res://city.glb"
 const CityBuilder = preload("res://city_builder.gd")
 const CityWorld = preload("res://city_world.gd")
 const CubaWorld = preload("res://cuba_world.gd")
+const PilarEditor = preload("res://pilar_editor.gd")
+var pilar_editor: PilarEditor
+var context_requested := false
 var cuba_world: CubaWorld
 var first_person := false
 var reticle: Label
@@ -102,6 +105,9 @@ func _ready() -> void:
 	_make_player()
 	_make_hud()
 	if cuba_world != null:
+		pilar_editor = PilarEditor.new()
+		add_child(pilar_editor)
+		pilar_editor.setup(cuba_world)
 		first_person = true
 		_apply_camera_mode()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -289,15 +295,21 @@ func _apply_camera_mode() -> void:
 		reticle.visible = first_person and not driving and not building_mode
 
 func _unhandled_input(event: InputEvent) -> void:
+	if pilar_editor != null and pilar_editor.active:
+		pilar_editor.handle(event)
+		return
+	if pilar_editor != null and not driving and event is InputEventMouseButton and event.pressed and event.button_index==MOUSE_BUTTON_RIGHT:
+		context_requested = true
+		return
 	if builder != null and builder.active:
 		builder.handle(event)
 		return
 	if building_mode:
 		return
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_B:
-		if cuba_world != null:
-			exit_message = "Editor de Pilar-Atarés pendiente; las calles reales estan protegidas."
-			message_time = 3.0
+		if pilar_editor != null:
+			if not driving:
+				_open_pilar_editor(player.global_position,false)
 			return
 		if not driving and builder != null and (city_world == null or (not city_world.seated and not city_world.inside_home and not city_world.bakery.inside and not city_world.family_home.pool_inside)):
 			building_mode = true
@@ -697,8 +709,9 @@ func _update_hud() -> void:
 			status.text += "\nVan no encontrada en la exportacion."
 	if not driving:
 		status.text += "\n[V] Primera / tercera persona"
-		if cuba_world == null:
-			status.text += " | [B] Construir ciudad"
+		status.text += " | [B] Construir ciudad"
+		if pilar_editor != null:
+			status.text += "\nClic derecho: editar objeto o terreno"
 	if cuba_world != null:
 		status.text += "\n© OpenStreetMap contributors | ODbL | openstreetmap.org/copyright"
 		if cuba_world.prompt_time > 0.0:
@@ -706,10 +719,30 @@ func _update_hud() -> void:
 	if message_time > 0.0:
 		status.text += "\n" + exit_message
 
+func _open_pilar_editor(at: Vector3,context: bool) -> void:
+	building_mode = true
+	player.velocity = Vector3.ZERO
+	status.hide()
+	reticle.hide()
+	pilar_editor.open(at,context)
+
 func _physics_process(delta: float) -> void:
 	if player == null:
 		return
+	if context_requested:
+		context_requested = false
+		if not driving and not building_mode and pilar_editor != null:
+			var origin := play_camera.global_position
+			var direction := -play_camera.global_transform.basis.z
+			var ray := PhysicsRayQueryParameters3D.create(origin,origin+direction*80.0,1|2|4|16)
+			ray.exclude = [player.get_rid()]
+			var hit := get_world_3d().direct_space_state.intersect_ray(ray)
+			var target: Vector3 = hit.position+direction*.10 if not hit.is_empty() else player.global_position+direction*6.0
+			_open_pilar_editor(target,true)
 	if building_mode:
+		if pilar_editor != null and pilar_editor.active:
+			pilar_editor.tick(delta)
+			return
 		if builder.active:
 			builder.tick(delta)
 			return
