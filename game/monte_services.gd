@@ -251,7 +251,7 @@ func _body(truck: bool,index: int) -> CharacterBody3D:
 	body.name = "Camion_Comunales" if truck else "Auto_Monte_"+str(index)
 	body.motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
 	body.collision_layer = 1
-	body.collision_mask = 1|4|8
+	body.collision_mask = 1|4|8|32
 	add_child(body)
 	body.add_to_group("autonomous_traffic")
 	var paint: Color = Color("#537c72") if truck else [Color("#a47155"),Color("#6990a1"),Color("#a7a19a")][index%3]
@@ -727,7 +727,7 @@ func _local_recovery(body: CharacterBody3D,target: Vector3,width: float,length: 
 				var q := PhysicsShapeQueryParameters3D.new()
 				q.shape = shape
 				q.transform = Transform3D(Basis(Vector3.UP,atan2(d.x,d.z)),p+Vector3.UP*(height*.5+.08))
-				q.collision_mask = 1|4|8
+				q.collision_mask = 1|4|8|32
 				q.exclude = [body.get_rid()]
 				if not space.intersect_shape(q,1).is_empty():
 					valid = false
