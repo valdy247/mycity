@@ -709,14 +709,14 @@ func tick(delta: float) -> void:
 		if detouring: reach = maxf(2.0,current_speed*current_speed/(2.0*BUS_BRAKE)+1.2)
 		elif next_dir.length_squared()>.1 and d.dot(next_dir)<.85:
 			reach = minf(reach,distance+2.0)
-		if approaching_stop: reach = minf(reach,distance+BUS_SAFE_GAP)
+		reach = minf(reach,distance+BUS_SAFE_GAP)
 		var free := _clear_distance(body,d,reach)
 		var blocked := free<reach-.05
 		var safe_speed := sqrt(2.0*BUS_BRAKE*maxf(0.0,free-BUS_SAFE_GAP))
 		if blocked:
 			speed = minf(speed,safe_speed)
 		bus.bypass_cooldown = maxf(0.0,float(bus.get("bypass_cooldown",0.0))-delta)
-		if stalled>1.0 and float(bus.bypass_cooldown)<=0.0:
+		if float(bus.get("retreat_remaining",0.0))<=0.0 and stalled>1.0 and float(bus.bypass_cooldown)<=0.0:
 			bus.bypass_cooldown = 1.8
 			if detouring:
 				bus.detour = []
@@ -733,10 +733,9 @@ func tick(delta: float) -> void:
 				bus.speed = minf(current_speed,2.0)
 				body.velocity = Vector3.ZERO
 				continue
-		if not detouring and stalled>3.5 and current_speed<.12:
-			if _back_up(bus,body,delta):
-				bus.speed = 0.0
-				continue
+		if not detouring and TrafficBypass.retreat(bus,body,streets,BUS_WIDTH,BUS_LENGTH,delta,stalled>3.5 and current_speed<.12):
+			bus.speed = 0.0
+			continue
 		if stalled<.1 and not blocked: bus.backed_up = 0.0
 		if detouring: speed = minf(speed,3.5)
 		bus.speed = move_toward(current_speed,speed,delta*(BUS_BRAKE if speed<current_speed else 2.5))
