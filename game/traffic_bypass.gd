@@ -214,7 +214,9 @@ static func request_space(body: CharacterBody3D,target: Vector3,length: float,wi
 	var best: CharacterBody3D
 	var best_distance := INF
 	var rank := _traffic_rank(body,length)
-	for node in body.get_tree().get_nodes_in_group("autonomous_traffic"):
+	var candidates := body.get_tree().get_nodes_in_group("autonomous_traffic")
+	candidates.append_array(body.get_tree().get_nodes_in_group("traffic_parked"))
+	for node in candidates:
 		var other := node as CharacterBody3D
 		if other==null or other==body or bool(other.get_meta("traffic_servicing",false)): continue
 		if not other.has_meta("traffic_priority"): continue
