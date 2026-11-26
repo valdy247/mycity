@@ -820,8 +820,10 @@ func _update_hud() -> void:
 			status.text += "\nClic derecho: editar objeto o terreno | B y F8: GPS"
 	if cuba_world != null:
 		status.text += "\n© OpenStreetMap contributors | ODbL | openstreetmap.org/copyright"
-		if not cuba_world.paired_landmarks:
-			status.text += "\nCasa: ubicación pendiente | clic derecho para señalarla en Monte"
+		if not cuba_world.home_gps_status.is_empty():
+			status.text += "\n"+cuba_world.home_gps_status
+		if cuba_world.home_root!=null and not cuba_world.paired_landmarks:
+			status.text += "\nLa Alborada: falta espacio junto a la casa."
 		if cuba_world.prompt_time > 0.0:
 			status.text += "\n"+cuba_world.prompt
 	if message_time > 0.0:
