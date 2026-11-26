@@ -1,5 +1,6 @@
 extends Node3D
 const Routes = preload("res://taxi_routes.gd")
+const TaxiMap = preload("res://taxi_map.gd")
 const MapData = preload("res://pilar_map.gd")
 const Streets = preload("res://street_geometry.gd")
 var router := Routes.new()
@@ -9,6 +10,10 @@ var taxis: Array = []
 var selected: Dictionary = {}
 var passenger: Dictionary = {}
 var pending_query := ""
+var map_view: TaxiMap
+var go_button: Button
+var selected_route: Dictionary = {}
+var trip_confirmed := false
 var ride_status := ""
 var dialog: PanelContainer
 var destination: LineEdit
@@ -154,38 +159,51 @@ func _make_dialog() -> void:
 	add_child(layer)
 	dialog = PanelContainer.new()
 	layer.add_child(dialog)
-	dialog.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-	dialog.offset_left = -220
-	dialog.offset_right = 220
-	dialog.offset_top = -110
-	dialog.offset_bottom = 110
+	dialog.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	dialog.offset_left = 16
+	dialog.offset_right = -16
+	dialog.offset_top = 16
+	dialog.offset_bottom = -16
 	var margin := MarginContainer.new()
 	for side in ["left","right","top","bottom"]:
-		margin.add_theme_constant_override("margin_"+side,18)
+		margin.add_theme_constant_override("margin_"+side,12)
 	dialog.add_child(margin)
 	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation",10)
+	col.add_theme_constant_override("separation",6)
 	margin.add_child(col)
 	var title := Label.new()
-	title.text = "TAXI • ¿A dónde vamos?"
+	title.text = "TAXI · Elige tu destino"
 	title.add_theme_font_size_override("font_size",22)
 	col.add_child(title)
+	var search_row := HBoxContainer.new()
+	col.add_child(search_row)
 	destination = LineEdit.new()
-	destination.placeholder_text = "Pila y Matadero"
+	destination.placeholder_text = "Buscar calle o esquina (opcional)"
 	destination.max_length = 100
-	destination.custom_minimum_size.x = 340
-	col.add_child(destination)
+	destination.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	search_row.add_child(destination)
 	destination.text_submitted.connect(_submit)
+	var search_button := Button.new()
+	search_button.text = "Buscar"
+	search_button.pressed.connect(func(): _submit(destination.text))
+	search_row.add_child(search_button)
+	map_view = TaxiMap.new()
+	map_view.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	col.add_child(map_view)
+	map_view.setup(geography)
+	map_view.point_selected.connect(_select_map_point)
 	feedback = Label.new()
 	feedback.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	feedback.text = "Escribe una calle o dos calles."
+	feedback.text = "Clic: marcar destino · Arrastrar: mover mapa · Rueda: acercar"
 	col.add_child(feedback)
 	var buttons := HBoxContainer.new()
 	col.add_child(buttons)
-	var go := Button.new()
-	go.text = "Ir al destino"
-	go.pressed.connect(func(): _submit(destination.text))
-	buttons.add_child(go)
+	go_button = Button.new()
+	go_button.text = "Ir al destino"
+	go_button.disabled = true
+	go_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	go_button.pressed.connect(func(): trip_confirmed = true)
+	buttons.add_child(go_button)
 	var cancel := Button.new()
 	cancel.text = "Cancelar"
 	cancel.pressed.connect(close_dialog)
@@ -208,30 +226,73 @@ func open_dialog(at: Vector3) -> bool:
 	selected = nearby(at)
 	if selected.is_empty(): return false
 	destination.clear()
-	feedback.text = "Ejemplo: Pila y Matadero. También puedes escribir una sola calle."
+	selected_route = {}
+	trip_confirmed = false
+	pending_query = ""
+	go_button.disabled = true
+	var body: CharacterBody3D = selected.body
+	map_view.reset(body.global_position)
+	feedback.text = "Clic: marcar destino · Arrastrar: mover mapa · Rueda: acercar"
 	dialog.show()
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-	destination.grab_focus()
 	return true
 
 func close_dialog() -> void:
 	dialog.hide()
 	selected = {}
 	pending_query = ""
+	selected_route = {}
+	trip_confirmed = false
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 func _submit(value: String) -> void:
 	if not value.strip_edges().is_empty():
 		pending_query = value.strip_edges()
 
-func prepare_trip() -> bool:
-	if pending_query.is_empty() or selected.is_empty(): return false
-	var query := pending_query
-	pending_query = ""
-	var result := router.resolve(query,String(selected.next_node))
+func _select_map_point(point: Vector3) -> void:
+	if selected.is_empty(): return
+	var result := router.resolve_point(point,String(selected.next_node))
+	_show_selection(result)
+
+func _show_selection(result: Dictionary) -> void:
+	selected_route = {}
+	trip_confirmed = false
+	go_button.disabled = true
 	if result.has("error"):
+		map_view.clear_route()
 		feedback.text = String(result.error)
-		return false
+		return
+	var ids: Array[String] = result.path
+	if ids.is_empty():
+		map_view.clear_route()
+		feedback.text = "No hay ruta disponible."
+		return
+	var points: Array = []
+	for id in ids:
+		points.append(geography.points[id])
+	var target: Vector3 = result.get("point",geography.points[ids.back()])
+	var distance: float = float(result.get("distance",router.route_length(ids)))
+	var body: CharacterBody3D = selected.body
+	distance += body.global_position.distance_to(geography.points[ids[0]])
+	map_view.show_route(points,target)
+	var label_value := String(result.label)
+	var note := String(result.get("note",""))
+	feedback.text = "%s · %.0f m · %s" % [label_value,distance,geography.coordinate_text(target)]
+	if not note.is_empty():
+		feedback.text += "\n"+note
+	selected_route = result
+	go_button.disabled = false
+
+func prepare_trip() -> bool:
+	if selected.is_empty(): return false
+	if not pending_query.is_empty():
+		var query := pending_query
+		pending_query = ""
+		_show_selection(router.resolve(query,String(selected.next_node)))
+	if not trip_confirmed or selected_route.is_empty(): return false
+	trip_confirmed = false
+	var result := selected_route
+	selected_route = {}
 	var ids: Array[String] = result.path
 	var body: CharacterBody3D = selected.body
 	var waypoints: Array = []
@@ -240,7 +301,8 @@ func prepare_trip() -> bool:
 	var first_offset := Vector3(-forward.z,0,forward.x)*1.10
 	# Approach the next directed graph node from the current lane.
 	var first_stop := start+first_offset
-	if ids.size()==1:
+	var partial: bool = bool(result.get("partial",false))
+	if ids.size()==1 and not partial:
 		var remaining := body.position.distance_to(first_stop)
 		first_stop -= forward*minf(4.5,remaining*.5)
 	waypoints.append({"p":first_stop,"node":ids[0]})
@@ -254,9 +316,18 @@ func prepare_trip() -> bool:
 		if length>8.0:
 			waypoints.append({"p":a+d*minf(3.0,length*.25)+lane_offset,"node":""})
 		var end := b+lane_offset
-		if i==ids.size()-2:
+		if i==ids.size()-2 and not partial:
 			end -= d*minf(4.5,length*.35)
 		waypoints.append({"p":end,"node":ids[i+1]})
+	if partial:
+		var entry: Vector3 = geography.points[String(result.entry)]
+		var exit_point: Vector3 = geography.points[String(result.exit)]
+		var target: Vector3 = result.point
+		var lane_offset := router.lane(entry,exit_point)
+		var direction := (exit_point-entry).normalized()
+		if entry.distance_to(target)>4.0:
+			waypoints.append({"p":entry+direction*2.0+lane_offset,"node":""})
+		waypoints.append({"p":target+lane_offset,"node":""})
 	selected.path = waypoints
 	selected.index = 0
 	selected.goal = String(result.id)
