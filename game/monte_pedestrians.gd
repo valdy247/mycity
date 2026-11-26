@@ -333,7 +333,7 @@ func _profile_for(style: int,at: Vector3) -> Dictionary:
 			if not bool(profiles[old_key].get("active",false)):
 				profiles.erase(old_key)
 				break
-	profiles[key] = profile
+	if profiles.size()<MAX_PROFILES: profiles[key] = profile
 	return profile
 
 func _attach_profile(agent: Dictionary) -> void:
