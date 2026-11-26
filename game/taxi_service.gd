@@ -26,7 +26,10 @@ var feedback: Label
 var arrived := false
 var speed_mode := 1
 var speed_choice: OptionButton
-const SPEEDS := [8.0,12.5,16.0]
+const SPEEDS := [12.0,18.0,22.0]
+const BRAKE := 9.0
+const ACCEL := 6.5
+var stop_requested := false
 const SPEED_NAMES := ["Normal","Rápido","Exprés"]
 var mats: Dictionary = {}
 var meshes: Dictionary = {}
@@ -371,7 +374,8 @@ func prepare_trip() -> bool:
 		if entry.distance_to(target)>4.0:
 			waypoints.append({"p":entry+direction*2.0+lane_offset,"node":""})
 		waypoints.append({"p":target+lane_offset,"node":""})
-	selected.path = waypoints
+	selected.path = _smooth_route(waypoints,body.global_position)
+	stop_requested = false
 	selected.index = 0
 	selected.goal = String(result.id)
 	selected.label = String(result.label)
@@ -389,56 +393,167 @@ func prepare_trip() -> bool:
 	ride_status = String(passenger.note) if not String(passenger.note).is_empty() else "Destino: "+String(passenger.label)
 	return true
 
-func tick(delta: float,clock: float) -> void:
-	if passenger.is_empty() or arrived: return
+func request_stop() -> void:
+	if passenger.is_empty(): return
+	stop_requested = true
+	ride_status = "Deteniendo el taxi para que puedas bajar..."
+
+func ready_to_exit() -> bool:
+	if passenger.is_empty(): return false
 	var body: CharacterBody3D = passenger.body
+	return (arrived or stop_requested) and float(passenger.speed)<.15 and body.velocity.length()<.15
+
+# Round sharp corners along the actual road. Keep signals and the final stop.
+func _smooth_route(raw: Array,origin: Vector3) -> Array:
+	var result: Array = []
+	for i in range(raw.size()):
+		var item: Dictionary = raw[i]
+		var corner: Vector3 = item.p
+		if i==raw.size()-1 or geography.signal_nodes.has(String(item.node)):
+			result.append(item)
+			continue
+		var previous: Vector3 = origin if i==0 else raw[i-1].p
+		var following: Vector3 = raw[i+1].p
+		previous.y = corner.y
+		following.y = corner.y
+		var incoming := corner-previous
+		var outgoing := following-corner
+		var a_len := incoming.length()
+		var b_len := outgoing.length()
+		if minf(a_len,b_len)<.8:
+			result.append(item)
+			continue
+		var a := incoming/a_len
+		var b := outgoing/b_len
+		if a.dot(b)>.985 or a.dot(b)<-.85:
+			result.append(item)
+			continue
+		var trim := minf(5.0,minf(a_len,b_len)*.43)
+		var rounded: Array = []
+		for attempt in range(3):
+			var entry := corner-a*trim
+			var exit_point := corner+b*trim
+			var valid := true
+			rounded.clear()
+			var count := maxi(4,ceili(trim*2.0/.8))
+			for k in range(count+1):
+				var t := float(k)/float(count)
+				var p := entry.lerp(corner,t).lerp(corner.lerp(exit_point,t),t)
+				var tangent := (corner-entry).lerp(exit_point-corner,t).normalized()
+				var right := Vector3(-tangent.z,0,tangent.x)
+				if not streets.point_on_road(p) or not streets.point_on_road(p+right*.95) or not streets.point_on_road(p-right*.95):
+					valid = false
+					break
+				rounded.append({"p":p,"node":""})
+			if valid: break
+			rounded.clear()
+			trim *= .55
+		if rounded.is_empty(): result.append(item)
+		else: result.append_array(rounded)
+	return result
+
+func _route_speed(body: CharacterBody3D,waypoints: Array,index: int) -> float:
+	var limit: float = SPEEDS[speed_mode]
+	var previous: Vector3 = body.position
+	var traveled := 0.0
+	for i in range(index,waypoints.size()):
+		var item: Dictionary = waypoints[i]
+		var p: Vector3 = item.p
+		p.y = previous.y
+		var incoming := p-previous
+		var length := incoming.length()
+		traveled += length
+		var target_speed: float = SPEEDS[speed_mode]
+		if i==waypoints.size()-1:
+			target_speed = 0.0
+		elif geography.signal_nodes.has(String(item.node)) and String(passenger.signal_seen)!=String(item.node):
+			target_speed = 0.0
+		else:
+			var next_point: Vector3 = waypoints[i+1].p
+			next_point.y = p.y
+			var outgoing := next_point-p
+			if incoming.length()>.15 and outgoing.length()>.15:
+				var angle := acos(clampf(incoming.normalized().dot(outgoing.normalized()),-1.0,1.0))
+				if angle>.035:
+					var radius := maxf(.6,minf(length,outgoing.length())/maxf(angle,.035))
+					target_speed = minf(target_speed,maxf(2.5,sqrt(6.0*radius)))
+		limit = minf(limit,sqrt(target_speed*target_speed+2.0*BRAKE*traveled))
+		previous = p
+		if traveled>40.0: break
+	return limit
+
+# Trace the actual path rather than a long straight ray into a corner wall.
+func _route_blocked(body: CharacterBody3D,waypoints: Array,index: int) -> bool:
+	var speed := float(passenger.speed)
+	var remaining := 3.0+speed*.25+speed*speed/(2.0*BRAKE)
+	var previous := body.position
+	var space := get_world_3d().direct_space_state
+	var checks := 0
+	for i in range(index,waypoints.size()):
+		var p: Vector3 = waypoints[i].p
+		p.y = body.position.y
+		var offset := p-previous
+		var distance := offset.length()
+		if distance<.05: continue
+		var end := previous+offset.normalized()*minf(distance,remaining)
+		var ray := PhysicsRayQueryParameters3D.create(previous+Vector3.UP*.85,end+Vector3.UP*.85,1|4)
+		ray.exclude = [body.get_rid()]
+		if not space.intersect_ray(ray).is_empty(): return true
+		remaining -= distance
+		checks += 1
+		if remaining<=0.0 or checks>=24: break
+		previous = p
+	return false
+
+func tick(delta: float,_clock: float) -> void:
+	if passenger.is_empty(): return
+	var body: CharacterBody3D = passenger.body
+	if arrived:
+		body.velocity = Vector3.ZERO
+		passenger.speed = 0.0
+		return
 	var waypoints: Array = passenger.path
-	var index: int = int(passenger.index)
+	var index := int(passenger.index)
+	# Consume intermediate samples without introducing a one-frame stop.
+	while index<waypoints.size():
+		var p: Vector3 = waypoints[index].p
+		p.y = body.position.y
+		if p.distance_to(body.position)>.22: break
+		var node_id := String(waypoints[index].node)
+		if geography.signal_nodes.has(node_id) and String(passenger.signal_seen)!=node_id:
+			passenger.signal_seen = node_id
+			passenger.signal_wait = 2.0
+		index += 1
+	passenger.index = index
 	if index>=waypoints.size():
 		arrived = true
 		ride_status = "Llegaste a "+String(passenger.label)+"."
 		body.velocity = Vector3.ZERO
 		passenger.speed = 0.0
 		return
-	var item: Dictionary = waypoints[index]
-	var target: Vector3 = item.p
+	var target: Vector3 = waypoints[index].p
 	target.y = body.position.y
 	var diff := target-body.position
 	var distance := diff.length()
-	if distance<.24:
-		passenger.index = index+1
-		return
 	var d := diff.normalized()
-	# Faster cruise speed, still brake for turns, stops and obstacles.
-	var limit: float = SPEEDS[speed_mode]
-	var speed := minf(limit,maxf(.9,sqrt(2.0*5.0*distance)))
-	if index+1<waypoints.size():
-		var next_target: Vector3 = waypoints[index+1].p
-		var next_dir := (next_target-target).normalized()
-		if next_dir.length_squared()>.1 and d.dot(next_dir)<.86:
-			speed = minf(speed,maxf(2.0,distance*1.5))
-	var node_id := String(item.node)
-	# Stop briefly at mapped traffic signals. No fictional green signal state
-	# is asserted; the existing Cuban city has no coordinated signal controller.
-	if geography.signal_nodes.has(node_id) and distance<7.0 and String(passenger.signal_seen)!=node_id:
-		passenger.signal_seen = node_id
-		passenger.signal_wait = 2.0
+	var speed := _route_speed(body,waypoints,index)
 	passenger.signal_wait = maxf(0.0,float(passenger.signal_wait)-delta)
-	if float(passenger.signal_wait)>0.0:
-		speed = 0.0
-	var ray := PhysicsRayQueryParameters3D.create(body.position+Vector3.UP*.85+d*2.5,body.position+Vector3.UP*.85+d*(4.0+float(passenger.speed)*.65+pow(float(passenger.speed),2)/10.0),1|4)
-	ray.exclude = [body.get_rid()]
-	var blocked := not get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
-	if blocked:
-		speed = 0.0
-	passenger.speed = move_toward(float(passenger.speed),speed,delta*(9.0 if speed<float(passenger.speed) else 4.5))
-	body.rotation.y = lerp_angle(body.rotation.y,atan2(d.x,d.z),minf(delta*6.0,1.0))
+	if float(passenger.signal_wait)>0.0: speed = 0.0
+	var blocked := _route_blocked(body,waypoints,index)
+	if blocked or stop_requested: speed = 0.0
+	passenger.speed = move_toward(float(passenger.speed),speed,delta*(BRAKE if speed<float(passenger.speed) else ACCEL))
+	if float(passenger.speed)<.10 and (stop_requested or blocked or float(passenger.signal_wait)>0.0):
+		passenger.speed = 0.0
+		body.velocity = Vector3.ZERO
+		return
+	# Smooth yaw while the body follows the rounded lane exactly.
+	body.rotation.y = lerp_angle(body.rotation.y,atan2(d.x,d.z),1.0-exp(-delta*8.0))
 	body.velocity = d*minf(float(passenger.speed),distance/maxf(delta,.001))
 	body.move_and_slide()
 	if blocked or body.get_slide_collision_count()>0:
 		passenger.blocked = float(passenger.blocked)+delta
-		if float(passenger.blocked)>12.0:
-			ride_status = "El taxi está bloqueado. Pulsa E para bajar o espera a que se despeje."
+		if float(passenger.blocked)>5.0 and not stop_requested:
+			ride_status = "Taxi bloqueado. Pulsa E para bajar."
 	else:
 		passenger.blocked = 0.0
 
@@ -446,21 +561,30 @@ func stop_position(player: CharacterBody3D,shape: Shape3D) -> Dictionary:
 	if passenger.is_empty(): return {}
 	var body: CharacterBody3D = passenger.body
 	var space := get_world_3d().direct_space_state
-	for side in [1.0,-1.0]:
-		for distance in [2.6,3.5,4.4]:
-			for along in [0.0,1.2,-1.2]:
-				var p := body.to_global(Vector3(-float(side)*float(distance),0,float(along)))
-				if streets.point_on_road(p): continue
-				var ground_ray := PhysicsRayQueryParameters3D.create(p+Vector3.UP*2.0,p-Vector3.UP*1.0,2)
-				var hit := space.intersect_ray(ground_ray)
-				if hit.is_empty(): continue
-				var at: Vector3 = hit.position+Vector3.UP*.90
-				var query := PhysicsShapeQueryParameters3D.new()
-				query.shape = shape
-				query.transform = Transform3D(Basis.IDENTITY,at)
-				query.collision_mask = 1|4
-				query.exclude = [body.get_rid(),player.get_rid()]
-				if space.intersect_shape(query,1).is_empty():
+	# Prefer sidewalks, then any unoccupied ground next to the stationary
+	# taxi. Wide avenues previously had no valid exit inside 4.4 metres.
+	for pass_index in range(2):
+		for distance_value in [1.65,2.1,2.6,3.5,4.4,5.5,6.5,8.0]:
+			for side in [1.0,-1.0]:
+				for along in [0.0,-1.3,1.3,-2.7,2.7]:
+					var p := body.to_global(Vector3(-float(side)*float(distance_value),0,float(along)))
+					if pass_index==0 and streets.point_on_road(p): continue
+					if pass_index==1 and float(distance_value)>4.4: continue
+					var ground_ray := PhysicsRayQueryParameters3D.create(p+Vector3.UP*2.0,p-Vector3.UP*1.0,2)
+					ground_ray.exclude = [player.get_rid()]
+					var hit := space.intersect_ray(ground_ray)
+					if hit.is_empty(): continue
+					var at: Vector3 = hit.position+Vector3.UP*.90
+					var query := PhysicsShapeQueryParameters3D.new()
+					query.shape = shape
+					query.transform = Transform3D(Basis.IDENTITY,at)
+					query.collision_mask = 1|4|8|16
+					query.exclude = [player.get_rid()]
+					if not space.intersect_shape(query,1).is_empty(): continue
+					var start := body.global_position+Vector3.UP*.90
+					var clear_ray := PhysicsRayQueryParameters3D.create(start,at,1|4|8|16)
+					clear_ray.exclude = [body.get_rid(),player.get_rid()]
+					if not space.intersect_ray(clear_ray).is_empty(): continue
 					return {"position":at}
 	return {}
 
@@ -486,6 +610,7 @@ func finish_trip() -> void:
 					passenger.next_node = String(id)
 	passenger = {}
 	arrived = false
+	stop_requested = false
 
 func cycle_speed() -> void:
 	speed_mode = (speed_mode+1)%SPEEDS.size()
