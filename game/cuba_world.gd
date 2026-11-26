@@ -1626,6 +1626,14 @@ func _arcade_edge(edge: Dictionary) -> bool:
 func _avenue_edge(edge: Dictionary) -> bool:
 	return _arcade_edge(edge) or (bool(edge.driveable) and (float(edge.width)>=10.0 or String(edge.kind) in ["primary","secondary","trunk"]))
 
+func _near_avenue(center: Vector3,extent: Vector3) -> bool:
+	var radius := Vector2(extent.x,extent.z).length()*.5
+	for road in geography.roads_near(center,radius+18.0):
+		if not _avenue_edge(road): continue
+		var q: Vector3 = Geometry3D.get_closest_point_to_segment(center,road.a,road.b)
+		if center.distance_to(q)<=radius+float(road.width)*.5+8.0: return true
+	return false
+
 func _street_facing_walls(poly: PackedVector2Array) -> Array:
 	var faces: Array = []
 	for i in range(poly.size()):
@@ -1713,7 +1721,10 @@ func _avenue_bays(front: Dictionary,h: float,ceiling: float,depth: float,lower: 
 		var q := p+n*(-depth+.07 if portal else .045)
 		var ground_height := minf(ceiling if portal else h,2.96)
 		if ground_height>2.4 and _wall_has_opening(lower,q,n):
-			# Ground divisions are narrow vertical masonry strips only.
+			# A full wall tint is safe only when both ends of the bay are
+			# supported by the same lower face, not an open arcade corner.
+			if _wall_has_opening(lower,q-t*(step*.5-.12),n) and _wall_has_opening(lower,q+t*(step*.5-.12),n):
+				_cube(q-n*.025+Vector3.UP*(ground_height*.5),Vector3(step-.10,ground_height-.06,.025),mat,angle)
 			for side in [-1.0,1.0]:
 				var at := q+t*float(side)*(step*.5-.12)
 				if _wall_has_opening(lower,at,n):
@@ -1918,6 +1929,7 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 	var palette: Array[Color] = [Color("#a5b2a5"),Color("#c3b49b"),Color("#a2b8ba"),Color("#b19a88"),Color("#c3bc9d"),Color("#a4a29a"),Color("#b8ad99")]
 	var market_pos: Vector3 = geography.project(23.1234716,-82.3659728)
 	var market_poly_id := ""
+	var home_pin := geography.project(23.1223007,-82.3668138)
 	var alborada_poly_id := ""
 	var best: float = INF
 	for fp in geography.footprints_near(market_pos,80.0):
@@ -1960,14 +1972,14 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		var edit: Dictionary = map_edits.get(String(fp.id),{})
 		var front := _front_edge(poly)
 		var monte_front := _front_edge(poly,true)
-		var faces := _street_facing_walls(poly)
+		var extent: Vector3 = fp.high-fp.low
+		var faces := _street_facing_walls(poly) if not monte_front.is_empty() or _near_avenue(center,extent) else []
 		var avenue_faces: Array = []
 		for face in faces:
 			if _avenue_edge(face.road): avenue_faces.append(face)
 		avenue_faces.sort_custom(func(a,b): return (0.0 if _arcade_edge(a.road) else 10.0)+float(a.score)<(0.0 if _arcade_edge(b.road) else 10.0)+float(b.score))
 		# Keep the previously selected wall on the original house/landmark
 		# intact. Only improve surrounding fronts and previously bare sides.
-		var home_pin := geography.project(23.1223007,-82.3668138)
 		var home_wall := monte_front if not monte_front.is_empty() else front
 		var preserve_home := false
 		if not home_wall.is_empty():
@@ -1991,11 +2003,15 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		var lower := poly
 		var extra: Array = []
 		if not front.is_empty() and bool(edit.get("portal",front.road.portal or monte)) and h>(3.10 if monte else 3.8):
-			var clipped := _arcade_cut(poly,front,portal_depth)
-			# Preserve the earlier home geometry when its original valid cut
-			# would be rejected by the stricter new frontage validation.
-			if preserve_home and clipped.is_empty():
-				clipped = _clip_inward(poly,front,portal_depth)
+			var clipped := _clip_inward(poly,front,portal_depth) if preserve_home or avenue_faces.is_empty() else _arcade_cut(poly,front,portal_depth)
+			# Narrow historic lots can still support a shallower walkable arcade.
+			if monte and not preserve_home and not avenue_faces.is_empty() and clipped.is_empty():
+				for depth in [2.35,1.95]:
+					var candidate := _arcade_cut(poly,front,float(depth))
+					if not candidate.is_empty():
+						clipped = candidate
+						portal_depth = float(depth)
+						break
 			if clipped.size()>=3 and not Geometry2D.triangulate_polygon(clipped).is_empty():
 				lower = clipped
 				portal = true
@@ -2007,13 +2023,17 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 				if _same_wall(face,front): continue
 				var face_arcade := _arcade_edge(face.road)
 				var recessed := false
+				var face_depth := 2.85
 				if not preserve_home and face_arcade and h>3.10 and bool(edit.get("portal",true)):
-					var candidate := _arcade_cut(lower,face,2.85)
-					if not candidate.is_empty():
-						lower = candidate
-						portal_ceiling = minf(3.4,h-.26)
-						recessed = true
-				extra.append({"face":face,"portal":recessed,"arcade":face_arcade})
+					for depth in [2.85,2.35,1.95]:
+						var candidate := _arcade_cut(lower,face,float(depth))
+						if not candidate.is_empty():
+							lower = candidate
+							portal_ceiling = minf(3.4,h-.26)
+							face_depth = float(depth)
+							recessed = true
+							break
+				extra.append({"face":face,"portal":recessed,"arcade":face_arcade,"depth":face_depth})
 		var has_arcade := portal
 		for entry in extra:
 			if bool(entry.portal): has_arcade = true
@@ -2028,7 +2048,7 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		kept_footprints.append(fp)
 		editable_buildings[String(fp.id)] = {"poly":poly,"center":center,"height":h,"name":String(tags.get("name","Edificio")),"protected":market or String(fp.id)==alborada_poly_id,"front":front}
 		if not front.is_empty():
-			_detail_front(front,h,idx,portal,market,monte,portal_depth,PackedVector2Array() if preserve_home or market else lower)
+			_detail_front(front,h,idx,portal,market,monte,portal_depth,PackedVector2Array() if preserve_home or market or avenue_faces.is_empty() else lower)
 			if monte and portal:
 				_monte_portal(front,poly,portal_depth,portal_ceiling,idx,base_color)
 			if not preserve_home and not market and _avenue_edge(front.road):
@@ -2037,10 +2057,11 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 				var side_front: Dictionary = entry.face
 				var side_portal := bool(entry.portal)
 				var side_arcade := bool(entry.arcade)
-				_detail_front(side_front,h,idx,side_portal,false,side_arcade,2.85,lower)
+				var side_depth := float(entry.depth)
+				_detail_front(side_front,h,idx,side_portal,false,side_arcade,side_depth,lower)
 				if side_portal:
-					_monte_portal(side_front,poly,2.85,portal_ceiling,idx,base_color)
-				if _avenue_edge(side_front.road): _avenue_bays(side_front,h,portal_ceiling,2.85,lower,idx,base_color,side_portal)
+					_monte_portal(side_front,poly,side_depth,portal_ceiling,idx,base_color)
+				if _avenue_edge(side_front.road): _avenue_bays(side_front,h,portal_ceiling,side_depth,lower,idx,base_color,side_portal)
 			if market:
 				_market_side_details(poly,front,h)
 			var name_value := String(tags.get("name",""))
@@ -2226,8 +2247,9 @@ func _monte_portal(front: Dictionary,poly: PackedVector2Array,depth: float,ceili
 		if Geometry2D.is_point_in_polygon(Vector2(p.x,p.z),poly):
 			_monte_column(p,ceiling,mat,angle)
 		var door := a+t*(float(i)+.5)*step-n*(depth-.40)
-		var run_a := a+t*float(i)*step-n*1.37
-		var run_b := a+t*float(i+1)*step-n*1.37
+		var walk_depth := minf(1.37,depth*.53)
+		var run_a := a+t*float(i)*step-n*walk_depth
+		var run_b := a+t*float(i+1)*step-n*walk_depth
 		if Geometry2D.is_point_in_polygon(Vector2(door.x,door.z),poly):
 			monte_walkways.append({"a":run_a,"b":run_b,"door":door,"kind":"shop" if (idx+i)%3==0 else "home"})
 	_cube((a+b)*.5-n*.07+Vector3.UP*(ceiling-.03),Vector3(length,.22,.27),trim,angle)
