@@ -2270,7 +2270,7 @@ func add_school_bus(original: Node3D) -> void:
 	bus.name = "SchoolBus_Original"
 	bus.motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
 	bus.collision_layer = 1
-	bus.collision_mask = 1|4
+	bus.collision_mask = 1|4|8
 	add_child(bus)
 	original.reparent(bus,true)
 	original.position = Vector3.ZERO
@@ -2287,6 +2287,7 @@ func add_school_bus(original: Node3D) -> void:
 		bus.position = route[0].lerp(route[1],.4)+Vector3.UP*.055
 		var d := (route[1]-route[0]).normalized()
 		bus.rotation.y = atan2(d.x,d.z)
+		bus.add_to_group("autonomous_traffic")
 		travel.append({"node":bus,"route":route,"next":1,"speed":0.0,"stop":0.0})
 	else:
 		var edge: Dictionary = geography.roads[0]
@@ -2324,34 +2325,41 @@ func tick(delta: float) -> void:
 		var d := diff.normalized()
 		var speed := minf(3.0 if active else 5.0,maxf(1.2,distance*1.5))
 		if float(entry.stop)>0.0: speed = 0.0
-		var reach := minf(9.0,distance+1.5)
+		var reach := minf(9.0,distance+.7)
 		var free := TrafficBypass.clear_distance(car,d,reach,2.35,7.65,2.8)
+		var blocked := free<reach-.05
+		var stalled := TrafficBypass.stalled(entry,car,delta)
 		entry.cooldown = maxf(0.0,float(entry.get("cooldown",0.0))-delta)
-		if free<reach-.05:
-			speed = 0.0
-			entry.blocked = float(entry.get("blocked",0.0))+delta
-			if not active and float(entry.blocked)>.5 and float(entry.cooldown)<=0.0:
-				entry.cooldown = 1.5
-				var ordered: Array = []
-				for i in range(route.size()):
-					ordered.append({"p":route[(next+i)%route.size()]})
-				var choice := TrafficBypass.find(car,ordered,0,street_geometry,2.35,7.65,geography.signal_nodes)
-				if not choice.is_empty():
-					entry.detour = choice.path
-					entry.detour_index = 0
-					entry.resume = (next+int(choice.resume))%route.size()
-					continue
-			if not active and float(entry.blocked)>2.0 and free<1.1 and float(entry.speed)<.1 and float(entry.get("backed_up",0.0))<4.0:
-				if TrafficBypass.reverse_clear(car,street_geometry,2.35,7.65,delta):
-					entry.backed_up = float(entry.get("backed_up",0.0))+.8*delta
-					continue
-		else:
-			entry.blocked = 0.0
-			entry.backed_up = 0.0
+		if blocked: speed = minf(speed,sqrt(12.0*maxf(0.0,free-.7)))
+		if stalled>1.0 and float(entry.stop)<=0.0 and float(entry.cooldown)<=0.0:
+			entry.cooldown = 1.8
+			if active:
+				entry.detour = []
+				entry.next = int(entry.resume)
+				continue
+			var ordered: Array = []
+			for i in range(route.size()):
+				ordered.append({"p":route[(next+i)%route.size()]})
+			var choice := TrafficBypass.recover(car,ordered,0,street_geometry,2.35,7.65,geography.signal_nodes,2.8)
+			if not choice.is_empty():
+				entry.detour = choice.path
+				entry.detour_index = 0
+				entry.resume = (next+int(choice.resume))%route.size()
+				entry.traffic_stall = 0.0
+				continue
+		if not active and stalled>3.5 and float(entry.speed)<.12 and float(entry.get("backed_up",0.0))<5.5:
+			if TrafficBypass.reverse_clear(car,street_geometry,2.35,7.65,delta):
+				entry.backed_up = float(entry.get("backed_up",0.0))+.8*delta
+				continue
+		if stalled<.1: entry.backed_up = 0.0
 		entry.speed = move_toward(float(entry.speed),speed,delta*5.0)
 		var angle := lerp_angle(car.rotation.y,atan2(d.x,d.z),minf(delta*4.0,1.0))
-		var advance := minf(minf(float(entry.speed)*delta,distance),maxf(0.0,free-.7))
-		if not TrafficBypass.safe_step(car,d,advance,angle,delta): entry.speed = 0.0
+		var advance := minf(float(entry.speed)*delta,distance)
+		if blocked: advance = minf(advance,maxf(0.0,free-.7))
+		if advance<.0001:
+			car.velocity = Vector3.ZERO
+			entry.speed = 0.0
+		elif not TrafficBypass.safe_step(car,d,advance,angle,delta): entry.speed = 0.0
 	npc_update_time += delta
 	if npc_update_time < .10:
 		return
