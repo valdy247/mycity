@@ -179,8 +179,10 @@ func four_lane_at(p: Vector3,heading: Vector3) -> Dictionary:
 		result = {"edge":edge,"direction":d,"right":right,"center":center,"lateral":(flat-center).dot(right),"half":half}
 	return result
 
-func in_carriageway(p: Vector3,heading: Vector3,width: float,length: float) -> bool:
-	var lane := four_lane_at(p,heading)
+func in_carriageway(p: Vector3,heading: Vector3,width: float,length: float,road_heading: Vector3 = Vector3.ZERO) -> bool:
+	# A lane-changing vehicle faces diagonally. Locate its road using the
+	# original road direction, but measure the footprint at the real angle.
+	var lane := four_lane_at(p,heading if road_heading.length_squared()<.01 else road_heading)
 	if lane.is_empty(): return false
 	var d: Vector3 = lane.direction
 	var right: Vector3 = lane.right
