@@ -3,7 +3,12 @@ extends RefCounted
 const PRODUCTS := {
 	"pollo":{"name":"Pollo","cost":2200,"retail":300,"units":10},
 	"picadillo":{"name":"Picadillo","cost":1500,"retail":210,"units":10},
-	"perrito":{"name":"Perrito (salchicha)","cost":1200,"retail":170,"units":10}
+	"perrito":{"name":"Perrito (salchicha)","cost":1200,"retail":170,"units":10},
+	"harina":{"name":"Harina","cost":850,"retail":120,"units":10},
+	"queso":{"name":"Queso","cost":1850,"retail":260,"units":10},
+	"refresco":{"name":"Refrescos","cost":950,"retail":135,"units":10},
+	"aceite":{"name":"Aceite","cost":1400,"retail":195,"units":10},
+	"tomate":{"name":"Salsa de tomate","cost":750,"retail":105,"units":10}
 }
 const COMMISSION_PERCENT := 15
 const VEHICLE_CAPACITY := 8
@@ -23,6 +28,7 @@ var messages: Array = []
 var unread := 0
 var low_alert: Dictionary = {}
 var sales_clock := 0.0
+var life_data: Dictionary = {}
 
 func load_game() -> void:
 	if not persistence_enabled: return
@@ -33,6 +39,8 @@ func load_game() -> void:
 	f.close()
 	if not value is Dictionary: return
 	cash = maxi(0,int(value.get("cash",10000)))
+	var life: Variant = value.get("city_life",{})
+	life_data = life if life is Dictionary else {}
 	stage = clampi(int(value.get("stage",0)),0,4)
 	pending = _counts(value.get("pending",{}))
 	stock = _counts(value.get("stock",{}))
@@ -72,11 +80,19 @@ func _counts(value: Variant) -> Dictionary:
 
 func save_game() -> void:
 	if not persistence_enabled: return
-	var data := {"cash":cash,"stage":stage,"pending":pending,"carry":carry,"cargo":cargo,"stock":stock,"sold":sold,"revenue":revenue,"wages":wages,"expenses":expenses,"messages":messages,"unread":unread,"low_alert":low_alert}
+	var data := {"cash":cash,"stage":stage,"pending":pending,"carry":carry,"cargo":cargo,"stock":stock,"sold":sold,"revenue":revenue,"wages":wages,"expenses":expenses,"messages":messages,"unread":unread,"low_alert":low_alert,"city_life":life_data}
 	var f := FileAccess.open(SAVE_PATH,FileAccess.WRITE)
 	if f!=null:
 		f.store_string(JSON.stringify(data))
 		f.close()
+
+# City purchases share the same wallet and save transaction as missions.
+func spend(amount: int) -> bool:
+	if amount<0 or cash<amount: return false
+	cash -= amount
+	expenses += amount
+	save_game()
+	return true
 
 func total(counts: Dictionary) -> int:
 	var result := 0
