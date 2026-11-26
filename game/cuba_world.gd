@@ -14,6 +14,10 @@ var home_cutaway: Array = []
 const INVENTORY_PATH := "user://pilar_atares_inventory.json"
 var geography := MapData.new()
 var home_root: Node3D
+var alborada_lot: Dictionary = {}
+var old_home_transform: Transform3D = Transform3D.IDENTITY
+var old_home_found := false
+var paired_landmarks := false
 var home_spawn := Vector3.ZERO
 var van_spawn := Vector3.ZERO
 var van_angle := 0.0
@@ -285,6 +289,53 @@ func _home_score(lot: Dictionary,anchor: Vector3) -> float:
 		result += 45.0
 	return result
 
+# Facing the facade from the street, +basis.x is the viewer's right.
+# Move the fictional home to the old shop position, and reconstruct the
+# shop on its immediate right. No real private address is persisted.
+func _monte_pair(anchor: Vector3) -> Array:
+	var best: Array = []
+	var best_score := INF
+	for edge in geography.roads_near(anchor,55.0):
+		if not bool(edge.driveable) or geography.street_label(String(edge.name))!="MONTE":
+			continue
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		var d := (b-a).normalized()
+		var q := Geometry3D.get_closest_point_to_segment(anchor,a,b)
+		var outward := Vector3(-d.z,0,d.x)
+		if outward.dot(anchor-q)<0.0:
+			outward = -outward
+		var front := -outward
+		var right := Vector3(front.z,0,-front.x)
+		for shift in [0.0,-2.0,2.0,-4.0,4.0,-6.0,6.0,-9.0,9.0,-12.0,12.0]:
+			var curb := q+right*float(shift)
+			var shop_curb := curb+right*9.12
+			# Both premises stay on the same street frontage; no corner crossing.
+			if Geometry3D.get_closest_point_to_segment(curb,a,b).distance_to(curb)>0.15 or Geometry3D.get_closest_point_to_segment(shop_curb,a,b).distance_to(shop_curb)>0.15:
+				continue
+			for setback in [1.65,1.95,2.25]:
+				var offset := outward*(float(edge.width)*.5+float(setback)+4.5)
+				var home := {"center":curb+offset,"front":front,"edge":edge,"curb":curb,"outward":outward,"d":d,"portal":true}
+				var shop := {"center":shop_curb+offset,"front":front,"edge":edge,"curb":shop_curb,"outward":outward,"d":d,"portal":true}
+				if not _lot_clear(home.center,front,edge) or not _lot_clear(shop.center,front,edge):
+					continue
+				var safe := true
+				for lot in [home,shop]:
+					var poly := _lot_polygon(lot)
+					for fp in geography.footprints_near(lot.center,12.0):
+						var extent: Vector3 = fp.high-fp.low
+						var change: Dictionary = map_edits.get(String(fp.id),{})
+						if (extent.x*extent.z>380.0 or not change.is_empty()) and not Geometry2D.intersect_polygons(poly,fp.poly).is_empty():
+							safe = false
+							break
+				if not safe:
+					continue
+				var score := curb.distance_to(q)+q.distance_to(anchor)*.5+float(setback)*.2
+				if score<best_score:
+					best_score = score
+					best = [home,shop]
+	return best
+
 func _make_frontages() -> void:
 	var proposals: Array = []
 	var public_anchor: Vector3 = geography.project(23.12230,-82.36677)
@@ -326,9 +377,28 @@ func _make_frontages() -> void:
 				huge = true
 				break
 		if huge: continue
-		_add_lot(lot)
-		_make_humble_home(lot)
+		var legacy_front: Vector3 = lot.front
+		old_home_transform = Transform3D(Basis(Vector3.UP,atan2(legacy_front.x,legacy_front.z)),c)
+		old_home_found = true
 		break
+	var pair := _monte_pair(public_anchor)
+	if pair.size()==2:
+		var residence: Dictionary = pair[0]
+		alborada_lot = pair[1]
+		_add_lot(residence)
+		_make_humble_home(residence)
+		_add_lot(alborada_lot)
+		_facade(alborada_lot,7,"LA ALBORADA")
+		paired_landmarks = true
+		print("Monte: casa y La Alborada contiguas, tienda a la derecha vista desde la calle.")
+	elif old_home_found:
+		for lot in home_candidates:
+			var center: Vector3 = lot.center
+			if center.distance_to(old_home_transform.origin)<.01:
+				_add_lot(lot)
+				_make_humble_home(lot)
+				break
+		push_warning("Monte: no hay dos parcelas contiguas seguras; se conserva la casa anterior.")
 	# Keep special interiors from the prototype in small unrecorded lots.
 	proposals.sort_custom(func(a,b): return a.center.distance_squared_to(public_anchor)<b.center.distance_squared_to(public_anchor))
 	for lot in proposals:
@@ -717,7 +787,9 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 				name_value = "PLAZA DE CUATRO CAMINOS"
 				market_drawn = true
 			elif String(fp.id)==alborada_poly_id:
-				name_value = "LA ALBORADA"
+				name_value = "" if paired_landmarks else "LA ALBORADA"
+			if paired_landmarks and geography.normalized(name_value).contains("alborada"):
+				name_value = ""
 			if not name_value.is_empty() and (market or String(fp.id)==alborada_poly_id or tags.has("amenity") or tags.has("shop")):
 				var m: Vector3 = front.mid
 				var n: Vector3 = front.normal
@@ -739,7 +811,7 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 			print("Cuatro Caminos: approximate facade from four mapped intersections (not exact building footprint).")
 	if not market_drawn:
 		print("Cuatro Caminos: no verified market footprint or four safe corners in this OSM extract.")
-	if alborada_poly_id.is_empty():
+	if alborada_poly_id.is_empty() and not paired_landmarks:
 		var closest := _nearest_street(public_anchor)
 		if not closest.is_empty():
 			var a: Vector3 = closest.a
@@ -923,6 +995,9 @@ func _facade(lot: Dictionary,index: int,service: String) -> void:
 	var iron := _mat("iron",Color("#43433d"))
 	var upper := 1+index%3
 	var h: float = float(upper)*3.1
+	if service=="LA ALBORADA":
+		plaster = _mat("alborada_wall",Color("#91a9a9"))
+		doors = _mat("alborada_blue",Color("#47677e"))
 	var portal: bool = bool(lot.get("portal",false))
 	var face_z: float = 1.52 if portal else 4.43
 	# Deep covered portal, facade behind columns, upper floors above walkway.
@@ -959,6 +1034,12 @@ func _facade(lot: Dictionary,index: int,service: String) -> void:
 		var px := -3.85+fmod(float(index*17+k*13)*.37,7.7)
 		var py := .40+fmod(float(index+k*3)*.73,2.2)
 		_local_cube(c,basis,Vector3(px,py,face_z+.006),Vector3(.48+float(k)*.12,.30,.008),weathered)
+	if service=="LA ALBORADA":
+		# Recognizable shopfront, not a surveyed reproduction.
+		_local_cube(c,basis,Vector3(0,1.36,face_z+.07),Vector3(5.8,2.28,.075),doors)
+		for x in [-1.94,0.0,1.94]:
+			_local_cube(c,basis,Vector3(float(x),1.56,face_z+.12),Vector3(1.65,1.48,.055),recess)
+			_local_cube(c,basis,Vector3(float(x),.68,face_z+.15),Vector3(1.65,.12,.11),stone)
 	if not service.is_empty():
 		_local_cube(c,basis,Vector3(0,2.65,face_z+.10),Vector3(5.2,.48,.10),doors)
 		_label(service,c+basis*Vector3(0,2.66,face_z+.17),.010,angle,Color("#fff2cb"))
@@ -1077,6 +1158,19 @@ func _make_humble_home(lot: Dictionary) -> void:
 	_local_cube(c,basis,Vector3(0,6.24,0),Vector3(8.9,.22,9.0),wall,true)
 	for x in [-4.1,0.0,4.1]:
 		_local_cube(c,basis,Vector3(float(x),1.55,4.0),Vector3(.36,3.1,.36),trim,true)
+	# Humble colonial facade: cornice, tall shutters, and iron balcony.
+	_local_cube(c,basis,Vector3(0,3.23,1.73),Vector3(8.55,.22,.34),trim)
+	_local_cube(c,basis,Vector3(0,6.10,1.73),Vector3(8.55,.25,.30),trim)
+	for x in [-2.5,2.5]:
+		var xx: float = float(x)
+		_local_cube(c,basis,Vector3(xx,4.66,1.66),Vector3(1.45,2.20,.06),dark)
+		_local_cube(c,basis,Vector3(xx,4.66,1.72),Vector3(1.35,2.07,.065),wood)
+		for k in range(7):
+			_local_cube(c,basis,Vector3(xx,3.82+float(k)*.26,1.77),Vector3(1.24,.055,.035),trim)
+		_local_cube(c,basis,Vector3(xx,3.60,1.95),Vector3(1.85,.15,.68),trim)
+		_local_cube(c,basis,Vector3(xx,4.31,2.24),Vector3(1.85,.065,.06),dark)
+		for k in range(7):
+			_local_cube(c,basis,Vector3(xx-.84+float(k)*.28,3.99,2.24),Vector3(.045,.66,.045),dark)
 	# Upper floor, leaving a staircase opening along the east wall.
 	_local_cube(c,basis,Vector3(-1.16,3.10,-1.45),Vector3(6.1,.20,5.9),floor_mat,true)
 	_local_cube(c,basis,Vector3(3.15,3.10,-3.90),Vector3(2.3,.20,1.05),floor_mat,true)
