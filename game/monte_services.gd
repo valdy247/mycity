@@ -429,19 +429,17 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 	if direction.dot(next_dir)<.85: speed = minf(speed,maxf(1.0,distance*1.0))
 	if active: speed = minf(speed,3.4)
 	var half := 3.1 if bool(vehicle.truck) else 2.125
-	var ray := PhysicsRayQueryParameters3D.create(body.position+Vector3.UP*.85+direction*(half+.06),body.position+Vector3.UP*.85+direction*(half+2.5+float(vehicle.speed)*.9),1|4)
-	ray.exclude = [body.get_rid()]
-	var blocked := not get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
-	if not blocked:
-		var low_ray := PhysicsRayQueryParameters3D.create(ray.from-Vector3.UP*.58,ray.to-Vector3.UP*.58,1|4)
-		low_ray.exclude = [body.get_rid()]
-		blocked = not get_world_3d().direct_space_state.intersect_ray(low_ray).is_empty()
+	var width := 2.3 if bool(vehicle.truck) else 1.83
+	var height := 2.8 if bool(vehicle.truck) else 1.65
+	var reach := minf(maxf(5.0,float(vehicle.speed)*float(vehicle.speed)/12.0+3.0),distance+1.5)
+	var free := Bypass.clear_distance(body,direction,reach,width,half*2.0,height)
+	var blocked := free<reach-.05
 	vehicle.cooldown = maxf(0.0,float(vehicle.cooldown)-delta)
 	if blocked:
 		speed = 0.0
 		vehicle.blocked = float(vehicle.blocked)+delta
-		if not active and float(vehicle.blocked)>1.7 and float(vehicle.cooldown)<=0.0:
-			vehicle.cooldown = 4.0
+		if not active and float(vehicle.blocked)>.4 and float(vehicle.cooldown)<=0.0:
+			vehicle.cooldown = 1.5
 			var choice := Bypass.find(body,original,index,world.street_geometry,2.3 if bool(vehicle.truck) else 1.83,half*2.0,world.geography.signal_nodes)
 			if not choice.is_empty():
 				vehicle.detour = choice.path
@@ -449,15 +447,21 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 				vehicle.resume = int(choice.resume)
 				vehicle.blocked = 0.0
 				return
+		if not active and float(vehicle.blocked)>2.0 and free<1.1 and float(vehicle.speed)<.1 and float(vehicle.get("backed_up",0.0))<4.0:
+			if Bypass.reverse_clear(body,world.street_geometry,width,half*2.0,delta):
+				vehicle.backed_up = float(vehicle.get("backed_up",0.0))+.8*delta
+				return
 	else:
 		vehicle.blocked = 0.0
+		vehicle.backed_up = 0.0
 	vehicle.speed = move_toward(float(vehicle.speed),speed,delta*(7.0 if speed<float(vehicle.speed) else 3.5))
 	if float(vehicle.speed)<.04:
 		body.velocity = Vector3.ZERO
 		return
-	body.rotation.y = lerp_angle(body.rotation.y,atan2(direction.x,direction.z),1.0-exp(-delta*4.5))
-	body.velocity = direction*minf(float(vehicle.speed),distance/maxf(delta,.001))
-	body.move_and_slide()
+	var angle := lerp_angle(body.rotation.y,atan2(direction.x,direction.z),1.0-exp(-delta*4.5))
+	var advance := minf(minf(float(vehicle.speed)*delta,distance),maxf(0.0,free-.7))
+	if not Bypass.safe_step(body,direction,advance,angle,delta):
+		vehicle.speed = 0.0
 
 func tick(delta: float) -> void:
 	notice_time = maxf(0.0,notice_time-delta)
