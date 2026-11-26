@@ -415,13 +415,38 @@ func _ask_stock(id: String) -> void:
 		for key in MENU:
 			if _can_make(id,String(key)): reply += String(MENU[key].name)+" · "+str(MENU[key].price)+" CUP\n"
 	ledger.add_message(String(site.contact),reply.strip_edges())
+	ledger.unread = 0
 	ledger.save_game()
-	business.open_messages()
+	business._phone_thread(String(site.contact))
 
 func open_contacts() -> void:
-	business._open("CONTACTOS","Guarda los contactos cuando conozcas a las personas.")
-	for id in state.contacts:
-		if sites.has(id): business._button(String(sites[id].contact)+"  ·  "+String(sites[id].name),_contact_page.bind(String(id)))
+	business._open("Contactos","Personas y negocios que has conocido en la ciudad.")
+	if not bool(business.phone_mode):
+		for id in state.contacts:
+			if sites.has(id): business._button(String(sites[id].contact)+"  ·  "+String(sites[id].name),_contact_page.bind(String(id)))
+	else:
+		var search := LineEdit.new()
+		search.placeholder_text = "Buscar persona o negocio"
+		search.custom_minimum_size.y = 42
+		business.content.add_child(search)
+		var rows: Array = []
+		for id in state.contacts:
+			if not sites.has(id): continue
+			var site: Dictionary = sites[id]
+			var row := Button.new()
+			row.text = String(site.contact)+"\n"+String(site.name)
+			row.alignment = HORIZONTAL_ALIGNMENT_LEFT
+			row.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			row.custom_minimum_size.y = 66
+			row.icon = business._phone_icon("contact",Color("#3d6dba"))
+			row.add_theme_constant_override("icon_max_width",38)
+			row.pressed.connect(_contact_page.bind(String(id)))
+			business.content.add_child(row)
+			rows.append({"node":row,"text":row.text.to_lower()})
+		search.text_changed.connect(func(value: String):
+			var term := value.strip_edges().to_lower()
+			for entry in rows:
+				if is_instance_valid(entry.node): entry.node.visible = term.is_empty() or String(entry.text).contains(term))
 	if state.contacts.is_empty():
 		var label := Label.new()
 		label.text = "Todavía no tienes contactos nuevos."
