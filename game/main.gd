@@ -1183,6 +1183,8 @@ func _physics_process(delta: float) -> void:
 			taxis.tick(delta,cuba_world.cuba_clock)
 			monte_services.tick(delta)
 			monte_pedestrians.tick(delta)
+			garage.tick(delta)
+			business.tick(delta,false,false)
 			return
 	social_cooldown = maxf(0.0,social_cooldown-delta)
 	if is_instance_valid(chatting_with):
