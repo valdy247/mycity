@@ -22,6 +22,8 @@ var preview: Node3D
 var marker: Node3D
 var exterior_label: Label3D
 var carried_view: Node3D
+var waypoint: Node3D
+var rider: Node3D
 var waypoint_point := Vector3.ZERO
 var waypoint_label := ""
 var waypoint_active := false
@@ -71,6 +73,15 @@ func setup(controller) -> void:
 	game.play_camera.add_child(carried_view)
 	carried_view.position = Vector3(.30,-.35,-.88)
 	_refresh_carried()
+	waypoint = Node3D.new()
+	add_child(waypoint)
+	business._box(waypoint,Vector3(0,.22,0),Vector3(.13,.40,.13),Color("#f0c85f"))
+	var pointer: MeshInstance3D = business._box(waypoint,Vector3.ZERO,Vector3(.28,.28,.12),Color("#f0c85f"))
+	pointer.rotation.z = PI*.25
+	waypoint.hide()
+	var gps: Dictionary = state.get("gps",{})
+	if not gps.is_empty():
+		_set_waypoint(Vector3(float(gps.x),0,float(gps.z)),String(gps.label))
 	for kind in state.parked:
 		if Kit.KITS.has(kind) and _complete(String(kind)):
 			var p: Dictionary = state.parked[kind]
@@ -80,6 +91,7 @@ func setup(controller) -> void:
 				body.global_position = at
 				body.rotation.y = float(p.angle)
 				owned[kind] = body
+	_refresh_preview()
 	_save()
 
 func _save() -> void:
@@ -230,9 +242,28 @@ func _exit() -> void:
 	if site.is_empty(): return
 	var basis: Basis = site.basis
 	var door: Vector3 = site.door
-	var at := door+basis.z*.72
+	var space := get_world_3d().direct_space_state
+	var destination := Vector3.ZERO
+	var found := false
+	for offset in [Vector2(0,.75),Vector2(-.75,.90),Vector2(.75,.90),Vector2(0,1.50)]:
+		var at := door+basis.x*offset.x+basis.z*offset.y
+		var ground := space.intersect_ray(PhysicsRayQueryParameters3D.create(at+Vector3.UP*1.8,at-Vector3.UP*.4,1|2))
+		if ground.is_empty() or ground.normal.y<.65: continue
+		var point: Vector3 = ground.position+Vector3.UP*.86
+		var q := PhysicsShapeQueryParameters3D.new()
+		q.shape = game.player_shape.shape
+		q.transform = Transform3D(Basis.IDENTITY,point)
+		q.collision_mask = 1|4|8
+		q.exclude = [game.player.get_rid()]
+		if space.intersect_shape(q,1).is_empty():
+			destination = point
+			found = true
+			break
+	if not found:
+		business._notify("La puerta está bloqueada. Espera un momento.")
+		return
 	inside = false
-	game.player.global_position = at+Vector3.UP*.86
+	game.player.global_position = destination
 	game.player.velocity = Vector3.ZERO
 	game.yaw = atan2(basis.z.x,basis.z.z)+PI
 	game.pitch = -.12
@@ -319,6 +350,7 @@ func interact(at: Vector3) -> bool:
 	if inside:
 		if at.distance_to(ROOM+Vector3(-.7,.86,5.25))<1.55:
 			_exit()
+		elif not business.life.state.meal.is_empty(): return false
 		elif at.distance_to(ROOM+BENCH)<3.0:
 			_garage_menu()
 		elif not String(state.held_furniture).is_empty(): _place_furniture()
@@ -458,11 +490,16 @@ func _find_part(kind: String,key: String) -> void:
 	_save()
 	_show_map(site.road,String(site.name))
 
-func _show_map(point: Vector3,label_value: String) -> void:
+func _set_waypoint(point: Vector3,label_value: String) -> void:
 	waypoint_active = true
 	waypoint_point = point
 	waypoint_label = label_value
+	state.gps = {"x":point.x,"z":point.z,"label":label_value}
 	game.taxis.set_garage_destination(point,label_value)
+
+func _show_map(point: Vector3,label_value: String) -> void:
+	_set_waypoint(point,label_value)
+	_save()
 	business._open("Mapa · "+label_value,"Puedes caminar o elegir este destino al tomar un taxi.")
 	var map := MapView.new()
 	business.content.add_child(map)
@@ -505,6 +542,9 @@ func _buy_part(kind: String,key: String) -> void:
 	state["wanted"] = ""
 	business.ledger.spend(price)
 	waypoint_active = false
+	state.gps = {}
+	game.taxis.set_garage_destination(Vector3.ZERO,"")
+	_save()
 	_refresh_carried()
 	business.close()
 	business._notify("Lleva la pieza a tu garaje y selecciona Instalar.")
@@ -555,8 +595,20 @@ func _launch(kind: String) -> void:
 	_refresh_preview()
 	_mount(kind)
 
+func _make_rider(body: CharacterBody3D,kind: String,style: int) -> Node3D:
+	var person := Person.new()
+	body.add_child(person)
+	person.setup(style)
+	person.position = Vector3(0,.37,-.20)
+	person.scale = Vector3(.80,.80,.80)
+	person.remove_from_group("social_people")
+	for leg in person.limbs: leg.rotation.x = -1.00
+	for arm in person.arms: arm.rotation.x = -1.25
+	return person
+
 func _mount(kind: String) -> void:
 	var body: CharacterBody3D = owned[kind]
+	if kind!="carro": rider = _make_rider(body,kind,691)
 	riding = true
 	ride_kind = kind
 	ride_speed = 0.0
@@ -606,6 +658,9 @@ func _dismount(force: bool = false) -> void:
 		business._notify("No hay espacio para bajar.")
 		return
 	_store_park(ride_kind)
+	if rider!=null:
+		rider.queue_free()
+		rider = null
 	body.velocity = Vector3.ZERO
 	game.arm.remove_excluded_object(body.get_rid())
 	game.pivot.reparent(game.player,false)
@@ -675,13 +730,7 @@ func _init_traffic() -> void:
 			var body := Kit.body(self,kind)
 			body.global_position = p+Vector3.UP*.055
 			body.rotation.y = atan2(d.x,d.z)
-			var person := Person.new()
-			body.add_child(person)
-			person.setup(600+i)
-			person.position = Vector3(0,.55,-.20)
-			person.scale = Vector3(.80,.80,.80)
-			person.social_context = "worker"
-			person.remove_from_group("social_people")
+			_make_rider(body,kind,600+i)
 			traffic.append({"body":body,"kind":kind,"route":route,"index":i+1,"speed":0.0,"blocked":0.0,"cooldown":0.0,"detour":[],"detour_index":0,"resume":0})
 			break
 
@@ -736,6 +785,9 @@ func tick(delta: float) -> void:
 			_init_traffic()
 	else: _traffic_tick(delta)
 	marker.position.y = 2.35+sin(Time.get_ticks_msec()*.003)*.12
+	if waypoint!=null:
+		waypoint.visible = waypoint_active and not inside
+		waypoint.global_position = waypoint_point+Vector3.UP*(2.7+sin(Time.get_ticks_msec()*.003)*.15)
 	if carried_view!=null: carried_view.visible = not riding and not game.driving and not game.taxi_riding and not game.bus_riding
 	for i in range(state.deliveries.size()-1,-1,-1):
 		var delivery: Dictionary = state.deliveries[i]
@@ -749,7 +801,7 @@ func tick(delta: float) -> void:
 			business._notify("Repuesto entregado en tu garaje.")
 	if inside and not business.modal_open():
 		var near: bool = game.player.global_position.distance_to(ROOM+BENCH)<2.5
-		if near and not garage_near and String(state.held_furniture).is_empty():
+		if near and not garage_near and String(state.held_furniture).is_empty() and business.life.state.meal.is_empty():
 			garage_near = true
 			_garage_menu()
 		elif not near: garage_near = false
