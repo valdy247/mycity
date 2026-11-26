@@ -11,6 +11,14 @@ var bus_berths: Array = []
 var sites: Array = []
 var vehicles: Array = []
 var civilian_route: Array = []
+const MAX_CIVILIAN_CARS := 24
+var traffic_jobs: Array = []
+var traffic_clock := 0.0
+var traffic_phase := 0
+var traffic_serial := 0
+var main_links: Dictionary = {}
+var neighborhood_links: Dictionary = {}
+var neighborhood_candidates: Array = []
 var initialized := false
 var player: CharacterBody3D
 var camera: Camera3D
@@ -330,6 +338,144 @@ func _body(truck: bool,index: int) -> CharacterBody3D:
 	return body
 
 # Add intermediate points for distributed spawning on long blocks.
+# Civilian circuits use the same directed graph as the buses, but
+# distribute the cars between inner/outer lanes and neighborhood loops.
+func _traffic_route(ids: Array,outer: bool) -> Array:
+	var raw: Array = []
+	for i in range(ids.size()-1):
+		var edge: Dictionary = planner.edges.get(String(ids[i])+":"+String(ids[i+1]),{})
+		if edge.is_empty(): return []
+		var a: Vector3 = world.geography.points[ids[i]]
+		var b: Vector3 = world.geography.points[ids[i+1]]
+		var d := (b-a).normalized()
+		var length := a.distance_to(b)
+		if length<.2: continue
+		var offset := Vector3(-d.z,0,d.x)*world.geography.lane_distance(edge,1.83,outer and int(edge.get("lanes_per_direction",1))==2)
+		if length>8.0: raw.append({"p":a+d*3.0+offset})
+		raw.append({"p":b+offset})
+	return _civilian_route(raw)
+
+func _queue_traffic(route: Array,count: int,kind: String,outer: bool = false) -> void:
+	if route.size()<5: return
+	var distance := 0.0
+	for i in range(route.size()):
+		var a: Vector3 = route[i].p
+		var b: Vector3 = route[(i+1)%route.size()].p
+		distance += a.distance_to(b)
+	# Bound density by available road length, even on a short map.
+	var capacity := mini(count,maxi(1,floori(distance/(65.0 if kind=="neighborhood" else 38.0))))
+	for i in range(capacity):
+		traffic_jobs.append({"route":route,"kind":kind,"outer":outer,"slot":i,"slots":capacity,"attempts":0,"serial":traffic_serial})
+		traffic_serial += 1
+
+func _prepare_secondary_routes() -> void:
+	var ids := planner.plan("CERRO",anchor)
+	if ids.size()>=6:
+		var length := 0.0
+		var fresh := 0.0
+		for i in range(ids.size()-1):
+			var a: Vector3 = world.geography.points[ids[i]]
+			var b: Vector3 = world.geography.points[ids[i+1]]
+			var span := a.distance_to(b)
+			length += span
+			if not main_links.has(String(ids[i])+":"+String(ids[i+1])): fresh += span
+		if length>0.0 and fresh/length>=.35:
+			_queue_traffic(_traffic_route(ids,false),4,"avenue")
+			_queue_traffic(_traffic_route(ids,true),2,"avenue",true)
+			for i in range(ids.size()-1): main_links[String(ids[i])+":"+String(ids[i+1])] = true
+	# Small streets must be actual drivable links with room for a car.
+	# Never create a route through a pedestrian alley or private passage.
+	var seen: Dictionary = {}
+	for edge in planner.edges.values():
+		var width := float(edge.width)
+		if width<5.6 or width>=8.5 or world._is_monte_edge(edge): continue
+		if String(edge.get("kind","")) in ["service","living_street","pedestrian","footway","path"]: continue
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		var mid := (a+b)*.5
+		var dist := mid.distance_to(anchor)
+		if dist>650.0 or a.distance_to(b)<12.0: continue
+		var first := String(edge.a_id)
+		var second := String(edge.b_id)
+		var key := first+":"+second if first<second else second+":"+first
+		if seen.has(key): continue
+		seen[key] = true
+		neighborhood_candidates.append({"a":first,"b":second,"distance":dist,"key":key})
+	neighborhood_candidates.sort_custom(func(a,b): return float(a.distance)<float(b.distance))
+
+func _neighborhood_loop(first: String,last: String) -> Array[String]:
+	var empty: Array[String] = []
+	if not planner.edges.has(first+":"+last):
+		var swap := first
+		first = last
+		last = swap
+	if not planner.edges.has(first+":"+last): return empty
+	var u := int(planner.ids[last])
+	var v := int(planner.ids[first])
+	var reverse := planner.graph.are_points_connected(u,v,false)
+	if reverse: planner.graph.disconnect_points(u,v,false)
+	var back := planner._path(last,first)
+	if reverse: planner.graph.connect_points(u,v,false)
+	if back.size()<3: return empty
+	var ids: Array[String] = [first]
+	ids.append_array(back)
+	return ids
+
+func _next_neighborhood() -> bool:
+	# At most six graph searches per update. Require a genuine closed
+	# route with several narrow links, no immediate U-turn at a dead end.
+	for attempt in range(6):
+		if neighborhood_candidates.is_empty(): return true
+		var candidate: Dictionary = neighborhood_candidates.pop_front()
+		var ids := _neighborhood_loop(String(candidate.a),String(candidate.b))
+		if ids.size()<5: continue
+		var length := 0.0
+		var local := 0.0
+		var shared := 0.0
+		var links: Array = []
+		for i in range(ids.size()-1):
+			var key := String(ids[i])+":"+String(ids[i+1])
+			var edge: Dictionary = planner.edges[key]
+			var a: Vector3 = world.geography.points[ids[i]]
+			var b: Vector3 = world.geography.points[ids[i+1]]
+			var span := a.distance_to(b)
+			length += span
+			if float(edge.width)<8.5 and not world._is_monte_edge(edge): local += span
+			if neighborhood_links.has(key): shared += span
+			links.append(key)
+		if length<110.0 or length>850.0 or local<length*.40 or shared>length*.30: continue
+		var route := _traffic_route(ids,false)
+		if route.size()<5: continue
+		for key in links: neighborhood_links[key] = true
+		_queue_traffic(route,1,"neighborhood")
+		traffic_phase += 1
+		return traffic_phase>=6
+	return false
+
+func _traffic_tick(delta: float) -> void:
+	traffic_clock += delta
+	if traffic_clock<.65: return
+	traffic_clock = 0.0
+	if traffic_phase==0:
+		_prepare_secondary_routes()
+		traffic_phase = 1
+	elif traffic_phase<6:
+		if _next_neighborhood(): traffic_phase = 6
+	if traffic_jobs.is_empty(): return
+	var total := 0
+	for car in vehicles:
+		if not bool(car.truck): total += 1
+	if total>=MAX_CIVILIAN_CARS:
+		traffic_jobs.clear()
+		return
+	var job: Dictionary = traffic_jobs.pop_front()
+	var before := vehicles.size()
+	_make_vehicle(job.route,false,int(job.serial),int(job.slots),int(job.slot),String(job.kind),bool(job.outer))
+	if vehicles.size()==before and int(job.attempts)<3:
+		job.attempts = int(job.attempts)+1
+		job.slot = int(job.slot)+1
+		traffic_jobs.append(job)
+
 func _civilian_route(raw: Array) -> Array:
 	var result: Array = []
 	for i in range(raw.size()):
@@ -343,10 +489,15 @@ func _civilian_route(raw: Array) -> Array:
 				result.append({"p":at})
 	return result
 
-func _make_vehicle(route: Array,truck: bool,index: int) -> void:
+func _make_vehicle(route: Array,truck: bool,index: int,slots: int = 8,slot: int = -1,kind: String = "avenue",outer: bool = false) -> void:
 	var start := -1
 	if route.size()<2: return
-	var preferred := 0 if truck else floori(float(route.size())*float(index%8)/8.0)
+	var preferred := 0 if truck else floori(float(route.size())*float(posmod(index if slot<0 else slot,maxi(1,slots)))/float(maxi(1,slots)))
+	var live: Array = []
+	if not truck:
+		for node in get_tree().get_nodes_in_group("autonomous_traffic"):
+			if node is Node3D and node.is_inside_tree(): live.append(node.global_position)
+		if is_instance_valid(player): live.append(player.global_position)
 	for step in range(route.size()):
 		var i := (preferred+step)%route.size()
 		var item: Dictionary = route[i]
@@ -359,10 +510,18 @@ func _make_vehicle(route: Array,truck: bool,index: int) -> void:
 				clear = false
 				break
 		if not clear: continue
+		if not truck:
+			for other in live:
+				if p.distance_to(other)<(24.0 if kind=="neighborhood" else 15.0):
+					clear = false
+					break
+			if not clear: continue
 		var next: Vector3 = route[(i+1)%route.size()].p
 		var d := (next-p).normalized()
 		if item.has("stop"): d = item.stop.direction
 		if not truck and not world.street_geometry.intersection_clear_for_stop(p,4.25,1.83): continue
+		if not truck and kind=="neighborhood" and not world.street_geometry.four_lane_at(p,d).is_empty(): continue
+		if not truck and outer and world.street_geometry.four_lane_at(p,d).is_empty(): continue
 		if not Bypass._on_road(world.street_geometry,p,d,2.3 if truck else 1.83,6.2 if truck else 4.25): continue
 		if d.length_squared()<.1: continue
 		if not _free_box(p,d,Vector3(2.3 if truck else 1.83,2.7 if truck else 1.5,6.2 if truck else 4.25)): continue
@@ -377,7 +536,7 @@ func _make_vehicle(route: Array,truck: bool,index: int) -> void:
 	if item.has("stop"): direction = item.stop.direction
 	body.position = p+Vector3.UP*.04
 	body.rotation.y = atan2(direction.x,direction.z)
-	avoid.append(p)
+	if truck: avoid.append(p)
 	var crew: Array = []
 	if truck:
 		for i in range(2):
@@ -386,7 +545,7 @@ func _make_vehicle(route: Array,truck: bool,index: int) -> void:
 			person.setup(700+i,true)
 			person.hide()
 			crew.append({"node":person,"state":"idle","pause":0.0})
-	vehicles.append({"body":body,"route":route,"index":start if truck else (start+1)%route.size(),"speed":0.0,"truck":truck,"crew":crew,"site":{},"blocked":0.0,"cooldown":0.0,"detour":[],"detour_index":0,"resume":0})
+	vehicles.append({"body":body,"route":route,"index":start if truck else (start+1)%route.size(),"speed":0.0,"truck":truck,"crew":crew,"site":{},"blocked":0.0,"cooldown":0.0,"detour":[],"detour_index":0,"resume":0,"traffic_kind":kind})
 
 func _initialize() -> void:
 	planner.setup(world.geography)
@@ -420,9 +579,16 @@ func _initialize() -> void:
 	if not sites.is_empty(): _make_vehicle(route,true,0)
 	car_route = _civilian_route(car_route)
 	civilian_route = car_route
+	# Keep the existing rescue circuit. Spread the initial eight cars,
+	# then add the other traffic in batches while the city is running.
+	for i in range(ids.size()-1):
+		main_links[String(ids[i])+":"+String(ids[i+1])] = true
 	for i in range(8):
-		_make_vehicle(car_route,false,i)
-	print("Monte: ",sites.size()," garbage collection points; ",vehicles.size()," municipal/ordinary vehicles.")
+		_make_vehicle(car_route,false,i,8)
+	traffic_serial = 8
+	var outer := _traffic_route(ids,true)
+	_queue_traffic(outer,4,"avenue",true)
+	print("Monte: ",sites.size()," garbage collection points; ",vehicles.size()," initial municipal/ordinary vehicles.")
 
 func _begin_collection(vehicle: Dictionary,site: Dictionary) -> void:
 	vehicle.site = site
@@ -572,7 +738,7 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 			vehicle.index = (index+1)%route.size()
 		return
 	var direction := diff.normalized()
-	var limit := 6.5 if bool(vehicle.truck) else 10.5
+	var limit := 6.5 if bool(vehicle.truck) else (6.0 if String(vehicle.get("traffic_kind","avenue"))=="neighborhood" else 10.5)
 	var speed := minf(limit,maxf(.8,sqrt(2.0*4.0*distance)))
 	var next: Vector3 = route[(index+1)%route.size()].p
 	var next_dir := (next-target).normalized()
@@ -646,6 +812,8 @@ func tick(delta: float) -> void:
 	if not initialized:
 		initialized = true
 		_initialize()
+	elif not civilian_route.is_empty():
+		_traffic_tick(delta)
 	for vehicle in vehicles:
 		if bool(vehicle.get("incident_hold",false)): continue
 		_drive(vehicle,delta)
