@@ -13,8 +13,8 @@ const INITIAL := {
 	"mayorista_sol":{"harina":15,"queso":12,"tomate":14,"refresco":12},
 	"mayorista_union":{"aceite":12,"pollo":8,"perrito":9,"harina":8,"refresco":18,"tomate":10}
 }
-var business: Node
-var world: Node
+var business
+var world
 var ledger: Ledger
 var sites: Dictionary = {}
 var racks: Dictionary = {}
@@ -28,12 +28,15 @@ var avatar_food: Node3D
 var avatar_drink: Node3D
 var food_model := ""
 var drink_model := ""
+var bite_anim := 0.0
+var meal_arms: Array = []
+var last_first_person := true
 var save_clock := 0.0
 var economy_clock := 0.0
 var state: Dictionary = {}
 var rng := RandomNumberGenerator.new()
 
-func setup(mission: Node) -> void:
+func setup(mission) -> void:
 	business = mission
 	world = mission.world
 	ledger = mission.ledger
@@ -67,6 +70,27 @@ func setup(mission: Node) -> void:
 	_refresh_meal()
 	refresh_primary()
 	ledger.save_game()
+
+func attach_avatar(arms: Array) -> void:
+	if arms.size()<2: return
+	meal_arms = arms
+	avatar_food = Node3D.new()
+	avatar_drink = Node3D.new()
+	arms[0].add_child(avatar_food)
+	arms[1].add_child(avatar_drink)
+	avatar_food.position = Vector3(0,-.48,.10)
+	avatar_drink.position = Vector3(0,-.48,.10)
+	_refresh_meal()
+
+func pose_meal(first_person: bool,delta: float) -> void:
+	last_first_person = first_person
+	if meal_root!=null: meal_root.visible = first_person and not state.meal.is_empty()
+	if meal_arms.size()<2 or state.meal.is_empty(): return
+	for i in range(2):
+		var held := not food_model.is_empty() if i==0 else not drink_model.is_empty()
+		if held:
+			var arm: Node3D = meal_arms[i]
+			arm.rotation.x = lerpf(arm.rotation.x,-1.80 if bite_anim>.05 else -.85,minf(1.0,delta*12.0))
 
 func _make_hud() -> void:
 	fullness_bar = ProgressBar.new()
@@ -233,6 +257,9 @@ func interact(at: Vector3) -> bool:
 			ledger.save_game()
 			business._notify("Buen provecho. Pulsa E para comer o beber.")
 		return true
+	if not ledger.carry.is_empty():
+		business._notify("Deja la caja en un vehículo antes de comer.")
+		return true
 	_menu(id)
 	return true
 
@@ -277,6 +304,12 @@ func _refresh_meal() -> void:
 	drink_model = d
 	_draw_meal(food_view,f,int(meal.get("food_bites",0)))
 	_draw_meal(drink_view,d,int(meal.get("drink_sips",0)))
+	for view in [food_view,drink_view]:
+		if view.get_child_count()>0:
+			business._box(view,Vector3(0,-.07,.05),Vector3(.12,.07,.10),Color("#c59169"))
+	if avatar_food!=null:
+		_draw_meal(avatar_food,f,int(meal.get("food_bites",0)))
+		_draw_meal(avatar_drink,d,int(meal.get("drink_sips",0)))
 
 func _draw_meal(root: Node3D,kind: String,count: int) -> void:
 	for child in root.get_children():
@@ -298,6 +331,8 @@ func _draw_meal(root: Node3D,kind: String,count: int) -> void:
 		business._box(root,Vector3(0,.04,0),Vector3(.20*float(count)/3.0,.035,.04),Color("#a95644"))
 
 func _eat() -> void:
+	if bite_anim>0.0: return
+	bite_anim = .55
 	var meal: Dictionary = state.meal
 	var key := String(meal.get("key",""))
 	if not MENU.has(key): return
@@ -385,8 +420,39 @@ func greet(person: Node3D) -> String:
 func _plan(agent: Dictionary,goal: Vector3,task: String) -> bool:
 	if world.pedestrian_router==null: return false
 	var person: Person = agent.node
-	var path: PackedVector3Array = world.pedestrian_router.call("route_between",person.global_position,goal)
-	if path.size()<2: return false
+	var site: Dictionary = sites[agent.site]
+	var basis: Basis = site.basis
+	var c: Vector3 = site.center
+	var home: Vector3 = agent.home
+	var entrance: Vector3 = site.entrance
+	var local := basis.inverse()*(person.global_position-c)
+	var start := person.global_position
+	var finish := goal
+	var prefix := PackedVector3Array()
+	var suffix := PackedVector3Array()
+	# Leave and enter the open storefront via its actual doorway,
+	# walking around the counter rather than through its solid wall.
+	if absf(local.x)<3.9 and local.z<4.05 and local.z> -4.0:
+		var side := c+basis*Vector3(2.35,.11,local.z)
+		var aisle := c+basis*Vector3(2.35,.11,3.65)
+		prefix.append(start)
+		prefix.append(side)
+		prefix.append(aisle)
+		prefix.append(entrance)
+		start = entrance
+	if goal.distance_to(home)<.2:
+		finish = entrance
+		var home_local := basis.inverse()*(home-c)
+		suffix.append(c+basis*Vector3(2.35,.11,3.65))
+		suffix.append(c+basis*Vector3(2.35,.11,home_local.z))
+		suffix.append(home)
+	var middle: PackedVector3Array = world.pedestrian_router.call("route_between",start,finish)
+	if middle.size()<2: return false
+	var path := prefix
+	for point in middle: path.append(point)
+	for point in suffix: path.append(point)
+	for i in range(1,path.size()):
+		if not world.pedestrian_segment_clear(path[i-1],path[i]): return false
 	agent.path = path
 	agent.index = 1
 	agent.task = task
@@ -432,11 +498,8 @@ func _tick_agents(delta: float) -> void:
 				var key := String(agent.ingredient)
 				var supplier := String(agent.supplier)
 				var price := int(Ledger.PRODUCTS[key].cost)
-				if int(cafe.cash)>=price and reserve_crate(supplier,key):
-					cafe.cash = int(cafe.cash)-price
-					agent.delivery = {"key":key,"units":10}
-					refresh_supplier(supplier)
-					ledger.save_game()
+				if int(cafe.cash)>=price and available(supplier,key):
+					agent.delivery = {"key":key,"units":10,"supplier":supplier,"price":price}
 				agent.timer = 3.0
 				agent.task = "return_pending"
 			elif task=="return":
@@ -444,9 +507,12 @@ func _tick_agents(delta: float) -> void:
 				if not delivery.is_empty():
 					var cafe: Dictionary = state.cafes[agent.site]
 					var key := String(delivery.key)
-					cafe[key] = int(cafe.get(key,0))+int(delivery.units)
+					if int(cafe.cash)>=int(delivery.price) and reserve_crate(String(delivery.supplier),key):
+						cafe.cash = int(cafe.cash)-int(delivery.price)
+						cafe[key] = int(cafe.get(key,0))+int(delivery.units)
+						refresh_supplier(String(delivery.supplier))
+						ledger.save_game()
 					agent.delivery = {}
-					ledger.save_game()
 				person.social_context = "worker"
 				agent.departed = false
 			elif task=="break":
@@ -477,11 +543,14 @@ func _tick_agents(delta: float) -> void:
 			agent.timer = 8.0
 
 func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
+	if fullness_bar!=null: fullness_bar.visible = not editor
+	if clock_label!=null: clock_label.visible = not editor
 	if editor: return
+	bite_anim = maxf(0.0,bite_anim-delta)
 	state.minutes = fmod(float(state.minutes)+delta,1440.0)
 	state.fullness = maxf(0.0,float(state.fullness)-delta/9.0)
 	if meal_root!=null:
-		meal_root.visible = not in_vehicle and not state.meal.is_empty()
+		meal_root.visible = not in_vehicle and last_first_person and not state.meal.is_empty()
 		food_view.position.y = move_toward(food_view.position.y,-.36,delta*.5)
 		drink_view.position.y = move_toward(drink_view.position.y,-.36,delta*.5)
 	var order: Dictionary = state.order
