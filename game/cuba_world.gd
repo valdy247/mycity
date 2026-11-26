@@ -6,6 +6,7 @@ const HavanaTextures = preload("res://havana_textures.gd")
 var havana_textures := HavanaTextures.new()
 var texture_anchor := Vector3.ZERO
 var texture_market := Vector3.ZERO
+var texture_kinds: Dictionary = {}
 var street_geometry := StreetGeometry.new()
 const EDIT_FILE := "user://pilar_atares_edits_v1.json"
 var map_edits: Dictionary = {}
@@ -104,6 +105,10 @@ func _chunk_body(tile: Vector2i, layer_id: int) -> StaticBody3D:
 func _textured(base: StandardMaterial3D,at: Vector3) -> StandardMaterial3D:
 	if at.distance_squared_to(texture_anchor)>62500.0 and at.distance_squared_to(texture_market)>32400.0:
 		return base
+	var material_id := base.get_instance_id()
+	if texture_kinds.has(material_id):
+		var cached: String = texture_kinds[material_id]
+		return base if cached.is_empty() else havana_textures.material(base,cached)
 	var kind := ""
 	for key in mats:
 		if mats[key]!=base:
@@ -117,9 +122,10 @@ func _textured(base: StandardMaterial3D,at: Vector3) -> StandardMaterial3D:
 			kind = "tile"
 		elif k in ["home_wood_cuba","old_door","facade_door","alborada_blue","public_wood"]:
 			kind = "wood"
-		elif k in ["old_sidewalk","old_stone","facade_trim","home_trim"]:
+		elif k in ["old_sidewalk","old_stone","facade_trim","home_trim","market_trim"]:
 			kind = "stone"
 		break
+	texture_kinds[material_id] = kind
 	return base if kind.is_empty() else havana_textures.material(base,kind)
 
 func _cube(at: Vector3, size: Vector3, material: StandardMaterial3D, angle: float = 0.0, solid: bool = false) -> void:
@@ -325,6 +331,16 @@ func _home_score(lot: Dictionary,anchor: Vector3) -> float:
 # Facing the facade from the street, +basis.x is the viewer's right.
 # Move the fictional home to the old shop position, and reconstruct the
 # shop on its immediate right. No real private address is persisted.
+func _on_monte_alignment(p: Vector3,direction: Vector3) -> bool:
+	for edge in geography.roads_near(p,2.0):
+		if geography.street_label(String(edge.name))!="MONTE":
+			continue
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		if absf((b-a).normalized().dot(direction))>.98 and Geometry3D.get_closest_point_to_segment(p,a,b).distance_to(p)<.35:
+			return true
+	return false
+
 func _monte_pair(anchor: Vector3) -> Array:
 	var best: Array = []
 	var best_score := INF
@@ -344,7 +360,7 @@ func _monte_pair(anchor: Vector3) -> Array:
 			var curb := q+right*float(shift)
 			var shop_curb := curb+right*9.12
 			# Both premises stay on the same street frontage; no corner crossing.
-			if Geometry3D.get_closest_point_to_segment(curb,a,b).distance_to(curb)>0.15 or Geometry3D.get_closest_point_to_segment(shop_curb,a,b).distance_to(shop_curb)>0.15:
+			if not _on_monte_alignment(curb,d) or not _on_monte_alignment(shop_curb,d):
 				continue
 			for setback in [1.65,1.95,2.25]:
 				var offset := outward*(float(edge.width)*.5+float(setback)+4.5)
@@ -816,6 +832,8 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		editable_buildings[String(fp.id)] = {"poly":poly,"center":center,"height":h,"name":String(tags.get("name","Edificio")),"protected":market or String(fp.id)==alborada_poly_id,"front":front}
 		if not front.is_empty():
 			_detail_front(front,h,idx,portal,market)
+			if market:
+				_market_side_details(poly,front,h)
 			var name_value := String(tags.get("name",""))
 			if market:
 				name_value = "PLAZA DE CUATRO CAMINOS"
@@ -838,6 +856,7 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 			var front := _front_edge(market_block)
 			if not front.is_empty():
 				_detail_front(front,10.0,0,false,true)
+				_market_side_details(market_block,front,10.0)
 				var m: Vector3 = front.mid
 				var n: Vector3 = front.normal
 				_label("PLAZA DE CUATRO CAMINOS",m+n*.15+Vector3.UP*3.15,.013,atan2(n.x,n.z),Color("#554d3e"))
@@ -854,6 +873,39 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 			var n := (q-public_anchor).normalized()
 			_label("LA ALBORADA",public_anchor+Vector3.UP*2.85,.010,atan2(n.x,n.z),Color("#f5ead0"))
 		print("La Alborada: named geographic point; building footprint unavailable.")
+
+# Cuatro Caminos: repeated bays, pilasters and upper windows on each
+# long street-facing edge. Keep all decoration inside the legal footprint.
+func _market_side_details(poly: PackedVector2Array,primary: Dictionary,h: float) -> void:
+	var stone := _mat("market_trim",Color("#c0b39b"))
+	for i in range(poly.size()):
+		var j := (i+1)%poly.size()
+		var a := Vector3(poly[i].x,0,poly[i].y)
+		var b := Vector3(poly[j].x,0,poly[j].y)
+		var length := a.distance_to(b)
+		if length<9.0:
+			continue
+		var mid := (a+b)*.5
+		var tangent := (b-a).normalized()
+		var n := Vector3(-tangent.z,0,tangent.x)
+		var sample := mid+n*.25
+		if Geometry2D.is_point_in_polygon(Vector2(sample.x,sample.z),poly):
+			n = -n
+		var road := _nearest_street(mid)
+		if road.is_empty():
+			continue
+		var road_a: Vector3 = road.a
+		var road_b: Vector3 = road.b
+		var nearest := Geometry3D.get_closest_point_to_segment(mid,road_a,road_b)
+		if nearest.distance_to(mid)>22.0 or n.dot(nearest-mid)<0.0:
+			continue
+		var count := clampi(roundi(length/4.2),2,32)
+		var angle := atan2(n.x,n.z)
+		for k in range(count+1):
+			var p := a.lerp(b,float(k)/float(count))
+			_cube(p-n*.04+Vector3.UP*(h*.48),Vector3(.24,h*.88,.12),stone,angle)
+		if mid.distance_to(primary.mid)>1.0:
+			_detail_front({"a":a,"b":b,"normal":n,"mid":mid,"road":road},h,0,false,true)
 
 func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool) -> void:
 	var a: Vector3 = front.a
