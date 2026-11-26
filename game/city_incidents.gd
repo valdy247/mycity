@@ -189,6 +189,13 @@ func _crowd_tick(center: Vector3,delta: float) -> void:
 			if not node is Person or not node.is_visible_in_tree() or node.has_meta("incident_role"): continue
 			if node.global_position.distance_to(center)>30.0: continue
 			if String(node.social_context)!="bus_wait": continue
+			var at: Vector3 = node.global_position
+			if at.distance_to(center)<=8.0 and at.distance_to(center)>=1.8 and not streets.point_on_road(at) and _witness_slot_free(at) and crowd.size()<4:
+				var witness := _impact_agent(node)
+				if not witness.is_empty():
+					_lock(witness,"curioso")
+					crowd.append({"agent":witness,"target":at,"path":PackedVector3Array(),"index":0,"time":0.0,"last":at,"stuck":0.0})
+					continue
 			candidates.append({"node":node,"waiting_witness":true})
 		for agent in candidates:
 			if crowd.size()>=8: break
@@ -869,9 +876,12 @@ func _assign_rescue(victim: Dictionary,car: Dictionary,approach: Dictionary) -> 
 func _reserve_responder(victim: Dictionary,center: Vector3) -> bool:
 	# One supplementary civilian, only on a free road away from the event.
 	# It has the same geometry and navigation rules as ordinary traffic.
+	var extras := 0
 	for car in municipal.vehicles:
-		if bool(car.get("rescue_extra",false)) and bool(car.get("incident_hold",false)): return false
-	if municipal.civilian_route.size()<2: return false
+		if not bool(car.get("rescue_extra",false)): continue
+		extras += 1
+		if bool(car.get("incident_hold",false)): return false
+	if extras>=2 or municipal.civilian_route.size()<2: return false
 	var goals: Array = []
 	for goal in _berths(center,RESCUE_WALK_RANGE).slice(0,24):
 		if _rescue_foot_access(goal,center).is_empty(): continue
@@ -951,7 +961,8 @@ func _rescue_start(victim: Dictionary) -> void:
 		if int(failed.get(body.get_instance_id(),0))>Time.get_ticks_msec(): continue
 		candidates.append(car)
 	candidates.sort_custom(func(a,b): return (a.body as Node3D).global_position.distance_squared_to(center)<(b.body as Node3D).global_position.distance_squared_to(center))
-	for car in candidates.slice(0,8):
+	var budget := 3 if float(victim.time)>=8.0 else 5
+	for car in candidates.slice(0,budget):
 		var body: CharacterBody3D = car.body
 		var parked := _park_here(body,center)
 		var approach := {"trip":_new_trip(body,[]),"berth":parked} if not parked.is_empty() else _car_trip(body,center,RESCUE_WALK_RANGE)
@@ -1137,6 +1148,8 @@ func _rescue_tick(delta: float) -> void:
 		var arrived := _drive_trip(scene.trip,delta)
 		if not arrived:
 			if float(scene.trip.get("traffic_stall",0.0))<3.5: return
+			if float(scene.age)<float(scene.get("next_park_probe",0.0)): return
+			scene.next_park_probe = float(scene.age)+1.0
 			var parked := _park_here(body,scene.center)
 			if not parked.is_empty():
 				scene.berth = parked
