@@ -43,8 +43,8 @@ func setup(city: World,taxi_service: Taxi,actor: CharacterBody3D,vehicle: Charac
 	_make_scene()
 	_sync_visuals()
 	_update_hud()
-	if world.food_factory.is_empty() or world.home_root==null:
-		_notify("La primera misión requiere una casa y una parcela libre para la fábrica.")
+	if world.food_factory.is_empty() or world.business_frontage==null:
+		_notify("La primera misión requiere un puesto de venta y una parcela libre para la fábrica.")
 	else:
 		taxis.set_business_points(world.food_factory.road,world.van_spawn,ledger.stage>=1)
 
@@ -126,8 +126,8 @@ func _crate(root: Node3D,p: Vector3,key: String) -> Node3D:
 	return node
 
 func _make_scene() -> void:
-	if world.home_root==null or world.food_factory.is_empty(): return
-	var home := world.home_root
+	if world.business_frontage==null or world.food_factory.is_empty(): return
+	var home := world.business_frontage
 	albertico = _person(self,Color("#638e77"))
 	albertico.position = home.to_global(Vector3(-2.55,.105,2.85))
 	albertico.rotation.y = home.rotation.y
@@ -291,7 +291,7 @@ func cargo_action(at: Vector3) -> bool:
 	var id := String(vehicle.id)
 	if not ledger.carry.is_empty():
 		if ledger.load_vehicle(id):
-			_notify("Caja cargada. Ahora viaja a casa o sigue comprando.")
+			_notify("Caja cargada. Ahora viaja al puesto o sigue comprando.")
 		else:
 			_notify("El vehículo está lleno: máximo 8 cajas.")
 	elif ledger.unload_vehicle(id):
@@ -467,14 +467,14 @@ func _sync_cargo_views() -> void:
 		cargo_views[key] = _label(body,"%d cajas · G" % count,Vector3(0,2.65,0),Color("#ffe19a"))
 
 func _objective() -> String:
-	if albertico==null: return "Misión no disponible: falta la fábrica o vivienda."
+	if albertico==null: return "Misión no disponible: falta la fábrica o el puesto."
 	match ledger.stage:
-		0: return "Habla con Albertico frente a tu casa."
+		0: return "Habla con Albertico en su puesto de Monte."
 		1: return "Toma un taxi y selecciona Fábrica de alimentos."
 		2: return "Compra cajas y cárgalas en el carro con G."
 		3:
 			if ledger.total(ledger.stock)>0: return "Contrata a Albertico para vender."
-			return "Vuelve a casa, descarga con G y entrega con E."
+			return "Vuelve al puesto, descarga con G y entrega con E."
 		4: return "Negocio activo · Repón mercancía cuando Albertico avise."
 	return ""
 
@@ -511,7 +511,7 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 				_sync_visuals()
 	if buyer!=null and buyer_time>0.0:
 		buyer_time -= delta
-		var target := stand.position+world.home_root.transform.basis.x*.9
+		var target := stand.position+world.business_frontage.transform.basis.x*.9
 		if buyer_time<3.0: target = buyer_origin
 		buyer.position = buyer.position.move_toward(target,delta*1.5)
 		var direction := target-buyer.position
