@@ -11,6 +11,11 @@ var style_id := 0
 var female := false
 var social_context := "street"
 var carried: Node3D
+var age_group := "adulto"
+var gait := 1.0
+var leisure_prop: Node3D
+var phone_idle := false
+var knees: Array[Node3D] = []
 
 func _material(color: Color) -> StandardMaterial3D:
 	var key := color.to_html()
@@ -56,7 +61,7 @@ func _part(root: Node3D,kind: String,p: Vector3,dims: Vector3,color: Color,detai
 	node.scale = dims
 	return node
 
-func setup(style: int,worker: bool = false) -> void:
+func setup(style: int,worker: bool = false,ambient: bool = false) -> void:
 	style_id = style
 	female = not worker and posmod(style,3)==1
 	add_to_group("social_people")
@@ -81,6 +86,14 @@ func setup(style: int,worker: bool = false) -> void:
 	var hip_width := .35 if worker else (.36+float(build)*.025 if female else .32+float(build)*.018)
 	var depth := .27 if worker else .24+float(build)*.025
 	var height := 0.94+float(posmod(style,5))*.035
+	if ambient and posmod(variant,13)==0:
+		age_group = "menor"
+		height *= .73
+		gait = 1.13
+	elif ambient and posmod(variant,7)==0:
+		age_group = "mayor"
+		height *= .94
+		gait = .76
 	scale = Vector3(height,height,height)
 	_part(self,"limb",Vector3(0,1.18,0),Vector3(torso_width,.58,depth),shirt)
 	_part(self,"head",Vector3(0,.88,0),Vector3(hip_width,.23,depth),pants)
@@ -88,8 +101,13 @@ func setup(style: int,worker: bool = false) -> void:
 	_part(self,"head",Vector3(0,1.66,.015),Vector3(.28,.34,.29),skin)
 	var hair_colors: Array[Color] = [Color("#231e1b"),Color("#302b28"),Color("#4b3428"),Color("#3c3531")]
 	var hair: Color = Color("#d5c14b") if worker else hair_colors[posmod(variant,hair_colors.size())]
+	if age_group=="mayor": hair = Color("#a29d96")
 	_part(self,"head",Vector3(0,1.77,-.028),Vector3(.29,.17,.29),hair)
-	_part(self,"box",Vector3(0,1.65,.155),Vector3(.064,.075,.055),skin,true)
+	_part(self,"head",Vector3(0,1.65,.155),Vector3(.055,.067,.048),skin,true)
+	for side in [-1.0,1.0]:
+		_part(self,"box",Vector3(float(side)*.060,1.69,.146),Vector3(.045,.022,.014),Color("#d9d3c9"),true)
+		_part(self,"box",Vector3(float(side)*.060,1.69,.156),Vector3(.017,.019,.008),Color("#302823"),true)
+	_part(self,"box",Vector3(0,1.59,.149),Vector3(.062,.012,.009),Color("#805345"),true)
 	var shoe: Color = Color("#393832") if worker or outfit==0 else (Color("#e1ddd4") if outfit%2==1 else Color("#464b50"))
 	for side in [-1.0,1.0]:
 		var x := float(side)
@@ -103,8 +121,12 @@ func setup(style: int,worker: bool = false) -> void:
 			_part(leg,"limb",Vector3(0,-.315,0),Vector3(thigh_width*.88,.21,.16),skin)
 		else:
 			_part(leg,"limb",Vector3(0,-.21,0),Vector3(thigh_width,.42,.18),pants)
-		_part(leg,"limb",Vector3(0,-.59,0),Vector3(.13,.36,.14),skin if shorts else pants)
-		_part(leg,"box",Vector3(0,-.80,.05),Vector3(.16,.12,.27),shoe)
+		var knee := Node3D.new()
+		leg.add_child(knee)
+		knee.position = Vector3(0,-.42,0)
+		knees.append(knee)
+		_part(knee,"limb",Vector3(0,-.17,0),Vector3(.13,.36,.14),skin if shorts else pants)
+		_part(knee,"box",Vector3(0,-.38,.05),Vector3(.16,.12,.27),shoe)
 		var arm := Node3D.new()
 		add_child(arm)
 		# Preserve shoulder/leg pivots used by the rescue choreography.
@@ -132,17 +154,30 @@ func setup(style: int,worker: bool = false) -> void:
 			var bag := Color("#16734f") if outfit==1 else Color("#343637")
 			_part(self,"box",Vector3(.25,1.02,-.10),Vector3(.25,.34,.13),bag,true)
 			_part(self,"box",Vector3(.22,1.29,-.11),Vector3(.045,.31,.035),bag,true)
+	if ambient and age_group=="adulto" and posmod(variant,5)==0:
+		leisure_prop = Node3D.new()
+		arms[1].add_child(leisure_prop)
+		leisure_prop.position = Vector3(0,-.48,.05)
+		_part(leisure_prop,"box",Vector3.ZERO,Vector3(.065,.115,.018),Color("#262b2e"),true)
+		leisure_prop.hide()
 	if worker:
 		social_context = "worker"
 		_part(self,"box",Vector3(0,1.14,.14),Vector3(.38,.075,.018),Color("#eee0a0"))
 		_part(self,"box",Vector3(0,1.14,-.14),Vector3(.38,.075,.018),Color("#eee0a0"))
 
 func animate(delta: float,moving: bool) -> void:
-	if moving: phase += delta*9.5
+	if moving: phase += delta*9.5*gait
+	var use_phone := phone_idle and not moving and carried==null and not has_meta("incident_role")
+	if is_instance_valid(leisure_prop): leisure_prop.visible = use_phone
 	for i in range(limbs.size()):
-		var swing := sin(phase+float(i)*PI)*.43 if moving else 0.0
-		limbs[i].rotation.x = lerpf(limbs[i].rotation.x,swing,minf(1.0,delta*15.0))
-		arms[i].rotation.x = lerpf(arms[i].rotation.x,-swing*.72 if carried==null else -.85,minf(1.0,delta*15.0))
+		var stride := sin(phase+float(i)*PI) if moving else 0.0
+		var swing := stride*.43
+		var blend := minf(1.0,delta*15.0)
+		limbs[i].rotation.x = lerpf(limbs[i].rotation.x,swing,blend)
+		knees[i].rotation.x = lerpf(knees[i].rotation.x,maxf(0.0,-stride)*.48,blend)
+		var arm_pose := -swing*.72 if carried==null else -.85
+		if use_phone and i==1: arm_pose = -1.15
+		arms[i].rotation.x = lerpf(arms[i].rotation.x,arm_pose,blend)
 
 func conversation_active(delta: float) -> bool:
 	if Time.get_ticks_msec()>=int(get_meta("conversation_until",0)): return false
