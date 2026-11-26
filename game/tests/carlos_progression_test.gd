@@ -26,10 +26,34 @@ func _initialize() -> void:
 	_check(bool(garage.state.projects.bicicleta.wheel_a),"migration is idempotent")
 	var mission := Mission.new()
 	var keys: Dictionary = {}
-	for wall in range(4):
-		for y in range(Mission.ROWS):
-			for x in range(Mission.COLS): keys[mission._cell_key(wall,x,y)] = true
-	_check(keys.size()==Mission.TOTAL,"unique paint cells across four walls")
+	for wall in range(5):
+		for y in range(mission._rows(wall)):
+			for x in range(mission._columns(wall)):
+				if mission._covered(wall,x,y): continue
+				keys[mission._cell_key(wall,x,y)] = mission._required(wall)
+	_check(keys.size()==Mission.TOTAL,"four wall surfaces plus six door cells without double-counting")
+	mission.state = {"painted":keys.duplicate()}
+	mission.correct_tiles = mission._correct_count()
+	_check(mission._finished(),"correct blue walls and yellow door permit payment")
+	mission.state.painted["4:0:0"] = "blue"
+	mission.correct_tiles = mission._correct_count()
+	_check(not mission._finished(),"blue door prevents payment")
+	mission.state.painted["0:0:0"] = "yellow"
+	mission.correct_tiles = mission._correct_count()
+	_check(mission.correct_tiles==Mission.TOTAL-2,"wrong wall and door colors both rejected")
+	var repair := mission._worker_next()
+	_check(int(repair.get("wall",-1))==0 and String(repair.get("color",""))=="blue","Carlos repairs wrong wall after his own wall")
+	mission.state.painted["0:0:0"] = "blue"
+	repair = mission._worker_next()
+	_check(int(repair.get("wall",-1))==4 and String(repair.get("color",""))=="yellow","Carlos repairs wrong door with yellow")
+	mission.state.painted["4:0:0"] = "yellow"
+	mission.correct_tiles = mission._correct_count()
+	_check(mission._finished(),"correcting errors restores completion")
+	garage.state.part = "bicicleta:wheel_a"
+	garage.state.wheel_tutorial = false
+	_check(garage._wheel_pending(),"reward wheel awaits physical garage arrival")
+	garage.state.wheel_tutorial = true
+	_check(not garage._wheel_pending(),"tutorial cannot be repeated")
 	mission.free()
 	garage.free()
 	business.free()
