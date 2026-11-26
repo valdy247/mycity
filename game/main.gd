@@ -8,6 +8,8 @@ const PilarEditor = preload("res://pilar_editor.gd")
 const TaxiService = preload("res://taxi_service.gd")
 const UrbanBuses = preload("res://urban_buses.gd")
 const BusinessMission = preload("res://business_mission.gd")
+const HomeGarage = preload("res://home_garage.gd")
+var garage: HomeGarage
 const MontePedestrians = preload("res://monte_pedestrians.gd")
 const MonteServices = preload("res://monte_services.gd")
 var monte_pedestrians: MontePedestrians
@@ -157,6 +159,10 @@ func _ready() -> void:
 		monte_pedestrians = MontePedestrians.new()
 		add_child(monte_pedestrians)
 		monte_pedestrians.setup(cuba_world,urban_buses)
+		garage = HomeGarage.new()
+		add_child(garage)
+		garage.setup(self)
+		business.garage_market = garage.open_phone_market
 		first_person = true
 		_face_cuba_home()
 		_apply_camera_mode()
@@ -405,15 +411,19 @@ func _process(delta: float) -> void:
 func _apply_camera_mode() -> void:
 	if player == null or arm == null:
 		return
-	if driving:
+	if garage!=null and garage.riding:
+		arm.spring_length = 4.2
+		avatar.hide()
+	elif driving:
 		arm.spring_length = 7.5
 		avatar.hide()
 	else:
 		avatar.visible = not first_person
 		arm.spring_length = 0.0 if first_person else (2.15 if city_world != null and (city_world.inside_home or (city_world.bakery != null and city_world.bakery.inside) or (cuba_world != null and cuba_world.current_room>=0)) else 4.5)
 		pivot.position.y = .65
+	if garage!=null and garage.inside and not first_person: arm.spring_length = 2.0
 	if reticle != null:
-		reticle.visible = first_person and not driving and not building_mode
+		reticle.visible = first_person and not driving and not building_mode and not (garage!=null and garage.riding)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode==KEY_H and not building_mode and not (business!=null and business.modal_open()) and not (taxis!=null and taxis.dialog.visible):
@@ -424,11 +434,20 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event is InputEventKey and event.pressed and not event.echo and event.keycode in [KEY_ESCAPE,KEY_P]:
 			business.close()
 		return
+	if garage!=null and garage.riding:
+		if event is InputEventKey and event.pressed and not event.echo:
+			if event.keycode==KEY_E: interact_requested = true
+			elif event.keycode==KEY_R: reset_requested = true
+		if event is InputEventMouseMotion and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED:
+			yaw -= event.relative.x*.003
+			pitch = clampf(pitch-event.relative.y*.003,-.95,.30)
+			pivot.rotation = Vector3(pitch,yaw,0)
+		return
 	if business!=null and not bus_riding and not building_mode and not (taxis!=null and taxis.dialog.visible) and event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode==KEY_P:
 			business.open_phone()
 			return
-		if event.keycode==KEY_G and not driving and not taxi_riding and not city_world.seated:
+		if event.keycode==KEY_G and not driving and not taxi_riding and not city_world.seated and not (garage!=null and garage.inside):
 			cargo_requested = true
 			return
 	if cuba_world!=null and player!=null and event is InputEventKey and event.pressed and not event.echo and event.keycode==KEY_F9 and not (pilar_editor!=null and pilar_editor.active) and not (taxis!=null and taxis.dialog.visible):
@@ -471,7 +490,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if pilar_editor != null and pilar_editor.active:
 		pilar_editor.handle(event)
 		return
-	if pilar_editor != null and not driving and event is InputEventMouseButton and event.pressed and event.button_index==MOUSE_BUTTON_RIGHT:
+	if pilar_editor != null and not driving and not (garage!=null and garage.inside) and event is InputEventMouseButton and event.pressed and event.button_index==MOUSE_BUTTON_RIGHT:
 		context_requested = true
 		return
 	if builder != null and builder.active:
@@ -480,6 +499,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if building_mode:
 		return
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_B:
+		if garage!=null and garage.inside: return
 		if pilar_editor != null:
 			if not driving:
 				_open_pilar_editor(player.global_position,false)
@@ -817,6 +837,7 @@ func _face_cuba_home() -> void:
 	pivot.rotation = Vector3(pitch,yaw,0)
 
 func _reset_player() -> void:
+	if garage!=null: garage.reset()
 	if monte_services!=null:
 		monte_services.return_player_bag()
 	if city_world != null:
@@ -881,6 +902,9 @@ func _update_hud() -> void:
 	if not controls_expanded:
 		_update_compact_hud()
 		return
+	if garage!=null and garage.riding:
+		status.text = "Vehículo · %d km/h\nW/S: acelerar y retroceder | A/D: girar\nEspacio: frenar | E: bajar | H: ocultar controles" % roundi(absf(garage.ride_speed)*3.6)
+		return
 	if bus_riding:
 		var bus: Dictionary = urban_buses.player_bus
 		status.text = "GUAGUA | "+String(bus.get("line",""))+"\n"
@@ -899,7 +923,8 @@ func _update_hud() -> void:
 		status.text += "\nW/S: acelerar y retroceder | A/D: girar | Espacio: frenar\nE: salir detenido | R: reiniciar | Esc: liberar mouse"
 	else:
 		status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
-		var action := business.aimed_text(player.global_position) if business!=null else ""
+		var action := garage.action_text(player.global_position) if garage!=null else ""
+		if action.is_empty() and business!=null: action = business.aimed_text(player.global_position)
 		if action.is_empty() and business!=null and business.life!=null: action = business.life.action_text(player.global_position)
 		if action.is_empty() and _aimed_person()!=null: action = "[E] Saludar"
 		if action.is_empty() and urban_buses!=null and not urban_buses.nearby_boarding(player.global_position).is_empty(): action = "[E] Subir a la guagua"
@@ -941,7 +966,9 @@ func _update_hud() -> void:
 # Gameplay prompts remain visible with the large help overlay collapsed.
 func _update_compact_hud() -> void:
 	var lines: Array[String] = ["[H] Controles"]
-	if bus_riding:
+	if garage!=null and garage.riding:
+		lines.append("%d km/h · [E] Bajar detenido" % roundi(absf(garage.ride_speed)*3.6))
+	elif bus_riding:
 		var bus: Dictionary = urban_buses.player_bus
 		lines.append("Guagua "+String(bus.get("line",""))+" · "+("Bajada solicitada" if urban_buses.player_exit_requested else "[E] Bajar en próxima parada"))
 	elif taxi_riding:
@@ -949,7 +976,8 @@ func _update_compact_hud() -> void:
 	elif driving:
 		lines.append("%d km/h · [E] Bajar detenido" % roundi(absf(drive_speed)*3.6))
 	else:
-		var action := business.aimed_text(player.global_position) if business!=null else ""
+		var action := garage.action_text(player.global_position) if garage!=null else ""
+		if action.is_empty() and business!=null: action = business.aimed_text(player.global_position)
 		if action.is_empty() and business!=null and business.life!=null: action = business.life.action_text(player.global_position)
 		if action.is_empty() and _aimed_person()!=null: action = "[E] Saludar"
 		if action.is_empty() and urban_buses!=null and not urban_buses.nearby_boarding(player.global_position).is_empty(): action = "[E] Subir a la guagua"
@@ -961,6 +989,7 @@ func _update_compact_hud() -> void:
 		if action.is_empty() and taxis!=null and not taxis.nearby(player.global_position).is_empty(): action = "[E] Tomar taxi"
 		if action.is_empty() and _near_van(): action = "[E] Subir a la van"
 		if not action.is_empty(): lines.append(action)
+	if garage!=null and not garage.gps_hint().is_empty(): lines.append(garage.gps_hint())
 	if cuba_world!=null and cuba_world.prompt_time>0.0: lines.append(cuba_world.prompt)
 	if monte_services!=null and monte_services.notice_time>0.0: lines.append(monte_services.notice)
 	if message_time>0.0: lines.append(exit_message)
@@ -1113,6 +1142,30 @@ func _physics_process(delta: float) -> void:
 	if player == null:
 		return
 	social_cooldown = maxf(0.0,social_cooldown-delta)
+	if garage!=null and not building_mode and not business.modal_open() and not (taxis!=null and taxis.dialog.visible):
+		garage.tick(delta)
+	if garage!=null and garage.riding:
+		if reset_requested:
+			reset_requested = false
+			_reset_player()
+			return
+		if interact_requested:
+			interact_requested = false
+			garage.interact(player.global_position)
+			if not garage.riding: return
+		cuba_world.tick(delta)
+		if urban_buses!=null: urban_buses.tick(delta)
+		if monte_services!=null: monte_services.tick(delta)
+		if monte_pedestrians!=null: monte_pedestrians.tick(delta)
+		if taxis!=null: taxis.tick(delta,cuba_world.cuba_clock)
+		if business!=null: business.tick(delta,true,false)
+		garage.drive(delta,_read_controls())
+		message_time = maxf(0.0,message_time-delta)
+		hud_time += delta
+		if hud_time>=.12:
+			hud_time = 0.0
+			_update_hud()
+		return
 	if bus_riding:
 		if bus_reset_requested:
 			_leave_bus(true)
@@ -1224,13 +1277,20 @@ func _physics_process(delta: float) -> void:
 			elif not _safe_exit():
 				exit_message = "No hay espacio para salir. Mueve la van."
 				message_time = 2.0
+		elif garage!=null and garage.interact(player.global_position):
+			player.velocity = Vector3.ZERO
+			_update_hud()
+			return
 		elif business!=null and business.life!=null and not business.life.state.meal.is_empty():
 			business.life.interact(player.global_position)
+			return
+		elif garage!=null and (not String(garage.state.held_furniture).is_empty() or not String(garage.state.part).is_empty()) and business!=null and not business.aimed_text(player.global_position).is_empty():
+			business._notify("Primero deja el mueble o la pieza en casa.")
 			return
 		elif business!=null and business.take_aimed(player.global_position):
 			_update_hud()
 			return
-		elif business!=null and business.life!=null and (monte_services==null or monte_services.player_bag==null) and business.life.interact(player.global_position):
+		elif business!=null and business.life!=null and (garage==null or (String(garage.state.part).is_empty() and String(garage.state.held_furniture).is_empty())) and (monte_services==null or monte_services.player_bag==null) and business.life.interact(player.global_position):
 			player.velocity = Vector3.ZERO
 			return
 		elif _greet_person():
