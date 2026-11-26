@@ -634,7 +634,11 @@ func _replace_object(id: String,record: Dictionary) -> void:
 func _save_objects() -> void:
 	var f := FileAccess.open(SAVE,FileAccess.WRITE)
 	if f!=null:
-		f.store_string(JSON.stringify(records,"\t"))
+		var payload := records.duplicate(true)
+		if world.home_root!=null:
+			var home := world.home_root.global_transform
+			payload["__home_layout"] = {"x":home.origin.x,"z":home.origin.z,"angle":world.home_root.rotation.y}
+		f.store_string(JSON.stringify(payload,"\t"))
 		f.close()
 	else:
 		message = "No se pudo guardar."
@@ -648,9 +652,18 @@ func _load_objects() -> void:
 	var f := FileAccess.open(SAVE,FileAccess.READ)
 	if f==null:
 		return
-	var data: Variant = JSON.parse_string(f.get_as_text())
+	var raw := f.get_as_text()
+	f.close()
+	var data: Variant = JSON.parse_string(raw)
 	if not data is Dictionary:
 		return
+	var previous := world.old_home_transform
+	var have_previous: bool = world.old_home_found
+	var saved: Variant = data.get("__home_layout",null)
+	if saved is Dictionary:
+		previous = Transform3D(Basis(Vector3.UP,float(saved.get("angle",0))),Vector3(float(saved.get("x",0)),0,float(saved.get("z",0))))
+		have_previous = true
+	var changed := false
 	for id in data:
 		var r: Variant = data[id]
 		if not r is Dictionary or not sizes.has(String(r.get("kind",""))):
@@ -658,10 +671,26 @@ func _load_objects() -> void:
 		var p := Vector3(float(r.get("x",0)),float(r.get("y",0)),float(r.get("z",0)))
 		if not p.is_finite():
 			continue
+		if have_previous and world.home_root!=null and String(r.kind) in ["Cama","Inodoro","Pared","Mesa"]:
+			var current := world.home_root.global_transform
+			var local: Vector3 = previous.affine_inverse()*p
+			if absf(local.x)<=4.5 and local.z>=-4.5 and local.z<=1.6 and (previous.origin.distance_to(current.origin)>.01 or not previous.basis.is_equal_approx(current.basis)):
+				var relocated: Vector3 = current*local
+				r.x = relocated.x
+				r.z = relocated.z
+				r.angle = float(r.angle)+current.basis.get_euler().y-previous.basis.get_euler().y
+				changed = true
 		var poly := _record_poly(r)
 		if String(r.kind) not in ["Cama","Inodoro","Pared","Mesa"] and not world.build_allowed(poly).is_empty():
 			continue
 		_replace_object(String(id),r)
+	if changed:
+		var backup_path := SAVE+".before_monte_"+str(int(Time.get_unix_time_from_system()))
+		var backup := FileAccess.open(backup_path,FileAccess.WRITE)
+		if backup!=null:
+			backup.store_string(raw)
+			backup.close()
+			_save_objects()
 	_update_cutaway()
 
 func _attach_reference(path: String) -> void:
