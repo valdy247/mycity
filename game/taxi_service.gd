@@ -411,6 +411,8 @@ func prepare_trip() -> bool:
 	selected.speed = 0.0
 	selected.blocked = 0.0
 	selected.traffic_stall = 0.0
+	selected.retreat_remaining = 0.0
+	selected.backed_up = 0.0
 	selected.traffic_last = body.global_position
 	selected.signal_wait = 0.0
 	selected.signal_seen = ""
@@ -679,7 +681,7 @@ func tick(delta: float,_clock: float) -> void:
 	var blocked := free<reach-.05
 	var stalled := TrafficBypass.stalled(passenger,body,delta)
 	passenger.bypass_cooldown = maxf(0.0,float(passenger.get("bypass_cooldown",0.0))-delta)
-	if stalled>1.0 and not stop_requested and float(passenger.signal_wait)<=0.0 and float(passenger.bypass_cooldown)<=0.0:
+	if float(passenger.get("retreat_remaining",0.0))<=0.0 and stalled>1.0 and not stop_requested and float(passenger.signal_wait)<=0.0 and float(passenger.bypass_cooldown)<=0.0:
 		passenger.bypass_cooldown = 1.8
 		# Discard only pending bypass samples, not the original destination.
 		var base := index
@@ -699,11 +701,9 @@ func tick(delta: float,_clock: float) -> void:
 				return
 	if blocked: speed = minf(speed,sqrt(2.0*BRAKE*maxf(0.0,free-.7)))
 	if stop_requested: speed = 0.0
-	if not stop_requested and float(passenger.signal_wait)<=0.0 and stalled>3.5 and float(passenger.speed)<.12 and float(passenger.get("backed_up",0.0))<5.5:
-		if TrafficBypass.reverse_clear(body,streets,1.90,4.80,delta):
-			passenger.backed_up = float(passenger.get("backed_up",0.0))+.8*delta
-			passenger.speed = 0.0
-			return
+	if not stop_requested and float(passenger.signal_wait)<=0.0 and TrafficBypass.retreat(passenger,body,streets,1.90,4.80,delta,stalled>3.5 and float(passenger.speed)<.12):
+		passenger.speed = 0.0
+		return
 	if stalled<.1 and not blocked: passenger.backed_up = 0.0
 	passenger.speed = move_toward(float(passenger.speed),speed,delta*(BRAKE if speed<float(passenger.speed) else ACCEL))
 	var angle := lerp_angle(body.rotation.y,atan2(d.x,d.z),1.0-exp(-delta*8.0))
