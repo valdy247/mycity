@@ -774,6 +774,7 @@ func _traffic_tick(delta: float) -> void:
 		var free := Bypass.clear_distance(body,d,reach,width,length,height)
 		var blocked := free<reach-.05
 		var stalled := Bypass.stalled(entry,body,delta)
+		var junction_limit := Bypass.junction_gate(entry,body,world.street_geometry,detour if active else route,index,not active,width,length,height,delta,route if active else [],int(entry.resume))
 		if Bypass.cooperate(entry,body,world.street_geometry,width,length,height,delta,stalled,target): continue
 		if bool(entry.get("cooperative_rejoin",false)):
 			entry.cooperative_rejoin = false
@@ -783,7 +784,8 @@ func _traffic_tick(delta: float) -> void:
 		entry.cooldown = maxf(0.0,float(entry.cooldown)-delta)
 		var speed := minf(3.2 if active else float(spec.speed)*.65,maxf(.75,distance))
 		if blocked: speed = minf(speed,sqrt(10.0*maxf(0.0,free-.55)))
-		if float(entry.get("retreat_remaining",0.0))<=0.0 and (stalled>.8 or (not active and Bypass.early_lane_pass(body,world.street_geometry,blocked,free))) and float(entry.cooldown)<=0.0:
+		speed = Bypass.junction_speed(speed,junction_limit,5.0)
+		if not bool(body.get_meta("junction_guard",false)) and float(entry.get("retreat_remaining",0.0))<=0.0 and (stalled>.8 or (not active and Bypass.early_lane_pass(body,world.street_geometry,blocked,free))) and float(entry.cooldown)<=0.0:
 			entry.cooldown = 1.6
 			if active:
 				entry.detour = []
@@ -802,7 +804,7 @@ func _traffic_tick(delta: float) -> void:
 		if stalled<.1: entry.backed_up = 0.0
 		entry.speed = move_toward(float(entry.speed),speed,delta*5)
 		var angle := lerp_angle(body.rotation.y,atan2(d.x,d.z),minf(delta*5.0,1.0))
-		var advance := minf(float(entry.speed)*delta,distance)
+		var advance := Bypass.junction_advance(minf(float(entry.speed)*delta,distance),junction_limit)
 		if blocked: advance = minf(advance,maxf(0.0,free-.55))
 		if advance<.0001:
 			body.velocity = Vector3.ZERO
