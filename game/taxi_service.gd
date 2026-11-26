@@ -680,6 +680,14 @@ func tick(delta: float,_clock: float) -> void:
 	var free := TrafficBypass.clear_distance(body,d,reach,1.90,4.80)
 	var blocked := free<reach-.05
 	var stalled := TrafficBypass.stalled(passenger,body,delta)
+	body.set_meta("traffic_priority",4.8)
+	body.set_meta("traffic_servicing",stop_requested or float(passenger.signal_wait)>0.0)
+	if not bool(body.get_meta("traffic_servicing")) and TrafficBypass.cooperate(passenger,body,streets,1.90,4.80,1.8,delta,stalled,target): return
+	if bool(passenger.get("cooperative_rejoin",false)):
+		passenger.cooperative_rejoin = false
+		while index<waypoints.size()-1 and bool(waypoints[index].get("bypass",false)): index += 1
+		passenger.index = index
+		return
 	passenger.bypass_cooldown = maxf(0.0,float(passenger.get("bypass_cooldown",0.0))-delta)
 	if float(passenger.get("retreat_remaining",0.0))<=0.0 and stalled>1.0 and not stop_requested and float(passenger.signal_wait)<=0.0 and float(passenger.bypass_cooldown)<=0.0:
 		passenger.bypass_cooldown = 1.8
