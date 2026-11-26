@@ -4,11 +4,13 @@ const SIZE := 512.0
 const ROAD_Y := 0.055
 const ROAD_AXES := [-128, -64, 0, 64, 128]
 const HOME := Vector3(16, ROAD_Y, 16)
-const HOME_OUT := Vector3(16, 0.91, 21.0)
+const HOME_OUT := Vector3(16, 0.94, 21.0)
 const HOME_IN := Vector3(16, 1.02, 17.35)
 const VAN_PARK := Vector3(8, 0, 16)
 const Builder = preload("res://city_builder.gd")
 const Bakery = preload("res://mayuli_bakery.gd")
+const FamilyHome = preload("res://family_home.gd")
+var family_home: FamilyHome
 var bakery: Bakery
 var grid_builder: Builder
 var mats: Dictionary = {}
@@ -24,9 +26,6 @@ var clock := 0.0
 var inside_home := false
 var seated := false
 var seat_exit := Vector3.ZERO
-var door: Node3D
-var door_tween: Tween
-var door_anchor := Vector3.ZERO
 
 func setup(builder: Builder) -> void:
 	grid_builder = builder
@@ -197,7 +196,7 @@ func _starter(kind: String, x: int, z: int, turn: int) -> void:
 func _make_districts() -> void:
 	# Uniform buildings use exactly the same model generator as player builds.
 	# Keep many empty blocks and lots for future construction.
-	for p in [Vector2i(-6,2),Vector2i(-5,2),Vector2i(-4,2),Vector2i(-3,2),Vector2i(-2,2),Vector2i(3,2),Vector2i(4,2),Vector2i(6,2),Vector2i(7,2),Vector2i(-6,4),Vector2i(-5,4),Vector2i(-4,4),Vector2i(3,4),Vector2i(4,4)]:
+	for p in [Vector2i(-6,2),Vector2i(-5,2),Vector2i(-4,2),Vector2i(-3,2),Vector2i(-2,2),Vector2i(6,2),Vector2i(7,2),Vector2i(-6,4),Vector2i(-5,4),Vector2i(-4,4),Vector2i(3,4),Vector2i(4,4)]:
 		_starter("house",p.x,p.y,0 if p.y==2 else 2)
 	for p in [Vector2i(-2,-2),Vector2i(-3,-2),Vector2i(-4,-2),Vector2i(4,-2),Vector2i(7,-2)]:
 		_starter("shop",p.x,p.y,2)
@@ -207,49 +206,9 @@ func _make_districts() -> void:
 		_starter("house",p.x,p.y,0)
 
 func _make_home() -> void:
-	_reserve(2,2)
-	_reserve(1,2) # player's parking space
-	var wall := _mat("home_wall",Color(0.94,0.85,0.66))
-	var roof := _mat("home_roof",Color(0.65,0.22,0.13))
-	var glass := _mat("home_glass",Color(0.16,0.38,0.54))
-	var wood := _mat("home_wood",Color(0.34,0.19,0.08))
-	var floor := _mat("floor",Color("#c5ae87"))
-	var blue := _mat("sofa",Color("#427a9f"))
-	var cream := _mat("cream",Color("#eee3c8"))
-	_batch(HOME+Vector3(0,-0.06,0),Vector3(7.8,0.12,7.8),_mat("lot",Color("#8bb65e")))
-	_static_box(HOME+Vector3(0,0.06,0),Vector3(5,0.12,4.8),floor)
-	_static_box(HOME+Vector3(0,1.5,-2.35),Vector3(5,3,.15),wall)
-	for side in [-1.0,1.0]:
-		var v: float = float(side)
-		_static_box(HOME+Vector3(v*2.425,1.5,0),Vector3(.15,3,4.7),wall)
-		_static_box(HOME+Vector3(v*1.50,1.5,2.35),Vector3(2.0,3,.15),wall)
-		_batch(HOME+Vector3(v*1.5,1.58,2.44),Vector3(1.15,1.0,.04),glass)
-		var slab := _visual_box(self,HOME+Vector3(v*1.25,3.60,0),Vector3(3.05,.18,5.25),roof)
-		slab.rotation.z = -v*.39
-	_static_box(HOME+Vector3(0,2.55,2.35),Vector3(1.0,.9,.15),wall)
-	_static_box(HOME+Vector3(0,3.03,0),Vector3(5,.14,4.8),roof)
-	door = Node3D.new()
-	add_child(door)
-	door.position = HOME+Vector3(-.48,0.12,2.43)
-	_visual_box(door,Vector3(.48,1.0,0),Vector3(.96,2.0,.09),wood)
-	# Doorway is accessible only via E; the invisible blocker prevents
-	# wandering into the home by accident.
-	_shape(solid_body,HOME+Vector3(0,1.05,2.35),Vector3(.95,2.10,.13))
-	door_anchor = HOME+Vector3(0,0.9,2.55)
-	_static_box(HOME+Vector3(-1.65,.35,-1.2),Vector3(.95,.60,1.8),blue)
-	_batch(HOME+Vector3(-2.06,.75,-1.2),Vector3(.18,.65,1.8),blue)
-	_static_box(HOME+Vector3(1.48,.29,-1.35),Vector3(1.55,.48,1.75),wood)
-	_batch(HOME+Vector3(1.48,.58,-1.35),Vector3(1.5,.15,1.7),cream)
-	_static_box(HOME+Vector3(0,.40,-.7),Vector3(.85,.72,.60),wood)
-	_batch(HOME+Vector3(0,0.13,3.0),Vector3(1.1,.12,1.2),floor)
-	var label := Label3D.new()
-	label.text = "MI CASA"
-	label.font_size = 48
-	label.pixel_size = .009
-	label.modulate = Color("#fff3c5")
-	label.outline_size = 5
-	add_child(label)
-	label.position = HOME+Vector3(0,2.65,2.47)
+	family_home = FamilyHome.new()
+	add_child(family_home)
+	family_home.setup(grid_builder)
 
 func _make_park(center: Vector3) -> void:
 	# 2x2 tile footprint, with seats available to the player.
@@ -288,6 +247,10 @@ func _make_park(center: Vector3) -> void:
 
 func _all_seats() -> Array:
 	var result: Array = seats.duplicate()
+	if family_home != null:
+		for seat in family_home.seats:
+			if bool(seat.indoors) == family_home.inside:
+				result.append(seat)
 	for entry in grid_builder.pieces.values():
 		if String(entry.kind) != "park":
 			continue
@@ -306,21 +269,14 @@ func interaction_text(at: Vector3) -> String:
 		var bakery_action: String = bakery.interaction_text(at)
 		if not bakery_action.is_empty():
 			return bakery_action
-	if at.distance_to(door_anchor) < 2.6:
-		return "[E] Salir de mi casa" if inside_home else "[E] Entrar a mi casa"
+	if family_home != null:
+		var home_action: String = family_home.interaction_text(at)
+		if not home_action.is_empty():
+			return home_action
 	for seat in _all_seats():
 		if at.distance_to(seat.at) < 2.1:
 			return "[E] Sentarse"
 	return ""
-
-func _animate_door() -> void:
-	if door_tween != null and door_tween.is_valid():
-		door_tween.kill()
-	door.rotation.y = 0.0
-	door_tween = create_tween()
-	door_tween.tween_property(door,"rotation:y",-1.4,.25)
-	door_tween.tween_interval(.2)
-	door_tween.tween_property(door,"rotation:y",0.0,.25)
 
 func interact(player: CharacterBody3D, avatar: Node3D, legs: Array, arms: Array) -> bool:
 	if seated:
@@ -333,11 +289,8 @@ func interact(player: CharacterBody3D, avatar: Node3D, legs: Array, arms: Array)
 		return true
 	if bakery != null and bakery.interact(player):
 		return true
-	if player.global_position.distance_to(door_anchor)<2.6:
-		inside_home = not inside_home
-		_animate_door()
-		player.global_position = HOME_IN if inside_home else HOME_OUT
-		player.velocity = Vector3.ZERO
+	if family_home != null and family_home.interact(player):
+		inside_home = family_home.inside
 		return true
 	for seat in _all_seats():
 		if player.global_position.distance_to(seat.at)<2.1:
@@ -357,6 +310,8 @@ func interact(player: CharacterBody3D, avatar: Node3D, legs: Array, arms: Array)
 func reset_interaction(avatar: Node3D, legs: Array) -> void:
 	if bakery != null:
 		bakery.reset()
+	if family_home != null:
+		family_home.reset()
 	inside_home = false
 	seated = false
 	avatar.position.y = 0
