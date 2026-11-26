@@ -1,7 +1,7 @@
 extends Node3D
 # First playable local prototype. Static world, third-person movement.
 const CITY_PATH = "res://city.glb"
-const SPAWN = Vector3(-1.5, 1.0, 30.0)
+const SPAWN = Vector3(-2.4, 1.0, 5.5)
 var player: CharacterBody3D
 var pivot: Node3D
 var arm: SpringArm3D
@@ -10,6 +10,22 @@ var yaw := 0.0
 var pitch := -0.20
 var status: Label
 var city_loaded := false
+var van: CharacterBody3D
+var van_visual: Node3D
+var driver_door: Node3D
+var door_closed := 0.0
+var door_tween: Tween
+var driving := false
+var drive_speed := 0.0
+var interact_requested := false
+var reset_requested := false
+var limb_arms: Array[Node3D] = []
+var limb_legs: Array[Node3D] = []
+var step_phase := 0.0
+var player_shape: CollisionShape3D
+var van_home := Transform3D.IDENTITY
+var exit_message := ""
+var message_time := 0.0
 
 func _ready() -> void:
 	var env := Environment.new()
@@ -31,10 +47,12 @@ func _ready() -> void:
 		if packed != null:
 			var city := packed.instantiate()
 			add_child(city)
+			_install_city_van(city)
 			_add_world_collision(city)
 			city_loaded = true
 	if not city_loaded:
 		_make_demo_floor()
+		_make_demo_van()
 	_make_player()
 	_make_hud()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -86,28 +104,10 @@ func _make_player() -> void:
 	capsule.height = 1.6
 	col.shape = capsule
 	player.add_child(col)
+	player_shape = col
 	avatar = Node3D.new()
 	player.add_child(avatar)
-	var body := MeshInstance3D.new()
-	var body_mesh := CapsuleMesh.new()
-	body_mesh.radius = 0.32
-	body_mesh.height = 1.25
-	body.mesh = body_mesh
-	var blue := StandardMaterial3D.new()
-	blue.albedo_color = Color(0.12, 0.48, 0.93)
-	body.material_override = blue
-	body.position.y = -0.12
-	avatar.add_child(body)
-	var head := MeshInstance3D.new()
-	var sphere := SphereMesh.new()
-	sphere.radius = 0.26
-	sphere.height = 0.52
-	head.mesh = sphere
-	var skin := StandardMaterial3D.new()
-	skin.albedo_color = Color(0.92, 0.70, 0.48)
-	head.material_override = skin
-	head.position.y = 0.59
-	avatar.add_child(head)
+	_make_cartoon_avatar()
 	pivot = Node3D.new()
 	pivot.position.y = 0.65
 	player.add_child(pivot)
@@ -122,6 +122,8 @@ func _make_player() -> void:
 	add_child(player)
 	player.position = SPAWN
 	arm.add_excluded_object(player.get_rid())
+	if van != null:
+		arm.add_excluded_object(van.get_rid())
 	cam.current = true
 	pivot.rotation = Vector3(pitch, yaw, 0)
 
@@ -134,18 +136,17 @@ func _make_hud() -> void:
 	status.add_theme_color_override("font_shadow_color", Color.BLACK)
 	status.add_theme_constant_override("shadow_offset_x", 2)
 	status.add_theme_constant_override("shadow_offset_y", 2)
-	var title := "VALDY JR TV | Explora tu ciudad"
-	if not city_loaded:
-		title = "MODO DE PRUEBA | Exporta city.glb desde Blender"
-	status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
 	canvas.add_child(status)
+	_update_hud()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
 			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		elif event.keycode == KEY_R and player != null:
-			_reset_player()
+			reset_requested = true
+		elif event.keycode == KEY_E and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+			interact_requested = true
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and pivot != null:
@@ -153,33 +154,334 @@ func _unhandled_input(event: InputEvent) -> void:
 		pitch = clampf(pitch - event.relative.y * 0.003, -1.05, 0.35)
 		pivot.rotation = Vector3(pitch, yaw, 0)
 
+# Reuse the exact exported van hierarchy when present.
+func _normalized_name(value: String) -> String:
+	return value.to_lower().replace(" ", "").replace("_", "").replace("|", "").replace("-", "").replace(".", "")
+
+func _find_named(node: Node, prefix: String) -> Node3D:
+	if node is Node3D and _normalized_name(String(node.name)).begins_with(prefix):
+		return node as Node3D
+	for child in node.get_children():
+		var found := _find_named(child, prefix)
+		if found != null:
+			return found
+	return null
+
+func _new_van_body(position_world: Vector3) -> CharacterBody3D:
+	var car := CharacterBody3D.new()
+	car.name = "DrivableVan"
+	car.floor_snap_length = 0.50
+	car.floor_max_angle = deg_to_rad(40.0)
+	var collision := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(2.18, 2.0, 5.12)
+	collision.shape = shape
+	collision.position.y = 1.0
+	car.add_child(collision)
+	add_child(car)
+	car.global_position = position_world + Vector3.UP * 0.04
+	return car
+
+func _install_city_van(city: Node) -> void:
+	var original := _find_named(city, "vancontrol")
+	if original == null:
+		push_warning("No se encontro VAN | CONTROL en city.glb; la van no sera interactiva.")
+		return
+	var original_transform := original.global_transform
+	van = _new_van_body(original_transform.origin)
+	# Blender -Y maps to Godot +Z in our GLB export.
+	# Preserve imported transforms and mesh hierarchy, including door hinges.
+	var forward := original_transform.basis.z
+	if absf(forward.y) < 0.25 and Vector2(forward.x, forward.z).length() > 0.1:
+		van.rotation.y = atan2(forward.x, forward.z)
+	original.reparent(van, true)
+	van_visual = original
+	original.global_position = van.global_position
+	van_home = van.global_transform
+	driver_door = _find_named(original, "bisagrapuertadelantera")
+	if driver_door != null:
+		door_closed = driver_door.rotation.y
+
+func _material(color: Color) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.roughness = 0.75
+	return mat
+
+func _box(parent: Node3D, part_name: String, at: Vector3, size: Vector3, mat: StandardMaterial3D) -> MeshInstance3D:
+	var mesh := BoxMesh.new()
+	mesh.size = size
+	var instance := MeshInstance3D.new()
+	instance.name = part_name
+	instance.mesh = mesh
+	instance.material_override = mat
+	parent.add_child(instance)
+	instance.position = at
+	return instance
+
+func _sphere(parent: Node3D, part_name: String, at: Vector3, size: Vector3, mat: StandardMaterial3D) -> MeshInstance3D:
+	var mesh := SphereMesh.new()
+	mesh.radius = 0.5
+	mesh.height = 1.0
+	mesh.radial_segments = 12
+	mesh.rings = 6
+	var instance := MeshInstance3D.new()
+	instance.name = part_name
+	instance.mesh = mesh
+	instance.material_override = mat
+	parent.add_child(instance)
+	instance.position = at
+	instance.scale = size
+	return instance
+
+func _make_demo_van() -> void:
+	van = _new_van_body(Vector3.ZERO)
+	van_home = van.global_transform
+	van_visual = Node3D.new()
+	van.add_child(van_visual)
+	var white := _material(Color(0.91, 0.93, 0.96))
+	var dark := _material(Color(0.08, 0.10, 0.13))
+	var glass := _material(Color(0.17, 0.40, 0.55))
+	_box(van_visual, "Body", Vector3(0, 0.84, 0), Vector3(2.05, 1.03, 5.0), white)
+	_box(van_visual, "Cab", Vector3(0, 1.65, -0.2), Vector3(1.98, 1.0, 4.0), white)
+	_box(van_visual, "Windshield", Vector3(0, 1.69, 1.82), Vector3(1.68, 0.65, 0.05), glass)
+	_box(van_visual, "BackGlass", Vector3(0, 1.69, -2.23), Vector3(1.67, 0.63, 0.06), glass)
+	for side in [-1, 1]:
+		_box(van_visual, "Window", Vector3(side * 1.0, 1.72, -0.65), Vector3(0.06, 0.56, 2.1), glass)
+		for z in [-1.62, 1.62]:
+			var wheel_mesh := CylinderMesh.new()
+			wheel_mesh.top_radius = 0.42
+			wheel_mesh.bottom_radius = 0.42
+			wheel_mesh.height = 0.24
+			wheel_mesh.radial_segments = 16
+			var wheel := MeshInstance3D.new()
+			wheel.mesh = wheel_mesh
+			wheel.material_override = dark
+			van_visual.add_child(wheel)
+			wheel.position = Vector3(side * 1.01, 0.42, z)
+			wheel.rotation.z = PI / 2.0
+	driver_door = Node3D.new()
+	van_visual.add_child(driver_door)
+	driver_door.position = Vector3(-1.06, 0.65, 1.65)
+	_box(driver_door, "DriverDoor", Vector3(0, 0.49, -0.68), Vector3(0.08, 0.9, 1.35), white)
+	_box(driver_door, "DriverWindow", Vector3(0, 1.04, -0.68), Vector3(0.08, 0.47, 1.35), glass)
+
+func _make_cartoon_avatar() -> void:
+	var skin := _material(Color(0.84, 0.56, 0.36))
+	var shirt := _material(Color(0.08, 0.46, 0.94))
+	var jeans := _material(Color(0.10, 0.18, 0.34))
+	var shoes := _material(Color(0.09, 0.10, 0.13))
+	var hair := _material(Color(0.14, 0.085, 0.045))
+	var eye := _material(Color(0.06, 0.07, 0.10))
+	var eye_white := _material(Color(0.98, 0.98, 0.98))
+	# Capsule collision remains the same. All limbs are purely visual.
+	_sphere(avatar, "Shirt", Vector3(0, 0.05, 0), Vector3(0.58, 0.64, 0.35), shirt)
+	_sphere(avatar, "Hip", Vector3(0, -0.23, 0), Vector3(0.44, 0.25, 0.30), jeans)
+	_sphere(avatar, "Head", Vector3(0, 0.53, 0), Vector3(0.52, 0.55, 0.48), skin)
+	_sphere(avatar, "Hair", Vector3(0, 0.73, -0.045), Vector3(0.53, 0.26, 0.49), hair)
+	for side in [-1, 1]:
+		_sphere(avatar, "Ear", Vector3(side * 0.25, 0.53, 0), Vector3(0.10, 0.14, 0.11), skin)
+		_sphere(avatar, "EyeWhite", Vector3(side * 0.105, 0.57, 0.212), Vector3(0.115, 0.14, 0.075), eye_white)
+		_sphere(avatar, "Eye", Vector3(side * 0.105, 0.57, 0.245), Vector3(0.053, 0.078, 0.035), eye)
+		var shoulder := Node3D.new()
+		avatar.add_child(shoulder)
+		shoulder.position = Vector3(side * 0.32, 0.21, 0)
+		limb_arms.append(shoulder)
+		_sphere(shoulder, "Sleeve", Vector3(0, -0.10, 0), Vector3(0.20, 0.24, 0.22), shirt)
+		_sphere(shoulder, "Arm", Vector3(0, -0.30, 0), Vector3(0.13, 0.33, 0.15), skin)
+		_sphere(shoulder, "Hand", Vector3(0, -0.46, 0), Vector3(0.17, 0.18, 0.16), skin)
+		var hip := Node3D.new()
+		avatar.add_child(hip)
+		hip.position = Vector3(side * 0.13, -0.23, 0)
+		limb_legs.append(hip)
+		_sphere(hip, "Leg", Vector3(0, -0.23, 0), Vector3(0.22, 0.48, 0.23), jeans)
+		_sphere(hip, "Shoe", Vector3(0, -0.46, 0.075), Vector3(0.24, 0.18, 0.36), shoes)
+	_sphere(avatar, "Nose", Vector3(0, 0.48, 0.247), Vector3(0.09, 0.10, 0.09), skin)
+
+func _animate_avatar(delta: float, speed: float) -> void:
+	var moving := speed > 0.1 and player.is_on_floor()
+	var strength := 0.68 if speed < 6.0 else 0.95
+	if moving:
+		step_phase += delta * (6.5 + speed * 0.8)
+	for i in range(limb_legs.size()):
+		var swing := sin(step_phase + i * PI) * strength if moving else 0.0
+		if not player.is_on_floor():
+			swing = -0.25 if i == 0 else 0.35
+		limb_legs[i].rotation.x = lerpf(limb_legs[i].rotation.x, swing, minf(delta * 12.0, 1.0))
+		limb_arms[i].rotation.x = lerpf(limb_arms[i].rotation.x, -swing * 0.85, minf(delta * 12.0, 1.0))
+	avatar.position.y = lerpf(avatar.position.y, absf(sin(step_phase)) * 0.045 if moving else 0.0, minf(delta * 12.0, 1.0))
+
+func _near_van() -> bool:
+	if van == null or player == null:
+		return false
+	var local := van.to_local(player.global_position)
+	return absf(local.x) < 3.4 and absf(local.z) < 4.1 and absf(local.y) < 2.5
+
+func _door_cycle() -> void:
+	if driver_door == null:
+		return
+	if door_tween != null and door_tween.is_valid():
+		door_tween.kill()
+	driver_door.rotation.y = door_closed
+	door_tween = create_tween()
+	door_tween.tween_property(driver_door, "rotation:y", door_closed - 1.0, 0.24)
+	door_tween.tween_interval(0.18)
+	door_tween.tween_property(driver_door, "rotation:y", door_closed, 0.28)
+
+func _enter_van() -> void:
+	if not _near_van():
+		return
+	driving = true
+	drive_speed = 0.0
+	player.velocity = Vector3.ZERO
+	avatar.hide()
+	player_shape.set_deferred("disabled", true)
+	_door_cycle()
+	pivot.reparent(van, false)
+	pivot.position = Vector3(0, 1.55, 0)
+	yaw = PI
+	pitch = -0.24
+	pivot.rotation = Vector3(pitch, yaw, 0)
+	arm.spring_length = 7.5
+
+func _safe_exit() -> bool:
+	# Test both sides against ground and physical world, including the road.
+	var space := get_world_3d().direct_space_state
+	for side in [-1.0, 1.0]:
+		var side_point := van.to_global(Vector3(side * 1.95, 0, 0.9))
+		var ray := PhysicsRayQueryParameters3D.create(side_point + Vector3.UP * 3.0, side_point - Vector3.UP * 3.0)
+		ray.exclude = [van.get_rid(), player.get_rid()]
+		var hit := space.intersect_ray(ray)
+		if hit.is_empty():
+			continue
+		if hit.normal.y < 0.65:
+			continue
+		var destination: Vector3 = hit.position + Vector3.UP * 0.86
+		var query := PhysicsShapeQueryParameters3D.new()
+		query.shape = player_shape.shape
+		query.transform = Transform3D(Basis.IDENTITY, destination)
+		query.exclude = [player.get_rid(), van.get_rid()]
+		if not space.intersect_shape(query, 1).is_empty():
+			continue
+		_finish_exit(destination)
+		return true
+	return false
+
+func _finish_exit(destination: Vector3) -> void:
+	driving = false
+	drive_speed = 0.0
+	van.velocity = Vector3.ZERO
+	_door_cycle()
+	player.global_position = destination
+	player.velocity = Vector3.ZERO
+	avatar.show()
+	player_shape.set_deferred("disabled", false)
+	pivot.reparent(player, false)
+	pivot.position = Vector3(0, 0.65, 0)
+	yaw = van.rotation.y + PI
+	pitch = -0.20
+	pivot.rotation = Vector3(pitch, yaw, 0)
+	arm.spring_length = 4.5
+
 func _reset_player() -> void:
+	if driving and van != null:
+		van.global_transform = van_home
+		van.velocity = Vector3.ZERO
+		_finish_exit(SPAWN)
 	player.global_position = SPAWN
 	player.velocity = Vector3.ZERO
+
+func _read_controls() -> Vector2:
+	var movement := Vector2.ZERO
+	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+		return movement
+	if Input.is_physical_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP):
+		movement.y -= 1
+	if Input.is_physical_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN):
+		movement.y += 1
+	if Input.is_physical_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT):
+		movement.x -= 1
+	if Input.is_physical_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT):
+		movement.x += 1
+	return movement
+
+func _drive(delta: float, movement: Vector2) -> void:
+	var target := -movement.y * (13.0 if movement.y <= 0 else 4.0)
+	var brake := Input.is_physical_key_pressed(KEY_SPACE) or Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
+	if brake:
+		target = 0.0
+	drive_speed = move_toward(drive_speed, target, delta * (14.0 if brake else 5.0))
+	if absf(drive_speed) > 0.15:
+		van.rotation.y -= movement.x * signf(drive_speed) * delta * 1.35 * minf(absf(drive_speed) / 3.0, 1.0)
+	var forward := van.global_transform.basis.z.normalized()
+	van.velocity.x = forward.x * drive_speed
+	van.velocity.z = forward.z * drive_speed
+	if not van.is_on_floor():
+		van.velocity.y -= 18.0 * delta
+	van.move_and_slide()
+	if van.is_on_wall():
+		drive_speed *= 0.35
+	if van.global_position.y < -8.0 or absf(van.global_position.x) > 79.0 or absf(van.global_position.z) > 109.0:
+		van.global_transform = van_home
+		van.velocity = Vector3.ZERO
+		drive_speed = 0.0
+
+func _update_hud() -> void:
+	if status == null:
+		return
+	var title := "VALDY JR TV | Explora tu ciudad"
+	if not city_loaded:
+		title = "MODO DE PRUEBA | Exporta city.glb desde Blender"
+	if driving:
+		status.text = title + "\nCONDUCIENDO | %d km/h" % roundi(absf(drive_speed) * 3.6)
+		status.text += "\nW/S: acelerar y retroceder | A/D: girar | Espacio: frenar\nE: salir detenido | R: reiniciar | Esc: liberar mouse"
+	else:
+		status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
+		if _near_van():
+			status.text += "\n[E] Subir a la van"
+		elif van == null:
+			status.text += "\nVan no encontrada en la exportacion."
+	if message_time > 0.0:
+		status.text += "\n" + exit_message
 
 func _physics_process(delta: float) -> void:
 	if player == null:
 		return
-	var input := Vector2.ZERO
-	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		if Input.is_physical_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP):
-			input.y -= 1
-		if Input.is_physical_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN):
-			input.y += 1
-		if Input.is_physical_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT):
-			input.x -= 1
-		if Input.is_physical_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT):
-			input.x += 1
-	var direction := Vector3(input.x, 0, input.y).normalized().rotated(Vector3.UP, yaw)
-	var speed := 8.0 if Input.is_physical_key_pressed(KEY_SHIFT) else 4.5
-	player.velocity.x = direction.x * speed
-	player.velocity.z = direction.z * speed
-	if direction.length_squared() > 0.01:
-		avatar.rotation.y = atan2(direction.x, direction.z)
-	if not player.is_on_floor():
-		player.velocity.y -= 18.0 * delta
-	elif Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and Input.is_physical_key_pressed(KEY_SPACE):
-		player.velocity.y = 5.5
-	player.move_and_slide()
-	if player.global_position.y < -15 or absf(player.global_position.x) > 90 or absf(player.global_position.z) > 120:
+	if reset_requested:
+		reset_requested = false
 		_reset_player()
+	if interact_requested:
+		interact_requested = false
+		if driving:
+			if absf(drive_speed) > 0.7:
+				exit_message = "Deten la van antes de bajar."
+				message_time = 2.0
+			elif not _safe_exit():
+				exit_message = "No hay espacio para salir. Mueve la van."
+				message_time = 2.0
+		elif _near_van():
+			_enter_van()
+	var movement := _read_controls()
+	if driving:
+		_drive(delta, movement)
+	else:
+		var direction := Vector3(movement.x, 0, movement.y).normalized().rotated(Vector3.UP, yaw)
+		var speed := 8.0 if Input.is_physical_key_pressed(KEY_SHIFT) else 4.5
+		player.velocity.x = direction.x * speed
+		player.velocity.z = direction.z * speed
+		if direction.length_squared() > 0.01:
+			avatar.rotation.y = lerp_angle(avatar.rotation.y, atan2(direction.x, direction.z), minf(delta * 13.0, 1.0))
+		if not player.is_on_floor():
+			player.velocity.y -= 18.0 * delta
+		elif Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and Input.is_physical_key_pressed(KEY_SPACE):
+			player.velocity.y = 5.5
+		player.move_and_slide()
+		_animate_avatar(delta, Vector2(player.velocity.x, player.velocity.z).length())
+		if player.global_position.y < -15 or absf(player.global_position.x) > 90 or absf(player.global_position.z) > 120:
+			_reset_player()
+		# Keep the stationary van supported by the terrain without moving it horizontally.
+		if van != null and not van.is_on_floor():
+			van.velocity = Vector3(0, van.velocity.y - 18.0 * delta, 0)
+			van.move_and_slide()
+	message_time = maxf(0.0, message_time - delta)
+	_update_hud()
