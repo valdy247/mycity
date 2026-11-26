@@ -22,7 +22,6 @@ var preview: Node3D
 var marker: Node3D
 var exterior_label: Label3D
 var carried_view: Node3D
-var waypoint: Node3D
 var waypoint_point := Vector3.ZERO
 var waypoint_label := ""
 var waypoint_active := false
@@ -127,7 +126,7 @@ func _build_interior() -> void:
 	interior.add_child(marker)
 	marker.position = BENCH+Vector3.UP*2.35
 	business._box(marker,Vector3(0,.18,0),Vector3(.13,.42,.13),Color("#79df81"))
-	var arrow := business._box(marker,Vector3(0,-.07,0),Vector3(.28,.28,.12),Color("#79df81"))
+	var arrow: MeshInstance3D = business._box(marker,Vector3(0,-.07,0),Vector3(.28,.28,.12),Color("#79df81"))
 	arrow.rotation.z = PI*.25
 	preview = Node3D.new()
 	interior.add_child(preview)
@@ -138,6 +137,7 @@ func _build_interior() -> void:
 func _refresh_furniture(id: String) -> void:
 	if furniture_nodes.has(id):
 		var old: Node3D = furniture_nodes[id]
+		interior.remove_child(old)
 		old.queue_free()
 		furniture_nodes.erase(id)
 	var data: Dictionary = state.furniture[id]
@@ -255,7 +255,7 @@ func _place_furniture() -> void:
 	var id := String(state.held_furniture)
 	if not FURNITURE.has(id): return
 	var p: Vector3 = game.player.global_position-ROOM
-	var forward := -game.play_camera.global_transform.basis.z
+	var forward: Vector3 = -game.play_camera.global_transform.basis.z
 	forward.y = 0.0
 	p += forward.normalized()*1.8
 	p.y = 0.0
@@ -412,6 +412,9 @@ func _part_menu(kind: String,key: String) -> void:
 	var token := kind+":"+key
 	if bool(state.projects[kind].get(key,false)): return
 	if String(state.part)==token or int(state.inventory.get(token,0))>0:
+		if not inside or game.player.global_position.distance_to(ROOM+BENCH)>3.5:
+			business._notify("Instala la pieza físicamente en el garaje.")
+			return
 		if String(state.part)==token: state.part = ""
 		else: state.inventory[token] = int(state.inventory[token])-1
 		state.projects[kind][key] = true
@@ -431,6 +434,9 @@ func _part_menu(kind: String,key: String) -> void:
 	business._button("Volver",_project_menu)
 
 func _order_part(kind: String,key: String) -> void:
+	if not bool(state.house):
+		business._notify("Necesitas una vivienda con garaje para recibir repuestos.")
+		return
 	var token := kind+":"+key
 	var price := int(Kit.KITS[kind].parts[key])+100
 	if business.ledger.cash<price: return
@@ -515,7 +521,7 @@ func _spawn(kind: String) -> CharacterBody3D:
 	var spec: Dictionary = Kit.KITS[kind]
 	for sign_value in [-1.0,1.0]:
 		var d := direction*float(sign_value)
-		var lane := right*float(sign_value)*world.geography.lane_distance(edge,float(spec.width))
+		var lane: Vector3 = right*float(sign_value)*world.geography.lane_distance(edge,float(spec.width))
 		for shift in [0.0,4.0,-4.0,8.0,-8.0,12.0,-12.0]:
 			var p := road+lane+direction*float(shift)
 			if not Bypass._on_road(world.street_geometry,p,d,float(spec.width),float(spec.length)): continue
@@ -742,7 +748,7 @@ func tick(delta: float) -> void:
 			_save()
 			business._notify("Repuesto entregado en tu garaje.")
 	if inside and not business.modal_open():
-		var near := game.player.global_position.distance_to(ROOM+BENCH)<2.5
+		var near: bool = game.player.global_position.distance_to(ROOM+BENCH)<2.5
 		if near and not garage_near and String(state.held_furniture).is_empty():
 			garage_near = true
 			_garage_menu()
