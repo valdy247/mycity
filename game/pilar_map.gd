@@ -93,7 +93,8 @@ func load_map() -> bool:
 
 func _path(start: String, goal: String, blocked_a: String, blocked_b: String) -> Array:
 	var queue: Array = [start]
-	var parent: Dictionary = {start:""}
+	var parent: Dictionary = {}
+	parent[start] = ""
 	var cursor := 0
 	while cursor<queue.size():
 		var current := String(queue[cursor])
@@ -152,7 +153,6 @@ func bus_loop(avoid_a: String, avoid_b: String) -> Array[Vector3]:
 	var result: Array[Vector3] = []
 	if best.is_empty():
 		return result
-	best.pop_back()
 	for i in range(best.size()):
 		var p: Vector3 = points[best[i]]
 		var previous: Vector3 = points[best[posmod(i-1,best.size())]]
