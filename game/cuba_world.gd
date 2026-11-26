@@ -3,6 +3,10 @@ extends "res://city_world.gd"
 const MapData = preload("res://pilar_map.gd")
 const StreetGeometry = preload("res://street_geometry.gd")
 var street_geometry := StreetGeometry.new()
+const EDIT_FILE := "user://pilar_atares_edits_v1.json"
+var map_edits: Dictionary = {}
+var editable_buildings: Dictionary = {}
+var original_footprints: Dictionary = {}
 const INVENTORY_PATH := "user://pilar_atares_inventory.json"
 var geography := MapData.new()
 var home_root: Node3D
@@ -52,6 +56,7 @@ func setup(builder: Builder) -> void:
 	_shape(road_ground,Vector3(0,-.25,0),Vector3(2520,.50,2520))
 	_load_inventory()
 	street_geometry.build(geography)
+	_load_map_edits()
 	_make_osm_streets()
 	_make_frontages()
 	_make_corner_plaques()
@@ -485,6 +490,81 @@ func _market_from_intersections(anchor: Vector3) -> PackedVector2Array:
 				return PackedVector2Array()
 	return candidate
 
+func _load_map_edits() -> void:
+	if FileAccess.file_exists(EDIT_FILE):
+		var file := FileAccess.open(EDIT_FILE,FileAccess.READ)
+		if file != null:
+			var parsed: Variant = JSON.parse_string(file.get_as_text())
+			if parsed is Dictionary:
+				map_edits = parsed
+	# Preserve the geographic source and construct a separate editable layer.
+	var working: Array = []
+	geography.footprint_cells.clear()
+	for original in geography.footprints:
+		var id := String(original.id)
+		original_footprints[id] = original.duplicate(true)
+		var changes: Dictionary = map_edits.get(id,{})
+		if bool(changes.get("deleted",false)):
+			continue
+		var fp: Dictionary = original.duplicate(true)
+		var polygon: PackedVector2Array = fp.poly
+		var origin: Vector3 = fp.center
+		var dx := float(changes.get("dx",0.0))
+		var dz := float(changes.get("dz",0.0))
+		var angle := float(changes.get("angle",0.0))
+		var changed := PackedVector2Array()
+		var middle := Vector2(origin.x,origin.z)
+		for p in polygon:
+			changed.append((p-middle).rotated(-angle)+middle+Vector2(dx,dz))
+		if not street_geometry.clear(changed):
+			# OSM widths are estimated. Do not let inferred pavement overlap
+			# a solid model: clip only the game rendering, never the source.
+			var safe := street_geometry.subtract(changed,street_geometry.protected_index)
+			if safe.is_empty():
+				continue
+			var largest: PackedVector2Array = safe[0]
+			for piece in safe:
+				if street_geometry.bounds(piece).get_area()>street_geometry.bounds(largest).get_area():
+					largest = piece
+			changed = largest
+		var rect := street_geometry.bounds(changed)
+		fp.poly = changed
+		fp.center = Vector3(rect.get_center().x,0,rect.get_center().y)
+		fp.low = Vector3(rect.position.x,0,rect.position.y)
+		fp.high = Vector3(rect.end.x,0,rect.end.y)
+		working.append(fp)
+		geography._index(geography.footprint_cells,fp.low,fp.high,fp)
+	geography.footprints = working
+
+func save_map_edits() -> bool:
+	var file := FileAccess.open(EDIT_FILE,FileAccess.WRITE)
+	if file==null:
+		return false
+	file.store_string(JSON.stringify(map_edits,"\t"))
+	file.close()
+	return true
+
+func build_allowed(poly: PackedVector2Array,ignore_id: String = "") -> String:
+	if not street_geometry.clear(poly):
+		return "Calle, cruce o acera protegida"
+	var rect := street_geometry.bounds(poly)
+	for p in poly:
+		if absf(p.x)>geography.LIMIT or absf(p.y)>geography.LIMIT:
+			return "Fuera del mapa"
+	var center := Vector3(rect.get_center().x,0,rect.get_center().y)
+	var radius := rect.size.length()*.5+2.0
+	for fp in geography.footprints_near(center,radius):
+		if String(fp.id)==ignore_id:
+			continue
+		if not Geometry2D.intersect_polygons(poly,fp.poly).is_empty():
+			return "Edificio cartografiado"
+	for lot in _lots_near(center):
+		if not Geometry2D.intersect_polygons(poly,_lot_polygon(lot)).is_empty():
+			return "Parcela ocupada"
+	if not market_block.is_empty() and not Geometry2D.intersect_polygons(poly,market_block).is_empty():
+		return "Plaza de Cuatro Caminos protegida"
+	return ""
+
 func _make_mapped_buildings(public_anchor: Vector3) -> void:
 	var palette: Array[Color] = [Color("#a5b2a5"),Color("#c3b49b"),Color("#a2b8ba"),Color("#b19a88"),Color("#c3bc9d"),Color("#a4a29a"),Color("#b8ad99")]
 	var market_pos: Vector3 = geography.project(23.1234716,-82.3659728)
@@ -528,11 +608,16 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		var h: float = _building_height(tags,idx)
 		if market and not tags.has("height") and not tags.has("building:levels"):
 			h = 10.0
-		var wall := _mat("mapped_wall"+str(idx) if not market else "market_wall",palette[idx] if not market else Color("#ded4bc"))
+		var edit: Dictionary = map_edits.get(String(fp.id),{})
+		var base_color: Color = palette[idx] if not market else Color("#ded4bc")
+		var paint := String(edit.get("paint",""))
+		if Color.html_is_valid(paint):
+			base_color = Color(paint)
+		var wall := _mat("mapped_wall"+str(idx) if paint.is_empty() and not market else "custom_wall_"+String(fp.id),base_color)
 		wall.cull_mode = BaseMaterial3D.CULL_DISABLED
 		var front := _front_edge(poly)
 		var portal := false
-		if not front.is_empty() and bool(front.road.portal) and h>3.8:
+		if not front.is_empty() and bool(edit.get("portal",front.road.portal)) and h>3.8:
 			var clipped := _clip_inward(poly,front,2.25)
 			# Fall back to the mapped solid if the inset is too small/invalid.
 			if clipped.size()>=3 and not Geometry2D.triangulate_polygon(clipped).is_empty():
@@ -542,6 +627,7 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 			continue
 		mapped_buildings += 1
 		kept_footprints.append(fp)
+		editable_buildings[String(fp.id)] = {"poly":poly,"center":center,"height":h,"name":String(tags.get("name","Edificio")),"protected":market or String(fp.id)==alborada_poly_id,"front":front}
 		if not front.is_empty():
 			_detail_front(front,h,idx,portal,market)
 			var name_value := String(tags.get("name",""))
