@@ -40,13 +40,14 @@ func _say(person: Node3D,message: String) -> void:
 	bubble.outline_size = 8
 	person.add_child(bubble)
 	bubble.position = Vector3(0,2.15,0)
-	get_tree().create_timer(4.0).timeout.connect(func(): if is_instance_valid(bubble): bubble.queue_free())
+	get_tree().create_timer(4.0).timeout.connect(func():
+		if is_instance_valid(bubble): bubble.queue_free())
 
 func _flat(p: Vector3) -> Vector3:
 	return Vector3(p.x,0,p.z)
 
 func _lock(agent: Dictionary,role: String) -> void:
-	var p: Node3D = agent.node
+	var p: Person = agent.node
 	p.set_meta("incident_role",role)
 	p.remove_meta("conversation_until")
 	agent.erase("yield_target")
@@ -54,7 +55,7 @@ func _lock(agent: Dictionary,role: String) -> void:
 
 func _release(agent: Dictionary) -> void:
 	if agent.is_empty() or not is_instance_valid(agent.get("node")): return
-	var p: Node3D = agent.node
+	var p: Person = agent.node
 	p.remove_meta("incident_role")
 	p.add_to_group("bus_yield_walkers")
 	agent.incident_replan = true
@@ -62,7 +63,7 @@ func _release(agent: Dictionary) -> void:
 func _walkers(at: Vector3,radius: float) -> Array:
 	var out: Array = []
 	for agent in router.walkers:
-		var p: Node3D = agent.node
+		var p: Person = agent.node
 		if not is_instance_valid(p) or not p.is_visible_in_tree() or p.has_meta("incident_role"): continue
 		if bool(agent.get("indoors",false)) or p.global_position.distance_to(at)>radius: continue
 		out.append(agent)
@@ -78,7 +79,7 @@ func _ped_path(a: Vector3,b: Vector3) -> PackedVector3Array:
 	if world.pedestrian_segment_clear(a,b): return PackedVector3Array([b])
 	return router.route_between(a,b)
 
-func _advance_actor(person: Node3D,path: PackedVector3Array,index: int,dt: float,speed: float = 1.5) -> int:
+func _advance_actor(person: Person,path: PackedVector3Array,index: int,dt: float,speed: float = 1.5) -> int:
 	if index>=path.size(): return index
 	var target := path[index]
 	var step := person.global_position.move_toward(target,speed*dt)
@@ -97,7 +98,7 @@ func _crowd_tick(center: Vector3,delta: float) -> void:
 		var candidates: Array = _walkers(center,22.0)
 		for agent in candidates:
 			if crowd.size()>=8: break
-			var p: Node3D = agent.node
+			var p: Person = agent.node
 			for id in router._near_ids(center,9.0):
 				if router.graph.get_point_weight_scale(int(id))>=router.ROAD_COST: continue
 				var spot: Vector3 = router.graph.get_point_position(int(id))
@@ -117,7 +118,7 @@ func _crowd_tick(center: Vector3,delta: float) -> void:
 		if not is_instance_valid(item.agent.node):
 			crowd.remove_at(i)
 			continue
-		var p: Node3D = item.agent.node
+		var p: Person = item.agent.node
 		item.time = float(item.time)+delta
 		if float(item.time)>32.0:
 			_release(item.agent)
@@ -270,7 +271,7 @@ func _car_trip(body: CharacterBody3D,at: Vector3) -> Dictionary:
 			if not route.is_empty(): return {"trip":_new_trip(body,route),"berth":goal}
 	return {}
 
-func _officer(style: int) -> Node3D:
+func _officer(style: int) -> Person:
 	var person := Person.new()
 	add_child(person)
 	person.setup(style)
@@ -302,7 +303,18 @@ func _police_start() -> void:
 		for side in [-1.0,1.0]:
 			var plaque: Label3D = game.business._label(body,"PNR",Vector3(float(side)*.94,.77,.15),Color.WHITE)
 			plaque.rotation.y = float(side)*PI*.5
-		var starts := _berths(center,66.0)
+		var starts: Array = []
+		for edge in data.roads_near(center,65.0):
+			if not bool(edge.driveable): continue
+			var a: Vector3 = edge.a
+			var b: Vector3 = edge.b
+			for fraction in [.25,.5,.75]:
+				var sample := a.lerp(b,float(fraction))
+				if sample.distance_to(center)<30.0 or sample.distance_to(center)>70.0: continue
+				for start in _berths(sample,8.0):
+					start.dist = start.p.distance_to(center)
+					starts.append(start)
+			if starts.size()>36: break
 		var found := false
 		for goal in goals.slice(0,3):
 			if not _clear_pose(body,goal): continue
@@ -325,7 +337,7 @@ func _sidewalk(berth: Dictionary,near: Vector3) -> Dictionary:
 	var side: Vector3 = berth.right
 	var d: Vector3 = berth.d
 	for shift in [0.0,1.0,-1.0,2.0,-2.0,3.0,-3.0]:
-		for dist in [1.65,2.1,2.65,3.2]:
+		for dist in [1.65,2.1,2.65,3.2,4.0,4.8]:
 			var at := p+side*float(dist)+d*float(shift)
 			if streets.point_on_road(at): continue
 			var ground := _foot(at)
@@ -367,9 +379,12 @@ func _depart_police() -> void:
 func _police_tick(delta: float) -> void:
 	var stall: Dictionary = scene.stall
 	var body: CharacterBody3D = scene.trip.body
-	var seller: Node3D = stall.person
+	var seller: Person = stall.person
 	var phase := String(scene.phase)
 	var elapsed := float(scene.time)
+	var flash := fmod(float(scene.age),.64)<.32
+	scene.blue.visible = flash
+	scene.red.visible = not flash
 	if phase=="approach":
 		if not _drive_trip(scene.trip,delta): return
 		var ground := _sidewalk(scene.berth,scene.center)
@@ -381,7 +396,7 @@ func _police_tick(delta: float) -> void:
 		for i in range(2):
 			var officer := _officer(900+i)
 			officer.global_position = spawn+Vector3.UP*.01
-			var target := seller.global_position+stall.root.global_transform.basis.x*(.65 if i==0 else -.65)-stall.root.global_transform.basis.z*.85
+			var target: Vector3 = seller.global_position+stall.root.global_transform.basis.x*(.65 if i==0 else -.65)-stall.root.global_transform.basis.z*.85
 			var path := _ped_path(officer.global_position,target)
 			if path.is_empty():
 				officer.queue_free()
@@ -427,7 +442,7 @@ func _police_tick(delta: float) -> void:
 			scene.load_item = {}
 			scene.load_phase = "take"
 		var officer: Dictionary = scene.actors[0]
-		var carrier: Node3D = officer.node
+		var carrier: Person = officer.node
 		if scene.load_phase=="take":
 			if scene.load_queue.is_empty():
 				scene.phase = "escort"
@@ -436,7 +451,10 @@ func _police_tick(delta: float) -> void:
 			var item: Dictionary = scene.load_queue.pop_front()
 			var model: Node3D = item.node
 			var path := _ped_path(carrier.global_position,officer.spawn)
-			if path.is_empty(): _finish_police(false); return
+			if path.is_empty():
+				_finish_police(false)
+				return
+			item["display_position"] = model.position
 			model.reparent(carrier,true)
 			model.position = Vector3(0,.85,.35)
 			carrier.arms[0].rotation.x = -.85
@@ -468,7 +486,9 @@ func _police_tick(delta: float) -> void:
 		if not scene.has("escort_path"):
 			var target: Vector3 = scene.actors[0].spawn
 			var path := _ped_path(seller.global_position,target)
-			if path.is_empty(): _finish_police(false); return
+			if path.is_empty():
+				_finish_police(false)
+				return
 			scene.escort_path = path
 			scene.escort_index = 0
 			seller.remove_meta("conversation_until")
@@ -542,7 +562,7 @@ func vehicle_motion(body: CharacterBody3D,before: Transform3D,speed: float,width
 	var axis := body.global_transform.basis.z.normalized()
 	var side := Vector3(-axis.z,0,axis.x)
 	for agent in _walkers(center,length+2.0):
-		var person: Node3D = agent.node
+		var person: Person = agent.node
 		var p := person.global_position
 		if absf(p.y-end.y)>.75: continue
 		var near := Geometry3D.get_closest_point_to_segment(_flat(p),_flat(start),_flat(end))
@@ -569,7 +589,7 @@ func _injury_tick(delta: float) -> void:
 		if bool(victim.severe): continue
 		victim.time = float(victim.time)+delta
 		if float(victim.time)<5.0: continue
-		var p: Node3D = victim.agent.node
+		var p: Person = victim.agent.node
 		p.global_transform = victim.old
 		_release(victim.agent)
 		injured.remove_at(i)
@@ -577,7 +597,7 @@ func _injury_tick(delta: float) -> void:
 func _rescue_start(victim: Dictionary) -> void:
 	var dest := _destination("hospital")
 	if dest.is_empty(): return
-	var person: Node3D = victim.agent.node
+	var person: Person = victim.agent.node
 	var center := person.global_position
 	var candidates: Array = []
 	for car in municipal.vehicles:
@@ -608,23 +628,27 @@ func _rescue_start(victim: Dictionary) -> void:
 
 func _rescue_tick(delta: float) -> void:
 	var victim: Dictionary = scene.victim
-	var person: Node3D = victim.agent.node
+	var person: Person = victim.agent.node
 	var body: CharacterBody3D = scene.trip.body
 	var phase := String(scene.phase)
 	if phase=="approach":
 		if not _drive_trip(scene.trip,delta): return
 		var ground := _sidewalk(scene.berth,scene.center)
-		if ground.is_empty(): _end_rescue(false); return
+		if ground.is_empty():
+			_end_rescue(false)
+			return
 		var spawn: Vector3 = ground.p
 		var helper: Dictionary = {}
 		var victim_point: Vector3 = victim.old.origin
 		for agent in _walkers(victim_point,22.0):
-			var p: Node3D = agent.node
+			var p: Person = agent.node
 			var path := _ped_path(p.global_position,victim_point)
 			if path.is_empty(): continue
 			helper = {"agent":agent,"node":p,"path":path,"index":0}
 			break
-		if helper.is_empty(): _end_rescue(false); return
+		if helper.is_empty():
+			_end_rescue(false)
+			return
 		var driver := Person.new()
 		add_child(driver)
 		driver.setup(rng.randi_range(1200,1290))
@@ -649,14 +673,16 @@ func _rescue_tick(delta: float) -> void:
 			if int(actor.index)<actor.path.size(): ready = false
 		if not ready: return
 		var path := _ped_path(victim.old.origin,scene.pickup_point)
-		if path.is_empty(): _end_rescue(false); return
+		if path.is_empty():
+			_end_rescue(false)
+			return
 		scene.carry_path = path
 		scene.carry_index = 0
 		scene.phase = "carry"
 		scene.time = 0.0
 	elif phase=="carry":
-		var driver: Node3D = scene.actors[0].node
-		var helper: Node3D = scene.actors[1].node
+		var driver: Person = scene.actors[0].node
+		var helper: Person = scene.actors[1].node
 		var path: PackedVector3Array = scene.carry_path
 		scene.carry_index = _advance_actor(driver,path,int(scene.carry_index),delta,.95)
 		var follow := driver.global_position
@@ -691,7 +717,7 @@ func _rescue_tick(delta: float) -> void:
 func _end_rescue(delivered: bool) -> void:
 	var car: Dictionary = scene.car
 	var victim: Dictionary = scene.victim
-	var person: Node3D = victim.agent.node
+	var person: Person = victim.agent.node
 	for actor in scene.actors:
 		if actor.has("agent"): _release(actor.agent)
 		elif is_instance_valid(actor.node): actor.node.queue_free()
