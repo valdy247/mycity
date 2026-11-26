@@ -748,6 +748,7 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 	body.set_meta("traffic_priority",6.2 if bool(vehicle.truck) else 4.25)
 	body.set_meta("traffic_servicing",not vehicle.site.is_empty())
 	if not vehicle.site.is_empty():
+		Bypass.reset_watchdog(vehicle)
 		_collect(vehicle,delta)
 		return
 	var original: Array = vehicle.route
