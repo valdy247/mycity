@@ -158,6 +158,10 @@ func _ready() -> void:
 		business = BusinessMission.new()
 		add_child(business)
 		business.setup(cuba_world,taxis,player,van,play_camera)
+		business.phone_position = func() -> Vector3:
+			if driving: return van.global_position
+			if garage!=null and garage.inside and not cuba_world.garage_home_site.is_empty(): return cuba_world.garage_home_site.door
+			return player.global_position
 		business.life.attach_avatar(limb_arms)
 		for bus in urban_buses.buses:
 			var body: CharacterBody3D = bus.body
