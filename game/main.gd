@@ -283,7 +283,7 @@ func _apply_camera_mode() -> void:
 		avatar.hide()
 	else:
 		avatar.visible = not first_person
-		arm.spring_length = 0.0 if first_person else (2.15 if city_world != null and (city_world.inside_home or (city_world.bakery != null and city_world.bakery.inside)) else 4.5)
+		arm.spring_length = 0.0 if first_person else (2.15 if city_world != null and (city_world.inside_home or (city_world.bakery != null and city_world.bakery.inside) or (cuba_world != null and cuba_world.current_room>=0)) else 4.5)
 		pivot.position.y = .65
 	if reticle != null:
 		reticle.visible = first_person and not driving and not building_mode
@@ -303,6 +303,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			building_mode = true
 			player.velocity = Vector3.ZERO
 			status.hide()
+			reticle.hide()
 			builder.open(player.global_position)
 		else:
 			exit_message = "Sal de la casa, piscina, banco o van antes de construir."
@@ -688,8 +689,8 @@ func _update_hud() -> void:
 		var action := city_world.interaction_text(player.global_position) if city_world != null else ""
 		if action != "":
 			status.text += "\n" + action
-		elif cuba_world != null and cuba_world.aimed_product(play_camera,player)!=null:
-			status.text += "\n[E] Consultar producto"
+		elif cuba_world != null and not cuba_world.aimed_text(play_camera,player).is_empty():
+			status.text += "\n"+cuba_world.aimed_text(play_camera,player)
 		elif _near_van():
 			status.text += "\n[E] Subir a la van"
 		elif van == null:
