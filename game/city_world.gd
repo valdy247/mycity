@@ -385,6 +385,52 @@ func _make_traffic() -> void:
 				_visual_box(car,Vector3(float(side)*.79,.27,float(end)*1.03),Vector3(.25,.52,.55),_mat("tire",Color("#23282d")))
 		cars.append({"node":car,"route":route,"next":1,"speed":0.0,"committed":false})
 
+# Extracted original Blender school bus; preserve mesh hierarchy and materials.
+func add_school_bus(original: Node3D) -> void:
+	var bus := CharacterBody3D.new()
+	bus.name = "SchoolBus_Original"
+	bus.motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
+	bus.collision_layer = 1
+	bus.collision_mask = 1|4
+	add_child(bus)
+	# The GLB was exported Y-up; original front (-Y in Blender) is +Z.
+	original.reparent(bus,true)
+	original.position = Vector3.ZERO
+	# Preserve the visual transforms and ground the entire original asset.
+	var bottom: float = _lowest_mesh_y(original,bus)
+	if is_finite(bottom):
+		original.position.y -= bottom
+	var col := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(2.35,2.9,7.65)
+	col.shape = shape
+	bus.add_child(col)
+	col.position = Vector3(0,1.48,0.05)
+	# Separate clockwise loop west of the central district. Right-hand lanes.
+	# Passes near the main neighborhood; intersects other routes only on
+	# opposing lanes or at signal-controlled intersections.
+	var route: Array[Vector3] = [
+		Vector3(-62.2,0,1.8), Vector3(-1.8,0,1.8),
+		Vector3(-1.8,0,62.2), Vector3(-62.2,0,62.2)
+	]
+	bus.position = route[0]+Vector3(16,ROAD_Y,0)
+	bus.rotation.y = PI/2.0
+	cars.append({"node":bus,"route":route,"next":1,"speed":0.0,"committed":false,"max_speed":5.5,"stop_distance":8.0,"look_ahead":9.0})
+	print("MyCity: autobus escolar original recuperado.")
+
+func _lowest_mesh_y(node: Node, carrier: Node3D) -> float:
+	var bottom: float = INF
+	if node is MeshInstance3D:
+		var mesh_node := node as MeshInstance3D
+		if mesh_node.mesh != null:
+			var bounds := mesh_node.get_aabb()
+			for i in range(8):
+				var point: Vector3 = carrier.to_local(mesh_node.to_global(bounds.get_endpoint(i)))
+				bottom = minf(bottom,point.y)
+	for child in node.get_children():
+		bottom = minf(bottom,_lowest_mesh_y(child,carrier))
+	return bottom
+
 func _make_pedestrians() -> void:
 	# Six people use sidewalk paths outside the traffic lanes; no random
 	# crossing or crowd simulation. Their routes stay within the same block.
@@ -431,14 +477,15 @@ func tick(delta: float) -> void:
 			continue
 		var direction := diff.normalized()
 		var axis: int = 0 if absf(direction.x)>.5 else 1
-		var target_speed: float = 6.0
+		var target_speed: float = float(entry.get("max_speed",6.0))
+		var stop_distance: float = float(entry.get("stop_distance",4.8))
 		if not bool(entry.committed):
 			if phase != axis:
-				target_speed = minf(target_speed,maxf(0.0,(distance-4.8)*1.8))
-			elif distance<5.0:
+				target_speed = minf(target_speed,maxf(0.0,(distance-stop_distance)*1.8))
+			elif distance<stop_distance+0.5:
 				entry.committed=true
 		var space := get_world_3d().direct_space_state
-		var ray := PhysicsRayQueryParameters3D.create(car.position+Vector3.UP*.65,car.position+Vector3.UP*.65+direction*5.0,1|4)
+		var ray := PhysicsRayQueryParameters3D.create(car.position+Vector3.UP*.65,car.position+Vector3.UP*.65+direction*float(entry.get("look_ahead",5.0)),1|4)
 		ray.exclude=[car.get_rid()]
 		if not space.intersect_ray(ray).is_empty():
 			target_speed=0.0
