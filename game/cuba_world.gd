@@ -485,8 +485,42 @@ func _monte_pair(anchor: Vector3,manual: bool = false) -> Array:
 		return [best_home]
 	return best
 
+func _pair_at_parked_van(home: Dictionary) -> Array:
+	# The viewer looks opposite the facade normal, so their right is
+	# -basis.x, not +basis.x (the building's own right).
+	var front: Vector3 = home.front
+	var right := Vector3(-front.z,0,front.x)
+	var center: Vector3 = home.center
+	var curb: Vector3 = home.curb
+	var result: Array = [home]
+	for distance in [8.96,9.12,9.5,10.0,11.0,12.0]:
+		for setback in [0.0,.3,.6,1.0,1.5,2.0,3.0]:
+			var shop := home.duplicate(true)
+			shop.center = center+right*float(distance)-front*float(setback)
+			shop.curb = curb+right*float(distance)
+			shop.landmark = "alborada"
+			var poly := _lot_polygon(shop)
+			if not street_geometry.clear(poly):
+				continue
+			if not Geometry2D.intersect_polygons(_lot_polygon(home),poly).is_empty():
+				continue
+			var safe := true
+			for fp in geography.footprints_near(shop.center,12.0):
+				var tags: Dictionary = fp.tags
+				var label_value := geography.normalized(String(tags.get("name","")))
+				var extent: Vector3 = fp.high-fp.low
+				if (label_value.contains("cuatro caminos") or label_value.contains("mercado unico") or extent.x*extent.z>1500.0 or not map_edits.get(String(fp.id),{}).is_empty()) and not Geometry2D.intersect_polygons(poly,fp.poly).is_empty():
+					safe = false
+					break
+			if safe:
+				result.append(shop)
+				return result
+	return result
+
 func request_home_placement(at: Vector3) -> String:
 	var pair := _monte_pair(Vector3(at.x,0,at.z),true)
+	if not pair.is_empty():
+		pair = _pair_at_parked_van(pair[0])
 	if pair.size()!=2:
 		return "No caben casa y tienda sin invadir calles. Marca el centro de la fachada en Monte."
 	var file := FileAccess.open(HOME_PLACEMENT_FILE,FileAccess.WRITE)
@@ -547,6 +581,18 @@ func _make_frontages() -> void:
 	var manual := _saved_home_anchor()
 	var target: Vector3 = manual.get("point",public_anchor)
 	var pair := _monte_pair(target,not manual.is_empty())
+	# The screenshot identifies the white van's parked frontage. Its spawn
+	# is derived from the selected residence lot, not the POI. Pin that
+	# lot rather than letting the neighboring shop change its position.
+	if not pair.is_empty():
+		var pinned_home: Dictionary = pair[0]
+		pair = _pair_at_parked_van(pinned_home)
+	elif old_home_found:
+		for candidate in home_candidates:
+			var c: Vector3 = candidate.center
+			if c.distance_to(old_home_transform.origin)<.01:
+				pair = _pair_at_parked_van(candidate)
+				break
 	if pair.size()==2:
 		var residence: Dictionary = pair[0]
 		alborada_lot = pair[1]
