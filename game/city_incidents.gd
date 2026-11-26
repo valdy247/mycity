@@ -1102,14 +1102,15 @@ func _release_helper() -> void:
 func _rescue_grip(carrier: Person,axis: Vector3,center: Vector3) -> void:
 	var facing := center-carrier.global_position
 	facing.y = 0.0
+	# Face across the casualty's body, not diagonally toward its center.
+	facing -= axis*facing.dot(axis)
 	if facing.length_squared()>.01: carrier.rotation.y = atan2(facing.x,facing.z)
 	for arm in carrier.arms:
 		var shoulder := arm.global_position
 		var offset := clampf((shoulder-center).dot(axis),-.76,.76)
 		var hand := center+axis*offset
-		var inward := (carrier.global_position-center)
-		inward.y = 0.0
-		if inward.length_squared()>.01: hand += inward.normalized()*.10
+		var inward := -facing.normalized()
+		if inward.length_squared()>.01: hand += inward*.10
 		hand.y -= .10
 		var direction := carrier.global_basis.inverse()*(hand-shoulder)
 		if direction.length_squared()>.0001:
@@ -1128,7 +1129,7 @@ func _carry_side_clear(driver: Person,helper: Person,side: Vector3) -> bool:
 	var shift := side*.46
 	return world.pedestrian_segment_clear(a,a+shift) and world.pedestrian_segment_clear(b,b+shift) and world.pedestrian_segment_clear(a+shift,b+shift)
 
-func _carry_pose(person: Node3D,driver: Person,helper: Person,delta: float,blend: float = 1.0) -> void:
+func _carry_pose(person: Node3D,driver: Person,helper: Person,_delta: float,blend: float = 1.0) -> void:
 	var heading: Vector3 = scene.get("carry_direction",Vector3.FORWARD)
 	var side := Vector3(-heading.z,0,heading.x)
 	var axis := side
