@@ -311,6 +311,7 @@ func accept_alighting(node: Node3D) -> bool:
 	if not _choose_route(agent,true): return false
 	person.reparent(self,true)
 	person.show()
+	person.add_to_group("bus_yield_walkers")
 	walkers.append(agent)
 	return true
 
@@ -347,10 +348,36 @@ func _populate() -> void:
 		person.global_position = p
 		var agent := {"node":person,"path":PackedVector3Array(),"index":0,"destination":{},"pause":0.0,"speed":1.12+float(posmod(serial,7))*.065}
 		if _choose_route(agent):
+				person.add_to_group("bus_yield_walkers")
 			walkers.append(agent)
 			added += 1
 		else:
 			person.queue_free()
+
+# A horn gives a walker a checked path out of the bus lane, not a
+# teleport. After reaching safety the normal destination planner resumes.
+func yield_to_bus(stop: Dictionary,bus: CharacterBody3D) -> void:
+	var center: Vector3 = stop.position
+	var direction: Vector3 = stop.direction
+	var side := Vector3(-direction.z,0,direction.x)
+	var approach := maxf(0.0,(center-bus.global_position).dot(direction))
+	for agent in walkers:
+		var person: Person = agent.node
+		if bool(agent.get("indoors",false)) or agent.has("yield_target"): continue
+		var at := person.global_position
+		var offset := at-center
+		if absf(offset.dot(side))>1.55 or offset.dot(direction)<-approach-4.7 or offset.dot(direction)>5.6: continue
+		var wait: Vector3 = stop.wait
+		var along := offset.dot(direction)
+		for shift in [0.0,1.0,-1.0,2.0,-2.0]:
+			var candidate := wait+direction*(along+float(shift))
+			if world.street_geometry.point_on_road(candidate): continue
+			var ground := _ground(candidate)
+			if ground.is_empty(): continue
+			var target: Vector3 = ground.p
+			if world.pedestrian_segment_clear(at,target):
+				agent.yield_target = target
+				break
 
 func tick(delta: float) -> void:
 	if not initialized:
@@ -372,6 +399,16 @@ func tick(delta: float) -> void:
 		var agent: Dictionary = walkers[i]
 		var person: Person = agent.node
 		person.visible = not bool(agent.get("indoors",false)) and (camera==null or person.global_position.distance_squared_to(camera.global_position)<14400.0)
+		if agent.has("yield_target"):
+			var safe: Vector3 = agent.yield_target
+			var step := person.global_position.move_toward(safe,1.8*dt)
+			if world.pedestrian_segment_clear(person.global_position,step):
+				if person.walk_to(safe,dt,1.8):
+					agent.erase("yield_target")
+					agent.pause = 6.0
+			else:
+				agent.erase("yield_target")
+			continue
 		if float(agent.pause)>0.0:
 			agent.pause = maxf(0.0,float(agent.pause)-dt)
 			person.animate(dt,false)
@@ -390,6 +427,7 @@ func tick(delta: float) -> void:
 			var dest: Dictionary = agent.destination
 			if String(dest.get("kind",""))=="bus" and buses!=null:
 				if buses.join_stop(dest.stop,person):
+					person.remove_from_group("bus_yield_walkers")
 					walkers.remove_at(i)
 					continue
 			# Simulated indoor visits are only allowed at a verified door.
