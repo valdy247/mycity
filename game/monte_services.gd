@@ -130,6 +130,19 @@ func _fill(site: Dictionary) -> void:
 	site.refill = 0.0
 	site.collected = 0
 
+# Furniture joins the same collection queue as municipal refuse.
+func add_discarded_furniture(site: Dictionary,id: String,size_value: Vector3,color: Color) -> bool:
+	if site.is_empty() or not sites.has(site): return false
+	var root: Node3D = site.root
+	var object := Node3D.new()
+	root.add_child(object)
+	object.position = Vector3(.0,.45,-1.40-float(site.bags.size()%3)*.36)
+	_part(object,Vector3.ZERO,Vector3(minf(size_value.x,1.35),minf(size_value.y,.80),minf(size_value.z,.65)),color)
+	object.set_meta("discarded_furniture",id)
+	site.bags.append(object)
+	if float(site.refill)>0.0: site.refill = 0.0
+	return true
+
 func _remove_bag(bag: Node3D) -> void:
 	if bag is StaticBody3D:
 		(bag as StaticBody3D).collision_layer = 0
