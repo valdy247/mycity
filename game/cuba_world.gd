@@ -34,6 +34,10 @@ var home_edge: Dictionary = {}
 var food_factory: Dictionary = {}
 # Walkable portal centre lines and frontage destinations for Monte life.
 var monte_walkways: Array = []
+# Only actual rendered door panels may be used for simulated indoor visits.
+var npc_doorways: Array = []
+var pedestrian_router: Node
+var pedestrian_body := CapsuleShape3D.new()
 var monte_columns: Dictionary = {}
 var home_local_door := Vector3(0,0,1.65)
 var slots: Array = []
@@ -68,6 +72,8 @@ func load_map() -> bool:
 	return geography.load_map()
 
 func setup(builder: Builder) -> void:
+	pedestrian_body.radius = .27
+	pedestrian_body.height = 1.55
 	grid_builder = builder
 	solid_body = StaticBody3D.new()
 	solid_body.collision_layer = 1
@@ -902,7 +908,9 @@ func _monte_infill(lot: Dictionary,index: int) -> void:
 	for i in range(count):
 		var x := -w*.5+(float(i)+.5)*w/float(count)
 		_monte_column(c+basis*Vector3(x,0,4.12),3.0,paint,angle)
-		_local_cube(c,basis,Vector3(x,1.38,1.65),Vector3(minf(w/float(count)*.62,1.45),2.55,.075),door)
+		var opening := minf(w/float(count)*.62,1.45)
+		_local_cube(c,basis,Vector3(x,1.38,1.65),Vector3(opening,2.55,.075),door)
+		_register_npc_door(c+basis*Vector3(x,0,1.69),front,"home",opening)
 		for floor in range(1,roundi(h/3.1)):
 			var y := float(floor)*3.1+1.50
 			_local_cube(c,basis,Vector3(x,y,4.53),Vector3(1.05,1.85,.08),door)
@@ -1467,6 +1475,33 @@ func _market_side_details(poly: PackedVector2Array,primary: Dictionary,h: float)
 		if mid.distance_to(primary.mid)>1.0:
 			_detail_front({"a":a,"b":b,"normal":n,"mid":mid,"road":road},h,0,false,true)
 
+# A checked movement step for scripted NPCs. The capsule stays above
+# shallow pavement and detects the whole person rather than a single ray.
+func pedestrian_segment_clear(a: Vector3,b: Vector3) -> bool:
+	var space := get_world_3d().direct_space_state
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = pedestrian_body
+	query.collision_mask = 1|4|8|16
+	query.transform = Transform3D(Basis.IDENTITY,a+Vector3.UP*.95)
+	if not space.intersect_shape(query,1).is_empty(): return false
+	query.transform = Transform3D(Basis.IDENTITY,b+Vector3.UP*.95)
+	if not space.intersect_shape(query,1).is_empty(): return false
+	if a.distance_squared_to(b)<.0001: return true
+	query.transform = Transform3D(Basis.IDENTITY,a+Vector3.UP*.95)
+	query.motion = b-a
+	var fraction := space.cast_motion(query)
+	if fraction.size()<2 or fraction[0]<.999: return false
+	for height in [.25,1.65]:
+		var lift := Vector3.UP*float(height)
+		var ray := PhysicsRayQueryParameters3D.create(a+lift,b+lift,1|4|8|16)
+		ray.hit_from_inside = true
+		if not space.intersect_ray(ray).is_empty(): return false
+	return true
+
+func _register_npc_door(threshold: Vector3,normal: Vector3,kind: String,width: float) -> void:
+	if width<.72: return
+	npc_doorways.append({"threshold":threshold,"normal":normal.normalized(),"kind":kind})
+
 func _monte_color(index: int) -> Color:
 	var palette: Array[Color] = [Color("#8fbdac"),Color("#dbada7"),Color("#70b7c8"),Color("#d8c096"),Color("#a5c9cb"),Color("#c4a18b"),Color("#e2d1b4")]
 	return palette[posmod(index,palette.size())]
@@ -1575,7 +1610,10 @@ func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool
 	for i in range(count):
 		var p := a+t*(float(i)+.5)*step
 		var q := p+n*offset
-		_cube(q+Vector3.UP*1.38,Vector3(minf(step*.58,1.5),2.50,.065),door_mat,angle)
+		var door_width := minf(step*.58,1.5)
+		_cube(q+Vector3.UP*1.38,Vector3(door_width,2.50,.065),door_mat,angle)
+		if not market:
+			_register_npc_door(q+n*.04,n,"home",door_width)
 		_cube(q+Vector3.UP*2.71,Vector3(minf(step*.74,1.85),.17,.12),stone,angle)
 		if monte:
 			var opening := minf(step*.58,1.5)
@@ -1769,6 +1807,8 @@ func _facade(lot: Dictionary,index: int,service: String) -> void:
 	for x in [-2.7,0.0,2.7]:
 		if service not in ["BODEGA","HOSPITAL • LA DEPENDIENTE"] or float(x)!=0.0:
 			_local_cube(c,basis,Vector3(float(x),1.35,face_z),Vector3(1.12,2.55,.06),doors)
+			if service.is_empty():
+				_register_npc_door(c+basis*Vector3(float(x),0,face_z+.04),front,"home",1.12)
 		_local_cube(c,basis,Vector3(float(x),2.77,face_z+.04),Vector3(1.34,.16,.12),stone)
 		for floor in range(1,upper):
 			var y := float(floor)*3.1+1.5
@@ -2204,6 +2244,9 @@ func tick(delta: float) -> void:
 		var base: Vector3 = resident.origin
 		var direction: Vector3 = resident.direction
 		var phase: float = cuba_clock*.32+float(resident.phase)
-		npc.position = base+direction*sin(phase)*1.2
-		var d: Vector3 = direction if cos(phase)>0.0 else -direction
-		npc.rotation.y = atan2(d.x,d.z)
+		var target := base+direction*sin(phase)*1.2
+		var next := npc.position.move_toward(target,.15)
+		if pedestrian_segment_clear(npc.position,next):
+			npc.position = next
+			var d: Vector3 = direction if cos(phase)>0.0 else -direction
+			npc.rotation.y = atan2(d.x,d.z)
