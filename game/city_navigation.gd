@@ -10,6 +10,7 @@ var info: Label
 var query: LineEdit
 var destinations: Array = []
 var active := false
+var map_ready := false
 var origin := Vector3.ZERO
 var selected := Vector3.ZERO
 var selected_label := ""
@@ -64,7 +65,6 @@ func setup(controller) -> void:
 	map = MapView.new()
 	layout.add_child(map)
 	map.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	map.setup(game.cuba_world.geography)
 	map.point_selected.connect(_choose_point)
 	info = Label.new()
 	info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -100,6 +100,11 @@ func _refresh_places() -> void:
 	places.add_item("Destinos útiles y misiones")
 	var world = game.cuba_world
 	var mission = game.carlos_mission
+	var first_stage: int = game.business.ledger.stage
+	if first_stage in [0,3] and is_instance_valid(game.business.albertico):
+		_add_place("MISIÓN · Albertico",game.business.albertico.global_position)
+	elif first_stage in [1,2] and not world.food_factory.is_empty():
+		_add_place("MISIÓN · Recoger mercancía",world.food_factory.counter)
 	if mission!=null:
 		var stage: int = mission._stage()
 		if stage==2:
@@ -107,7 +112,7 @@ func _refresh_places() -> void:
 			_add_place("MISIÓN · Casa de Carlos",p)
 		elif stage in [3,4] and not mission.customer.is_empty():
 			_add_place("MISIÓN · Casa del cliente",mission.customer.p)
-		elif stage==5 and not world.garage_home_site.is_empty():
+		elif stage==5 and String(game.garage.state.part)=="bicicleta:wheel_a" and not world.garage_home_site.is_empty():
 			_add_place("MISIÓN · Llevar goma al garaje",world.garage_home_site.door)
 	if game.garage.waypoint_active: _add_place("Destino actual · "+game.garage.waypoint_label,game.garage.waypoint_point)
 	if not world.garage_home_site.is_empty(): _add_place("Mi casa / garaje",world.garage_home_site.door)
@@ -126,6 +131,9 @@ func _refresh_places() -> void:
 func open() -> void:
 	if active: return
 	active = true
+	if not map_ready:
+		map.setup(game.cuba_world.geography)
+		map_ready = true
 	previous_mouse = Input.mouse_mode
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	origin = _player_point()
@@ -138,6 +146,9 @@ func open() -> void:
 		selected = game.garage.waypoint_point
 		selected_label = game.garage.waypoint_label
 		_draw_route(true)
+	elif not destinations.is_empty() and String(destinations[0].label).begins_with("MISIÓN"):
+		places.select(1)
+		_set_destination(destinations[0].p,String(destinations[0].label))
 	else: info.text = "Selecciona una misión, un lugar o cualquier calle."
 
 func close() -> void:
@@ -156,6 +167,12 @@ func _choose_place(index: int) -> void:
 	_set_destination(place.p,String(place.label))
 
 func _choose_point(point: Vector3) -> void:
+	for i in range(destinations.size()):
+		var p: Vector3 = destinations[i].p
+		if Vector2(p.x-point.x,p.z-point.z).length()*map.zoom<=12.0:
+			places.select(i+1)
+			_choose_place(i+1)
+			return
 	places.select(0)
 	_set_destination(point,"Destino marcado")
 
@@ -214,7 +231,20 @@ func _draw_route(fit: bool) -> void:
 		elif from.distance_to(selected)<35.0 and game.cuba_world.pedestrian_segment_clear(from,selected):
 			path.append(from)
 			path.append(selected)
-		else: note = "No hay una ruta peatonal comprobada para este punto. Prueba una acera o el modo vehículo."
+		else:
+			var pedestrians = game.monte_pedestrians
+			if pedestrians.initialized:
+				var start: int = pedestrians._nearest(from,12.0)
+				var finish: int = pedestrians.graph.get_closest_point(selected)
+				if start>=0 and finish>=0:
+					var end: Vector3 = pedestrians.graph.get_point_position(finish)
+					if end.distance_to(selected)<=18.0:
+						var middle: PackedVector3Array = pedestrians.graph.get_point_path(start,finish)
+						if not middle.is_empty():
+							path.append(from)
+							for p in middle: path.append(p)
+							note = "Ruta hasta la acera accesible más cercana."
+			if path.is_empty(): note = "No hay una ruta peatonal comprobada para este punto. Prueba una acera o el modo vehículo."
 	else:
 		var result: Dictionary = game.taxis.router.resolve_point(selected,_start_node())
 		if result.has("error"):
@@ -248,7 +278,12 @@ func _draw_route(fit: bool) -> void:
 		for p in map.route:
 			low = low.min(p)
 			high = high.max(p)
-		map.center = (low+high)*.5
-		var span := high-low
-		map.zoom = clampf(minf(maxf(300.0,map.size.x-120.0)/maxf(70.0,span.x),maxf(220.0,map.size.y-120.0)/maxf(70.0,span.y)),.13,2.5)
+		_fit_bounds.call_deferred(low,high)
+	map.queue_redraw()
+
+func _fit_bounds(low: Vector2,high: Vector2) -> void:
+	if not active: return
+	map.center = (low+high)*.5
+	var span := high-low
+	map.zoom = clampf(minf(maxf(300.0,map.size.x-120.0)/maxf(70.0,span.x),maxf(220.0,map.size.y-120.0)/maxf(70.0,span.y)),.13,2.5)
 	map.queue_redraw()
