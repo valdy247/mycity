@@ -50,7 +50,7 @@ func setup(controller) -> void:
 	_bag_model(home_bag)
 	worn_bag = Node3D.new()
 	game.avatar.add_child(worn_bag)
-	worn_bag.position = Vector3(0,1.12,-.23)
+	worn_bag.position = Vector3(0,.06,-.24)
 	_bag_model(worn_bag)
 	hand_view = Node3D.new()
 	game.play_camera.add_child(hand_view)
@@ -112,6 +112,7 @@ func empty_hands() -> bool:
 	return String(state.held).is_empty()
 
 func _physical_hands() -> bool:
+	if game.driving or game.taxi_riding or game.bus_riding or game.garage.riding: return false
 	return empty_hands() and business.ledger.carry.is_empty() and business.life.state.meal.is_empty() and game.monte_services.player_bag==null and String(game.garage.state.part).is_empty() and String(game.garage.state.held_furniture).is_empty()
 
 func can_receive(key: String) -> bool:
@@ -157,15 +158,14 @@ func action_text() -> String:
 	if _bag_aimed(): return "[E] Equipar mochila" if not bool(state.equipped) else "[E] Guardar mochila"
 	var item := _find_aimed()
 	if not item.is_empty(): return "[E] Recoger "+String(ITEMS[item.key].name)
-	if not empty_hands(): return "[I] Objeto en mano · guardar / usar / soltar"
 	return ""
 
 func interact() -> bool:
-	if _bag_aimed() and not bool(state.equipped):
-		state.equipped = true
+	if _bag_aimed():
+		state.equipped = not bool(state.equipped)
 		_refresh()
 		business.ledger.save_game()
-		business._notify("Mochila equipada · %d/%d espacios" % [occupied(),CAPACITY])
+		business._notify("Mochila equipada · %d/%d espacios" % [occupied(),CAPACITY] if bool(state.equipped) else "Mochila guardada en casa.")
 		return true
 	var item := _find_aimed()
 	if item.is_empty(): return false
@@ -199,6 +199,7 @@ func _eat_found(item: Dictionary) -> void:
 	if not finds.has(item) or not _physical_hands(): return
 	if not business.life.start_found_meal(String(ITEMS[item.key].meal),bool(item.dirty)): return
 	_erase_found(item)
+	business.ledger.save_game()
 	business.close()
 
 func _spawn_item(key: String,at: Vector3,dirty: bool,site: int = 0) -> void:
@@ -244,7 +245,7 @@ func _name(token: String) -> String:
 	var key := token.get_slice(":",0)
 	var title := String(ITEMS[key].name)
 	if token.ends_with(":clean") and ITEMS[key].has("meal"):
-		title = String(business.life.MENU[String(ITEMS[key].meal)].name)
+		title = String({"pizza":"Pizza","pan":"Pan con perro","refresco":"Refresco"}.get(key,title))
 	return title
 
 func open_inventory() -> void:
@@ -303,6 +304,7 @@ func _pack_held() -> void:
 	open_inventory()
 
 func _eat_held() -> void:
+	if game.driving or game.taxi_riding or game.bus_riding or game.garage.riding: return
 	var key := String(state.held)
 	if not ITEMS.has(key) or not ITEMS[key].has("meal"): return
 	if not business.ledger.carry.is_empty() or not business.life.state.meal.is_empty() or game.monte_services.player_bag!=null or not String(game.garage.state.part).is_empty() or not String(game.garage.state.held_furniture).is_empty(): return
@@ -325,6 +327,7 @@ func _use_item(token: String) -> void:
 	else: open_inventory()
 
 func _drop_held() -> void:
+	if game.driving or game.taxi_riding or game.bus_riding or game.garage.riding: return
 	var key := String(state.held)
 	if not ITEMS.has(key): return
 	var actor: CharacterBody3D = game.player
