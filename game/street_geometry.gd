@@ -134,9 +134,14 @@ func clear(poly: PackedVector2Array) -> bool:
 	return true
 
 func point_on_road(p: Vector3) -> bool:
+	# Every polygon is already registered in all cells touched by its
+	# bounds. A point only needs its own cell; no temporary polygon,
+	# clipping lookup, deduplication dictionary or neighboring cells.
 	var q := Vector2(p.x,p.z)
-	var small := PackedVector2Array([q-Vector2(.01,.01),q+Vector2(.01,-.01),q+Vector2(.01,.01),q+Vector2(-.01,.01)])
-	for poly in near(road_index,small):
-		if Geometry2D.is_point_in_polygon(q,poly):
+	var cell := Vector2i(floori(q.x/CELL),floori(q.y/CELL))
+	for item in road_index.get(cell,[]):
+		var box: Rect2 = item.bounds
+		if q.x<box.position.x or q.x>box.end.x or q.y<box.position.y or q.y>box.end.y: continue
+		if Geometry2D.is_point_in_polygon(q,item.poly):
 			return true
 	return false
