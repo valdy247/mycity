@@ -33,6 +33,7 @@ var van_spawn := Vector3.ZERO
 var van_angle := 0.0
 var home_edge: Dictionary = {}
 var food_factory: Dictionary = {}
+var commerce_sites: Array = []
 # Walkable portal centre lines and frontage destinations for Monte life.
 var monte_walkways: Array = []
 # Only actual rendered door panels may be used for simulated indoor visits.
@@ -832,6 +833,7 @@ func _make_frontages() -> void:
 		_add_lot(lot)
 		_facade(lot,slots.size(),service_names[service_count])
 		service_count += 1
+	_reserve_commerce(proposals)
 	# Geographic footprints are authoritative; procedural infill is secondary.
 	_make_mapped_buildings(legacy_anchor)
 	proposals.sort_custom(func(a,b): return a.center.length_squared()<b.center.length_squared())
@@ -1033,6 +1035,48 @@ func _reserve_food_factory(proposals: Array) -> void:
 			_label("MIPYME DE ALIMENTOS",c+basis*Vector3(0,3.26,4.40),.010,atan2(front.x,front.z),Color("#fff4d7"))
 			return
 	push_warning("Misión: no se encontró parcela libre para la fábrica de alimentos.")
+
+# Fictional businesses occupy only free parcels, never mapped buildings.
+func _reserve_commerce(proposals: Array) -> void:
+	var specs := [
+		{"id":"cafe_mimi","name":"CAFETERÍA MIMI","kind":"cafe","contact":"Maritza","owner":"Rafael","distance":65.0,"color":Color("#d2b69a")},
+		{"id":"mayorista_sol","name":"MIPYME EL SOL","kind":"wholesale","contact":"Ernesto","owner":"Ernesto","distance":125.0,"color":Color("#9eb8b0")},
+		{"id":"cafe_esquina","name":"CAFETERÍA LA ESQUINA","kind":"cafe","contact":"Yanelis","owner":"Omar","distance":175.0,"color":Color("#b6b9d2")},
+		{"id":"mayorista_union","name":"MIPYME LA UNIÓN","kind":"wholesale","contact":"Lidia","owner":"Lidia","distance":225.0,"color":Color("#c9b49a")}
+	]
+	var market := geography.project(23.1234716,-82.3659728)
+	for spec in specs:
+		var candidates := proposals.duplicate()
+		candidates.sort_custom(func(a,b): return absf(home_spawn.distance_to(a.center)-float(spec.distance))<absf(home_spawn.distance_to(b.center)-float(spec.distance)))
+		for lot in candidates:
+			var c: Vector3 = lot.center
+			var front: Vector3 = lot.front
+			if c.distance_to(home_spawn)<26.0 or c.distance_to(home_spawn)>450.0 or c.distance_to(market)<75.0: continue
+			if float(lot.edge.width)<4.2: continue
+			if not _lot_clear(c,front,lot.edge) or _overlaps_footprint(lot): continue
+			var too_close := false
+			for other in commerce_sites:
+				if c.distance_to(other.center)<30.0: too_close = true
+			if too_close: continue
+			var basis := Basis(Vector3.UP,atan2(front.x,front.z))
+			_add_lot(lot)
+			var site: Dictionary = spec.duplicate()
+			site.merge({"center":c,"basis":basis,"entrance":c+basis*Vector3(0,.11,4.12),"counter":c+basis*Vector3(0,.11,.55),"clerk":c+basis*Vector3(0,.11,-1.25),"road":lot.curb})
+			commerce_sites.append(site)
+			var wall := _mat("commerce_"+String(spec.id),spec.color)
+			var trim := _mat("commerce_trim",Color("#e6ddc8"))
+			var floor_mat := _mat("commerce_floor",Color("#b8b4a8"))
+			var desk := _mat("commerce_counter",Color("#695d50"))
+			_local_cube(c,basis,Vector3(0,.05,0),Vector3(8.8,.10,9),floor_mat,true)
+			_local_cube(c,basis,Vector3(0,1.75,-4.30),Vector3(8.7,3.5,.24),wall,true)
+			for side in [-1.0,1.0]:
+				_local_cube(c,basis,Vector3(float(side)*4.28,1.75,0),Vector3(.22,3.5,8.75),wall,true)
+				_local_cube(c,basis,Vector3(float(side)*3.30,1.65,4.26),Vector3(1.9,3.3,.23),wall,true)
+			_local_cube(c,basis,Vector3(0,3.48,0),Vector3(8.9,.22,9),trim,true)
+			_local_cube(c,basis,Vector3(0,3.10,4.30),Vector3(4.7,.55,.20),trim)
+			_local_cube(c,basis,Vector3(0,.52,-.15),Vector3(3.25,1.04,.68),desk,true)
+			_label(String(spec.name),c+basis*Vector3(0,3.12,4.43),.007,atan2(front.x,front.z),Color("#33404b"))
+			break
 
 func _face(a: Vector3,b: Vector3,c: Vector3,normal: Vector3,mat: StandardMaterial3D,tile: Vector2i) -> void:
 	mat = _textured(mat,Vector3(float(tile.x)*96.0+48.0,0,float(tile.y)*96.0+48.0))
