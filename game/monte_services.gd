@@ -509,7 +509,7 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 	speed = minf(speed,safe_speed)
 	vehicle.cooldown = maxf(0.0,float(vehicle.cooldown)-delta)
 	var stalled := float(vehicle.get("stalled",0.0))
-	if stalled>.8 and float(vehicle.cooldown)<=0.0:
+	if float(vehicle.get("retreat_remaining",0.0))<=0.0 and stalled>.8 and float(vehicle.cooldown)<=0.0:
 		vehicle.cooldown = 1.6
 		if active:
 			# An interrupted detour is not permanent. Replan from here.
@@ -531,11 +531,9 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 				vehicle.resume = index
 				vehicle.stalled = 0.0
 				return
-	if not active and stalled>3.0 and float(vehicle.speed)<.12 and float(vehicle.get("backed_up",0.0))<5.5:
-		if Bypass.reverse_clear(body,world.street_geometry,width,half*2.0,delta):
-			vehicle.backed_up = float(vehicle.get("backed_up",0.0))+.8*delta
-			vehicle.speed = 0.0
-			return
+	if not active and Bypass.retreat(vehicle,body,world.street_geometry,width,half*2.0,delta,stalled>3.0 and float(vehicle.speed)<.12):
+		vehicle.speed = 0.0
+		return
 	vehicle.speed = move_toward(float(vehicle.speed),speed,delta*(7.0 if speed<float(vehicle.speed) else 3.5))
 	var angle := lerp_angle(body.rotation.y,atan2(direction.x,direction.z),1.0-exp(-delta*4.5))
 	var advance := minf(float(vehicle.speed)*delta,distance)
