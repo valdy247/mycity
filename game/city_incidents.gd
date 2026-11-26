@@ -1859,8 +1859,9 @@ func tick(delta: float) -> void:
 			if bool(victim.severe) and not bool(victim.get("in_transport",false)):
 				_finish_police(false)
 				break
-	if scene.is_empty() and dispatch_wait<=0.0:
+	if scene.is_empty():
 		for victim in injured:
+			if dispatch_wait>0.0: break
 			if bool(victim.severe) and not bool(victim.get("in_transport",false)) and float(victim.retry)<=0.0:
 				dispatch_wait = .65
 				victim.retry = 4.0
