@@ -1274,7 +1274,7 @@ func _monte_infill(lot: Dictionary,index: int) -> void:
 func _link_original_house() -> void:
 	var pin := geography.project(23.1223007,-82.3668138)
 	var saved := _private_home_pin()
-	if saved.has("point"): pin = saved.point
+	if saved.has("point") and pin.distance_to(saved.point)<1.5: pin = saved.point
 	var edge := _nearest_monte_street(pin,Vector3(sin(deg_to_rad(34.0)),0,-cos(deg_to_rad(34.0))))
 	if edge.is_empty(): edge = _nearest_street(pin)
 	# _nearest_monte_street returns a road dictionary; reject missing road.
