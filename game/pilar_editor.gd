@@ -243,7 +243,7 @@ func _allowed(poly: PackedVector2Array,p: Vector3) -> String:
 		if world.home_root==null:
 			return "No hay vivienda editable"
 		for q in poly:
-			var local := world.home_root.to_local(Vector3(q.x,p.y,q.y))
+			var local: Vector3 = world.home_root.to_local(Vector3(q.x,p.y,q.y))
 			if absf(local.x)>4.15 or local.z< -4.2 or local.z>1.35:
 				return "Mueble fuera del interior de casa"
 		var size: Vector3 = sizes[kind]
@@ -257,7 +257,9 @@ func _allowed(poly: PackedVector2Array,p: Vector3) -> String:
 		if mode=="move" and moving!=null:
 			for body in moving.get_children():
 				if body is CollisionObject3D:
-					query.exclude = query.exclude + [body.get_rid()]
+					var exclude_ids: Array[RID] = query.exclude
+					exclude_ids.append(body.get_rid())
+					query.exclude = exclude_ids
 		if not get_world_3d().direct_space_state.intersect_shape(query,1).is_empty():
 			return "Mueble o pared existente"
 	else:
@@ -532,7 +534,7 @@ func _click(p: Vector3) -> void:
 		else:
 			message = "Error guardando el edificio."
 		return
-	var id := selected_id if mode=="move" else "user_"+str(Time.get_ticks_usec())+"_"+str(serial)
+	var id := selected_id if mode=="move" else "user_"+str(Time.get_unix_time_from_system()).replace(".","_")+"_"+str(Time.get_ticks_usec())+"_"+str(serial)
 	serial += 1
 	var old: Dictionary = records.get(id,{})
 	var record := {"kind":kind,"x":p.x,"y":p.y,"z":p.z,"angle":angle,"paint":old.get("paint",colors[0])}
