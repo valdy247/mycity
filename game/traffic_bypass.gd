@@ -321,7 +321,7 @@ static func _yield_path(body: CharacterBody3D,streets: Streets,width: float,leng
 					var p := origin+heading*float(sign_value)*float(advance)*t+side*float(shift)*smoothstep(0.0,1.0,t)
 					var motion := (p-previous).normalized()
 					var face := motion*float(sign_value)
-					if not _on_road(streets,p,face,width,length) or not _segment_clear(body,previous,p,face,shape):
+					if not streets.intersection_clear_for_stop(p,length,width) or not _on_road(streets,p,face,width,length) or not _segment_clear(body,previous,p,face,shape):
 						valid = false
 						break
 					points.append(p)
@@ -575,6 +575,7 @@ static func junction_gate(state: Dictionary,body: CharacterBody3D,streets: Stree
 	if already_inside:
 		body.set_meta("junction_guard",true)
 		if not streets.intersection_claims.has(id):
+			body.set_meta("junction_extent",extent)
 			streets.intersection_claims[id] = {"owner":owner,"since":now,"junction":selected}
 			state.junction_claim = id
 			state.junction_entered = true
