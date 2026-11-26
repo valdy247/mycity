@@ -27,6 +27,7 @@ var mode := ""
 var kind := "Casa"
 var angle := 0.0
 var cursor_world := Vector3.ZERO
+var gps_cursor := Vector3.ZERO
 var click_world := Vector3.ZERO
 var reference_id := ""
 var ref_position := Vector3.ZERO
@@ -42,6 +43,13 @@ var reference_pending := false
 var preview_key := ""
 var preview_reason := ""
 var refresh_time := 0.0
+var gps_dialog: PanelContainer
+var gps_input: LineEdit
+var gps_feedback: Label
+var gps_action: OptionButton
+var gps_pending := false
+var gps_marker: MeshInstance3D
+var gps_marker_at := Vector3.ZERO
 var colors: Array[String] = ["#b5b39f","#92a9a4","#b69a84","#a3b5bd","#c6b58e","#b7a1a0"]
 var sizes: Dictionary = {
 	"Casa":Vector3(5.5,3.2,6.0),"Edificio":Vector3(7.0,6.4,7.5),
@@ -105,6 +113,10 @@ func _make_ui() -> void:
 	_button(grid,"Precisión (G)",_cycle_grid)
 	_button(grid,"Nivel (F)",_cycle_floor)
 	_button(grid,"Techo (H)",_toggle_roof)
+	var geo_row := HBoxContainer.new()
+	column.add_child(geo_row)
+	_button(geo_row,"GPS (F8)",_open_gps)
+	_button(geo_row,"Copiar punto",_copy_gps_cursor)
 	hint = Label.new()
 	hint.custom_minimum_size = Vector2(288,0)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -119,6 +131,7 @@ func _make_ui() -> void:
 	file_dialog.title = "Seleccionar fotografía de fachada"
 	file_dialog.file_selected.connect(_attach_reference)
 	layer.add_child(file_dialog)
+	_make_gps_ui()
 	panel.hide()
 
 func _button(parent: Control,caption: String,action: Callable) -> void:
@@ -132,6 +145,7 @@ func open(at: Vector3,context: bool = false) -> void:
 		return
 	active = true
 	focus = Vector3(at.x,0,at.z)
+	gps_cursor = at
 	camera_size = 28.0 if context else 45.0
 	view_mode = 0
 	mode = ""
@@ -147,6 +161,9 @@ func open(at: Vector3,context: bool = false) -> void:
 
 func close() -> void:
 	active = false
+	gps_dialog.hide()
+	gps_marker.hide()
+	gps_pending = false
 	roof_hidden = false
 	_update_cutaway()
 	preview.hide()
@@ -199,6 +216,112 @@ func _update_camera() -> void:
 		offset = Vector3(0,maxf(camera_size*.32,5.0),camera_size*.85)
 	camera.position = focus+offset+Vector3.UP*elevation
 	camera.look_at(focus+Vector3.UP*elevation,Vector3.UP)
+
+func _make_gps_ui() -> void:
+	gps_dialog = PanelContainer.new()
+	layer.add_child(gps_dialog)
+	gps_dialog.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	gps_dialog.offset_left = -218
+	gps_dialog.offset_right = 218
+	gps_dialog.offset_top = -115
+	gps_dialog.offset_bottom = 115
+	var margin := MarginContainer.new()
+	for side in ["left","right","top","bottom"]:
+		margin.add_theme_constant_override("margin_"+side,14)
+	gps_dialog.add_child(margin)
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation",8)
+	margin.add_child(column)
+	var title := Label.new()
+	title.text = "COORDENADAS REALES · WGS84"
+	title.add_theme_font_size_override("font_size",18)
+	column.add_child(title)
+	gps_input = LineEdit.new()
+	gps_input.placeholder_text = "Latitud, longitud"
+	column.add_child(gps_input)
+	gps_input.text_submitted.connect(func(_value): gps_pending = true)
+	gps_action = OptionButton.new()
+	gps_action.add_item("Centrar vista del editor",0)
+	gps_action.add_item("Aplicar colocación / movimiento actual",1)
+	gps_action.add_item("Ubicar mi casa y La Alborada",2)
+	column.add_child(gps_action)
+	gps_feedback = Label.new()
+	gps_feedback.custom_minimum_size.x = 380
+	gps_feedback.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	column.add_child(gps_feedback)
+	var buttons := HBoxContainer.new()
+	column.add_child(buttons)
+	_button(buttons,"Aplicar",func(): gps_pending = true)
+	_button(buttons,"Cancelar",func(): gps_dialog.hide())
+	gps_dialog.hide()
+	gps_marker = MeshInstance3D.new()
+	var ring := TorusMesh.new()
+	ring.inner_radius = .35
+	ring.outer_radius = .52
+	ring.rings = 16
+	ring.ring_segments = 8
+	gps_marker.mesh = ring
+	gps_marker.material_override = _transparent(Color(1,.78,.13,.95))
+	gps_marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(gps_marker)
+	gps_marker.hide()
+
+func _open_gps() -> void:
+	_open_gps_at(focus)
+
+func _open_gps_at(at: Vector3) -> void:
+	gps_input.text = world.geography.coordinate_text(at)
+	gps_action.select(0)
+	gps_feedback.text = "Latitud, longitud. Copia valores de tu mapa real."
+	gps_dialog.show()
+	gps_input.grab_focus()
+	gps_input.select_all()
+
+func _copy_gps_cursor() -> void:
+	# A UI button would be under the mouse, so copy the most recent
+	# ground cursor tracked outside the panel instead.
+	var point := gps_cursor
+	DisplayServer.clipboard_set(world.geography.coordinate_text(point))
+	message = "GPS copiado: "+world.geography.coordinate_text(point)
+
+func _apply_gps() -> void:
+	var result: Dictionary = world.geography.parse_coordinates(gps_input.text)
+	if result.has("error"):
+		gps_feedback.text = String(result.error)
+		return
+	var p: Vector3 = result.point
+	p.y = elevation
+	var action := gps_action.get_selected_id()
+	if action==1:
+		if not mode in ["place","move","mapped_move"]:
+			gps_feedback.text = "Selecciona primero un objeto y la acción Mover, o Colocar."
+			return
+		var reason := _allowed(_target_poly(p),p)
+		if not reason.is_empty():
+			gps_feedback.text = reason
+			return
+		# Direct coordinates bypass the metre grid snapping. Existing
+		# collision and road protections still apply at the exact point.
+		gps_dialog.hide()
+		_click(p)
+	elif action==2:
+		var reason: String = world.request_home_placement(p)
+		if not reason.is_empty():
+			gps_feedback.text = reason
+			return
+		_save_objects()
+		gps_dialog.hide()
+		get_tree().call_deferred("reload_current_scene")
+		return
+	else:
+		gps_dialog.hide()
+	focus = Vector3(p.x,0,p.z)
+	camera_size = 30.0
+	gps_marker_at = p
+	gps_marker.position = p+Vector3.UP*.16
+	gps_marker.show()
+	_update_camera()
+	message = "Punto GPS: "+world.geography.coordinate_text(p)
 
 func _point(mouse: Vector2) -> Vector3:
 	var ray_origin := camera.project_ray_origin(mouse)
@@ -300,6 +423,11 @@ func _show_preview(poly: PackedVector2Array,p: Vector3,valid: bool) -> void:
 func tick(delta: float) -> void:
 	if not active:
 		return
+	if gps_pending:
+		gps_pending = false
+		_apply_gps()
+	if gps_dialog.visible:
+		return
 	if not menu.visible and not file_dialog.visible:
 		var motion := Vector3.ZERO
 		if Input.is_physical_key_pressed(KEY_W): motion.z -= 1
@@ -316,7 +444,11 @@ func tick(delta: float) -> void:
 	if refresh_time<.08:
 		return
 	refresh_time = 0.0
-	cursor_world = _snap(_point(get_viewport().get_mouse_position()))
+	var mouse := get_viewport().get_mouse_position()
+	if not panel.get_global_rect().has_point(mouse) and not menu.visible and not file_dialog.visible:
+		gps_cursor = _point(mouse)
+	var raw_cursor := gps_cursor
+	cursor_world = _snap(raw_cursor)
 	var reason := ""
 	if mode in ["place","move","mapped_move"]:
 		var key := str(cursor_world)+":"+str(angle)+":"+mode+":"+kind+":"+selected_id
@@ -331,6 +463,11 @@ func tick(delta: float) -> void:
 		preview.hide()
 	var view_names: Array[String] = ["Aérea","Perspectiva","Calle"]
 	hint.text = "%s | %.2f m | Nivel %.1f m\n%s\nWASD: mover vista · rueda: zoom\nClic derecho: opciones · clic izq.: aplicar\nV: vista · G: precisión · M: medir\nH: techo · F: piso · Q/E: girar · B: salir" % [view_names[view_mode],snaps[step_index],elevation,mode if not mode.is_empty() else "Seleccionar"]
+	hint.text += "\nWGS84 cursor: "+world.geography.coordinate_text(raw_cursor)
+	if mode in ["place","move","mapped_move"]:
+		hint.text += "\nAjustado: "+world.geography.coordinate_text(cursor_world)
+	if not selected_id.is_empty():
+		hint.text += "\nID: "+selected_id
 	if not reason.is_empty():
 		hint.text += "\nNO PERMITIDO: "+reason
 	elif mode in ["place","move","mapped_move"]:
@@ -342,6 +479,10 @@ func tick(delta: float) -> void:
 
 func handle(event: InputEvent) -> void:
 	if not active or menu.visible or file_dialog.visible:
+		return
+	if gps_dialog.visible:
+		if event is InputEventKey and event.pressed and event.keycode==KEY_ESCAPE:
+			gps_dialog.hide()
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
@@ -355,6 +496,8 @@ func handle(event: InputEvent) -> void:
 			KEY_F: _cycle_floor()
 			KEY_H: _toggle_roof()
 			KEY_M: _measure_mode()
+			KEY_F8: _open_gps()
+			KEY_F9: _copy_gps_cursor()
 			KEY_Q: _rotate(-1)
 			KEY_E: _rotate(1)
 	if event is InputEventMouseButton and event.pressed:
@@ -441,6 +584,9 @@ func _context(p: Vector3,screen: Vector2i) -> void:
 	if selected_type in ["ground","lot","mapped","street"] and elevation==0.0:
 		menu.add_separator("Mi vivienda")
 		menu.add_item("Ubicar mi casa aquí en Monte",10)
+	menu.add_separator("Coordenadas WGS84")
+	menu.add_item("Copiar latitud y longitud",11)
+	menu.add_item("Ir / editar por coordenadas",12)
 	menu.add_item("Cancelar",0)
 	menu.position = screen
 	menu.popup()
@@ -519,6 +665,11 @@ func _menu_action(id: int) -> void:
 				get_tree().call_deferred("reload_current_scene")
 			else:
 				message = reason
+		11:
+			DisplayServer.clipboard_set(world.geography.coordinate_text(click_world))
+			message = "GPS copiado: "+world.geography.coordinate_text(click_world)
+		12:
+			_open_gps_at(click_world)
 		0: pass
 
 func _set_edit(key: String,value: Variant) -> void:
@@ -555,6 +706,9 @@ func _click(p: Vector3) -> void:
 		record.dx = p.x-origin.x
 		record.dz = p.z-origin.z
 		record.angle = angle
+		var gps := world.geography.unproject(p)
+		record.lat = gps.lat
+		record.lon = gps.lon
 		world.map_edits[selected_id] = record
 		if world.save_map_edits():
 			get_tree().call_deferred("reload_current_scene")
@@ -564,7 +718,8 @@ func _click(p: Vector3) -> void:
 	var id := selected_id if mode=="move" else "user_"+str(Time.get_unix_time_from_system()).replace(".","_")+"_"+str(Time.get_ticks_usec())+"_"+str(serial)
 	serial += 1
 	var old: Dictionary = records.get(id,{})
-	var record := {"kind":kind,"x":p.x,"y":p.y,"z":p.z,"angle":angle,"paint":old.get("paint",colors[0])}
+	var gps := world.geography.unproject(p)
+	var record := {"kind":kind,"x":p.x,"y":p.y,"z":p.z,"lat":gps.lat,"lon":gps.lon,"angle":angle,"paint":old.get("paint",colors[0])}
 	_replace_object(id,record)
 	_save_objects()
 	message = "Guardado: "+kind
