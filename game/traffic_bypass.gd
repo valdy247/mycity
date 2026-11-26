@@ -139,6 +139,7 @@ static func _four_lane_pass(body: CharacterBody3D,route: Array,index: int,street
 	return {}
 
 static func recover(body: CharacterBody3D,route: Array,index: int,streets: Streets,width: float,length: float,signals: Dictionary = {},height: float = 1.8) -> Dictionary:
+	if bool(body.get_meta("junction_guard",false)): return {}
 	if index<0 or index>=route.size(): return {}
 	var lane := streets.four_lane_at(body.global_position,body.global_transform.basis.z)
 	if not lane.is_empty():
@@ -242,6 +243,9 @@ static func reverse_clear(body: CharacterBody3D,streets: Streets,width: float,le
 # Keep reverse manoeuvres active across frames. Otherwise a few centimetres
 # of reverse progress reset the stall detector and cause forward/reverse loops.
 static func retreat(state: Dictionary,body: CharacterBody3D,streets: Streets,width: float,length: float,delta: float,requested: bool) -> bool:
+	if bool(body.get_meta("junction_guard",false)):
+		state.retreat_remaining = 0.0
+		return false
 	var remaining := float(state.get("retreat_remaining",0.0))
 	if remaining<=0.0:
 		if not requested or float(state.get("backed_up",0.0))>=5.5: return false
@@ -329,6 +333,7 @@ static func _yield_path(body: CharacterBody3D,streets: Streets,width: float,leng
 # Return true only when this vehicle owns a temporary yielding maneuver.
 # Ordinary physics safety checks remain active on every movement.
 static func cooperate(state: Dictionary,body: CharacterBody3D,streets: Streets,width: float,length: float,height: float,delta: float,stalled_time: float,target: Vector3) -> bool:
+	if bool(body.get_meta("junction_guard",false)): return false
 	body.set_meta("traffic_priority",length)
 	# On Monte, lane discipline replaces arbitrary refuge manoeuvres.
 	if stalled_time>.6 or not (state.get("cooperative_path",[]) as Array).is_empty() or body.has_meta("traffic_yield_until"):
@@ -427,3 +432,191 @@ static func rejoin_index(body: CharacterBody3D,route: Array,index: int,streets: 
 # The expensive path search is still throttled by each driver's cooldown.
 static func early_lane_pass(body: CharacterBody3D,streets: Streets,blocked: bool,free: float) -> bool:
 	return blocked and free>1.3 and not streets.four_lane_at(body.global_position,body.global_transform.basis.z).is_empty()
+
+# Intersection admission: reserve one crossing at a time, before the
+# vehicle's nose enters the junction. Verify that its tail can exit too.
+static func _junction_samples(origin: Vector3,route: Array,index: int,loop: bool,continuation: Array,resume: int) -> Array:
+	var samples: Array = [{"p":origin,"distance":0.0,"d":Vector3.ZERO}]
+	var previous := origin
+	var traveled := 0.0
+	var points: Array = []
+	for offset in range(mini(80,route.size())):
+		var at := index+offset
+		if at>=route.size() and not loop: break
+		points.append(route[at%route.size()])
+	if not continuation.is_empty():
+		for offset in range(mini(45,continuation.size())):
+			points.append(continuation[(resume+offset)%continuation.size()])
+	for item in points:
+		var target: Vector3 = item.p if item is Dictionary else item
+		target.y = origin.y
+		var diff := target-previous
+		var length := diff.length()
+		if length<.01: continue
+		var d := diff/length
+		var extent := minf(length,48.0-traveled)
+		if extent<=.01: break
+		var count := maxi(1,ceili(extent/1.0))
+		for i in range(1,count+1):
+			var step := extent*float(i)/float(count)
+			samples.append({"p":previous+d*step,"distance":traveled+step,"d":d})
+		traveled += extent
+		previous = target
+		if traveled>=47.99: break
+	return samples
+
+static func _flat_distance(a: Vector3,b: Vector3) -> float:
+	return Vector2(a.x-b.x,a.z-b.z).length()
+
+static func _junction_occupied(body: CharacterBody3D,junction: Dictionary) -> bool:
+	var shape := CylinderShape3D.new()
+	shape.radius = float(junction.radius)
+	shape.height = 3.8
+	var p: Vector3 = junction.p
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = shape
+	q.transform = Transform3D(Basis.IDENTITY,p+Vector3.UP*1.9)
+	q.collision_mask = 1|4|8
+	q.exclude = [body.get_rid()]
+	for hit in body.get_world_3d().direct_space_state.intersect_shape(q,64):
+		if hit.collider is CharacterBody3D: return true
+	return false
+
+static func _junction_exit_clear(body: CharacterBody3D,samples: Array,first: int,last: int,width: float,length: float,height: float) -> bool:
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(width+.10,height,length+.30)
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = shape
+	q.collision_mask = 1|4|8
+	q.exclude = [body.get_rid()]
+	var space := body.get_world_3d().direct_space_state
+	for i in range(maxi(1,first),last+1):
+		var p: Vector3 = samples[i].p
+		var d: Vector3 = samples[i].d
+		q.transform = Transform3D(Basis(Vector3.UP,atan2(d.x,d.z)),p+Vector3.UP*(height*.5+.08))
+		for hit in space.intersect_shape(q,32):
+			if hit.collider is CharacterBody3D: return false
+	return true
+
+static func _junction_release(state: Dictionary,body: CharacterBody3D,streets: Streets) -> void:
+	var id := String(state.get("junction_claim",""))
+	if not id.is_empty():
+		var claim: Dictionary = streets.intersection_claims.get(id,{})
+		if int(claim.get("owner",0))==body.get_instance_id(): streets.intersection_claims.erase(id)
+	state.erase("junction_claim")
+	state.erase("junction_entered")
+
+# Returns metres of permitted forward travel, or -1 when unrestricted.
+# The caller uses both a braking curve and a hard per-frame movement cap.
+static func junction_gate(state: Dictionary,body: CharacterBody3D,streets: Streets,route: Array,index: int,loop: bool,width: float,length: float,height: float,delta: float,continuation: Array = [],resume: int = 0) -> float:
+	var origin := body.global_position
+	var extent := Vector2(length,width).length()*.5
+	var owner := body.get_instance_id()
+	var now := Time.get_ticks_msec()
+	body.set_meta("junction_guard",false)
+	var held := String(state.get("junction_claim",""))
+	if not held.is_empty():
+		var claim: Dictionary = streets.intersection_claims.get(held,{})
+		if int(claim.get("owner",0))!=owner:
+			state.erase("junction_claim")
+			state.erase("junction_entered")
+		else:
+			var old: Dictionary = claim.junction
+			var old_center: Vector3 = old.p
+			var away := _flat_distance(origin,old_center)
+			var radius := float(old.radius)+extent
+			if away<radius+.10: state.junction_entered = true
+			if bool(state.get("junction_entered",false)) and away>radius+1.0:
+				_junction_release(state,body,streets)
+			elif not bool(state.get("junction_entered",false)) and now-int(claim.since)>8500:
+				_junction_release(state,body,streets)
+			else:
+				body.set_meta("junction_guard",true)
+				return -1.0
+	if route.is_empty() or index<0 or index>=route.size(): return -1.0
+	var nearby := streets.intersections_near(origin,34.0)
+	if nearby.is_empty():
+		state.erase("junction_signal_id")
+		return -1.0
+	var samples := _junction_samples(origin,route,index,loop,continuation,resume)
+	var selected: Dictionary = {}
+	var entry := -1
+	var exit := -1
+	var stop_distance := INF
+	for junction in nearby:
+		var center: Vector3 = junction.p
+		var radius := float(junction.radius)+extent+.65
+		var first := -1
+		var last := -1
+		for i in range(samples.size()):
+			var p: Vector3 = samples[i].p
+			var inside := _flat_distance(p,center)<=radius
+			if first<0:
+				if inside: first = i
+			elif not inside:
+				last = i
+				break
+		if first<0: continue
+		var limit := 0.0 if first==0 else float(samples[first-1].distance)
+		if limit>=stop_distance: continue
+		selected = junction
+		entry = first
+		exit = last
+		stop_distance = limit
+	if selected.is_empty():
+		state.erase("junction_signal_id")
+		return -1.0
+	var center: Vector3 = selected.p
+	var id := String(selected.id)
+	var occupied_radius := float(selected.radius)+extent
+	var already_inside := _flat_distance(origin,center)<occupied_radius-.05
+	# A vehicle already inside must clear the box, not stop for a red
+	# light or reverse across crossing traffic.
+	if already_inside:
+		body.set_meta("junction_guard",true)
+		if not streets.intersection_claims.has(id):
+			streets.intersection_claims[id] = {"owner":owner,"since":now,"junction":selected}
+			state.junction_claim = id
+			state.junction_entered = true
+		return -1.0
+	if stop_distance>maxf(8.0,float(state.get("speed",0.0))*1.2+3.0): return stop_distance
+	body.set_meta("junction_guard",true)
+	# Signal dwell occurs at the approach, never at the mapped node.
+	if bool(selected.signal):
+		if String(state.get("junction_signal_id",""))!=id:
+			state.junction_signal_id = id
+			state.junction_signal_wait = 0.0
+		if stop_distance<=.12 and float(state.get("speed",0.0))<.15:
+			state.junction_signal_wait = float(state.junction_signal_wait)+delta
+		if float(state.junction_signal_wait)<2.0: return stop_distance
+	# Don't lock the box far in advance; queue at the line first.
+	if stop_distance>2.0: return stop_distance
+	var existing: Dictionary = streets.intersection_claims.get(id,{})
+	if not existing.is_empty():
+		var other := instance_from_id(int(existing.owner)) as CharacterBody3D
+		if not is_instance_valid(other):
+			streets.intersection_claims.erase(id)
+		elif int(existing.owner)!=owner:
+			var other_extent := float(other.get_meta("junction_extent",4.5))
+			if now-int(existing.since)>8500 and _flat_distance(other.global_position,center)>float(selected.radius)+other_extent+.2:
+				streets.intersection_claims.erase(id)
+			else: return stop_distance
+	# If the route ends inside the crossing, refuse entry. A legal exit
+	# must fit the whole vehicle, plus a little space beyond its tail.
+	if exit<0: return stop_distance
+	if now<int(state.get("junction_retry",0)): return stop_distance
+	state.junction_retry = now+250
+	if _junction_occupied(body,selected): return stop_distance
+	var last := mini(samples.size()-1,exit+2)
+	if not _junction_exit_clear(body,samples,entry,last,width,length,height): return stop_distance
+	streets.intersection_claims[id] = {"owner":owner,"since":now,"junction":selected}
+	body.set_meta("junction_extent",extent)
+	state.junction_claim = id
+	state.junction_entered = false
+	return -1.0
+
+static func junction_speed(speed: float,limit: float,brake: float) -> float:
+	return speed if limit<0.0 else minf(speed,sqrt(2.0*brake*maxf(0.0,limit)))
+
+static func junction_advance(advance: float,limit: float) -> float:
+	return advance if limit<0.0 else minf(advance,maxf(0.0,limit))
