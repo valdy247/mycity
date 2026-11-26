@@ -8,6 +8,8 @@ const HOME_OUT := Vector3(16, 0.91, 21.0)
 const HOME_IN := Vector3(16, 1.02, 17.35)
 const VAN_PARK := Vector3(8, 0, 16)
 const Builder = preload("res://city_builder.gd")
+const Bakery = preload("res://mayuli_bakery.gd")
+var bakery: Bakery
 var grid_builder: Builder
 var mats: Dictionary = {}
 var mesh_cache: Dictionary = {}
@@ -41,6 +43,9 @@ func setup(builder: Builder) -> void:
 	_shape(ground,Vector3(0,-0.3,0),Vector3(SIZE,0.6,SIZE))
 	_make_roads()
 	_make_districts()
+	bakery = Bakery.new()
+	add_child(bakery)
+	bakery.setup(builder)
 	_make_home()
 	_make_park(Vector3(40,0,32))
 	_make_park(Vector3(-40,0,-40))
@@ -194,7 +199,7 @@ func _make_districts() -> void:
 	# Keep many empty blocks and lots for future construction.
 	for p in [Vector2i(-6,2),Vector2i(-5,2),Vector2i(-4,2),Vector2i(-3,2),Vector2i(-2,2),Vector2i(3,2),Vector2i(4,2),Vector2i(6,2),Vector2i(7,2),Vector2i(-6,4),Vector2i(-5,4),Vector2i(-4,4),Vector2i(3,4),Vector2i(4,4)]:
 		_starter("house",p.x,p.y,0 if p.y==2 else 2)
-	for p in [Vector2i(-2,-2),Vector2i(-3,-2),Vector2i(-4,-2),Vector2i(2,-2),Vector2i(3,-2),Vector2i(4,-2),Vector2i(7,-2)]:
+	for p in [Vector2i(-2,-2),Vector2i(-3,-2),Vector2i(-4,-2),Vector2i(4,-2),Vector2i(7,-2)]:
 		_starter("shop",p.x,p.y,2)
 	for p in [Vector2i(-3,6),Vector2i(3,6),Vector2i(10,-10),Vector2i(-10,10)]:
 		_starter("school",p.x,p.y,0)
@@ -297,6 +302,10 @@ func _all_seats() -> Array:
 func interaction_text(at: Vector3) -> String:
 	if seated:
 		return "[E] Levantarse"
+	if bakery != null:
+		var bakery_action: String = bakery.interaction_text(at)
+		if not bakery_action.is_empty():
+			return bakery_action
 	if at.distance_to(door_anchor) < 2.6:
 		return "[E] Salir de mi casa" if inside_home else "[E] Entrar a mi casa"
 	for seat in _all_seats():
@@ -322,6 +331,8 @@ func interact(player: CharacterBody3D, avatar: Node3D, legs: Array, arms: Array)
 		for leg in legs:
 			leg.rotation.x = 0.0
 		return true
+	if bakery != null and bakery.interact(player):
+		return true
 	if player.global_position.distance_to(door_anchor)<2.6:
 		inside_home = not inside_home
 		_animate_door()
@@ -344,6 +355,8 @@ func interact(player: CharacterBody3D, avatar: Node3D, legs: Array, arms: Array)
 	return false
 
 func reset_interaction(avatar: Node3D, legs: Array) -> void:
+	if bakery != null:
+		bakery.reset()
 	inside_home = false
 	seated = false
 	avatar.position.y = 0
@@ -457,6 +470,8 @@ func _make_pedestrians() -> void:
 		walkers.append({"node":person,"legs":legs,"origin":person.position,"phase":float(i)*.7})
 
 func tick(delta: float) -> void:
+	if bakery != null:
+		bakery.tick(delta)
 	clock += delta
 	var phase := _phase()
 	for traffic_signal in signals:
