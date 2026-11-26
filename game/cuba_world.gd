@@ -2424,6 +2424,115 @@ func _market_scaled(poly: PackedVector2Array,center: Vector2,factor: float) -> P
 	for p in poly: out.append(center+(p-center)*factor)
 	return out
 
+# The market is a special landmark: its two long historic street
+# fronts have a real recessed ground floor, not painted arch silhouettes.
+func _market_frontages(poly: PackedVector2Array) -> Array:
+	var result: Array = []
+	for i in range(poly.size()):
+		var a := Vector3(poly[i].x,0,poly[i].y)
+		var b := Vector3(poly[(i+1)%poly.size()].x,0,poly[(i+1)%poly.size()].y)
+		var length := a.distance_to(b)
+		if length<1.0: continue
+		var t := (b-a).normalized()
+		var mid := (a+b)*.5
+		var n := Vector3(-t.z,0,t.x)
+		if Geometry2D.is_point_in_polygon(Vector2(mid.x+n.x*.12,mid.z+n.z*.12),poly): n = -n
+		var term := ""
+		var best := INF
+		for fraction in [.18,.5,.82]:
+			var p := a.lerp(b,float(fraction))
+			for edge in geography.roads_near(p,32.0):
+				if not bool(edge.driveable): continue
+				var ra: Vector3 = edge.a
+				var rb: Vector3 = edge.b
+				if absf((rb-ra).normalized().dot(t))<.80: continue
+				var q := Geometry3D.get_closest_point_to_segment(p,ra,rb)
+				var distance := p.distance_to(q)
+				if distance<.1 or distance>32.0 or n.dot((q-p)/distance)<.87: continue
+				if absf((q-p).dot(t))>3.5: continue
+				var score := distance-float(edge.width)*.5
+				if score>=best: continue
+				best = score
+				term = geography._market_street_term(edge)
+				if term.is_empty() and _is_monte_edge(edge): term = "monte"
+		result.append({"a":a,"b":b,"mid":mid,"normal":n,"term":term,"length":length,"depth":0.0})
+	# Some extracts omit the alternate street name. Only infer the
+	# opposite facade when it is unnamed and faces the opposite direction.
+	for expected in ["monte","cristina"]:
+		var found := false
+		var other: Dictionary = {}
+		for face in result:
+			if String(face.term)==expected: found = true
+			if String(face.term)==("cristina" if expected=="monte" else "monte"):
+				if other.is_empty() or float(face.length)>float(other.length): other = face
+		if found or other.is_empty(): continue
+		var best_length := 0.0
+		var candidate: Dictionary = {}
+		var opposite: Vector3 = other.normal
+		for face in result:
+			var normal: Vector3 = face.normal
+			if not String(face.term).is_empty() or normal.dot(opposite)>-.85: continue
+			if float(face.length)>best_length:
+				best_length = float(face.length)
+				candidate = face
+		if not candidate.is_empty(): candidate.term = expected
+	return result
+
+func _market_arcade_lower(poly: PackedVector2Array,fronts: Array) -> PackedVector2Array:
+	var lower := poly.duplicate()
+	for face in fronts:
+		if String(face.term) not in ["monte","cristina"] or float(face.length)<3.0: continue
+		for value in [3.15,2.75,2.35]:
+			var depth := float(value)
+			var cut := _clip_inward(lower,face,depth)
+			if cut.size()<3 or Geometry2D.triangulate_polygon(cut).is_empty(): continue
+			var old_area := absf(geography._market_area(lower))
+			if absf(geography._market_area(cut))<old_area*.55: continue
+			lower = cut
+			face.depth = depth
+			break
+	return lower
+
+# Segmental masonry arch: build only the material ABOVE the opening,
+# leaving the lower space physically empty and collision-free.
+func _market_portal_arch(center: Vector3,t: Vector3,n: Vector3,width: float,ceiling: float,mat: StandardMaterial3D,tile: Vector2i) -> void:
+	var spring := 3.58
+	var rise := .63
+	for i in range(8):
+		var u := -1.0+float(i)*.25
+		var v := u+.25
+		var x := u*width*.5
+		var y := v*width*.5
+		var h0 := spring+rise*(1.0-u*u)
+		var h1 := spring+rise*(1.0-v*v)
+		var a := center+t*x+Vector3.UP*h0
+		var b := center+t*y+Vector3.UP*h1
+		var c := center+t*y+Vector3.UP*ceiling
+		var d := center+t*x+Vector3.UP*ceiling
+		_face(a,b,c,n,mat,tile)
+		_face(a,c,d,n,mat,tile)
+		var inset := n*.48
+		_face(a-inset,c-inset,b-inset,-n,mat,tile)
+		_face(a-inset,d-inset,c-inset,-n,mat,tile)
+		_face(a,b,b-inset,Vector3.DOWN,mat,tile)
+		_face(a,b-inset,a-inset,Vector3.DOWN,mat,tile)
+
+func _market_portal_column(p: Vector3,angle: float,ceiling: float,mat: StandardMaterial3D,trim: StandardMaterial3D) -> void:
+	_cube(p+Vector3.UP*.15,Vector3(.88,.30,.86),trim,angle,true)
+	_cube(p+Vector3.UP*.37,Vector3(.72,.17,.70),trim,angle)
+	_cube(p+Vector3.UP*(ceiling*.5),Vector3(.62,ceiling-.56,.63),mat,angle,true)
+	_cube(p+Vector3.UP*3.43,Vector3(.75,.21,.74),trim,angle)
+	_cube(p+Vector3.UP*(ceiling-.16),Vector3(.83,.30,.80),trim,angle)
+
+func _market_portal_floor(face: Dictionary,poly: PackedVector2Array,depth: float,mat: StandardMaterial3D) -> void:
+	var a: Vector3 = face.a
+	var b: Vector3 = face.b
+	var n: Vector3 = face.normal
+	var t := (b-a).normalized()
+	var strip := street_geometry.rect(a-t*.1-n*depth*.5,b+t*.1-n*depth*.5,depth-.04)
+	for piece in Geometry2D.intersect_polygons(strip,poly):
+		_draw_street_polygon(piece,.072,mat,"market_portal_floor")
+
 func _make_market_landmark(poly: PackedVector2Array,anchor: Vector3) -> void:
 	var tile := Vector2i(floori(anchor.x/96.0),floori(anchor.z/96.0))
 	var wall := _mat("cuatro_caminos_ivory",Color("#e2dfd5"))
@@ -2435,7 +2544,21 @@ func _make_market_landmark(poly: PackedVector2Array,anchor: Vector3) -> void:
 	for material in [wall,trim,shadow,glass,roof,cap]:
 		material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	var h := 10.8
-	if not _extrude(poly,0.0,h,wall,tile): return
+	var ceiling := 5.08
+	var fronts := _market_frontages(poly)
+	var lower := _market_arcade_lower(poly,fronts)
+	var portal_count := 0
+	for face in fronts:
+		if float(face.depth)>0.0: portal_count += 1
+	# The original footprint stays unchanged above the portales. Only
+	# the ground-floor walls move inward, including their collision mesh.
+	if portal_count>0:
+		if not _extrude(lower,0.0,ceiling,wall,tile): return
+		if not _extrude(poly,ceiling,h,wall,tile): return
+	else:
+		if not _extrude(poly,0.0,h,wall,tile): return
+	var floor_mat := _mat("cuatro_caminos_portal_floor",Color("#aaa79d"))
+	var inner_trim := _mat("cuatro_caminos_inner_stone",Color("#c8c4b7"))
 	var middle := Vector2.ZERO
 	for p in poly: middle += p
 	middle /= float(poly.size())
@@ -2456,17 +2579,21 @@ func _make_market_landmark(poly: PackedVector2Array,anchor: Vector3) -> void:
 		_extrude(poly,h,h+.28,roof,tile)
 	var primary := _front_edge(poly,true)
 	if primary.is_empty(): primary = _front_edge(poly)
-	for i in range(poly.size()):
-		var a := Vector3(poly[i].x,0,poly[i].y)
-		var b := Vector3(poly[(i+1)%poly.size()].x,0,poly[(i+1)%poly.size()].y)
-		var length := a.distance_to(b)
-		if length<1.0: continue
+	for face in fronts:
+		var a: Vector3 = face.a
+		var b: Vector3 = face.b
+		var length := float(face.length)
 		var t := (b-a).normalized()
-		var mid := (a+b)*.5
-		var n := Vector3(-t.z,0,t.x)
-		if Geometry2D.is_point_in_polygon(Vector2(mid.x+n.x*.12,mid.z+n.z*.12),poly): n = -n
+		var mid: Vector3 = face.mid
+		var n: Vector3 = face.normal
 		var angle := atan2(n.x,n.z)
+		var depth := float(face.depth)
+		var arcade := depth>0.0
+		if arcade:
+			_market_portal_floor(face,poly,depth,floor_mat)
+			print("Cuatro Caminos: portal real ",face.term," longitud=",length," profundidad=",depth)
 		for band in [[.40,.32],[5.18,.32],[5.66,.24],[9.92,.26],[10.62,.36]]:
+			if arcade and float(band[0])<ceiling: continue
 			_cube(mid+n*.09+Vector3.UP*float(band[0]),Vector3(length,float(band[1]),.30),trim,angle)
 		if length<3.0: continue
 		var count := maxi(1,roundi(length/3.65))
@@ -2478,20 +2605,45 @@ func _make_market_landmark(poly: PackedVector2Array,anchor: Vector3) -> void:
 			var p := a+t*(float(k)+.5)*step
 			var central := main_side and k==entrance
 			var door_height := 4.15 if central else 3.82
-			_market_arch(p+n*.10+Vector3.UP*.32,n,t,opening+.28,door_height+.24,trim)
-			_market_arch(p+n*.18+Vector3.UP*.39,n,t,opening,door_height,shadow)
+			var back := p-n*(depth-.04) if arcade else p
+			if _wall_has_opening(lower,back+n*.045,n):
+				_market_arch(back+n*.10+Vector3.UP*.32,n,t,opening+.28,door_height+.24,inner_trim if arcade else trim)
+				_market_arch(back+n*.18+Vector3.UP*.39,n,t,opening,door_height,shadow)
+			if arcade:
+				# Square masonry pillars stand on the outer line; the
+				# segmental arch spans the clear opening between them.
+				var arch_center := p-n*.10
+				_market_portal_arch(arch_center,t,n,step,ceiling,wall,tile)
+				var pier := a+t*(float(k)*step+.40 if k==0 else float(k)*step)-n*.38
+				if Geometry2D.is_point_in_polygon(Vector2(pier.x,pier.z),poly):
+					_market_portal_column(pier,angle,ceiling,wall,trim)
+				if k==count-1:
+					var last := b-t*.40-n*.38
+					if Geometry2D.is_point_in_polygon(Vector2(last.x,last.z),poly):
+						_market_portal_column(last,angle,ceiling,wall,trim)
+				var walk_a := a+t*float(k)*step-n*depth*.56
+				var walk_b := a+t*float(k+1)*step-n*depth*.56
+				var door := p-n*(depth-.55)
+				if Geometry2D.is_point_in_polygon(Vector2(door.x,door.z),poly):
+					monte_walkways.append({"a":walk_a,"b":walk_b,"door":door,"kind":"shop"})
 			_cube(p+n*.10+Vector3.UP*7.62,Vector3(opening+.20,2.62,.22),trim,angle)
 			_cube(p+n*.23+Vector3.UP*7.62,Vector3(opening,2.38,.20),glass,angle)
-			_cube(p+n*.31+Vector3.UP*7.62,Vector3(.09,2.38,.17),trim,angle)
+			# Glazing above, horizontal metal louvers below, as on the
+			# restored market's facade.
+			for bar in range(1,5):
+				_cube(p+n*.34+Vector3.UP*(6.65+float(bar)*.18),Vector3(opening,.035,.055),shadow,angle)
+			for bar in [-1.0,0.0,1.0]:
+				_cube(p+t*float(bar)*opening*.25+n*.34+Vector3.UP*8.02,Vector3(.045,1.50,.055),trim,angle)
 			_cube(p+n*.28+Vector3.UP*8.78,Vector3(opening+.27,.22,.31),trim,angle)
 			_cube(p+n*.28+Vector3.UP*6.42,Vector3(opening+.27,.22,.31),trim,angle)
 			if k>0:
 				var pier := a+t*float(k)*step
-				_cube(pier+n*.10+Vector3.UP*2.68,Vector3(.38,4.65,.34),trim,angle)
+				if not arcade and _wall_has_opening(lower,pier+n*.045,n):
+					_cube(pier+n*.10+Vector3.UP*2.68,Vector3(.38,4.65,.34),trim,angle)
 				_cube(pier+n*.12+Vector3.UP*7.92,Vector3(.40,3.95,.35),trim,angle)
 				_cube(pier+n*.15+Vector3.UP*9.76,Vector3(.63,.34,.42),trim,angle)
 		for corner in [a,b]:
-			_cube(corner+Vector3.UP*5.4,Vector3(.55,10.8,.55),trim,angle)
+			_cube(corner+Vector3.UP*((h+ceiling)*.5),Vector3(.55,h-ceiling,.55),trim,angle)
 		if main_side:
 			var p := a+t*(float(entrance)+.5)*step
 			var gable := minf(step*1.20,4.6)
@@ -2504,7 +2656,8 @@ func _make_market_landmark(poly: PackedVector2Array,anchor: Vector3) -> void:
 	market_drawn = true
 	mapped_buildings += 1
 	editable_buildings["landmark_cuatro_caminos"] = {"poly":poly,"center":Vector3(middle.x,0,middle.y),"height":14.9,"name":"Mercado de Cuatro Caminos","protected":true,"front":primary}
-	print("Cuatro Caminos: mercado monumental generado, ",poly.size()," frentes del perímetro.")
+	print("Cuatro Caminos: mercado monumental generado, ",poly.size()," frentes; ",portal_count," frentes con portal real.")
+	if portal_count<2: push_warning("Cuatro Caminos: revisar identificación de Monte y Cristina en el OSM local.")
 
 func _market_side_details(poly: PackedVector2Array,primary: Dictionary,h: float) -> void:
 	var stone := _mat("market_trim",Color("#c0b39b"))
