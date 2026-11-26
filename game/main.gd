@@ -173,7 +173,7 @@ func _ready() -> void:
 		monte_services.setup(cuba_world,cuba_world.home_spawn,avoid,player,play_camera,urban_buses.stops)
 		monte_pedestrians = MontePedestrians.new()
 		add_child(monte_pedestrians)
-		monte_pedestrians.setup(cuba_world,urban_buses)
+		monte_pedestrians.setup(cuba_world,urban_buses,business.life)
 		urban_buses.stop_priority.connect(taxis.yield_to_bus)
 		urban_buses.stop_priority.connect(monte_pedestrians.yield_to_bus)
 		urban_buses.stop_priority.connect(_bus_priority_notice)
@@ -1143,6 +1143,10 @@ func _greet_person() -> bool:
 		replies = ["Aquí esperando la guagua.","Esperando a ver si llega la guagua.","Voy pa' casa, esperando el transporte.","Aquí en la parada, tú sabes.","A ver si pasa pronto la guagua."]
 	elif context=="shopping":
 		replies = ["Voy a comprar algo de comida.","Voy a ver qué tiene Albertico.","Aquí buscando algo pa' la casa.","Voy a resolver la comida de hoy.","De compras, tú sabes, en la lucha."]
+	elif context=="homeward":
+		replies = ["Voy pa' casa, ya terminé por hoy.","Ya toca descansar un rato."]
+	elif context=="workward":
+		replies = ["Voy camino al trabajo.","Tengo que llegar temprano al trabajo."]
 	elif context=="worker":
 		replies = ["Aquí trabajando, tú sabes.","En la faena, asere.","Resolviendo el trabajo de hoy.","Aquí, cumpliendo con lo mío.","En la lucha, como siempre."]
 	var name_value := String(person.get_meta("citizen_name","Vecino"))
