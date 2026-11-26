@@ -222,12 +222,20 @@ func _flush_city_boxes() -> void:
 		add_child(instance)
 		instance.position = item.origin
 		if bool(item.detail):
+			instance.add_to_group("city_detail_batches")
 			instance.visibility_range_end = 190.0
 			instance.visibility_range_end_margin = 12.0
 			detail_batches += 1
 		if int(item.home_level)>0:
 			home_cutaway.append({"node":instance,"level":item.home_level})
 	box_groups.clear()
+
+func set_detail_quality(low: bool) -> void:
+	# Change existing visual batch ranges only when graphics mode changes.
+	# Collision bodies and navigation remain available.
+	for item in get_tree().get_nodes_in_group("city_detail_batches"):
+		if item is MultiMeshInstance3D:
+			item.visibility_range_end = 105.0 if low else 190.0
 
 func _line(a: Vector3,b: Vector3,width: float,height: float,y: float,mat: StandardMaterial3D) -> void:
 	var v := b-a
