@@ -42,6 +42,8 @@ var monte_walkways: Array = []
 var npc_doorways: Array = []
 var pedestrian_router: Node
 var pedestrian_body := CapsuleShape3D.new()
+var pedestrian_cells: Dictionary = {}
+var pedestrian_cell_frame := -100
 var monte_columns: Dictionary = {}
 var home_local_door := Vector3(0,0,1.65)
 var slots: Array = []
@@ -2734,6 +2736,51 @@ func _market_side_details(poly: PackedVector2Array,primary: Dictionary,h: float)
 
 # A checked movement step for scripted NPCs. The capsule stays above
 # shallow pavement and detects the whole person rather than a single ray.
+# Lightweight shared pedestrian occupancy. Rebuild the grid at most
+# once every six physics frames; check live positions in nearby cells.
+func _pedestrian_cell(p: Vector3) -> Vector2i:
+	return Vector2i(floori(p.x/2.5),floori(p.z/2.5))
+
+func _refresh_pedestrian_cells() -> void:
+	var frame := Engine.get_physics_frames()
+	if frame-pedestrian_cell_frame<6: return
+	pedestrian_cell_frame = frame
+	pedestrian_cells.clear()
+	var seen: Dictionary = {}
+	for group in ["social_people","pedestrian_spacing"]:
+		for node in get_tree().get_nodes_in_group(group):
+			if not node is Node3D or not node.is_visible_in_tree() or node.is_queued_for_deletion(): continue
+			var id: int = node.get_instance_id()
+			if seen.has(id): continue
+			seen[id] = true
+			var key := _pedestrian_cell(node.global_position)
+			if not pedestrian_cells.has(key): pedestrian_cells[key] = []
+			pedestrian_cells[key].append(node)
+
+func pedestrian_space_clear(actor: Node3D,at: Vector3,minimum: float = .65,allow_escape: bool = true) -> bool:
+	_refresh_pedestrian_cells()
+	var cell := _pedestrian_cell(at)
+	for x in range(cell.x-1,cell.x+2):
+		for z in range(cell.y-1,cell.y+2):
+			for node in pedestrian_cells.get(Vector2i(x,z),[]):
+				if not is_instance_valid(node) or node==actor or not node.is_visible_in_tree() or node.is_queued_for_deletion(): continue
+				var other: Vector3 = node.global_position
+				if absf(other.y-at.y)>1.0: continue
+				var end := other
+				if String(node.get_meta("incident_role",""))=="herido":
+					end += node.global_transform.basis.y*1.75
+					end.y = other.y
+				var flat := Vector3(at.x,other.y,at.z)
+				var nearest := Geometry3D.get_closest_point_to_segment(flat,other,end) if other.distance_squared_to(end)>.001 else other
+				var distance := flat.distance_squared_to(nearest)
+				if distance>=minimum*minimum: continue
+				if allow_escape and is_instance_valid(actor):
+					var current := Vector3(actor.global_position.x,other.y,actor.global_position.z)
+					var previous := Geometry3D.get_closest_point_to_segment(current,other,end) if other.distance_squared_to(end)>.001 else other
+					if distance>current.distance_squared_to(previous)+.0001: continue
+				return false
+	return true
+
 func pedestrian_segment_clear(a: Vector3,b: Vector3) -> bool:
 	var space := get_world_3d().direct_space_state
 	var query := PhysicsShapeQueryParameters3D.new()
@@ -2994,53 +3041,33 @@ func _make_corner_plaques() -> void:
 				var p := corner+d*run+outward*(float(road.width)*.5+1.0)
 				if not _street_clear(p,.10):
 					continue
-				var nearest: float = INF
+				# Mapped footprints do not guarantee a rendered wall at 2.5m
+				# (portals and recessed storefronts are common). Use a real
+				# freestanding support on the verified sidewalk instead.
 				var pos := p
 				var normal := -outward
-				var mounted := false
-				# Snap to the real mapped wall where one is available.
-				for fp in geography.footprints_near(p,10.0):
-					if _overlaps_game_lot(fp):
-						continue
-					var poly: PackedVector2Array = fp.poly
-					for i in range(poly.size()):
-						var j := (i+1)%poly.size()
-						var a := Vector3(poly[i].x,0,poly[i].y)
-						var b := Vector3(poly[j].x,0,poly[j].y)
-						if a.distance_to(b)<.8:
-							continue
-						var q := Geometry3D.get_closest_point_to_segment(p,a,b)
-						var distance := q.distance_to(p)
-						if distance<nearest and distance<6.0:
-							var tangent := (b-a).normalized()
-							var n := Vector3(-tangent.z,0,tangent.x)
-							if n.dot(p-q)<0.0:
-								n = -n
-							if n.dot(-outward)<.45:
-								continue
-							nearest = distance
-							pos = q+n*.13
-							var face := _front_edge(poly)
-							if not face.is_empty() and bool(face.road.portal) and n.dot(face.normal)>.8:
-								var tags: Dictionary = fp.tags
-								var idx: int = abs(String(fp.id).hash())%7
-								var inset := _clip_inward(poly,face,2.25)
-								if _building_height(tags,idx)>3.8 and inset.size()>=3 and not Geometry2D.triangulate_polygon(inset).is_empty():
-									pos -= n*2.25
-							normal = n
-							mounted = true
+				var q := Vector2(pos.x,pos.z)
+				var tiny := PackedVector2Array([q-Vector2(.08,.08),q+Vector2(.08,-.08),q+Vector2(.08,.08),q+Vector2(-.08,.08)])
+				var sidewalk := false
+				for poly in street_geometry.near(street_geometry.protected_index,tiny):
+					if Geometry2D.is_point_in_polygon(q,poly):
+						sidewalk = true
+						break
+				if not sidewalk: continue
 				var key := label+":"+str(Vector2i(roundi(pos.x/2.0),roundi(pos.z/2.0)))
-				if done.has(key):
-					continue
+				if done.has(key): continue
 				done[key] = true
 				var angle := atan2(normal.x,normal.z)
 				var width := clampf(float(label.length())*.105+.27,.68,2.15)
-				if not mounted:
-					_cube(pos+Vector3.UP*1.18,Vector3(.09,2.36,.09),concrete,angle)
+				_cube(pos+Vector3.UP*1.28,Vector3(.09,2.56,.09),concrete,angle)
 				var y := 2.48
-				_plaque_layer(pos+Vector3.UP*y+normal*.030,normal,width,.31,black)
-				_plaque_layer(pos+Vector3.UP*y+normal*.046,normal,width-.085,.235,white)
-				_label(label,pos+Vector3.UP*y+normal*.065,minf(.0038,(width-.13)/(float(label.length())*29.0)),angle,Color("#151d28"))
+				# Both faces are readable, and neither exposes a blank black back.
+				for side in [-1.0,1.0]:
+					var facing := normal*float(side)
+					_plaque_layer(pos+Vector3.UP*y+facing*.060,facing,width,.31,black)
+					_plaque_layer(pos+Vector3.UP*y+facing*.073,facing,width-.085,.235,white)
+					var plate := _label(label,pos+Vector3.UP*y+facing*.090,minf(.0038,(width-.13)/(float(label.length())*29.0)),atan2(facing.x,facing.z),Color("#151d28"))
+					plate.outline_size = 0
 				plaque_count += 1
 
 func _local_cube(c: Vector3,basis: Basis,p: Vector3,size: Vector3,material: StandardMaterial3D,solid: bool = false) -> void:
@@ -3598,7 +3625,7 @@ func tick(delta: float) -> void:
 		var phase: float = cuba_clock*.32+float(resident.phase)
 		var target := base+direction*sin(phase)*1.2
 		var next := npc.position.move_toward(target,.15)
-		if pedestrian_segment_clear(npc.position,next):
+		if pedestrian_segment_clear(npc.position,next) and pedestrian_space_clear(npc,next):
 			npc.position = next
 			var d: Vector3 = direction if cos(phase)>0.0 else -direction
 			npc.rotation.y = atan2(d.x,d.z)
