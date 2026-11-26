@@ -167,6 +167,7 @@ func _make_stop(mid: Vector3,d: Vector3,width: float,lane: float,line: String,ed
 	var right := Vector3(-d.z,0,d.x)
 	var sidewalk := mid+right*(width*.5+.70)
 	var p := mid+right*data.lane_distance(edge,BUS_WIDTH,true)
+	if not streets.intersection_clear_for_stop(p,BUS_LENGTH,BUS_WIDTH): return {}
 	for other in stops:
 		var old: Vector3 = other.position
 		if old.distance_to(p)<27.0: return {}
@@ -652,6 +653,7 @@ func tick(delta: float) -> void:
 		var diff := target-body.position
 		var distance := diff.length()
 		var stalled := TrafficBypass.stalled(bus,body,delta)
+		var junction_limit := TrafficBypass.junction_gate(bus,body,streets,route,index,not detouring,BUS_WIDTH,BUS_LENGTH,2.96,delta,original if detouring else [],int(bus.get("resume_index",0)))
 		if TrafficBypass.cooperate(bus,body,streets,BUS_WIDTH,BUS_LENGTH,2.96,delta,stalled,target): continue
 		if bool(bus.get("cooperative_rejoin",false)):
 			bus.cooperative_rejoin = false
@@ -723,8 +725,9 @@ func tick(delta: float) -> void:
 		var safe_speed := sqrt(2.0*BUS_BRAKE*maxf(0.0,free-BUS_SAFE_GAP))
 		if blocked:
 			speed = minf(speed,safe_speed)
+		speed = TrafficBypass.junction_speed(speed,junction_limit,BUS_BRAKE)
 		bus.bypass_cooldown = maxf(0.0,float(bus.get("bypass_cooldown",0.0))-delta)
-		if float(bus.get("retreat_remaining",0.0))<=0.0 and (stalled>1.0 or (not detouring and not approaching_stop and TrafficBypass.early_lane_pass(body,streets,blocked,free))) and float(bus.bypass_cooldown)<=0.0:
+		if not bool(body.get_meta("junction_guard",false)) and float(bus.get("retreat_remaining",0.0))<=0.0 and (stalled>1.0 or (not detouring and not approaching_stop and TrafficBypass.early_lane_pass(body,streets,blocked,free))) and float(bus.bypass_cooldown)<=0.0:
 			bus.bypass_cooldown = 1.8
 			if detouring:
 				bus.detour = []
@@ -758,7 +761,7 @@ func tick(delta: float) -> void:
 			continue
 		var old_angle := body.rotation.y
 		body.rotation.y = angle
-		var advance := d*minf(float(bus.speed)*delta,distance)
+		var advance := d*TrafficBypass.junction_advance(minf(float(bus.speed)*delta,distance),junction_limit)
 		# Test the real body before moving; avoid slide/push on contact.
 		if body.test_move(body.global_transform,advance):
 			body.rotation.y = old_angle
