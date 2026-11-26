@@ -4,6 +4,7 @@ const MapView = preload("res://taxi_map.gd")
 const Person = preload("res://street_person.gd")
 const Bypass = preload("res://traffic_bypass.gd")
 const HOUSE_COST := 5000
+const VEHICLE_ORDER := ["bicicleta","triciclo","moto","carro"]
 const ROOM := Vector3(0,110,0)
 const BENCH := Vector3(3.1,0,-1.4)
 const FURNITURE := {
@@ -50,6 +51,7 @@ func setup(controller) -> void:
 		if not state.has(key):
 			var defaults := {"house":false,"project":"","projects":{},"inventory":{},"deliveries":[],"part":"","furniture":{},"held_furniture":"","parked":{},"trash":[]}
 			state[key] = defaults[key]
+	_prepare_progression()
 	for id in FURNITURE:
 		if not state.furniture.has(id): state.furniture[id] = {"p":FURNITURE[id].p.duplicate(),"removed":false}
 	# Existing GPS residence belongs to the player; no purchase or exterior sign.
@@ -79,7 +81,7 @@ func setup(controller) -> void:
 	if not gps.is_empty():
 		_set_waypoint(Vector3(float(gps.x),0,float(gps.z)),String(gps.label))
 	for kind in state.parked:
-		if Kit.KITS.has(kind) and _complete(String(kind)):
+		if Kit.KITS.has(kind) and _unlocked(String(kind)) and _complete(String(kind)):
 			var p: Dictionary = state.parked[kind]
 			var at := Vector3(float(p.x),float(p.y),float(p.z))
 			if world.street_geometry.point_on_road(at):
@@ -89,6 +91,107 @@ func setup(controller) -> void:
 				owned[kind] = body
 	_refresh_preview()
 	_save()
+
+# One-time migration: reset only the old bicycle, not the wallet or other
+# saved projects. Higher projects remain locked until prior sales.
+func _prepare_progression() -> void:
+	if int(state.get("progression_version",0))>=1: return
+	state.progression_version = 1
+	state.vehicle_level = 0
+	state.vehicle_sales = {}
+	state.upgrades = {}
+	state.listing = {}
+	state.projects.erase("bicicleta")
+	state.parked.erase("bicicleta")
+	for token in state.inventory.keys():
+		if String(token).begins_with("bicicleta:"): state.inventory.erase(token)
+	for i in range(state.deliveries.size()-1,-1,-1):
+		if String(state.deliveries[i].token).begins_with("bicicleta:"): state.deliveries.remove_at(i)
+	if String(state.part).begins_with("bicicleta:"): state.part = ""
+	if String(state.get("wanted","")).begins_with("bicicleta:"): state.wanted = ""
+	state.project = "bicicleta"
+
+func _unlocked(kind: String) -> bool:
+	var index := VEHICLE_ORDER.find(kind)
+	var mission: Dictionary = business.ledger.life_data.get("carlos_paint",{})
+	return index>=0 and index<=int(state.get("vehicle_level",0)) and int(mission.get("stage",0))>=5
+
+func _listed(kind: String) -> bool:
+	return String(state.get("listing",{}).get("kind",""))==kind
+
+func _progression_hint() -> String:
+	if not _unlocked("bicicleta"): return "Completa el trabajo de pintura con Carlos para recibir tu primera goma."
+	var level := clampi(int(state.vehicle_level),0,VEHICLE_ORDER.size()-1)
+	return "Proyecto desbloqueado: "+String(Kit.KITS[VEHICLE_ORDER[level]].name)
+
+func receive_paint_wheel() -> bool:
+	if not _free_hands(): return false
+	state.project = "bicicleta"
+	if not state.projects.has("bicicleta"): state.projects.bicicleta = {}
+	state.part = "bicicleta:wheel_a"
+	_refresh_carried()
+	_refresh_preview()
+	return true
+
+func _upgrade_vehicle(kind: String) -> void:
+	if not _unlocked(kind) or not _complete(kind) or _listed(kind) or not inside: return
+	var upgrades: Dictionary = state.upgrades
+	var level := int(upgrades.get(kind,0))
+	if level>=2: return
+	var price := roundi(float(Kit.total(kind))*.12)
+	if business.ledger.cash<price: return
+	upgrades[kind] = level+1
+	business.ledger.spend(price)
+	_project_menu()
+
+func _sale_price(kind: String) -> int:
+	return roundi(float(Kit.total(kind))*(1.25+.15*float(state.upgrades.get(kind,0))))
+
+func _list_vehicle(kind: String) -> void:
+	if not _unlocked(kind) or not _complete(kind) or riding or not state.listing.is_empty(): return
+	business._open("Facebook Marketplace (juego)","Publicar "+String(Kit.KITS[kind].name)+" por "+str(_sale_price(kind))+" CUP. Cuando un comprador acepte, se entregará el vehículo y se desbloqueará el siguiente proyecto.")
+	business._button("Publicar vehículo",_confirm_listing.bind(kind))
+	business._button("Cancelar",_project_menu)
+
+func _confirm_listing(kind: String) -> void:
+	if not _unlocked(kind) or not _complete(kind) or riding or not state.listing.is_empty(): return
+	state.listing = {"kind":kind,"price":_sale_price(kind),"remaining":25.0}
+	_save()
+	business.close()
+	business._notify("Vehículo publicado en Marketplace. Esperando comprador.")
+
+func _tick_listing(delta: float) -> void:
+	var listing: Dictionary = state.listing
+	if listing.is_empty(): return
+	listing.remaining = float(listing.remaining)-delta
+	if float(listing.remaining)>0.0: return
+	var kind := String(listing.kind)
+	if riding and ride_kind==kind: return
+	if not _complete(kind):
+		state.listing = {}
+		_save()
+		return
+	var price := int(listing.price)
+	if owned.has(kind):
+		var body: CharacterBody3D = owned[kind]
+		if is_instance_valid(body):
+			body.collision_layer = 0
+			body.queue_free()
+		owned.erase(kind)
+	state.parked.erase(kind)
+	state.projects.erase(kind)
+	state.upgrades.erase(kind)
+	state.vehicle_sales[kind] = int(state.vehicle_sales.get(kind,0))+1
+	var next := mini(VEHICLE_ORDER.size()-1,VEHICLE_ORDER.find(kind)+1)
+	state.vehicle_level = maxi(int(state.vehicle_level),next)
+	state.project = VEHICLE_ORDER[int(state.vehicle_level)]
+	state.listing = {}
+	business.ledger.cash += price
+	business.ledger.revenue += price
+	business.ledger.add_message("Marketplace","Vendiste "+String(Kit.KITS[kind].name)+" por "+str(price)+" CUP. "+_progression_hint())
+	_refresh_preview()
+	_save()
+	business._notify("Vehículo vendido · +"+str(price)+" CUP")
 
 func _save() -> void:
 	business.ledger.save_game()
@@ -411,14 +514,15 @@ func _garage_menu() -> void:
 	if not String(state.held_furniture).is_empty():
 		business._notify("Primero coloca el mueble o llévalo al basurero.")
 		return
-	business._open("Mi garaje","Elige un proyecto. Las piezas instaladas se ven sólidas; las faltantes, transparentes.")
+	business._open("Mi garaje",_progression_hint()+"\nLas piezas instaladas se ven sólidas; las faltantes, transparentes.")
 	for kind in Kit.KITS:
 		var name_value := String(Kit.KITS[kind].name)
 		var done := _complete(String(kind))
-		business._button("%s · %s" % [name_value,"Completo" if done else "%d CUP en piezas" % Kit.total(String(kind))],_select.bind(String(kind)))
+		business._button("%s · %s" % [name_value,"Bloqueado" if not _unlocked(String(kind)) else ("Completo" if done else "%d CUP en piezas" % Kit.total(String(kind)))],_select.bind(String(kind)),not _unlocked(String(kind)))
 	business._button("Cerrar",business.close)
 
 func _select(kind: String) -> void:
+	if not _unlocked(kind): return
 	state.project = kind
 	if not state.projects.has(kind): state.projects[kind] = {}
 	_refresh_preview()
@@ -427,10 +531,14 @@ func _select(kind: String) -> void:
 
 func _project_menu() -> void:
 	var kind := String(state.project)
-	if not Kit.KITS.has(kind): return
+	if not Kit.KITS.has(kind) or not _unlocked(kind): return
 	if _complete(kind):
 		business._open(String(Kit.KITS[kind].name),"¡Vehículo terminado!")
-		business._button("Sacar a la calle / montar",_launch.bind(kind))
+		business._button("Sacar a la calle / montar",_launch.bind(kind),_listed(kind))
+		var level := int(state.upgrades.get(kind,0))
+		var price := roundi(float(Kit.total(kind))*.12)
+		business._button("Mejorar rendimiento · %d/2 · %d CUP" % [level,price],_upgrade_vehicle.bind(kind),level>=2 or not inside or _listed(kind) or business.ledger.cash<price)
+		business._button("Publicado · esperando comprador" if _listed(kind) else "Vender en Facebook · %d CUP" % _sale_price(kind),_list_vehicle.bind(kind),not state.listing.is_empty())
 		business._button("Otros proyectos",_garage_menu)
 		business._button("Cerrar",business.close)
 		return
@@ -458,6 +566,7 @@ func _project_menu() -> void:
 	business._button("Cerrar",business.close)
 
 func _part_menu(kind: String,key: String) -> void:
+	if not _unlocked(kind): return
 	var token := kind+":"+key
 	if bool(state.projects[kind].get(key,false)): return
 	if String(state.part)==token or int(state.inventory.get(token,0))>0:
@@ -483,6 +592,7 @@ func _part_menu(kind: String,key: String) -> void:
 	business._button("Volver",_project_menu)
 
 func _order_part(kind: String,key: String) -> void:
+	if not _unlocked(kind): return
 	if not bool(state.house):
 		business._notify("Necesitas una vivienda con garaje para recibir repuestos.")
 		return
@@ -501,6 +611,7 @@ func _seller(kind: String,key: String) -> Dictionary:
 	return world.parts_sites[mini(index,world.parts_sites.size()-1)]
 
 func _find_part(kind: String,key: String) -> void:
+	if not _unlocked(kind): return
 	var site := _seller(kind,key)
 	if site.is_empty(): return
 	state["wanted"] = kind+":"+key
@@ -531,9 +642,9 @@ func _show_map(point: Vector3,label_value: String) -> void:
 	business._button("Cerrar",business.close)
 
 func open_phone_market() -> void:
-	business._open("Marketplace · Repuestos","Pedidos simulados dentro del juego. Recoge tus piezas en el garaje.")
+	business._open("Facebook Marketplace (juego)",_progression_hint()+"\nCompra repuestos o vende vehículos terminados.")
 	for kind in Kit.KITS:
-		business._button(String(Kit.KITS[kind].name),_select.bind(String(kind)))
+		business._button(String(Kit.KITS[kind].name)+(" · Bloqueado" if not _unlocked(String(kind)) else ""),_select.bind(String(kind)),not _unlocked(String(kind)))
 	business._button("Mi casa / mapa",_home_map,world.garage_home_site.is_empty())
 	business._button("Inicio",business.open_phone_home)
 
@@ -552,6 +663,7 @@ func _vendor_menu(site: Dictionary) -> void:
 	business._button("Cerrar",business.close)
 
 func _buy_part(kind: String,key: String) -> void:
+	if not _unlocked(kind): return
 	if not _free_hands(): return
 	var price := int(Kit.KITS[kind].parts[key])
 	if business.ledger.cash<price: return
@@ -596,7 +708,7 @@ func _spawn(kind: String) -> CharacterBody3D:
 	return null
 
 func _launch(kind: String) -> void:
-	if not inside or not _complete(kind) or not _free_hands(): return
+	if not inside or not _unlocked(kind) or _listed(kind) or not _complete(kind) or not _free_hands(): return
 	if not owned.has(kind):
 		var body := _spawn(kind)
 		if body==null:
@@ -695,6 +807,7 @@ func _make_rider(body: CharacterBody3D,kind: String,style: int) -> Node3D:
 	return person
 
 func _mount(kind: String) -> void:
+	if not _unlocked(kind) or _listed(kind): return
 	var body: CharacterBody3D = owned[kind]
 	if kind!="carro": rider = _make_rider(body,kind,691)
 	riding = true
@@ -769,7 +882,7 @@ func reset() -> void:
 func drive(delta: float,movement: Vector2) -> void:
 	var body: CharacterBody3D = owned[ride_kind]
 	var spec: Dictionary = Kit.KITS[ride_kind]
-	var speed := float(spec.speed)
+	var speed := float(spec.speed)*(1.0+.08*float(state.upgrades.get(ride_kind,0)))
 	var target := -movement.y*(speed if movement.y<=0 else speed*.28)
 	var brake := Input.is_physical_key_pressed(KEY_SPACE)
 	ride_speed = move_toward(ride_speed,0.0 if brake else target,delta*(12.0 if brake else 4.0))
@@ -910,6 +1023,7 @@ func _traffic_tick(delta: float) -> void:
 		elif not Bypass.safe_step(body,d,advance,angle,delta): entry.speed = 0.0
 
 func tick(delta: float) -> void:
+	_tick_listing(delta)
 	if not traffic_ready:
 		refresh_clock += delta
 		if refresh_clock>1.0:
