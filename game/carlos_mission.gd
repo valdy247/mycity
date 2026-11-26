@@ -23,6 +23,7 @@ var warning_clock := 0.0
 var farewell := false
 var farewell_time := 0.0
 var follow_stall := 0.0
+var exit_retry := 0.0
 var hand_tip: MeshInstance3D
 var worker_tip: MeshInstance3D
 var game
@@ -535,6 +536,7 @@ func _exit() -> void:
 		_spawn_carlos(_companion_exit(point))
 		farewell = true
 		farewell_time = 0.0
+		follow_clock = 0.0
 		follow_path = PackedVector3Array()
 		follow_index = 0
 		business._notify("Carlos: Bueno, dale mano. Nos vemos después. Lleva esa goma al garaje.")
@@ -663,7 +665,9 @@ func _worker_position(job: Dictionary) -> Vector3:
 
 func _worker_tick(delta: float) -> void:
 	if not is_instance_valid(carlos) or _finished():
-		if is_instance_valid(carlos): carlos.animate(delta,false)
+		if is_instance_valid(carlos):
+			carlos.rotation.x = 0.0
+			carlos.animate(delta,false)
 		return
 	if worker_phase=="choose":
 		worker_job = _worker_next()
@@ -759,7 +763,9 @@ func _farewell_tick(delta: float) -> void:
 	if farewell_time<2.0:
 		carlos.animate(delta,false)
 		return
-	if follow_path.is_empty() and not home.is_empty():
+	follow_clock -= delta
+	if follow_path.is_empty() and not home.is_empty() and follow_clock<=0.0:
+		follow_clock = 2.0
 		follow_path = game.monte_pedestrians.route_between(carlos.global_position,home.p)
 		if follow_path.is_empty(): follow_path = PackedVector3Array([home.p]) if world.pedestrian_segment_clear(carlos.global_position,home.p) else PackedVector3Array()
 	if follow_index<follow_path.size():
@@ -778,10 +784,14 @@ func _follow(delta: float) -> void:
 	if vehicle:
 		carlos.hide()
 		was_vehicle = true
+		exit_retry = 0.0
 		return
 	var target: Vector3 = game.player.global_position-Vector3.UP*.86
 	if target.distance_to(customer.p)<7.0: target = customer.p
 	if was_vehicle:
+		exit_retry -= delta
+		if exit_retry>0.0: return
+		exit_retry = .5
 		# Passenger ride uses existing taxi/van; find a free sidewalk exit.
 		for offset in [Vector3(1.2,0,0),Vector3(-1.2,0,0),Vector3(0,0,1.2),Vector3(0,0,-1.2),Vector3.ZERO]:
 			var ground := _ground(target+offset)
@@ -837,7 +847,9 @@ func _follow(delta: float) -> void:
 			if world.pedestrian_segment_clear(carlos.global_position,candidate) and world.pedestrian_space_clear(carlos,candidate):
 				carlos.walk_to(candidate,delta,3.6)
 				break
-		if follow_stall>2.0: follow_clock = 0.0
+		if follow_stall>2.0:
+			follow_clock = 0.0
+			follow_stall = 0.0
 
 func tick(delta: float) -> void:
 	if _stage()==0:
