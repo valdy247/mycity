@@ -1047,7 +1047,7 @@ func _reserve_commerce(proposals: Array) -> void:
 	var market := geography.project(23.1234716,-82.3659728)
 	for spec in specs:
 		var candidates := proposals.duplicate()
-		candidates.sort_custom(func(a,b): return absf(home_spawn.distance_to(a.center)-float(spec.distance))<absf(home_spawn.distance_to(b.center)-float(spec.distance)))
+		candidates.sort_custom(func(a,b): return absf(home_spawn.distance_to(a.center)-float(spec.distance))+(0.0 if _is_monte_edge(a.edge) else 180.0)<absf(home_spawn.distance_to(b.center)-float(spec.distance))+(0.0 if _is_monte_edge(b.edge) else 180.0))
 		for lot in candidates:
 			var c: Vector3 = lot.center
 			var front: Vector3 = lot.front
