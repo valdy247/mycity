@@ -14,6 +14,11 @@ var map_view: TaxiMap
 var go_button: Button
 var selected_route: Dictionary = {}
 var trip_confirmed := false
+var business_enabled := false
+var business_factory := Vector3.ZERO
+var business_home := Vector3.ZERO
+var factory_button: Button
+var home_button: Button
 var ride_status := ""
 var dialog: PanelContainer
 var destination: LineEdit
@@ -197,6 +202,18 @@ func _make_dialog() -> void:
 	speed_choice.select(speed_mode)
 	speed_choice.item_selected.connect(func(index): speed_mode = index)
 	search_row.add_child(speed_choice)
+	var places := HBoxContainer.new()
+	col.add_child(places)
+	factory_button = Button.new()
+	factory_button.text = "Fábrica de alimentos"
+	factory_button.pressed.connect(func(): _business_destination(business_factory,"Fábrica de alimentos"))
+	places.add_child(factory_button)
+	home_button = Button.new()
+	home_button.text = "Mi casa"
+	home_button.pressed.connect(func(): _business_destination(business_home,"Mi casa"))
+	places.add_child(home_button)
+	factory_button.hide()
+	home_button.hide()
 	map_view = TaxiMap.new()
 	map_view.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	col.add_child(map_view)
@@ -243,6 +260,9 @@ func open_dialog(at: Vector3) -> bool:
 	go_button.disabled = true
 	var body: CharacterBody3D = selected.body
 	map_view.reset(body.global_position)
+	factory_button.visible = business_enabled
+	home_button.visible = business_enabled
+	map_view.set_business_markers(business_factory,business_home,business_enabled)
 	feedback.text = "Clic: marcar destino · Arrastrar: mover mapa · Rueda: acercar"
 	dialog.show()
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -259,6 +279,18 @@ func close_dialog() -> void:
 func _submit(value: String) -> void:
 	if not value.strip_edges().is_empty():
 		pending_query = value.strip_edges()
+
+func set_business_points(factory: Vector3,home: Vector3,enabled: bool) -> void:
+	business_factory = factory
+	business_home = home
+	business_enabled = enabled
+
+func _business_destination(point: Vector3,label_value: String) -> void:
+	if selected.is_empty(): return
+	var result := router.resolve_point(point,String(selected.next_node))
+	if not result.has("error"):
+		result.label = label_value
+	_show_selection(result)
 
 func _select_map_point(point: Vector3) -> void:
 	if selected.is_empty(): return
