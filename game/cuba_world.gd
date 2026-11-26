@@ -553,48 +553,40 @@ func _is_monte_edge(edge: Dictionary) -> bool:
 	return false
 
 func _home_from_gps(pin: Vector3) -> Array:
-	# The pin is authoritative. Never choose a different block or use the
-	# previous house/van location. Only adjust normal to the same frontage.
-	var candidates: Array = []
-	for edge in geography.roads_near(pin,35.0):
+	# The explicitly supplied GPS point is the house centre, not a search
+	# origin. Never snap, translate, swap or substitute this location.
+	var center := Vector3(pin.x,0,pin.z)
+	var nearest: Dictionary = {}
+	var best := INF
+	for edge in geography.roads_near(center,65.0):
 		if not _is_monte_edge(edge): continue
-		var q := Geometry3D.get_closest_point_to_segment(pin,edge.a,edge.b)
-		var distance := q.distance_to(pin)
-		if distance<=35.0:
-			candidates.append({"edge":edge,"distance":distance})
-	candidates.sort_custom(func(a,b): return float(a.distance)<float(b.distance))
-	if candidates.is_empty():
-		home_gps_status = "GPS casa: no se encuentra Monte junto al punto."
+		var q := Geometry3D.get_closest_point_to_segment(center,edge.a,edge.b)
+		var distance := q.distance_to(center)
+		if distance<best:
+			best = distance
+			nearest = edge
+	if nearest.is_empty():
+		nearest = _nearest_street(center)
+	if nearest.is_empty():
+		home_gps_status = "GPS casa: no existe calle para orientar la fachada."
 		return []
-	var nearest: Dictionary = candidates[0].edge
 	var a: Vector3 = nearest.a
 	var b: Vector3 = nearest.b
 	var direction := (b-a).normalized()
-	var curb := a+direction*(pin-a).dot(direction)
+	var curb := a+direction*(center-a).dot(direction)
 	var outward := Vector3(-direction.z,0,direction.x)
-	if outward.dot(pin-curb)<0.0:
+	if outward.dot(center-curb)<0.0:
 		outward = -outward
 	var front := -outward
-	for step in range(151):
-		var center := pin+outward*(float(step)*.10)
-		var home := {"center":center,"front":front,"edge":nearest,"curb":curb,"outward":outward,"d":direction,"portal":true,"landmark":"home"}
-		var poly := _lot_polygon(home)
-		if not street_geometry.clear(poly):
-			continue
-		var safe := true
-		for fp in geography.footprints_near(center,12.0):
-			var tags: Dictionary = fp.tags
-			var label_value := geography.normalized(String(tags.get("name","")))
-			var extent: Vector3 = fp.high-fp.low
-			if (label_value.contains("cuatro caminos") or label_value.contains("mercado unico") or extent.x*extent.z>1500.0) and not Geometry2D.intersect_polygons(poly,fp.poly).is_empty():
-				safe = false
-				break
-		if safe:
-			home_gps_status = "GPS casa: aplicado | ajuste hacia el interior %.1f m" % (float(step)*.10)
-			print(home_gps_status)
-			return _pair_at_parked_van(home)
-	home_gps_status = "GPS casa: el modelo no cabe en la fachada indicada."
-	return []
+	var home := {"center":center,"front":front,"edge":nearest,"curb":curb,"outward":outward,"d":direction,"portal":true,"landmark":"home"}
+	home_gps_status = "Casa GPS: "+geography.coordinate_text(center)+" | sin desplazamiento"
+	if not street_geometry.clear(_lot_polygon(home)):
+		# The road polygons are inferred from OSM widths, while the pin is
+		# the user's explicit correction. Do not relocate either one.
+		home_gps_status += " | revisar borde de acera"
+		push_warning("La huella de la vivienda GPS se cruza con el pavimento estimado; se mantiene el punto solicitado.")
+	print(home_gps_status)
+	return _pair_at_parked_van(home)
 
 func request_home_placement(at: Vector3) -> String:
 	var pair := _home_from_gps(Vector3(at.x,0,at.z))
@@ -685,8 +677,10 @@ func _make_frontages() -> void:
 		# Both lots have already passed the same street/sidewalk checks.
 		var former_home: Dictionary = pair[0]
 		var former_shop: Dictionary = pair[1]
-		var residence: Dictionary = former_shop.duplicate(true)
-		alborada_lot = former_home.duplicate(true)
+		# For an explicit GPS pin, pair[0] is already the requested home.
+		# Historical swaps apply ONLY to generated, non-GPS placements.
+		var residence: Dictionary = former_home.duplicate(true) if fixed_gps else former_shop.duplicate(true)
+		alborada_lot = former_shop.duplicate(true) if fixed_gps else former_home.duplicate(true)
 		residence.landmark = "home"
 		alborada_lot.landmark = "alborada"
 		var prior_front: Vector3 = former_home.front
@@ -699,14 +693,21 @@ func _make_frontages() -> void:
 		_facade(alborada_lot,7,"LA ALBORADA")
 		paired_landmarks = true
 		home_relocated = true
-		home_gps_status = "Casa y La Alborada: parcelas intercambiadas."
+		if not fixed_gps:
+			home_gps_status = "Casa y La Alborada: parcelas intercambiadas."
+		else:
+			var requested: Vector3 = gps.point
+			assert(home_root.position.distance_to(requested)<.001,"La casa GPS no coincide con el punto solicitado.")
 		print(home_gps_status)
 	elif pair.size()==1:
 		var residence: Dictionary = pair[0]
 		_add_lot(residence)
 		_make_humble_home(residence)
 		home_relocated = true
-		push_warning("Casa ubicada en la antigua fachada. La Alborada necesita una parcela segura a su derecha.")
+		if fixed_gps:
+			var requested: Vector3 = gps.point
+			assert(home_root.position.distance_to(requested)<.001,"La casa GPS no coincide con el punto solicitado.")
+		push_warning("La Alborada necesita una parcela segura a la derecha de la casa.")
 	elif old_home_found and not fixed_gps:
 		for lot in home_candidates:
 			var center: Vector3 = lot.center
