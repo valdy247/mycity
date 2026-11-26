@@ -443,23 +443,49 @@ func _road_mesh(parent: Node3D, samples: Array, base_y: float, grid_x: int, grid
 			var x: float = -4.0 + i*step
 			var z: float = -4.0 + j*step
 			_quad(st, Vector3(x,float(samples[j*n+i])-base_y,z), Vector3(x+step,float(samples[j*n+i+1])-base_y,z), Vector3(x,float(samples[(j+1)*n+i])-base_y,z+step), Vector3(x+step,float(samples[(j+1)*n+i+1])-base_y,z+step))
-	# Connector reaches the existing asphalt without forcing the inner road
-	# edge underneath the natural terrain. Sample the ramp itself as well.
+	# Cover the entire sidewalk/curb crossing and overlap the existing
+	# asphalt. The original GLB remains untouched; deleting this tile
+	# reveals its original sidewalk again.
 	if abs(grid_x) == 1:
-		var inner: float = -4.0 if grid_x > 0 else 4.0
-		var outer: float = -5.0 if grid_x > 0 else 5.0
-		for j in range(n-1):
+		var side: float = float(grid_x)
+		var inner: float = -4.0 * side
+		var outer: float = -5.75 * side
+		var cols: int = 7
+		var ramp_rows: Array = []
+		for j in range(n):
 			var z: float = -4.0 + j*step
-			var h1 := _road_height(samples,inner,z)-base_y
-			var h2 := _road_height(samples,inner,z+step)-base_y
-			var p1 := _hit_ground(grid_x*GRID+outer,grid_z*GRID+z)
-			var p2 := _hit_ground(grid_x*GRID+outer,grid_z*GRID+z+step)
-			var o1: float = float(p1.position.y)+0.035-base_y if not p1.is_empty() else 0.035-base_y
-			var o2: float = float(p2.position.y)+0.035-base_y if not p2.is_empty() else 0.035-base_y
-			if grid_x > 0:
-				_quad(st, Vector3(outer,o1,z),Vector3(inner,h1,z),Vector3(outer,o2,z+step),Vector3(inner,h2,z+step))
-			else:
-				_quad(st, Vector3(inner,h1,z),Vector3(outer,o1,z),Vector3(inner,h2,z+step),Vector3(outer,o2,z+step))
+			var row: Array[Vector3] = []
+			var edge_y: float = _road_height(samples,inner,z)
+			for k in range(cols+1):
+				var t: float = float(k)/float(cols)
+				var local_x: float = lerpf(inner,outer,t)
+				var world_x: float = grid_x*GRID+local_x
+				var world_z: float = grid_z*GRID+z
+				var level: float = lerpf(edge_y,0.035,t)
+				if k == 0:
+					level = edge_y
+				else:
+					# A small conservative horizontal margin prevents the
+					# curb lip from piercing triangles at its sharp edge.
+					var support: float = -INF
+					for offset in [-0.15,0.0,0.15]:
+						var hit := _hit_ground(world_x+float(offset),world_z)
+						if not hit.is_empty():
+							support = maxf(support,float(hit.position.y))
+					if is_finite(support):
+						level = maxf(level,support+0.045)
+				row.append(Vector3(local_x,level-base_y,z))
+			ramp_rows.append(row)
+		for j in range(n-1):
+			for k in range(cols):
+				var a: Vector3 = ramp_rows[j][k]
+				var b: Vector3 = ramp_rows[j][k+1]
+				var c: Vector3 = ramp_rows[j+1][k]
+				var d: Vector3 = ramp_rows[j+1][k+1]
+				if grid_x > 0:
+					_quad(st,b,a,d,c)
+				else:
+					_quad(st,a,b,c,d)
 	st.index()
 	st.generate_normals()
 	var instance := MeshInstance3D.new()
