@@ -24,6 +24,7 @@ var shape := CapsuleShape3D.new()
 
 func setup(city: World,bus_service: UrbanBuses) -> void:
 	world = city
+	world.pedestrian_router = self
 	buses = bus_service
 	shape.radius = .27
 	shape.height = 1.52
@@ -68,11 +69,11 @@ func _clear(a: Vector3,b: Vector3) -> bool:
 			if not space.intersect_ray(ray).is_empty(): return false
 	return true
 
-func _add(p: Vector3,cost: float) -> int:
+func _add(p: Vector3,cost: float,merge_radius: float = .45) -> int:
 	var ground := _ground(p)
 	if ground.is_empty(): return -1
 	var at: Vector3 = ground.p
-	for id in _near_ids(at,.45):
+	for id in _near_ids(at,merge_radius):
 		graph.set_point_weight_scale(int(id),minf(cost,graph.get_point_weight_scale(int(id))))
 		return int(id)
 	var id := next_id
@@ -92,8 +93,8 @@ func _build() -> void:
 	# Start from the actual traversable portal strips created by CubaWorld.
 	for strip in world.monte_walkways:
 		_run(strip.a,strip.b,PORTAL_COST)
-		var door := _add(strip.door,PORTAL_COST)
-		if door>0: destinations.append({"id":door,"kind":String(strip.kind)})
+		# Approximate strip points are navigation only, never entry doors.
+		_add(strip.door,PORTAL_COST)
 	# Extend the existing Monte network into adjoining streets without
 	# building a city-wide physics graph at startup.
 	var corridor_nodes: Dictionary = {}
@@ -133,8 +134,7 @@ func _build() -> void:
 	if world.home_root!=null:
 		var home := world.home_root
 		_run(home.to_global(Vector3(-3.3,0,2.75)),home.to_global(Vector3(3.3,0,2.75)),PORTAL_COST)
-		var home_id := _add(home.to_global(Vector3(1.25,0,2.65)),PORTAL_COST)
-		if home_id>0: destinations.append({"id":home_id,"kind":"shop"})
+		_add(home.to_global(Vector3(1.25,0,2.65)),PORTAL_COST)
 	for id in graph.get_point_ids():
 		var p := graph.get_point_position(id)
 		for other in _near_ids(p,3.8):
@@ -160,6 +160,7 @@ func _build() -> void:
 			if _clear(p,q):
 				graph.connect_points(id,int(other),true)
 				break
+	_register_doors()
 	if buses!=null:
 		for stop in buses.stops:
 			var p: Vector3 = stop.wait
@@ -171,6 +172,68 @@ func _build() -> void:
 			destinations.append({"id":nearest,"kind":"bus","stop":stop})
 		buses.alight_handler = Callable(self,"accept_alighting")
 	print("Monte: ",graph.get_point_count()," pedestrian waypoints, ",destinations.size()," destinations.")
+
+# Only generated door panels on reachable facades are indoor destinations.
+func _register_doors() -> void:
+	var space := get_world_3d().direct_space_state
+	var used: Dictionary = {}
+	for entry in world.npc_doorways:
+		var threshold: Vector3 = entry.threshold
+		var normal: Vector3 = entry.normal
+		var outside := threshold+normal*.48
+		if _near_ids(outside,3.2).is_empty(): continue
+		var ground := _ground(outside)
+		if ground.is_empty(): continue
+		var p: Vector3 = ground.p
+		var link := _nearest(p,3.2)
+		if link<0: continue
+		var ray := PhysicsRayQueryParameters3D.create(p+Vector3.UP*1.15,threshold-normal*.30+Vector3.UP*(p.y+1.15),1)
+		if space.intersect_ray(ray).is_empty(): continue
+		if not world.pedestrian_segment_clear(p,graph.get_point_position(link)): continue
+		var id := _add(p,SIDEWALK_COST,.06)
+		if id<0 or used.has(id): continue
+		if id!=link and not graph.are_points_connected(id,link):
+			graph.connect_points(id,link,true)
+		used[id] = true
+		destinations.append({"id":id,"kind":String(entry.kind),"door":true,"normal":normal,"threshold":threshold})
+
+# Albertico shares the pedestrian graph instead of crossing buildings
+# with an unchecked straight-line animation.
+func customer_trip(stand_at: Vector3,frontage: Basis) -> Dictionary:
+	if not initialized: return {}
+	var options: Array[Vector3] = [
+		stand_at+frontage.z*.84,
+		stand_at-frontage.z*.84,
+		stand_at+frontage.x*1.18,
+		stand_at-frontage.x*1.18
+	]
+	for option in options:
+		var ground := _ground(option)
+		if ground.is_empty(): continue
+		var target: Vector3 = ground.p
+		var end := _nearest(target,3.8)
+		if end<0 or not world.pedestrian_segment_clear(graph.get_point_position(end),target): continue
+		var doors: Array = []
+		for dest in destinations:
+			if not bool(dest.get("door",false)): continue
+			var p := graph.get_point_position(int(dest.id))
+			var dist := p.distance_to(target)
+			if dist>=3.0 and dist<=32.0:
+				doors.append({"dest":dest,"distance":dist})
+		doors.sort_custom(func(a,b): return float(a.distance)<float(b.distance))
+		for i in range(mini(doors.size(),18)):
+			var door: Dictionary = doors[i].dest
+			var start := int(door.id)
+			var path := graph.get_point_path(start,end)
+			if path.size()<2: continue
+			var length := 0.0
+			for j in range(1,path.size()):
+				length += path[j-1].distance_to(path[j])
+			if length>45.0: continue
+			if not world.pedestrian_segment_clear(path[0],path[0]): continue
+			if path[path.size()-1].distance_to(target)>.08: path.append(target)
+			return {"path":path,"door":door}
+	return {}
 
 func _nearest(p: Vector3,radius: float) -> int:
 	var best := radius
@@ -291,11 +354,18 @@ func tick(delta: float) -> void:
 	for i in range(walkers.size()-1,-1,-1):
 		var agent: Dictionary = walkers[i]
 		var person: Person = agent.node
-		person.visible = camera==null or person.global_position.distance_squared_to(camera.global_position)<14400.0
+		person.visible = not bool(agent.get("indoors",false)) and (camera==null or person.global_position.distance_squared_to(camera.global_position)<14400.0)
 		if float(agent.pause)>0.0:
 			agent.pause = maxf(0.0,float(agent.pause)-dt)
 			person.animate(dt,false)
-			if float(agent.pause)<=0.0: _choose_route(agent)
+			if float(agent.pause)<=0.0:
+				if bool(agent.get("indoors",false)):
+					if not world.pedestrian_segment_clear(person.global_position,person.global_position):
+						agent.pause = .5
+						continue
+					agent.indoors = false
+					person.show()
+				if not _choose_route(agent): agent.pause = .5
 			continue
 		var path: PackedVector3Array = agent.path
 		var index := int(agent.index)
@@ -305,13 +375,21 @@ func tick(delta: float) -> void:
 				if buses.join_stop(dest.stop,person):
 					walkers.remove_at(i)
 					continue
-			# Visit a facade/shop, wait as if shopping, then walk onward.
-			agent.pause = 3.0+float(posmod(person.style_id,8)) if String(dest.get("kind","")) in ["shop","home"] else .5
+			# Simulated indoor visits are only allowed at a verified door.
+			if bool(dest.get("door",false)) and person.global_position.distance_to(graph.get_point_position(int(dest.id)))<.14:
+				var normal: Vector3 = dest.normal
+				person.rotation.y = atan2(-normal.x,-normal.z)
+				agent.indoors = true
+				person.hide()
+				agent.pause = 3.0+float(posmod(person.style_id,8))
+			else:
+				agent.pause = .5
 			continue
 		var p: Vector3 = path[index]
 		# Recheck the live scene: walkers use scripted movement rather than
 		# CharacterBody3D, so never advance into a new obstacle.
-		if person.global_position.distance_to(p)>.12 and not _clear(person.global_position,p):
+		var step := person.global_position.move_toward(p,maxf(.12,float(agent.speed)*dt))
+		if not world.pedestrian_segment_clear(person.global_position,step) or (person.global_position.distance_to(p)>.12 and not _clear(person.global_position,p)):
 			person.animate(dt,false)
 			agent["blocked_time"] = float(agent.get("blocked_time",0.0))+dt
 			if float(agent.blocked_time)>=.65:
