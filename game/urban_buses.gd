@@ -647,20 +647,35 @@ func tick(delta: float) -> void:
 		var diff := target-body.position
 		var distance := diff.length()
 		bus.horn_cooldown = maxf(0.0,float(bus.get("horn_cooldown",0.0))-delta)
-		var approaching_stop := not detouring and item.has("stop") and distance<22.0
+		var priority_stop: Dictionary = {}
+		if not detouring:
+			if item.has("stop"):
+				priority_stop = item.stop
+			else:
+				var following: Dictionary = original[(index+1)%original.size()]
+				if following.has("stop"): priority_stop = following.stop
+		var approaching_stop := false
+		if not priority_stop.is_empty():
+			var stop_at: Vector3 = priority_stop.position
+			var stop_dir: Vector3 = priority_stop.direction
+			var stop_diff := stop_at-body.global_position
+			approaching_stop = stop_diff.length()<22.0 and stop_diff.dot(stop_dir)>-.5 and body.global_transform.basis.z.dot(stop_dir)>.75
 		var pedestrian_blocked := false
 		if approaching_stop:
-			pedestrian_blocked = _pedestrian_blocks(item.stop,body)
-			var berth := _safety_query(body,target,atan2(item.stop.direction.x,item.stop.direction.z))
+			pedestrian_blocked = _pedestrian_blocks(priority_stop,body)
+			var stop_at: Vector3 = priority_stop.position
+			stop_at.y = body.position.y
+			var stop_dir: Vector3 = priority_stop.direction
+			var berth := _safety_query(body,stop_at,atan2(stop_dir.x,stop_dir.z))
 			var berth_blocked := not get_world_3d().direct_space_state.intersect_shape(berth,1).is_empty()
 			var approach_blocked := distance>.3 and _clear_distance(body,diff.normalized(),distance)<distance-.08
 			if pedestrian_blocked or berth_blocked or approach_blocked:
 				if float(bus.horn_cooldown)<=0.0:
 					bus.horn_cooldown = 3.5
 					_horn(body)
-					stop_priority.emit(item.stop,body)
+					stop_priority.emit(priority_stop,body)
 				# Never open doors or drive over a walker in the reserved berth.
-				if pedestrian_blocked or distance<.30:
+				if pedestrian_blocked or (item.has("stop") and distance<.30):
 					body.velocity = Vector3.ZERO
 					bus.speed = 0.0
 					continue
