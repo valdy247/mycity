@@ -74,6 +74,7 @@ func setup(controller) -> void:
 	if PAINT_COLORS.has(active_color): state.paint_stock[active_color] = int(state.paint_stock.get(active_color,0))+maxi(0,int(state.paint_charge))
 	state.paint_active = ""
 	state.paint_charge = 0
+	if bool(state.projects.get("bicicleta",{}).get("wheel_a",false)) or int(state.vehicle_sales.get("bicicleta",0))>0: state.wheel_tutorial = true
 	for id in FURNITURE:
 		if not state.furniture.has(id): state.furniture[id] = {"p":FURNITURE[id].p.duplicate(),"removed":false}
 	# Existing GPS residence belongs to the player; no purchase or exterior sign.
@@ -1126,10 +1127,16 @@ func _aimed_project(at: Vector3) -> bool:
 	var cam: Camera3D = game.play_camera
 	var origin := cam.global_position
 	var end := origin-cam.global_basis.z*4.5
-	var bounds := AABB(Vector3(-1.1,0,-2.5),Vector3(2.2,2.0,5.0)) if String(state.project)=="carro" else AABB(Vector3(-.85,0,-1.25),Vector3(1.7,1.7,2.5))
-	var hit: Variant = bounds.intersects_segment(preview.to_local(origin),preview.to_local(end))
-	if hit==null: return false
-	var ray := PhysicsRayQueryParameters3D.create(origin,preview.to_global(hit),1|4|8|16|32)
+	var depth := INF
+	for child in preview.get_children():
+		if not child is MeshInstance3D or not child.is_visible_in_tree(): continue
+		var part := child as MeshInstance3D
+		var hit: Variant = part.get_aabb().intersects_segment(part.to_local(origin),part.to_local(end))
+		if hit==null: continue
+		var point: Vector3 = part.to_global(hit)
+		depth = minf(depth,origin.distance_to(point))
+	if not is_finite(depth): return false
+	var ray := PhysicsRayQueryParameters3D.create(origin,origin-cam.global_basis.z*depth,1|4|8|16|32)
 	ray.exclude = [game.player.get_rid()]
 	return get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
 
