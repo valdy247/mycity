@@ -30,6 +30,9 @@ var van_spawn := Vector3.ZERO
 var van_angle := 0.0
 var home_edge: Dictionary = {}
 var food_factory: Dictionary = {}
+# Walkable portal centre lines and frontage destinations for Monte life.
+var monte_walkways: Array = []
+var monte_columns: Dictionary = {}
 var home_local_door := Vector3(0,0,1.65)
 var slots: Array = []
 var box_groups: Dictionary = {}
@@ -87,6 +90,7 @@ func setup(builder: Builder) -> void:
 	_make_frontages()
 	_make_corner_plaques()
 	_flush_city_boxes()
+	_flush_monte_columns()
 	_flush_footprints()
 	print("Pilar-Atarés: ",slots.size()," generated facade lots, ",service_count," game services, ",residents.size()," citizens; ",mapped_buildings," OSM building footprints; ",plaque_count," corner plaques.")
 	# Real-world source attribution is visible in HUD via main.gd.
@@ -1032,7 +1036,7 @@ func _nearest_street(p: Vector3) -> Dictionary:
 			result = road
 	return result
 
-func _front_edge(poly: PackedVector2Array) -> Dictionary:
+func _front_edge(poly: PackedVector2Array,monte_only: bool = false) -> Dictionary:
 	var best: float = INF
 	var result: Dictionary = {}
 	for i in range(poly.size()):
@@ -1043,6 +1047,8 @@ func _front_edge(poly: PackedVector2Array) -> Dictionary:
 			continue
 		var m := (a+b)*.5
 		var road := _nearest_street(m)
+		if monte_only:
+			road = _nearest_monte_street(m,(b-a).normalized())
 		if road.is_empty():
 			continue
 		var ra: Vector3 = road.a
@@ -1271,16 +1277,22 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		if market and not tags.has("height") and not tags.has("building:levels"):
 			h = 10.0
 		var edit: Dictionary = map_edits.get(String(fp.id),{})
-		var base_color: Color = palette[idx] if not market else Color("#ded4bc")
+		var front := _front_edge(poly)
+		var monte_front := _front_edge(poly,true)
+		var monte := not monte_front.is_empty() and not market
+		if monte: front = monte_front
+		var base_color: Color = _monte_color(idx) if monte else (palette[idx] if not market else Color("#ded4bc"))
 		var paint := String(edit.get("paint",""))
 		if Color.html_is_valid(paint):
 			base_color = Color(paint)
-		var wall := _mat("mapped_wall"+str(idx) if paint.is_empty() and not market else "custom_wall_"+String(fp.id),base_color)
+		var wall_key := ("monte_wall" if monte else "mapped_wall")+str(idx)
+		if not paint.is_empty() or market: wall_key = "custom_wall_"+String(fp.id)
+		var wall := _mat(wall_key,base_color)
 		wall.cull_mode = BaseMaterial3D.CULL_DISABLED
-		var front := _front_edge(poly)
 		var portal := false
-		if not front.is_empty() and bool(edit.get("portal",front.road.portal)) and h>3.8:
-			var clipped := _clip_inward(poly,front,2.25)
+		var portal_depth := 2.85 if monte else 2.25
+		if not front.is_empty() and bool(edit.get("portal",front.road.portal or monte)) and h>3.8:
+			var clipped := _clip_inward(poly,front,portal_depth)
 			# Fall back to the mapped solid if the inset is too small/invalid.
 			if clipped.size()>=3 and not Geometry2D.triangulate_polygon(clipped).is_empty():
 				portal = _extrude(clipped,0.0,3.4,wall,tile)
@@ -1291,7 +1303,9 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		kept_footprints.append(fp)
 		editable_buildings[String(fp.id)] = {"poly":poly,"center":center,"height":h,"name":String(tags.get("name","Edificio")),"protected":market or String(fp.id)==alborada_poly_id,"front":front}
 		if not front.is_empty():
-			_detail_front(front,h,idx,portal,market)
+			_detail_front(front,h,idx,portal,market,monte,portal_depth)
+			if monte and portal:
+				_monte_portal(front,poly,portal_depth,idx,base_color)
 			if market:
 				_market_side_details(poly,front,h)
 			var name_value := String(tags.get("name",""))
@@ -1305,7 +1319,7 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 			if not name_value.is_empty() and (market or String(fp.id)==alborada_poly_id or tags.has("amenity") or tags.has("shop")):
 				var m: Vector3 = front.mid
 				var n: Vector3 = front.normal
-				var z: float = -2.18 if portal else .08
+				var z: float = -portal_depth+.07 if portal else .08
 				_label(name_value.to_upper(),m+n*z+Vector3.UP*2.85,.010,atan2(n.x,n.z),Color("#f5ead0"))
 	# Missing source polygon: never invent a market footprint or obstruct roads.
 	if not market_drawn and not market_block.is_empty():
@@ -1367,7 +1381,97 @@ func _market_side_details(poly: PackedVector2Array,primary: Dictionary,h: float)
 		if mid.distance_to(primary.mid)>1.0:
 			_detail_front({"a":a,"b":b,"normal":n,"mid":mid,"road":road},h,0,false,true)
 
-func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool) -> void:
+func _monte_color(index: int) -> Color:
+	var palette: Array[Color] = [Color("#8fbdac"),Color("#dbada7"),Color("#70b7c8"),Color("#d8c096"),Color("#a5c9cb"),Color("#c4a18b"),Color("#e2d1b4")]
+	return palette[posmod(index,palette.size())]
+
+func _nearest_monte_street(p: Vector3,tangent: Vector3) -> Dictionary:
+	var best := 15.0
+	var result: Dictionary = {}
+	for edge in geography.roads_near(p,18.0):
+		if not _is_monte_edge(edge): continue
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		if absf((b-a).normalized().dot(tangent))<.82: continue
+		var q := Geometry3D.get_closest_point_to_segment(p,a,b)
+		var dist := p.distance_to(q)
+		if dist<best and dist>=float(edge.width)*.5:
+			best = dist
+			result = edge
+	return result
+
+func _monte_column(p: Vector3,h: float,paint: StandardMaterial3D,angle: float) -> void:
+	var stone := _mat("monte_stone",Color("#a29d91"))
+	var trim := _mat("monte_capital",Color("#d1c8b7"))
+	_cube(p+Vector3.UP*.12,Vector3(.54,.24,.54),stone,angle,true)
+	_cube(p+Vector3.UP*.30,Vector3(.43,.16,.43),stone,angle)
+	_cube(p+Vector3.UP*(h-.11),Vector3(.56,.22,.56),trim,angle)
+	_cube(p+Vector3.UP*(h-.30),Vector3(.44,.15,.44),trim,angle)
+	var tile := Vector2i(floori(p.x/96.0),floori(p.z/96.0))
+	var origin := Vector3(float(tile.x)*96.0,0,float(tile.y)*96.0)
+	var key := str(tile)+":"+str(paint.get_instance_id())
+	if not monte_columns.has(key):
+		monte_columns[key] = {"origin":origin,"material":paint,"transforms":[]}
+	monte_columns[key].transforms.append(Transform3D(Basis.IDENTITY.scaled(Vector3(.35,h-.51,.35)),p+Vector3.UP*(h*.5+.025)-origin))
+	var collider := CollisionShape3D.new()
+	var shape := CylinderShape3D.new()
+	shape.radius = .18
+	shape.height = h-.30
+	collider.shape = shape
+	var body := _chunk_body(tile,1)
+	body.add_child(collider)
+	collider.position = p+Vector3.UP*(h*.5)-body.position
+
+func _flush_monte_columns() -> void:
+	var cylinder := CylinderMesh.new()
+	cylinder.top_radius = .5
+	cylinder.bottom_radius = .5
+	cylinder.height = 1.0
+	cylinder.radial_segments = 12
+	for entry in monte_columns.values():
+		var multi := MultiMesh.new()
+		multi.transform_format = MultiMesh.TRANSFORM_3D
+		multi.mesh = cylinder
+		multi.instance_count = entry.transforms.size()
+		for i in range(multi.instance_count):
+			multi.set_instance_transform(i,entry.transforms[i])
+		var node := MultiMeshInstance3D.new()
+		node.multimesh = multi
+		node.material_override = entry.material
+		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(node)
+		node.position = entry.origin
+	monte_columns.clear()
+
+func _monte_portal(front: Dictionary,poly: PackedVector2Array,depth: float,idx: int,paint: Color) -> void:
+	var a: Vector3 = front.a
+	var b: Vector3 = front.b
+	var n: Vector3 = front.normal
+	var t := (b-a).normalized()
+	var length := a.distance_to(b)
+	var angle := atan2(n.x,n.z)
+	var count := maxi(1,roundi(length/3.05))
+	var step := length/float(count)
+	var mat := _mat("monte_column"+str(idx),paint.lightened(.07))
+	var trim := _mat("monte_capital",Color("#d1c8b7"))
+	var floor_mat := _mat("monte_portal_shade",Color("#817c71"))
+	# Clip the floor to the real mapped footprint, never extend into road.
+	var strip := street_geometry.rect(a-n*depth*.5,b-n*depth*.5,depth-.07)
+	for piece in Geometry2D.intersect_polygons(strip,poly):
+		_draw_street_polygon(piece,.072,floor_mat,"monte_portal")
+	for i in range(count):
+		var p := a+t*(float(i)+.17)*step-n*.26
+		if Geometry2D.is_point_in_polygon(Vector2(p.x,p.z),poly):
+			_monte_column(p,3.4,mat,angle)
+		var door := a+t*(float(i)+.5)*step-n*(depth-.40)
+		var run_a := a+t*float(i)*step-n*1.37
+		var run_b := a+t*float(i+1)*step-n*1.37
+		if Geometry2D.is_point_in_polygon(Vector2(door.x,door.z),poly):
+			monte_walkways.append({"a":run_a,"b":run_b,"door":door,"kind":"shop" if (idx+i)%3==0 else "home"})
+	_cube((a+b)*.5-n*.07+Vector3.UP*3.37,Vector3(length,.22,.27),trim,angle)
+	_cube((a+b)*.5-n*.07+Vector3.UP*3.58,Vector3(length,.14,.21),trim,angle)
+
+func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool,monte: bool = false,portal_depth: float = 2.25) -> void:
 	var a: Vector3 = front.a
 	var b: Vector3 = front.b
 	var n: Vector3 = front.normal
@@ -1381,13 +1485,13 @@ func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool
 	var patch := _mat("facade_wear",Color("#938a77"))
 	var count := clampi(roundi(length/(4.2 if market else 2.9)),1,48)
 	var step := length/float(count)
-	var offset: float = -2.18 if portal else .045
+	var offset: float = -portal_depth+.07 if portal else .045
 	for i in range(count):
 		var p := a+t*(float(i)+.5)*step
 		var q := p+n*offset
 		_cube(q+Vector3.UP*1.38,Vector3(minf(step*.58,1.5),2.50,.065),door_mat,angle)
 		_cube(q+Vector3.UP*2.71,Vector3(minf(step*.74,1.85),.17,.12),stone,angle)
-		if portal:
+		if portal and not monte:
 			var col := a+t*(float(i)+.12)*step+n*.04
 			_cube(col+Vector3.UP*1.65,Vector3(.34,3.30,.34),stone,angle,true)
 			_cube(col+Vector3.UP*.17,Vector3(.52,.32,.52),stone,angle)
@@ -1533,7 +1637,8 @@ func _facade(lot: Dictionary,index: int,service: String) -> void:
 	var angle := atan2(front.x,front.z)
 	var basis := Basis(Vector3.UP,angle)
 	var palette: Array[Color] = [Color("#9bafa3"),Color("#b4ab92"),Color("#8eabb1"),Color("#b69883"),Color("#c1b995"),Color("#92918b"),Color("#a8a18c")]
-	var plaster := _mat("plaster"+str(index%7),palette[index%7])
+	var monte := _is_monte_edge(lot.edge)
+	var plaster := _mat("monte_wall"+str(index%7),_monte_color(index)) if monte else _mat("plaster"+str(index%7),palette[index%7])
 	var weathered := _mat("weathered",Color("#8d8574"))
 	var stone := _mat("old_stone",Color("#b3aa96"))
 	var doors := _mat("old_door",Color("#5e7773"))
@@ -1559,9 +1664,16 @@ func _facade(lot: Dictionary,index: int,service: String) -> void:
 		_local_cube(c,basis,Vector3(0,3.1+(h-3.1)*.5,0),Vector3(8.8,h-3.1,8.8),plaster,true)
 	_local_cube(c,basis,Vector3(0,h+.07,0),Vector3(8.95,.14,9.0),stone)
 	for x in ([-4.15,-1.4,1.4,4.15] if portal else []):
-		_local_cube(c,basis,Vector3(float(x),1.58,4.10),Vector3(.36,3.0,.36),stone,true)
-		_local_cube(c,basis,Vector3(float(x),.18,4.10),Vector3(.52,.31,.52),weathered)
-		_local_cube(c,basis,Vector3(float(x),2.96,4.10),Vector3(.50,.21,.50),stone)
+		if monte:
+			_monte_column(c+basis*Vector3(float(x),0,4.10),3.0,plaster,angle)
+		else:
+			_local_cube(c,basis,Vector3(float(x),1.58,4.10),Vector3(.36,3.0,.36),stone,true)
+			_local_cube(c,basis,Vector3(float(x),.18,4.10),Vector3(.52,.31,.52),weathered)
+			_local_cube(c,basis,Vector3(float(x),2.96,4.10),Vector3(.50,.21,.50),stone)
+	if monte and portal:
+		monte_walkways.append({"a":c+basis*Vector3(-4.15,0,2.7),"b":c+basis*Vector3(4.15,0,2.7),"door":c+basis*Vector3(0,0,2.05),"kind":"shop" if not service.is_empty() else "home"})
+		var shade := _mat("monte_portal_shade",Color("#817c71"))
+		_local_cube(c,basis,Vector3(0,.139,2.77),Vector3(8.72,.012,3.06),shade)
 	for x in [-2.7,0.0,2.7]:
 		if service not in ["BODEGA","HOSPITAL • LA DEPENDIENTE"] or float(x)!=0.0:
 			_local_cube(c,basis,Vector3(float(x),1.35,face_z),Vector3(1.12,2.55,.06),doors)
@@ -1589,9 +1701,9 @@ func _facade(lot: Dictionary,index: int,service: String) -> void:
 	if not service.is_empty():
 		_local_cube(c,basis,Vector3(0,2.65,face_z+.10),Vector3(5.2,.48,.10),doors)
 		_label(service,c+basis*Vector3(0,2.66,face_z+.17),.010,angle,Color("#fff2cb"))
-	elif portal and index%13==0 and residents.size()<45:
+	elif portal and not monte and index%13==0 and residents.size()<45:
 		_vendor(lot,index)
-	elif portal and index%5==0 and residents.size()<65:
+	elif portal and not monte and index%5==0 and residents.size()<65:
 		_citizen(lot,index,false)
 
 func _public_room(c: Vector3,basis: Basis,wall: StandardMaterial3D,service: String) -> void:
