@@ -55,7 +55,10 @@ func _ready() -> void:
 			var city := packed.instantiate()
 			add_child(city)
 			_install_city_van(city)
-			_fix_terrain_materials(city)
+			var terrain_count := _fix_terrain_materials(city)
+			print("MyCity: terrain meshes recolored = ", terrain_count)
+			if terrain_count == 0:
+				push_warning("MyCity: terrain mesh not detected in city.glb.")
 			_add_world_collision(city)
 			city_loaded = true
 	if not city_loaded:
@@ -67,27 +70,65 @@ func _ready() -> void:
 	add_child(builder)
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
-# Blender procedural grass shaders cannot be represented faithfully by GLB.
-# Set lightweight explicit colors only on the terrain's meadow surfaces.
-func _fix_terrain_materials(node: Node) -> void:
-	if node is MeshInstance3D and _normalized_name(String(node.name)).begins_with("terreno"):
-		var mesh_node := node as MeshInstance3D
-		var greens: Array[Color] = [Color("#56863c"), Color("#669747"), Color("#719f4d"), Color("#4d7938")]
-		if mesh_node.mesh != null:
-			for i in range(mesh_node.mesh.get_surface_count()):
-				var original := mesh_node.mesh.surface_get_material(i)
-				var key := String(original.resource_name).to_lower() if original != null else ""
-				var color := greens[i % 4]
-				if key.contains("orilla"):
-					color = Color("#746447")
-				elif key.contains("arena") or key.contains("grava"):
-					color = Color("#a38b62")
-				var mat := StandardMaterial3D.new()
-				mat.albedo_color = color
-				mat.roughness = 0.96
-				mesh_node.set_surface_override_material(i, mat)
+# Recognize terrain even when GLB import renames its mesh node or wraps it
+# in another Node3D. Never recolor roads, buildings or industrial platforms.
+func _is_terrain_mesh(m: MeshInstance3D) -> bool:
+	if m.mesh == null:
+		return false
+	var bounds := m.get_aabb()
+	var low := Vector3(INF, INF, INF)
+	var high := Vector3(-INF, -INF, -INF)
+	for i in range(8):
+		var p := m.to_global(bounds.get_endpoint(i))
+		low = low.min(p)
+		high = high.max(p)
+	var size := high - low
+	if size.x >= 75.0 and size.z >= 80.0 and size.y < 25.0:
+		return true
+	var current: Node = m
+	for i in range(3):
+		if current == null:
+			break
+		var key := _normalized_name(String(current.name))
+		if key.begins_with("terreno") or key.begins_with("relieve"):
+			if size.x >= 30.0 and size.z >= 30.0:
+				return true
+		current = current.get_parent()
+	for i in range(m.mesh.get_surface_count()):
+		var material := m.mesh.surface_get_material(i)
+		if material != null and String(material.resource_name).to_lower().contains("meadow"):
+			return true
+	return false
+
+func _fix_terrain_materials(node: Node) -> int:
+	var count := 0
+	if node is MeshInstance3D:
+		var m := node as MeshInstance3D
+		if _is_terrain_mesh(m):
+			# A global override takes precedence over imported surface materials,
+			# vertex colors and any previous per-surface override.
+			var shader := Shader.new()
+			shader.code = """shader_type spatial;
+render_mode diffuse_lambert, specular_disabled, cull_disabled;
+varying vec3 world_pos;
+void vertex() {
+	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+}
+void fragment() {
+	float n = sin(world_pos.x * 0.31 + world_pos.z * 0.19) * 0.5 + cos(world_pos.z * 0.43 - world_pos.x * 0.11) * 0.5;
+	float blend = smoothstep(-0.8, 0.8, n);
+	ALBEDO = mix(vec3(0.085, 0.22, 0.038), vec3(0.19, 0.39, 0.075), blend);
+	ROUGHNESS = 1.0;
+}"""
+			var grass := ShaderMaterial.new()
+			grass.shader = shader
+			m.material_override = grass
+			m.material_overlay = null
+			count += 1
+			print("MyCity terrain fixed: ", m.get_path(), " | ", m.get_aabb().size)
 	for child in node.get_children():
-		_fix_terrain_materials(child)
+		count += _fix_terrain_materials(child)
+	return count
 
 func _add_world_collision(node: Node) -> void:
 	# Only terrain and coarse building/road geometry are physical in this prototype.
@@ -103,10 +144,11 @@ func _add_world_collision(node: Node) -> void:
 		for detail in ["joint", "paint", "yellow", "cristal", "hojas", "troncos", "agua", "sen al", "letter", "letra", "ventana", "glass", "césped", "cesped"]:
 			if name_key.contains(detail):
 				solid = false
-		if solid and m.mesh != null and m.mesh.get_surface_count() > 0:
+		var terrain_mesh := _is_terrain_mesh(m)
+		if (solid or terrain_mesh) and m.mesh != null and m.mesh.get_surface_count() > 0:
 			m.create_trimesh_collision()
 			var key := _normalized_name(name_key)
-			var is_ground := key.begins_with("terreno") or key.begins_with("calleprincipalasphalt") or key.begins_with("calleprincipalconcrete") or key.begins_with("calleprincipalcurb") or key.begins_with("boulevardcalleprincipalasphalt") or key.begins_with("boulevardcalleprincipalconcrete") or key.begins_with("boulevardcalleprincipalcurb") or key.begins_with("boulevardboulevardasphalt") or key.begins_with("boulevardboulevardconcrete") or key.begins_with("boulevardboulevardcurb")
+			var is_ground := terrain_mesh or key.begins_with("terreno") or key.begins_with("calleprincipalasphalt") or key.begins_with("calleprincipalconcrete") or key.begins_with("calleprincipalcurb") or key.begins_with("boulevardcalleprincipalasphalt") or key.begins_with("boulevardcalleprincipalconcrete") or key.begins_with("boulevardcalleprincipalcurb") or key.begins_with("boulevardboulevardasphalt") or key.begins_with("boulevardboulevardconcrete") or key.begins_with("boulevardboulevardcurb")
 			if is_ground:
 				for child in m.get_children():
 					if child is StaticBody3D:
