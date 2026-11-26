@@ -14,6 +14,8 @@ const StreetMarket = preload("res://street_market.gd")
 var street_market: StreetMarket
 const Backpack = preload("res://backpack.gd")
 var backpack: Backpack
+const CityIncidents = preload("res://city_incidents.gd")
+var incidents: CityIncidents
 const MontePedestrians = preload("res://monte_pedestrians.gd")
 const MonteServices = preload("res://monte_services.gd")
 var monte_pedestrians: MontePedestrians
@@ -181,6 +183,9 @@ func _ready() -> void:
 		add_child(backpack)
 		backpack.setup(self)
 		business.backpack_inventory = backpack.open_inventory
+		incidents = CityIncidents.new()
+		add_child(incidents)
+		incidents.setup(self)
 		first_person = true
 		_face_cuba_home()
 		_apply_camera_mode()
@@ -899,6 +904,7 @@ func _drive(delta: float, movement: Vector2) -> void:
 	if absf(drive_speed) > 0.15:
 		van.rotation.y -= movement.x * signf(drive_speed) * delta * 1.35 * minf(absf(drive_speed) / 3.0, 1.0)
 	var prior := van.global_transform
+	var impact_speed := drive_speed
 	var forward := van.global_transform.basis.z.normalized()
 	van.velocity.x = forward.x * drive_speed
 	van.velocity.z = forward.z * drive_speed
@@ -908,6 +914,8 @@ func _drive(delta: float, movement: Vector2) -> void:
 		van.global_transform = prior
 		van.velocity = Vector3.ZERO
 		drive_speed = 0.0
+	if incidents!=null:
+		incidents.vehicle_motion(van,prior,impact_speed,1.95,4.9)
 	if van.get_slide_collision_count() > 0:
 		drive_speed *= 0.35
 	if van.global_position.y < -8.0 or absf(van.global_position.x) > (1250.0 if cuba_world != null else (253.0 if native_city else 79.0)) or absf(van.global_position.z) > (1250.0 if cuba_world != null else (253.0 if native_city else 109.0)):
@@ -1035,6 +1043,7 @@ func _aimed_person() -> Node3D:
 	for node in get_tree().get_nodes_in_group("social_people"):
 		if not node is Node3D or not node.is_visible_in_tree(): continue
 		var person := node as Node3D
+		if person.has_meta("incident_role"): continue
 		if player.global_position.distance_to(person.global_position)>3.7: continue
 		var center := person.global_position+Vector3.UP*1.15
 		var depth := (center-origin).dot(direction)
@@ -1187,6 +1196,7 @@ func _bus_priority_notice(stop: Dictionary,bus: CharacterBody3D) -> void:
 func _physics_process(delta: float) -> void:
 	if player == null:
 		return
+	if incidents!=null and not building_mode and not business.modal_open(): incidents.tick(delta)
 	if backpack!=null and not building_mode: backpack.tick(delta)
 	if street_market!=null:
 		if not building_mode: street_market.tick(delta)
