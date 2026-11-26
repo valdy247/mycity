@@ -443,6 +443,8 @@ func open_call() -> void:
 			business._button("Ahora no",business.close)
 		4:
 			business._open("Yordi","Vamos para Infanta, esquina de Tejas.")
+			if not _seller_site().is_finite():
+				business._button("Confirmar vendedor en el punto marcado del mapa",_confirm_seller)
 			business._button("Cerrar",business.close)
 		12:
 			if bool(state.get("delivered",false)): open_listing()
@@ -452,6 +454,24 @@ func open_call() -> void:
 		_:
 			business._open("Yordi",objective() if _stage()<14 else "Gracias, mano. Ya cobraste tus mil pesos.")
 			business._button("Cerrar",business.close)
+
+func _confirm_seller() -> void:
+	if _stage()!=4 or not game.garage.waypoint_active: return
+	var label_value: String = game.garage.waypoint_label
+	if label_value.contains("Moto de Yordi") or label_value.contains("Mi casa"):
+		business._notify("Marca primero la esquina correcta en el mapa.")
+		return
+	var point: Vector3 = game.garage.waypoint_point
+	var p := _near_ground(point,null,18.0)
+	if not p.is_finite():
+		business._notify("El punto marcado no tiene una acera válida.")
+		return
+	seller_point = p
+	state.seller = _encode(p)
+	_save()
+	business.close()
+	if is_instance_valid(bike): _target(bike.global_position,"Moto de Yordi")
+	business._notify("Punto de venta confirmado.")
 
 func _accept_visit() -> void:
 	business.close()
@@ -509,7 +529,7 @@ func _aim(actor: Node3D,center: Vector3,extent: Vector3,reach: float = 3.0) -> b
 	if game.player.global_position.distance_to(point)>reach: return false
 	var ray := PhysicsRayQueryParameters3D.create(origin,point,1|4|8|16|32)
 	ray.exclude = [game.player.get_rid()]
-	if actor is CollisionObject3D: ray.exclude.append(actor.get_rid())
+	if actor is CollisionObject3D: ray.exclude = [game.player.get_rid(),(actor as CollisionObject3D).get_rid()]
 	return get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
 
 func action_text() -> String:
@@ -522,6 +542,7 @@ func action_text() -> String:
 	return ""
 
 func interact() -> bool:
+	if _stage()==8: return true
 	var action := action_text()
 	if action.is_empty(): return false
 	match _stage():
