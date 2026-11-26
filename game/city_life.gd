@@ -34,6 +34,10 @@ var meal_arms: Array = []
 var last_first_person := true
 var save_clock := 0.0
 var economy_clock := 0.0
+var supply_clock := 0.0
+const CAFE_INGREDIENTS := ["harina","queso","tomate","refresco","perrito"]
+const CAFE_CREDIT_LIMIT := 3000
+const CAFE_DELIVERY_DELAY := 45.0
 var agent_tick_clock := 0.0
 var hud_tick_clock := 0.0
 var state: Dictionary = {}
@@ -48,6 +52,10 @@ func setup(mission) -> void:
 	if not state.has("fullness"): state.fullness = 100.0
 	if not state.has("minutes"): state.minutes = 480.0
 	if not state.has("supplies"): state.supplies = INITIAL.duplicate(true)
+	for supplier in INITIAL:
+		if not state.supplies.has(supplier): state.supplies[supplier] = INITIAL[supplier].duplicate(true)
+		for ingredient in INITIAL[supplier]:
+			if not state.supplies[supplier].has(ingredient): state.supplies[supplier][ingredient] = INITIAL[supplier][ingredient]
 	if not state.has("cafes"): state.cafes = {}
 	if not state.has("contacts"): state.contacts = {}
 	if not state.has("met"): state.met = {}
@@ -58,8 +66,12 @@ func setup(mission) -> void:
 	for site in world.commerce_sites:
 		var id := String(site.id)
 		sites[id] = site
-		if String(site.kind)=="cafe" and not state.cafes.has(id):
-			state.cafes[id] = {"harina":8,"queso":4,"tomate":10,"refresco":12,"perrito":8,"cash":3600}
+		if String(site.kind)=="cafe":
+			if not state.cafes.has(id):
+				state.cafes[id] = {"harina":8,"queso":4,"tomate":10,"refresco":12,"perrito":8,"cash":3600}
+			var cafe: Dictionary = state.cafes[id]
+			if not cafe.has("supplier_debt"): cafe.supplier_debt = 0
+			if not cafe.has("supply_wait"): cafe.supply_wait = 0.0
 		_make_site(site)
 	_make_hud()
 	meal_root = Node3D.new()
@@ -292,7 +304,7 @@ func _order(id: String,key: String) -> void:
 	var cafe: Dictionary = state.cafes[id]
 	for ingredient in item.needs:
 		cafe[ingredient] = int(cafe[ingredient])-int(item.needs[ingredient])
-	cafe.cash = int(cafe.cash)+int(item.price)
+	_cafe_sale(cafe,int(item.price))
 	state.order = {"site":id,"key":key,"remaining":7.0+float(rng.randi_range(0,5)),"announced":false}
 	ledger.spend(int(item.price))
 	business.close()
@@ -505,24 +517,78 @@ func _plan(agent: Dictionary,goal: Vector3,task: String) -> bool:
 	agent.task = task
 	return true
 
+# Cafeterias buy wholesale at a negotiated commercial rate, not the
+# player-facing crate price. All recipes remain profitable at menu prices.
+func _cafe_cost(key: String) -> int:
+	return ceili(float(Ledger.PRODUCTS[key].cost)*.40)
+
+func _cafe_sale(cafe: Dictionary,amount: int) -> void:
+	var repayment := mini(int(cafe.get("supplier_debt",0)),floori(float(amount)*.25))
+	cafe.supplier_debt = int(cafe.get("supplier_debt",0))-repayment
+	cafe.cash = int(cafe.cash)+amount-repayment
+
+func _cafe_can_buy(cafe: Dictionary,key: String) -> bool:
+	return int(cafe.cash)+maxi(0,CAFE_CREDIT_LIMIT-int(cafe.get("supplier_debt",0)))>=_cafe_cost(key)
+
+func _cafe_buy(id: String,supplier: String,key: String) -> bool:
+	var cafe: Dictionary = state.cafes[id]
+	if int(cafe.get(key,0))>=5 or not _cafe_can_buy(cafe,key) or not reserve_crate(supplier,key): return false
+	var price := _cafe_cost(key)
+	var paid := mini(maxi(0,int(cafe.cash)),price)
+	cafe.cash = int(cafe.cash)-paid
+	cafe.supplier_debt = int(cafe.get("supplier_debt",0))+price-paid
+	cafe[key] = int(cafe.get(key,0))+int(Ledger.PRODUCTS[key].units)
+	refresh_supplier(supplier)
+	return true
+
+func _cafe_needs(cafe: Dictionary) -> Array:
+	var needs: Array = []
+	for key in CAFE_INGREDIENTS:
+		if int(cafe.get(key,0))<5: needs.append(key)
+	needs.sort_custom(func(a,b): return int(cafe.get(a,0))<int(cafe.get(b,0)))
+	return needs
+
+# Supplier delivery is the fallback for a blocked owner or disconnected
+# pedestrian graph. Still transfers actual crates, debits cash or bounded
+# trade credit and persists inventory; never creates free cafe stock.
+func _supply_tick(delta: float) -> void:
+	var changed := false
+	for id in sites:
+		if not state.cafes.has(id): continue
+		var cafe: Dictionary = state.cafes[id]
+		var needs := _cafe_needs(cafe)
+		if needs.is_empty():
+			cafe.supply_wait = 0.0
+			continue
+		cafe.supply_wait = float(cafe.get("supply_wait",0.0))+delta
+		if float(cafe.supply_wait)<CAFE_DELIVERY_DELAY: continue
+		var delivered := false
+		for key in needs:
+			for supplier in INITIAL:
+				if not sites.has(supplier) or not available(supplier,key): continue
+				if _cafe_buy(String(id),String(supplier),String(key)):
+					delivered = true
+					changed = true
+					print("Abastecimiento: ",sites[id].name," recibió ",key," de ",sites[supplier].name)
+					break
+		if delivered: cafe.supply_wait = 0.0
+		else: cafe.supply_wait = CAFE_DELIVERY_DELAY-10.0
+	if changed: ledger.save_game()
+
 func _owner_depart(agent: Dictionary) -> void:
 	var cafe: Dictionary = state.cafes[agent.site]
-	var need := ""
-	for key in ["harina","queso","tomate","refresco","perrito"]:
-		if int(cafe.get(key,0))<5:
-			need = key
-			break
-	if need.is_empty(): return
 	var person: Person = agent.node
-	for id in sites:
-		if id=="primary" or String(sites[id].kind)!="wholesale" or not available(id,need): continue
-		var site: Dictionary = sites[id]
-		var dest: Vector3 = site.entrance
-		if _plan(agent,dest,"supplier"):
-			agent.supplier = id
-			agent.ingredient = need
-			person.social_context = "shopping"
-			return
+	for key in _cafe_needs(cafe):
+		if not _cafe_can_buy(cafe,key): continue
+		for id in sites:
+			if id=="primary" or String(sites[id].kind)!="wholesale" or not available(id,key): continue
+			var site: Dictionary = sites[id]
+			var dest: Vector3 = site.entrance
+			if _plan(agent,dest,"supplier"):
+				agent.supplier = id
+				agent.ingredient = key
+				person.social_context = "shopping"
+				return
 
 func _tick_agents(delta: float) -> void:
 	var minute := int(state.minutes)%1440
@@ -536,8 +602,17 @@ func _tick_agents(delta: float) -> void:
 			if index<path.size():
 				var target: Vector3 = path[index]
 				var next := person.global_position.move_toward(target,maxf(.12,1.35*delta))
-				if world.pedestrian_segment_clear(person.global_position,next) and person.walk_to(target,delta,1.35):
-					agent.index = index+1
+				if world.pedestrian_segment_clear(person.global_position,next):
+					agent.blocked_for = 0.0
+					if person.walk_to(target,delta,1.35): agent.index = index+1
+				else:
+					agent.blocked_for = float(agent.get("blocked_for",0.0))+delta
+					if float(agent.blocked_for)>8.0:
+						agent.path = PackedVector3Array()
+						agent.index = 0
+						agent.task = "return_pending"
+						agent.timer = 5.0
+						agent.blocked_for = 0.0
 				continue
 			agent.path = PackedVector3Array()
 			var task := String(agent.task)
@@ -546,20 +621,14 @@ func _tick_agents(delta: float) -> void:
 				var cafe: Dictionary = state.cafes[agent.site]
 				var key := String(agent.ingredient)
 				var supplier := String(agent.supplier)
-				var price := int(Ledger.PRODUCTS[key].cost)
-				if int(cafe.cash)>=price and available(supplier,key):
-					agent.delivery = {"key":key,"units":10,"supplier":supplier,"price":price}
+				if _cafe_can_buy(cafe,key) and available(supplier,key):
+					agent.delivery = {"key":key,"supplier":supplier}
 				agent.timer = 3.0
 				agent.task = "return_pending"
 			elif task=="return":
 				var delivery: Dictionary = agent.get("delivery",{})
 				if not delivery.is_empty():
-					var cafe: Dictionary = state.cafes[agent.site]
-					var key := String(delivery.key)
-					if int(cafe.cash)>=int(delivery.price) and reserve_crate(String(delivery.supplier),key):
-						cafe.cash = int(cafe.cash)-int(delivery.price)
-						cafe[key] = int(cafe.get(key,0))+int(delivery.units)
-						refresh_supplier(String(delivery.supplier))
+					if _cafe_buy(String(agent.site),String(delivery.supplier),String(delivery.key)):
 						ledger.save_game()
 					agent.delivery = {}
 				person.social_context = "worker"
@@ -617,6 +686,10 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	if agent_tick_clock>=.065:
 		_tick_agents(agent_tick_clock)
 		agent_tick_clock = 0.0
+	supply_clock += delta
+	if supply_clock>=5.0:
+		_supply_tick(supply_clock)
+		supply_clock = 0.0
 	economy_clock += delta
 	if economy_clock>=60.0:
 		economy_clock = 0.0
@@ -628,16 +701,18 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 				if not _can_make(String(id),String(key)): continue
 				for ingredient in MENU[key].needs:
 					cafe[ingredient] = int(cafe[ingredient])-int(MENU[key].needs[ingredient])
-				cafe.cash = int(cafe.cash)+int(MENU[key].price)
+				_cafe_sale(cafe,int(MENU[key].price))
 				break
 		# Small independent replenishment, not infinite shelf stock.
-		for id in state.supplies:
+		for id in INITIAL:
 			var inventory: Dictionary = state.supplies[id]
-			var keys := inventory.keys()
-			if keys.is_empty(): continue
-			var key := String(keys[rng.randi_range(0,keys.size()-1)])
-			inventory[key] = mini(int(INITIAL[id][key]),int(inventory[key])+2)
-			refresh_supplier(String(id))
+			var changed := false
+			for key in INITIAL[id]:
+				var before := int(inventory.get(key,0))
+				if before>=int(INITIAL[id][key]): continue
+				inventory[key] = mini(int(INITIAL[id][key]),before+2)
+				changed = true
+			if changed: refresh_supplier(String(id))
 		ledger.save_game()
 	save_clock += delta
 	if save_clock>=15.0:
