@@ -254,7 +254,7 @@ func nearby(at: Vector3) -> Dictionary:
 	var best := 3.7*3.7
 	for taxi in taxis:
 		var body: CharacterBody3D = taxi.body
-		if taxi==passenger or not taxi.path.is_empty(): continue
+		if taxi==passenger or not taxi.path.is_empty() or not (taxi.get("yield_path",[]) as Array).is_empty(): continue
 		var d := at.distance_squared_to(body.position+Vector3.UP*.8)
 		if d<best:
 			best = d
@@ -535,7 +535,87 @@ func _route_blocked(body: CharacterBody3D,waypoints: Array,index: int) -> bool:
 		previous = p
 	return false
 
+# Parked taxis must not monopolize a public bus stop. A horn requests
+# a forward relocation, with the left lane as the safe alternative.
+func yield_to_bus(stop: Dictionary,bus: CharacterBody3D) -> void:
+	var center: Vector3 = stop.position
+	var direction: Vector3 = stop.direction
+	var side := Vector3(-direction.z,0,direction.x)
+	var approach := maxf(0.0,(center-bus.global_position).dot(direction))
+	for taxi in taxis:
+		if taxi==passenger or taxi==selected or not taxi.path.is_empty(): continue
+		if not (taxi.get("yield_path",[]) as Array).is_empty(): continue
+		var body: CharacterBody3D = taxi.body
+		var offset := body.global_position-center
+		if absf(offset.dot(side))>2.30 or offset.dot(direction)<-approach-2.5 or offset.dot(direction)>8.5: continue
+		var forward := body.global_transform.basis.z.normalized()
+		if absf(forward.dot(direction))<.8: continue
+		var left := Vector3(forward.z,0,-forward.x)
+		var origin := body.global_position
+		var goal_distance := 0.0
+		# Stay on the current directed road, without jumping a junction.
+		var next_id := String(taxi.next_node)
+		if geography.points.has(next_id):
+			var end: Vector3 = geography.points[next_id]
+			goal_distance = (end-origin).dot(forward)-3.0
+		var candidates: Array = []
+		for distance in [9.0,12.0,16.0,20.0,24.0]:
+			if float(distance)>goal_distance: continue
+			for shift in [0.0,2.4,3.0]:
+				var goal := origin+forward*float(distance)+left*float(shift)
+				var relative := goal-center
+				if absf(relative.dot(side))<2.75 and absf(relative.dot(direction))<9.0: continue
+				candidates.append({"distance":distance,"shift":shift})
+		# If the road ends too close, clear the berth laterally instead.
+		for shift in [2.7,3.2,3.7]:
+			if goal_distance>=4.0:
+				candidates.append({"distance":minf(goal_distance,7.0),"shift":shift})
+		var shape := BoxShape3D.new()
+		shape.size = Vector3(2.0,1.65,4.9)
+		for candidate in candidates:
+			var points: Array = []
+			var last := origin
+			var valid := true
+			var steps := ceili(float(candidate.distance)/.55)
+			for i in range(1,steps+1):
+				var t := float(i)/float(steps)
+				var p := origin+forward*float(candidate.distance)*t+left*float(candidate.shift)*smoothstep(0.0,1.0,t)
+				var d := (p-last).normalized()
+				if not TrafficBypass._on_road(streets,p,d,1.90,4.80) or not TrafficBypass._clear(body,p,d,shape):
+					valid = false
+					break
+				points.append(p)
+				last = p
+			if valid and not points.is_empty():
+				taxi.yield_path = points
+				taxi.yield_index = 0
+				break
+
+func _tick_yielding_taxis(delta: float) -> void:
+	for taxi in taxis:
+		var path: Array = taxi.get("yield_path",[])
+		if path.is_empty(): continue
+		var body: CharacterBody3D = taxi.body
+		var index := int(taxi.get("yield_index",0))
+		var target: Vector3 = path[index]
+		var diff := target-body.global_position
+		diff.y = 0.0
+		if diff.length()<.10:
+			index += 1
+			taxi.yield_index = index
+			if index>=path.size():
+				taxi.yield_path = []
+				body.velocity = Vector3.ZERO
+			continue
+		var d := diff.normalized()
+		var step := minf(diff.length(),2.4*delta)
+		var angle := lerp_angle(body.rotation.y,atan2(d.x,d.z),minf(delta*7.0,1.0))
+		if not TrafficBypass.safe_step(body,d,step,angle,delta):
+			taxi.yield_path = []
+			body.velocity = Vector3.ZERO
+
 func tick(delta: float,_clock: float) -> void:
+	_tick_yielding_taxis(delta)
 	if passenger.is_empty(): return
 	var body: CharacterBody3D = passenger.body
 	if arrived:
