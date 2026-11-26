@@ -585,6 +585,7 @@ func tick(delta: float) -> void:
 		initialized = true
 		_initialize()
 	for vehicle in vehicles:
+		if bool(vehicle.get("incident_hold",false)): continue
 		_drive(vehicle,delta)
 	for site in sites:
 		if float(site.refill)>0.0:
