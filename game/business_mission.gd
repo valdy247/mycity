@@ -652,6 +652,7 @@ func _start_buyer() -> void:
 
 func _tick_buyer(delta: float) -> void:
 	if buyer==null or buyer_path.is_empty(): return
+	if buyer.conversation_active(delta): return
 	if not buyer_returning and buyer_index>=buyer_path.size():
 		buyer.animate(delta,false)
 		buyer_time += delta
