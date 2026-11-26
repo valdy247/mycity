@@ -12,6 +12,8 @@ const HomeGarage = preload("res://home_garage.gd")
 var garage: HomeGarage
 const CarlosMission = preload("res://carlos_mission.gd")
 var carlos_mission: CarlosMission
+const CityNavigation = preload("res://city_navigation.gd")
+var city_navigation: CityNavigation
 const StreetMarket = preload("res://street_market.gd")
 var street_market: StreetMarket
 const Backpack = preload("res://backpack.gd")
@@ -196,6 +198,10 @@ func _ready() -> void:
 		carlos_mission.setup(self)
 		business.carlos_call = carlos_mission.open_call
 		business.carlos_objective = carlos_mission.objective
+		city_navigation = CityNavigation.new()
+		add_child(city_navigation)
+		city_navigation.setup(self)
+		business.city_map = _open_city_map
 		incidents = CityIncidents.new()
 		add_child(incidents)
 		incidents.setup(self)
@@ -521,7 +527,29 @@ func _apply_camera_mode() -> void:
 	if reticle != null:
 		reticle.visible = first_person and not driving and not building_mode and not (garage!=null and garage.riding)
 
+func _open_city_map() -> void:
+	if city_navigation==null or building_mode: return
+	if business!=null and business.modal_open(): business.close()
+	city_navigation.open()
+
+func _input(event: InputEvent) -> void:
+	if not event is InputEventKey or not event.pressed or event.echo: return
+	if event.keycode==KEY_F11:
+		var window := get_window()
+		window.mode = Window.MODE_WINDOWED if window.mode in [Window.MODE_FULLSCREEN,Window.MODE_EXCLUSIVE_FULLSCREEN] else Window.MODE_FULLSCREEN
+		get_viewport().set_input_as_handled()
+		return
+	if city_navigation!=null and city_navigation.active:
+		if event.keycode==KEY_ESCAPE or (event.keycode==KEY_M and not city_navigation.query.has_focus()):
+			city_navigation.close()
+			get_viewport().set_input_as_handled()
+		return
+	if event.keycode==KEY_M and city_navigation!=null and not building_mode and not (pilar_editor!=null and pilar_editor.active) and not (taxis!=null and taxis.dialog.visible) and not (business!=null and business.modal_open()) and not (street_market!=null and not street_market.active.is_empty()):
+		_open_city_map()
+		get_viewport().set_input_as_handled()
+
 func _unhandled_input(event: InputEvent) -> void:
+	if city_navigation!=null and city_navigation.active: return
 	if cuba_world!=null and diagnostics_panel!=null and event is InputEventKey and event.pressed and not event.echo and event.keycode==KEY_F8:
 		diagnostics_panel.visible = not diagnostics_panel.visible
 		if diagnostics_panel.visible: _refresh_diagnostics()
@@ -1083,7 +1111,7 @@ func _update_hud() -> void:
 
 # Gameplay prompts remain visible with the large help overlay collapsed.
 func _update_compact_hud() -> void:
-	var lines: Array[String] = ["[H] Controles"]
+	var lines: Array[String] = ["[H] Controles · [M] Mapa · [F11] Pantalla completa" if city_navigation!=null else "[H] Controles · [F11] Pantalla completa"]
 	if garage!=null and garage.riding:
 		lines.append("%d km/h · [E] Bajar detenido" % roundi(absf(garage.ride_speed)*3.6))
 	elif bus_riding:
@@ -1292,6 +1320,9 @@ func _bus_priority_notice(stop: Dictionary,bus: CharacterBody3D) -> void:
 
 func _physics_process(delta: float) -> void:
 	if player == null:
+		return
+	if city_navigation!=null and city_navigation.active:
+		player.velocity = Vector3.ZERO
 		return
 	if carlos_mission!=null and not building_mode: carlos_mission.tick(delta)
 	if incidents!=null and not building_mode and not business.modal_open(): incidents.tick(delta)
