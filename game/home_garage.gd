@@ -52,12 +52,8 @@ func setup(controller) -> void:
 			state[key] = defaults[key]
 	for id in FURNITURE:
 		if not state.furniture.has(id): state.furniture[id] = {"p":FURNITURE[id].p.duplicate(),"removed":false}
-	if not world.garage_home_site.is_empty():
-		var site: Dictionary = world.garage_home_site
-		var basis: Basis = site.basis
-		var door: Vector3 = site.door
-		exterior_label = business._label(self,"MI CASA" if bool(state.house) else "CASA EN VENTA · 5000 CUP",door+basis.z*.12+Vector3.UP*2.30,Color("#f3ead0"))
-		exterior_label.rotation.y = basis.get_euler().y
+	# Existing GPS residence belongs to the player; no purchase or exterior sign.
+	if not world.garage_home_site.is_empty(): state.house = true
 	for site in world.parts_sites:
 		var person := Person.new()
 		add_child(person)
@@ -245,7 +241,7 @@ func _exit() -> void:
 	var space := get_world_3d().direct_space_state
 	var destination := Vector3.ZERO
 	var found := false
-	for offset in [Vector2(0,.75),Vector2(-.75,.90),Vector2(.75,.90),Vector2(0,1.50)]:
+	for offset in [Vector2(0,.75),Vector2(-.75,.90),Vector2(.75,.90),Vector2(0,1.50),Vector2(-.5,1.80),Vector2(.5,1.80),Vector2(0,2.25)]:
 		var at: Vector3 = door+basis.x*offset.x+basis.z*offset.y
 		var ground := space.intersect_ray(PhysicsRayQueryParameters3D.create(at+Vector3.UP*1.8,at-Vector3.UP*.4,1|2))
 		if ground.is_empty() or ground.normal.y<.65: continue
@@ -324,6 +320,24 @@ func _nearest_bin(at: Vector3) -> Dictionary:
 		if at.distance_to(p)<3.0: return site
 	return {}
 
+func _aimed_home(at: Vector3) -> bool:
+	if world.garage_home_site.is_empty(): return false
+	var site: Dictionary = world.garage_home_site
+	var door: Vector3 = site.door
+	var basis: Basis = site.basis
+	if at.distance_to(door)>3.5 or (at-door).dot(basis.z)<-.12: return false
+	var cam: Camera3D = game.play_camera
+	var origin := cam.global_position
+	var direction := -cam.global_transform.basis.z
+	var center := door+Vector3.UP*1.1
+	var depth := (center-origin).dot(direction)
+	if depth<=0.0 or depth>8.0: return false
+	var local := basis.inverse()*(origin+direction*depth-center)
+	if absf(local.x)>.65 or absf(local.y)>1.1: return false
+	var ray := PhysicsRayQueryParameters3D.create(origin,origin+direction*maxf(.05,depth-.35),1|4|16)
+	ray.exclude = [game.player.get_rid()]
+	return get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
+
 func action_text(at: Vector3) -> String:
 	if riding: return "[E] Bajar detenido"
 	if inside:
@@ -333,9 +347,7 @@ func action_text(at: Vector3) -> String:
 		var id := _aimed_furniture()
 		return "[E] Mover "+String(FURNITURE[id].name) if not id.is_empty() else ""
 	if not String(state.held_furniture).is_empty() and not _nearest_bin(at).is_empty(): return "[E] Desechar mueble"
-	if not world.garage_home_site.is_empty():
-		var door: Vector3 = world.garage_home_site.door
-		if at.distance_to(door)<2.4: return "[E] Entrar a mi casa" if bool(state.house) else "[E] Comprar casa"
+	if _aimed_home(at): return "[E] Entrar a mi casa"
 	if not _vendor_at(at).is_empty(): return "[E] Comprar repuestos"
 	for kind in owned:
 		var body: CharacterBody3D = owned[kind]
@@ -373,12 +385,9 @@ func interact(at: Vector3) -> bool:
 				_save()
 				business._notify("Mueble dejado en el basurero. El camión podrá recogerlo.")
 			return true
-	if not world.garage_home_site.is_empty():
-		var door: Vector3 = world.garage_home_site.door
-		if at.distance_to(door)<2.4:
-			if bool(state.house): _enter()
-			else: _home_menu()
-			return true
+	if _aimed_home(at):
+		_enter()
+		return true
 	var site := _vendor_at(at)
 	if not site.is_empty():
 		_vendor_menu(site)
