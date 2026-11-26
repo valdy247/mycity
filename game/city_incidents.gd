@@ -843,7 +843,9 @@ func _protect_casualty(victim: Dictionary) -> void:
 		if Time.get_ticks_msec()<int(victim.get("guard_retry",0)): return
 		victim.guard_retry = Time.get_ticks_msec()+1500
 		old = _casualty_pose(person,old)
-		if not _casualty_vehicle_clear(old): return
+		if not _casualty_vehicle_clear(old):
+			_rescue_log(victim,"espacio del herido ocupado; esperando una posición segura.")
+			return
 		victim.old = old
 		person.global_transform = old
 		person.rotation.x = -PI*.5
@@ -1037,6 +1039,8 @@ func _first_aid_start(victim: Dictionary) -> bool:
 
 func _first_aid_tick(victim: Dictionary,delta: float) -> void:
 	if not bool(victim.severe): return
+	# Do not send a neighbor underneath a vehicle while the fall is unresolved.
+	if not is_instance_valid(victim.get("traffic_guard")): return
 	if String(scene.get("kind",""))=="rescue" and scene.get("victim",{})==victim and String(scene.phase)!="approach":
 		return
 	var aid: Dictionary = victim.get("first_aid",{})
@@ -1173,6 +1177,7 @@ func _local_responder(victim: Dictionary,center: Vector3) -> bool:
 	return false
 
 func _rescue_start(victim: Dictionary) -> void:
+	if not is_instance_valid(victim.get("traffic_guard")): return
 	var person: Node3D = victim.agent.node
 	var center := person.global_position
 	var candidates: Array = []
