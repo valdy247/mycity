@@ -266,7 +266,7 @@ func _utility_open(p: Vector3) -> bool:
 	# procedural arcades. The curb-side furniture strip remains walkable.
 	for lot in _lots_near(p):
 		var c: Vector3 = lot.center
-		if c.distance_squared_to(p)>180.0: continue
+		if Vector2(c.x,c.z).distance_squared_to(q)>180.0: continue
 		if Geometry2D.is_point_in_polygon(q,_lot_polygon(lot)): return false
 	for fp in geography.footprints_near(p,.25):
 		var lo: Vector3 = fp.low
@@ -298,7 +298,7 @@ func _utility_beam(a: Vector3,b: Vector3,thickness: float,mat: StandardMaterial3
 	var basis := Basis.looking_at(-d.normalized(),up).scaled_local(Vector3(thickness,thickness,d.length()+.025))
 	box_groups[key].transforms.append(Transform3D(basis,at-origin))
 
-func _utility_register(p: Vector3,outward: Vector3,metal: StandardMaterial3D,wire: StandardMaterial3D) -> int:
+func _utility_register(p: Vector3,outward: Vector3,metal: StandardMaterial3D) -> int:
 	for id in _utility_near(p,1.3):
 		var old: Vector3 = utility_poles[int(id)].p
 		if old.distance_to(p)<1.3: return int(id)
@@ -427,7 +427,7 @@ func _utility_chain_poles(chain: Dictionary,metal: StandardMaterial3D,wire: Stan
 		if candidate.is_empty(): continue
 		var p: Vector3 = candidate.p
 		var outward: Vector3 = candidate.out
-		var id := _utility_register(p,outward,metal,wire)
+		var id := _utility_register(p,outward,metal)
 		if not found.is_empty():
 			if int(found.back())==id: continue
 			_utility_connect(int(found.back()),id,wire)
@@ -471,17 +471,45 @@ func _make_utility_network() -> void:
 			var node: String = endpoint[0]
 			if not ends.has(node): ends[node] = []
 			if not ends[node].has(endpoint[1]): ends[node].append(endpoint[1])
-	# At each intersection connect the nearest compatible real supports.
-	# Each branch gets a chance; duplicate spans are suppressed globally.
+	# Build a small connected network at each intersection instead of
+	# pairing two independent branches of a four-way crossing.
 	for node in ends:
 		var ids: Array = ends[node]
-		for id in ids:
-			var p: Vector3 = utility_poles[int(id)].p
-			var candidates := ids.duplicate()
-			candidates.sort_custom(func(a,b): return p.distance_squared_to(utility_poles[int(a)].p)<p.distance_squared_to(utility_poles[int(b)].p))
-			for other in candidates:
-				if int(id)==int(other): continue
-				if _utility_connect(int(id),int(other),wire): break
+		var joined: Array = []
+		if not ids.is_empty(): joined.append(ids[0])
+		while joined.size()<ids.size():
+			var pairs: Array = []
+			for first in joined:
+				var p: Vector3 = utility_poles[int(first)].p
+				for second in ids:
+					if joined.has(second): continue
+					var q: Vector3 = utility_poles[int(second)].p
+					pairs.append({"a":int(first),"b":int(second),"distance":p.distance_squared_to(q)})
+			pairs.sort_custom(func(a,b): return float(a.distance)<float(b.distance))
+			var linked := false
+			for pair in pairs:
+				if _utility_connect(int(pair.a),int(pair.b),wire):
+					joined.append(int(pair.b))
+					linked = true
+					break
+			if not linked: break
+	# Some tiny connecting road segments have no usable curb themselves.
+	# Connect their neighboring supports across the segment when safe.
+	for chain in chains:
+		if float(chain.length)>18.0: continue
+		var left: Array = ends.get(String(chain.start),[])
+		var right: Array = ends.get(String(chain.end),[])
+		if left.is_empty() or right.is_empty(): continue
+		var pairs: Array = []
+		for first in left:
+			var p: Vector3 = utility_poles[int(first)].p
+			for second in right:
+				if first==second: continue
+				var q: Vector3 = utility_poles[int(second)].p
+				pairs.append({"a":int(first),"b":int(second),"distance":p.distance_squared_to(q)})
+		pairs.sort_custom(func(a,b): return float(a.distance)<float(b.distance))
+		for pair in pairs:
+			if _utility_connect(int(pair.a),int(pair.b),wire): break
 	# Single supports on short blocks can join another nearby support only
 	# when both actual cables are clear; never render an unsupported end.
 	var degrees: Dictionary = {}
