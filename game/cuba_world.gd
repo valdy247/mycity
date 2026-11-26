@@ -56,6 +56,8 @@ var lot_cells: Dictionary = {}
 var map_surfaces: Dictionary = {}
 var map_collision: Dictionary = {}
 var street_collision: Dictionary = {}
+# Temporary spatial indexes for the non-overlapping rendered surface.
+var street_surface_index: Dictionary = {}
 var physics_chunks: Dictionary = {}
 var static_box_shapes: Dictionary = {}
 var detail_batches := 0
@@ -249,9 +251,10 @@ func _make_osm_streets() -> void:
 	var concrete := _mat("old_sidewalk",Color("#a39c89"))
 	var stripe := _mat("faded_line",Color("#b3a67d"))
 	for poly in street_geometry.roads:
-		_draw_street_polygon(poly,.030,asphalt,"road")
+		_draw_unique_street_polygon(poly,.030,asphalt,"road")
 	for poly in street_geometry.sidewalks:
-		_draw_street_polygon(poly,.061,concrete,"sidewalk")
+		_draw_unique_street_polygon(poly,.061,concrete,"sidewalk")
+	street_surface_index.clear()
 	for edge in geography.roads:
 		var a: Vector3 = edge.a
 		var b: Vector3 = edge.b
@@ -598,13 +601,81 @@ func update_utility_lighting(minutes: float,delta: float) -> void:
 		lamp.global_position = utility_poles[int(nearby[i])].lamp
 		lamp.show()
 
+# Partition overlapping planar surfaces into disjoint convex fragments.
+# The original OSM polygons remain authoritative for routing and sidewalks.
+# Splitting by half planes handles contained triangles without losing holes.
+func _street_half_plane(poly: PackedVector2Array,a: Vector2,b: Vector2,orientation: float,inside: bool) -> PackedVector2Array:
+	var result := PackedVector2Array()
+	if poly.size()<3: return result
+	var edge := b-a
+	if edge.length_squared()<.00000001: return poly if inside else result
+	var sign_value := orientation if inside else -orientation
+	var prev := poly[poly.size()-1]
+	var prev_distance := edge.cross(prev-a)*sign_value
+	for point in poly:
+		var distance := edge.cross(point-a)*sign_value
+		if (prev_distance>=0.0)!=(distance>=0.0):
+			var t := clampf(prev_distance/(prev_distance-distance),0.0,1.0)
+			result.append(prev.lerp(point,t))
+		if distance>=0.0:
+			if result.is_empty() or result[result.size()-1].distance_squared_to(point)>.00000001:
+				result.append(point)
+		prev = point
+		prev_distance = distance
+	if result.size()>1 and result[0].distance_squared_to(result[result.size()-1])<.00000001:
+		result.remove_at(result.size()-1)
+	return result
+
+func _street_subtract_triangle(poly: PackedVector2Array,cut: PackedVector2Array) -> Array:
+	var result: Array = []
+	var remaining := poly
+	var orientation := 1.0 if (cut[1]-cut[0]).cross(cut[2]-cut[0])>0.0 else -1.0
+	for i in range(3):
+		var a := cut[i]
+		var b := cut[(i+1)%3]
+		var outside := _street_half_plane(remaining,a,b,orientation,false)
+		if outside.size()>=3 and not Geometry2D.triangulate_polygon(outside).is_empty():
+			result.append(outside)
+		remaining = _street_half_plane(remaining,a,b,orientation,true)
+		if remaining.size()<3: break
+	return result
+
+func _draw_unique_street_polygon(poly: PackedVector2Array,y: float,mat: StandardMaterial3D,kind: String) -> void:
+	if not street_surface_index.has(kind): street_surface_index[kind] = {}
+	var index: Dictionary = street_surface_index[kind]
+	var tris := Geometry2D.triangulate_polygon(poly)
+	for i in range(0,tris.size(),3):
+		var triangle := PackedVector2Array([poly[tris[i]],poly[tris[i+1]],poly[tris[i+2]]])
+		var parts: Array = [triangle]
+		for cut in street_geometry.near(index,triangle):
+			var next: Array = []
+			for fragment in parts:
+				if Geometry2D.intersect_polygons(fragment,cut).is_empty():
+					next.append(fragment)
+				else:
+					next.append_array(_street_subtract_triangle(fragment,cut))
+			parts = next
+			if parts.is_empty(): break
+		for fragment in parts:
+			_draw_street_polygon(fragment,y,mat,kind)
+		# Register the input triangle, not the fragmented result. This
+		# bounds index growth to the original map complexity.
+		street_geometry._register(index,triangle)
+
 func _draw_street_polygon(poly: PackedVector2Array,y: float,mat: StandardMaterial3D,kind: String) -> void:
 	var tris := Geometry2D.triangulate_polygon(poly)
 	if tris.is_empty():
 		return
 	var p := poly[0]
 	var tile := Vector2i(floori(p.x/96.0),floori(p.y/96.0))
-	mat = _textured(mat,Vector3(float(tile.x)*96.0+48.0,0,float(tile.y)*96.0+48.0))
+	# One shared tileable material per surface class, including crossings.
+	# Mipmaps keep distant streets inexpensive and avoid abrupt texture seams.
+	if kind=="road":
+		mat = havana_textures.material(mat,"asphalt")
+	elif kind=="sidewalk":
+		mat = havana_textures.material(mat,"stone")
+	else:
+		mat = _textured(mat,Vector3(float(tile.x)*96.0+48.0,0,float(tile.y)*96.0+48.0))
 	var key := kind+":"+str(tile)
 	if not map_surfaces.has(key):
 		var surface := SurfaceTool.new()
