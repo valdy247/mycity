@@ -464,6 +464,8 @@ func _local_recovery(body: CharacterBody3D,target: Vector3,width: float,length: 
 
 func _drive(vehicle: Dictionary,delta: float) -> void:
 	var body: CharacterBody3D = vehicle.body
+	body.set_meta("traffic_priority",6.2 if bool(vehicle.truck) else 4.25)
+	body.set_meta("traffic_servicing",not vehicle.site.is_empty())
 	if not vehicle.site.is_empty():
 		_collect(vehicle,delta)
 		return
@@ -509,6 +511,13 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 	speed = minf(speed,safe_speed)
 	vehicle.cooldown = maxf(0.0,float(vehicle.cooldown)-delta)
 	var stalled := float(vehicle.get("stalled",0.0))
+	if Bypass.cooperate(vehicle,body,world.street_geometry,width,half*2.0,height,delta,stalled,target): return
+	if bool(vehicle.get("cooperative_rejoin",false)):
+		vehicle.cooperative_rejoin = false
+		if active: vehicle.index = int(vehicle.resume)
+		vehicle.detour = []
+		if not bool(vehicle.truck): vehicle.index = Bypass.rejoin_index(body,original,int(vehicle.index),world.street_geometry,width,half*2.0,height)
+		return
 	if float(vehicle.get("retreat_remaining",0.0))<=0.0 and stalled>.8 and float(vehicle.cooldown)<=0.0:
 		vehicle.cooldown = 1.6
 		if active:
