@@ -73,6 +73,7 @@ func _new_site(p: Vector3,d: Vector3,width: float,edge: Dictionary) -> Dictionar
 	if world.street_geometry.point_on_road(curb): return {}
 	if not _free_box(curb,d,Vector3(.80,1.05,2.40)): return {}
 	if not Bypass._on_road(world.street_geometry,parking,d,2.3,6.2): return {}
+	if not world.street_geometry.intersection_clear_for_stop(parking,6.2,2.3): return {}
 	if curb.distance_to(anchor)<24.0: return {}
 	for previous in sites:
 		var old: Vector3 = previous.curb
@@ -335,7 +336,7 @@ func _initialize() -> void:
 			route.append({"p":a+d*3.0+lane})
 			car_route.append({"p":a+d*3.0+passing_lane})
 		if sites.size()<5 and world._is_monte_edge(edge) and width>=6.5 and length>25.0:
-			var near_corner := a+d*clampf(length*.60,15.5,length-5.0)
+			var near_corner := a+d*clampf(length*.70,17.0,length-5.0)
 			var site := _new_site(near_corner,d,width,edge)
 			if not site.is_empty():
 				var park: Vector3 = site.parking
@@ -513,6 +514,8 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 	speed = minf(speed,safe_speed)
 	vehicle.cooldown = maxf(0.0,float(vehicle.cooldown)-delta)
 	var stalled := float(vehicle.get("stalled",0.0))
+	var junction_limit := Bypass.junction_gate(vehicle,body,world.street_geometry,route,index,not active,width,half*2.0,height,delta,original if active else [],int(vehicle.resume))
+	speed = Bypass.junction_speed(speed,junction_limit,6.0)
 	if Bypass.cooperate(vehicle,body,world.street_geometry,width,half*2.0,height,delta,stalled,target): return
 	if bool(vehicle.get("cooperative_rejoin",false)):
 		vehicle.cooperative_rejoin = false
@@ -520,7 +523,7 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 		vehicle.detour = []
 		if not bool(vehicle.truck): vehicle.index = Bypass.rejoin_index(body,original,int(vehicle.index),world.street_geometry,width,half*2.0,height)
 		return
-	if float(vehicle.get("retreat_remaining",0.0))<=0.0 and (stalled>.8 or (not active and Bypass.early_lane_pass(body,world.street_geometry,blocked,free))) and float(vehicle.cooldown)<=0.0:
+	if not bool(body.get_meta("junction_guard",false)) and float(vehicle.get("retreat_remaining",0.0))<=0.0 and (stalled>.8 or (not active and Bypass.early_lane_pass(body,world.street_geometry,blocked,free))) and float(vehicle.cooldown)<=0.0:
 		vehicle.cooldown = 1.6
 		if active:
 			# An interrupted detour is not permanent. Replan from here.
@@ -547,7 +550,7 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 		return
 	vehicle.speed = move_toward(float(vehicle.speed),speed,delta*(7.0 if speed<float(vehicle.speed) else 3.5))
 	var angle := lerp_angle(body.rotation.y,atan2(direction.x,direction.z),1.0-exp(-delta*4.5))
-	var advance := minf(float(vehicle.speed)*delta,distance)
+	var advance := Bypass.junction_advance(minf(float(vehicle.speed)*delta,distance),junction_limit)
 	if blocked: advance = minf(advance,maxf(0.0,free-gap))
 	var previous := body.global_position
 	if advance>.0001:
