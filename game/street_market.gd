@@ -16,7 +16,7 @@ const GOODS := {
 	"control":{"name":"Control remoto","price":250,"color":Color("#55595d")},
 	"linterna":{"name":"Linterna usada","price":300,"color":Color("#687d68")}
 }
-const FOOD_SETS := [["pollo"],["huevo","perrito"],["picadillo","pollo","huevo"],["arroz","aceite"],["refresco","perrito"]]
+const FOOD_SETS := [["pollo"],["huevo","perrito","picadillo"],["picadillo","pollo","huevo"],["arroz","aceite"],["refresco","perrito"]]
 const USED := ["cargador","radio","grabadora","cable","audifonos","control","linterna"]
 var game
 var world
@@ -41,6 +41,7 @@ func setup(controller) -> void:
 	var life: Dictionary = business.ledger.life_data
 	if not life.has("street_market"): life.street_market = {"inventory":{},"stocks":{}}
 	state = life.street_market
+	rng.randomize()
 	view = Camera3D.new()
 	add_child(view)
 	view.projection = Camera3D.PROJECTION_ORTHOGONAL
@@ -159,7 +160,7 @@ func _make_stall(id: String,p: Vector3,d: Vector3,outward: Vector3,index: int) -
 	add_child(root)
 	# Local +Z faces the seller, local -Z faces the sidewalk.
 	root.global_transform = Transform3D(Basis(Vector3.UP,atan2(outward.x,outward.z)),p)
-	var used := index%3==1 or index%3==2
+	var used := index%2==1
 	var names := ["Pavel","Rosa","Chino","Marta","Luis","Odalys","Rogelio","Ana","Tito","Nena"]
 	var name_value := String(names[index%names.size()])
 	var person := Person.new()
@@ -191,7 +192,7 @@ func _make_stall(id: String,p: Vector3,d: Vector3,outward: Vector3,index: int) -
 	if used:
 		for i in range(6): keys.append(USED[(index+i*2)%USED.size()])
 	else:
-		keys = FOOD_SETS[index%FOOD_SETS.size()].duplicate()
+		keys = FOOD_SETS[floori(float(index)/2.0)%FOOD_SETS.size()].duplicate()
 	var stock: Dictionary = state.stocks.get(id,{})
 	for key in keys:
 		if not stock.has(key): stock[key] = 1+posmod(index+String(key).length(),4) if used else 4+posmod(index+String(key).length(),6)
@@ -206,7 +207,10 @@ func _make_stall(id: String,p: Vector3,d: Vector3,outward: Vector3,index: int) -
 		_model(item,key)
 		item.visible = int(stock[key])>0
 		items.append({"key":key,"node":item})
-	stalls.append({"id":id,"root":root,"person":person,"name":name_value,"used":used,"items":items,"surface":surface,"stock":stock,"open":true,"index":index})
+	var minute := int(business.life.state.minutes)%1440
+	var open_now := minute>=420+index%3*45 and minute<1230+index%3*45
+	root.visible = open_now
+	stalls.append({"id":id,"root":root,"person":person,"name":name_value,"used":used,"items":items,"surface":surface,"stock":stock,"open":open_now,"index":index})
 
 func _model(root: Node3D,key: String) -> void:
 	var color: Color = GOODS[key].color
@@ -393,9 +397,19 @@ func tick(delta: float) -> void:
 	if clock<2.0: return
 	clock = 0.0
 	var minute := int(business.life.state.minutes)%1440
+	var previous := int(state.get("last_minute",minute))
+	var next_day := minute+720<previous
+	state.last_minute = minute
 	for stall in stalls:
+		if next_day:
+			for item in stall.items:
+				var key := String(item.key)
+				var quantity := int(stall.stock.get(key,0))
+				stall.stock[key] = mini(4 if bool(stall.used) else 9,quantity+rng.randi_range(1,2))
+				item.node.visible = int(stall.stock[key])>0
 		if not active.is_empty() and stall==active: continue
 		var start := 420+int(stall.index)%3*45
 		var finish := 1230+int(stall.index)%3*45
 		stall.open = minute>=start and minute<finish
 		stall.root.visible = stall.open
+	if next_day: business.ledger.save_game()
