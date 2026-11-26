@@ -249,13 +249,13 @@ func _unhandled_input(event: InputEvent) -> void:
 	if building_mode:
 		return
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_B:
-		if not driving and builder != null and (city_world == null or (not city_world.seated and not city_world.inside_home and not city_world.bakery.inside)):
+		if not driving and builder != null and (city_world == null or (not city_world.seated and not city_world.inside_home and not city_world.bakery.inside and not city_world.family_home.pool_inside)):
 			building_mode = true
 			player.velocity = Vector3.ZERO
 			status.hide()
 			builder.open(player.global_position)
 		else:
-			exit_message = "Sal de la casa, banco o van antes de construir."
+			exit_message = "Sal de la casa, piscina, banco o van antes de construir."
 			message_time = 2.0
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -688,7 +688,9 @@ func _physics_process(delta: float) -> void:
 		_drive(delta, movement)
 	else:
 		var direction := Vector3(movement.x, 0, movement.y).normalized().rotated(Vector3.UP, yaw)
-		var speed := 8.0 if Input.is_physical_key_pressed(KEY_SHIFT) else 4.5
+		var speed: float = 8.0 if Input.is_physical_key_pressed(KEY_SHIFT) else 4.5
+		if city_world != null and city_world.family_home.pool_inside:
+			speed = 2.0
 		player.velocity.x = direction.x * speed
 		player.velocity.z = direction.z * speed
 		if direction.length_squared() > 0.01:
