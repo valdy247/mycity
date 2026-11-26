@@ -245,6 +245,7 @@ func action_text(at: Vector3) -> String:
 	var order: Dictionary = state.order
 	if not order.is_empty() and String(order.site)==String(site.id):
 		return "[E] Recoger pedido" if float(order.remaining)<=0.0 else "Preparando tu pedido…"
+	if not ledger.carry.is_empty(): return "[E] Ofrecer caja · "+String(site.name)
 	return "[E] Ver menú · "+String(site.name)
 
 func interact(at: Vector3) -> bool:
@@ -274,10 +275,68 @@ func interact(at: Vector3) -> bool:
 			business._notify("Buen provecho. Pulsa E para comer o beber.")
 		return true
 	if not ledger.carry.is_empty():
-		business._notify("Deja la caja en un vehículo antes de comer.")
+		_offer_delivery(id)
 		return true
 	_menu(id)
 	return true
+
+# The player may supply an actual paid crate carried from a wholesaler.
+# Cafes pay the wholesale replacement value plus a transport premium.
+# No free inventory, duplicate payout or bypass of the player wallet.
+func _delivery_price(key: String) -> int:
+	return roundi(float(Ledger.PRODUCTS[key].cost)*1.12)
+
+func _delivery_available(id: String,key: String) -> bool:
+	if not state.cafes.has(id) or not CAFE_INGREDIENTS.has(key): return false
+	var cafe: Dictionary = state.cafes[id]
+	return int(cafe.get(key,0))<5 and int(cafe.cash)>=_cafe_cost(key) and float(cafe.get("delivery_cooldown",0.0))<=0.0
+
+func _offer_delivery(id: String) -> void:
+	var key := ledger.carry
+	if not _delivery_available(id,key):
+		business._notify("La cafetería no necesita esta caja o no puede pagarla ahora.")
+		return
+	var price := _delivery_price(key)
+	business._open("Entregar mercancía",String(sites[id].name)+" necesita "+String(Ledger.PRODUCTS[key].name)+". Cobras "+str(price)+" CUP por la caja (incluye incentivo de transporte).")
+	business._button("Entregar caja · "+str(price)+" CUP",_deliver_to_cafe.bind(id,key))
+	business._button("Cancelar",business.close)
+
+func _deliver_to_cafe(id: String,key: String) -> void:
+	if ledger.carry!=key or not _delivery_available(id,key): return
+	var cafe: Dictionary = state.cafes[id]
+	var price := _delivery_price(key)
+	cafe.cash = int(cafe.cash)-_cafe_cost(key)
+	# A limited city logistics contract covers the transport difference.
+	cafe.delivery_cooldown = 120.0
+	cafe[key] = int(cafe.get(key,0))+int(Ledger.PRODUCTS[key].units)
+	ledger.carry = ""
+	ledger.cash += price
+	ledger.revenue += price
+	state.cafe_deliveries = int(state.get("cafe_deliveries",0))+1
+	ledger.save_game()
+	business._sync_visuals()
+	business.close()
+	business._notify("Entrega completada · +"+str(price)+" CUP")
+
+func open_supply_market() -> void:
+	business._open("Abastecimiento","Oportunidades de entrega de mercancía. Compra una caja y llévala a la cafetería.")
+	for id in sites:
+		if not state.cafes.has(id): continue
+		var cafe: Dictionary = state.cafes[id]
+		var items: Array[String] = []
+		for key in _cafe_needs(cafe):
+			if not _delivery_available(String(id),String(key)): continue
+			items.append(String(Ledger.PRODUCTS[key].name)+" · "+str(_delivery_price(String(key)))+" CUP")
+		if not items.is_empty():
+			var label := Label.new()
+			label.text = String(sites[id].name)+"\n"+"\n".join(PackedStringArray(items))
+			label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			business.content.add_child(label)
+	if int(state.get("cafe_deliveries",0))>0:
+		var count := Label.new()
+		count.text = "Entregas completadas: "+str(int(state.cafe_deliveries))
+		business.content.add_child(count)
+	business._button("Inicio",business.open_phone_home)
 
 func _can_make(id: String,key: String) -> bool:
 	var cafe: Dictionary = state.cafes.get(id,{})
@@ -556,6 +615,7 @@ func _supply_tick(delta: float) -> void:
 	for id in sites:
 		if not state.cafes.has(id): continue
 		var cafe: Dictionary = state.cafes[id]
+		cafe.delivery_cooldown = maxf(0.0,float(cafe.get("delivery_cooldown",0.0))-delta)
 		var needs := _cafe_needs(cafe)
 		if needs.is_empty():
 			cafe.supply_wait = 0.0
