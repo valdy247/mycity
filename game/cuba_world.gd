@@ -1,6 +1,8 @@
 extends "res://city_world.gd"
 # Real road centerlines; reconstructed facades and gameplay premises.
 const MapData = preload("res://pilar_map.gd")
+const StreetGeometry = preload("res://street_geometry.gd")
+var street_geometry := StreetGeometry.new()
 const INVENTORY_PATH := "user://pilar_atares_inventory.json"
 var geography := MapData.new()
 var home_root: Node3D
@@ -49,8 +51,8 @@ func setup(builder: Builder) -> void:
 	_visual_box(road_ground,Vector3(0,-.25,0),Vector3(2520,.50,2520),_mat("urban_ground",Color("#aaa394")))
 	_shape(road_ground,Vector3(0,-.25,0),Vector3(2520,.50,2520))
 	_load_inventory()
+	street_geometry.build(geography)
 	_make_osm_streets()
-	_join_road_surfaces()
 	_make_frontages()
 	_make_corner_plaques()
 	_flush_city_boxes()
@@ -99,25 +101,28 @@ func _make_osm_streets() -> void:
 	var stripe := _mat("faded_line",Color("#b3a67d"))
 	var pole := _mat("old_pole",Color("#777366"))
 	var wires := _mat("wire",Color("#383b38"))
+	for poly in street_geometry.roads:
+		_draw_street_polygon(poly,.030,asphalt,"road")
+	for poly in street_geometry.sidewalks:
+		_draw_street_polygon(poly,.061,concrete,"sidewalk")
 	for edge in geography.roads:
 		var a: Vector3 = edge.a
 		var b: Vector3 = edge.b
 		var width: float = float(edge.width)
 		var d := (b-a).normalized()
 		var right := Vector3(-d.z,0,d.x)
-		_line(a,b,width,.05,.026,asphalt)
+		# Geometry comes from the shared polygon layer, not overlapping strips.
 		if a.distance_to(b)>8 and width>=8:
 			for i in range(int(a.distance_to(b)/9.0)):
 				var p := a+d*(float(i)*9.0+3.0)
-				_line(p,p+d*2.5,.09,.014,.058,stripe)
+				if street_geometry.point_on_road(p) and street_geometry.point_on_road(p+d*2.5):
+					_line(p,p+d*2.5,.09,.006,.034,stripe)
 		if not bool(edge.driveable):
 			continue
-		for side in [-1.0,1.0]:
-			var off := right*float(side)*(width*.5+.70)
-			_line(a+off,b+off,1.40,.055,.031,concrete)
+
 		if a.distance_to(b)>20.0:
 			var p := a.lerp(b,.45)+right*(width*.5+.55)
-			if _street_clear(p,0.0,edge):
+			if not street_geometry.point_on_road(p) and _street_clear(p,.18,edge):
 				_cube(p+Vector3.UP*2.65,Vector3(.17,5.3,.17),pole,0,true)
 				_cube(p+Vector3.UP*5.12,Vector3(1.0,.12,.13),pole)
 				var end := b+right*(width*.5+.55)
@@ -125,45 +130,24 @@ func _make_osm_streets() -> void:
 					_line(p+Vector3(float(offset),0,0),end+Vector3(float(offset),0,0),.026,.026,5.04,wires)
 
 
-func _join_road_surfaces() -> void:
-	# Centerline coordinates remain unchanged. Fill estimated carriageway
-	# joins from the incident widths, not from a synthetic street grid.
-	var asphalt := _mat("asphalt_cuba",Color("#555653"))
-	asphalt.cull_mode = BaseMaterial3D.CULL_DISABLED
-	for node_id in geography.junctions:
-		var incident: Array = geography.junctions[node_id]
-		if incident.size()<2:
-			continue
-		var p: Vector3 = geography.points[node_id]
-		var corners := PackedVector2Array()
-		for edge in incident:
-			if not bool(edge.driveable):
-				continue
-			var other: Vector3 = edge.b if edge.a_id==node_id else edge.a
-			var d := (other-p).normalized()
-			var side := Vector3(-d.z,0,d.x)*float(edge.width)*.5
-			var a := p+side+d*.45
-			var b := p-side+d*.45
-			corners.append(Vector2(a.x,a.z))
-			corners.append(Vector2(b.x,b.z))
-		if corners.size()<4:
-			continue
-		var hull := Geometry2D.convex_hull(corners)
-		if hull.size()>3 and hull[0].is_equal_approx(hull[hull.size()-1]):
-			hull.remove_at(hull.size()-1)
-		var tris := Geometry2D.triangulate_polygon(hull)
-		var tile := Vector2i(floori(p.x/96.0),floori(p.z/96.0))
-		var key := "road_join:"+str(tile)
-		if not map_surfaces.has(key):
-			var surface := SurfaceTool.new()
-			surface.begin(Mesh.PRIMITIVE_TRIANGLES)
-			surface.set_material(asphalt)
-			map_surfaces[key] = surface
-		var st: SurfaceTool = map_surfaces[key]
-		for idx in tris:
-			var v := hull[idx]
-			st.set_normal(Vector3.UP)
-			st.add_vertex(Vector3(v.x,.061,v.y))
+func _draw_street_polygon(poly: PackedVector2Array,y: float,mat: StandardMaterial3D,kind: String) -> void:
+	var tris := Geometry2D.triangulate_polygon(poly)
+	if tris.is_empty():
+		return
+	var p := poly[0]
+	var tile := Vector2i(floori(p.x/96.0),floori(p.y/96.0))
+	var key := kind+":"+str(tile)
+	if not map_surfaces.has(key):
+		var surface := SurfaceTool.new()
+		surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		surface.set_material(mat)
+		map_surfaces[key] = surface
+	var st: SurfaceTool = map_surfaces[key]
+	for idx in tris:
+		var v := poly[idx]
+		st.set_normal(Vector3.UP)
+		st.add_vertex(Vector3(v.x,y,v.y))
 
 func _street_clear(p: Vector3,padding: float,ignore: Dictionary = {}) -> bool:
 	for e in geography.roads_near(p,padding+1.0):
@@ -179,14 +163,12 @@ func _street_clear(p: Vector3,padding: float,ignore: Dictionary = {}) -> bool:
 	return true
 
 func _lot_clear(center: Vector3,front: Vector3,edge: Dictionary) -> bool:
-	var side := Vector3(front.z,0,-front.x)
-	for x in [-3.8,0.0,3.8]:
-		for z in [-4.2,0.0,4.2]:
-			if not _street_clear(center+side*float(x)+front*float(z),.85,edge):
-				return false
+	var candidate := _lot_polygon({"center":center,"front":front})
+	if not street_geometry.clear(candidate):
+		return false
 	for existing in _lots_near(center):
 		var other: Vector3 = existing.center
-		if center.distance_squared_to(other)<76.0:
+		if center.distance_squared_to(other)<210.0 and not Geometry2D.intersect_polygons(candidate,_lot_polygon(existing)).is_empty():
 			return false
 	return true
 
