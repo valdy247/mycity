@@ -68,6 +68,9 @@ var plaque_count := 0
 var service_count := 0
 var public_rooms: Array = []
 var incident_services: Dictionary = {}
+var geographic_places: Array = []
+var geographic_by_building: Dictionary = {}
+var geographic_rendered: Dictionary = {}
 var current_room := -1
 var upstairs := false
 var prompt := ""
@@ -1178,10 +1181,14 @@ func _make_frontages() -> void:
 		home_edge = _nearest_street(public_anchor)
 		home_spawn = public_anchor+Vector3.UP*.96
 	home_gps_status = "Vivienda personalizada retirada · Monte en reconstrucción"
+	_prepare_geographic_places()
+	_place_geographic_shops(proposals)
 	_reserve_food_factory(proposals)
 	# Keep special interiors from the prototype in small unrecorded lots.
 	proposals.sort_custom(func(a,b): return a.center.distance_squared_to(public_anchor)<b.center.distance_squared_to(public_anchor))
 	for lot in proposals:
+		while service_count<service_names.size() and _geographic_service_exists(service_names[service_count]):
+			service_count += 1
 		if service_count>=service_names.size():
 			break
 		if lot.center.distance_to(public_anchor)<35.0 or lot.center.length()>1000.0:
@@ -1206,6 +1213,7 @@ func _make_frontages() -> void:
 		_add_lot(lot)
 		_facade(lot,slots.size(),"")
 	_fill_monte_frontage_gaps()
+	_report_geographic_places()
 	_place_temporary_business()
 	_link_original_house()
 
@@ -2031,6 +2039,181 @@ func build_allowed(poly: PackedVector2Array,ignore_id: String = "") -> String:
 		return "Plaza de Cuatro Caminos protegida"
 	return ""
 
+# Public OSM landmarks cross-checked against the geographic directory.
+# Way entries require their original building identity; node entries can
+# be associated with a containing/nearby frontage, never a distant lot.
+const GEOGRAPHIC_CATALOG := [
+	["5233654525","node","La Alborada","clothes",23.12230,-82.36677],
+	["5249345921","node","MAI ATARE","convenience",23.12219,-82.36641],
+	["10186878686","node","Mercadito de Cuatro Caminos","marketplace",23.12311,-82.36673],
+	["5238037626","node","Bufete Colectivo Ignacio Agramonte","lawyer",23.12139,-82.36747],
+	["362658318","way","4ta Estación PNR Infanta","police",23.12240,-82.37411],
+	["360427237","way","La Esmeralda","marketplace",23.12133,-82.37481],
+	["391095691","way","Policlínico Girón","clinic",23.12088,-82.37469],
+	["194910494","way","Museo del Ferrocarril de Cuba","museum",23.12290,-82.36493],
+	["290017021","way","Hospital La Dependiente","hospital",23.11411,-82.37001]
+]
+
+func _place_kind(tags: Dictionary) -> String:
+	for field in ["shop","amenity","office","tourism","healthcare"]:
+		var value := String(tags.get(field,""))
+		if value in ["yes","no","parking","bench","toilets","place_of_worship","fuel","bus_station","shelter"]: continue
+		if not value.is_empty(): return value
+	return ""
+
+func _geo_key(value: String) -> String:
+	return geography.normalized(value).strip_edges()
+
+func _prepare_geographic_places() -> void:
+	geographic_places.clear()
+	geographic_by_building.clear()
+	geographic_rendered.clear()
+	var seen: Dictionary = {}
+	for entry in GEOGRAPHIC_CATALOG:
+		var id := String(entry[0])
+		var p := geography.project(float(entry[4]),float(entry[5]))
+		var kind := String(entry[3])
+		for poi in geography.poi:
+			if String(poi.id)==id and String(entry[1])=="node":
+				p = poi.position
+				break
+		geographic_places.append({"id":id,"type":String(entry[1]),"name":String(entry[2]),"kind":kind,"p":p,"catalog":true})
+		seen[_geo_key(String(entry[2]))] = true
+		seen["id:"+id] = true
+	# Import other named businesses and public venues already present in
+	# the local OSM extract. No online calls are required at game startup.
+	for poi in geography.poi:
+		if geographic_places.size()>=150: break
+		var tags: Dictionary = poi.tags
+		var name_value := String(tags.get("name","")).strip_edges()
+		var kind := _place_kind(tags)
+		if name_value.is_empty() or kind.is_empty() or seen.has(_geo_key(name_value)) or seen.has("id:"+String(poi.id)): continue
+		if kind=="police" or kind=="hospital": continue
+		geographic_places.append({"id":String(poi.id),"type":"node","name":name_value,"kind":kind,"p":poi.position,"catalog":false})
+		seen[_geo_key(name_value)] = true
+	for fp in geography.footprints:
+		if geographic_places.size()>=180: break
+		var tags: Dictionary = fp.tags
+		var name_value := String(tags.get("name","")).strip_edges()
+		var kind := _place_kind(tags)
+		if name_value.is_empty() or kind.is_empty() or seen.has(_geo_key(name_value)) or seen.has("id:"+String(fp.id)): continue
+		geographic_places.append({"id":String(fp.id),"type":"way","name":name_value,"kind":kind,"p":fp.center,"catalog":false})
+		seen[_geo_key(name_value)] = true
+	for place in geographic_places:
+		var p: Vector3 = place.p
+		var chosen: Dictionary = {}
+		var score := INF
+		var radius := 10.0 if String(place.type)=="node" else 85.0
+		for fp in geography.footprints_near(p,radius):
+			if _market_reserved(fp.poly): continue
+			var exact := String(place.type)=="way" and String(fp.id)==String(place.id)
+			var matching := _geo_key(String(fp.tags.get("name","")))==_geo_key(String(place.name))
+			if String(place.type)=="way" and not exact and not matching: continue
+			var inside := Geometry2D.is_point_in_polygon(Vector2(p.x,p.z),fp.poly)
+			var distance := INF
+			var poly: PackedVector2Array = fp.poly
+			for i in range(poly.size()):
+				distance = minf(distance,Vector2(p.x,p.z).distance_to(Geometry2D.get_closest_point_to_segment(Vector2(p.x,p.z),poly[i],poly[(i+1)%poly.size()])))
+			if not exact and not matching and not inside and distance>4.0: continue
+			var rank := -1000.0 if exact else (-100.0 if matching else (0.0 if inside else 10.0+distance))
+			rank += p.distance_to(fp.center)*.01
+			if rank>=score: continue
+			chosen = fp
+			score = rank
+		if not chosen.is_empty():
+			var id := String(chosen.id)
+			if not geographic_by_building.has(id): geographic_by_building[id] = []
+			geographic_by_building[id].append(place)
+			place["building"] = id
+
+func _geo_mark(place: Dictionary,at: Vector3) -> void:
+	geographic_rendered[String(place.id)] = true
+	var kind := String(place.kind)
+	if kind=="police" or kind=="hospital":
+		incident_services[kind] = at
+	elif kind=="clinic" and not incident_services.has("clinic"):
+		incident_services["clinic"] = at
+
+func _geographic_service_exists(service: String) -> bool:
+	var kind := "police" if service=="PNR" else ("hospital" if service.begins_with("HOSPITAL") else "")
+	if kind.is_empty(): return false
+	for place in geographic_places:
+		if String(place.kind)==kind and place.has("building"): return true
+	return false
+
+func _place_geographic_shops(proposals: Array) -> void:
+	# Missing node footprints: only build on a verified empty lot within
+	# a few metres of the source pin, on the same side of the road.
+	var home := geography.project(23.1223007,-82.3668138)
+	for place in geographic_places:
+		if place.has("building") or String(place.type)!="node": continue
+		var pin: Vector3 = place.p
+		var chosen: Dictionary = {}
+		var best := 7.0
+		for lot in proposals:
+			var center: Vector3 = lot.center
+			if center.distance_to(pin)>14.0 or center.distance_to(home)<11.0: continue
+			var front: Vector3 = lot.front
+			var threshold := center+front*4.4
+			var distance := threshold.distance_to(pin)
+			if distance>=best or (pin-center).dot(front)<-.3: continue
+			if not _lot_clear(center,front,lot.edge) or _overlaps_footprint(lot): continue
+			chosen = lot
+			best = distance
+		if chosen.is_empty(): continue
+		_add_lot(chosen)
+		_facade(chosen,slots.size(),String(place.name).to_upper())
+		var center: Vector3 = chosen.center
+		var front: Vector3 = chosen.front
+		_geo_mark(place,center+front*4.8)
+
+func _geo_facade(place: Dictionary,front: Dictionary,portal: bool,depth: float,lower: PackedVector2Array,used: Array) -> bool:
+	var a: Vector3 = front.a
+	var b: Vector3 = front.b
+	var n: Vector3 = front.normal
+	var t := (b-a).normalized()
+	var length := a.distance_to(b)
+	var count := clampi(roundi(length/2.9),1,48)
+	var step := length/float(count)
+	var pin: Vector3 = place.p
+	var best := INF
+	var at := Vector3.ZERO
+	for i in range(count):
+		var q := a+t*(float(i)+.5)*step+n*(-depth+.07 if portal else .045)
+		if not _wall_has_opening(lower,q,n): continue
+		var occupied := false
+		for old in used:
+			if q.distance_to(old)<2.0: occupied = true
+		if occupied: continue
+		var score := q.distance_squared_to(pin)
+		if score<best:
+			best = score
+			at = q
+	if best==INF: return false
+	used.append(at)
+	var kind := String(place.kind)
+	var color := Color("#486b79") if kind=="police" else (Color("#587b72") if kind in ["clinic","hospital","pharmacy"] else Color("#5c7778"))
+	var panel := _mat("geo_shop_"+kind,color)
+	var angle := atan2(n.x,n.z)
+	var width := minf(step*.83,2.7)
+	# Surface-mounted shopfront and sign; do not change building mass
+	# or create a passage where there is a solid wall.
+	_cube(at+n*.09+Vector3.UP*2.82,Vector3(width,.40,.09),panel,angle)
+	var words := String(place.name).to_upper()
+	var pixels := minf(.009,width/maxf(1.0,float(words.length())*21.0))
+	_label(words,at+n*.15+Vector3.UP*2.82,pixels,angle,Color("#fff3df"))
+	if kind not in ["police","hospital","clinic","museum"]:
+		_cube(at+n*.095+Vector3.UP*1.55,Vector3(minf(width*.88,1.65),1.55,.04),_mat("geo_shop_glass",Color("#344c57")),angle)
+		_cube(at+n*.13+Vector3.UP*1.55,Vector3(.055,1.55,.035),panel,angle)
+	_geo_mark(place,at+n*(depth+.65 if portal else .65))
+	return true
+
+func _report_geographic_places() -> void:
+	print("Lugares reales: ",geographic_rendered.size(),"/",geographic_places.size()," integrados en fachadas verificadas.")
+	for place in geographic_places:
+		if bool(place.catalog) and not geographic_rendered.has(String(place.id)):
+			print("Lugar real sin fachada compatible en el mapa local: ",place.name)
+
 func _make_mapped_buildings(public_anchor: Vector3) -> void:
 	var palette: Array[Color] = [Color("#a5b2a5"),Color("#c3b49b"),Color("#a2b8ba"),Color("#b19a88"),Color("#c3bc9d"),Color("#a4a29a"),Color("#b8ad99")]
 	var market_pos: Vector3 = geography.project(23.1234716,-82.3659728)
@@ -2148,7 +2331,7 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 			continue
 		mapped_buildings += 1
 		kept_footprints.append(fp)
-		editable_buildings[String(fp.id)] = {"poly":poly,"center":center,"height":h,"name":String(tags.get("name","Edificio")),"protected":market or String(fp.id)==alborada_poly_id,"front":front}
+		editable_buildings[String(fp.id)] = {"poly":poly,"center":center,"height":h,"name":String(tags.get("name","Edificio")),"protected":market or String(fp.id)==alborada_poly_id or geographic_by_building.has(String(fp.id)),"front":front}
 		if not front.is_empty():
 			_detail_front(front,h,idx,portal,market,monte,portal_depth,PackedVector2Array() if preserve_home or market or avenue_faces.is_empty() else lower)
 			if monte and portal:
@@ -2166,11 +2349,21 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 				if _avenue_edge(side_front.road): _avenue_bays(side_front,h,portal_ceiling,side_depth,lower,idx,base_color,side_portal)
 			if market:
 				_market_side_details(poly,front,h)
+			var known: Array = geographic_by_building.get(String(fp.id),[])
+			var used: Array = []
+			for place in known:
+				var choices: Array = [{"face":front,"portal":portal,"depth":portal_depth}]
+				for entry in extra: choices.append(entry)
+				var pin: Vector3 = place.p
+				choices.sort_custom(func(a,b): return pin.distance_squared_to(a.face.mid)<pin.distance_squared_to(b.face.mid))
+				for entry in choices:
+					if _geo_facade(place,entry.face,bool(entry.portal),float(entry.depth),lower,used): break
 			var name_value := String(tags.get("name",""))
+			if not known.is_empty(): name_value = ""
 			if market:
 				name_value = "PLAZA DE CUATRO CAMINOS"
 				market_drawn = true
-			elif String(fp.id)==alborada_poly_id:
+			elif String(fp.id)==alborada_poly_id and known.is_empty():
 				name_value = "" if home_relocated else "LA ALBORADA"
 			if home_relocated and geography.normalized(name_value).contains("alborada"):
 				name_value = ""
@@ -2181,7 +2374,7 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 				_label(name_value.to_upper(),m+n*z+Vector3.UP*2.85,.010,atan2(n.x,n.z),Color("#f5ead0"))
 	if not market_drawn:
 		print("Cuatro Caminos: no verified market footprint or four safe corners in this OSM extract.")
-	if alborada_poly_id.is_empty() and not home_relocated:
+	if alborada_poly_id.is_empty() and not home_relocated and not geographic_rendered.has("5233654525"):
 		var closest := _nearest_street(public_anchor)
 		if not closest.is_empty():
 			var a: Vector3 = closest.a
