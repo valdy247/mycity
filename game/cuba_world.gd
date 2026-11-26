@@ -555,8 +555,9 @@ func _is_monte_edge(edge: Dictionary) -> bool:
 	return false
 
 func _home_from_gps(pin: Vector3) -> Array:
-	# The explicitly supplied GPS point is the house centre, not a search
-	# origin. Never snap, translate, swap or substitute this location.
+	# The GPS pin fixes the frontage along Monte, not the middle of a
+	# nine-metre-deep building. Keep the exact along-street position
+	# and move the footprint only perpendicular to the road as needed.
 	var center := Vector3(pin.x,0,pin.z)
 	# The approved overhead screenshot shows the avenue running roughly
 	# NNE/SSW (34 degrees clockwise from north). A tiny nearby OSM segment
@@ -604,14 +605,32 @@ func _home_from_gps(pin: Vector3) -> Array:
 		outward = -outward
 	var front := -outward
 	var home := {"center":center,"front":front,"edge":nearest,"curb":curb,"outward":outward,"d":direction,"portal":true,"landmark":"home"}
-	home_gps_status = "Casa GPS: "+geography.coordinate_text(center)+" | alineada con Monte"
-	if not street_geometry.clear(_lot_polygon(home)):
-		# The road polygons are inferred from OSM widths, while the pin is
-		# the user's explicit correction. Do not relocate either one.
-		home_gps_status += " | revisar borde de acera"
-		push_warning("La huella de la vivienda GPS se cruza con el pavimento estimado; se mantiene el punto solicitado.")
-	print(home_gps_status)
-	return _gps_home_and_shop(home)
+	# The roof, slabs and all portal columns fit inside the full lot.
+	# Add a small clearance to avoid edge contact caused by rounding.
+	for step in range(251):
+		var setback := float(step)*.10
+		var candidate := center+outward*setback
+		home.center = candidate
+		var clearance := home.duplicate()
+		clearance.lot_width = 9.10
+		clearance.lot_depth = 9.20
+		if not street_geometry.clear(_lot_polygon(clearance)):
+			continue
+		var safe := true
+		for fp in geography.footprints_near(candidate,12.0):
+			var tags: Dictionary = fp.tags
+			var name_value := geography.normalized(String(tags.get("name","")))
+			if (name_value.contains("cuatro caminos") or name_value.contains("mercado unico")) and not Geometry2D.intersect_polygons(_lot_polygon(clearance),fp.poly).is_empty():
+				safe = false
+				break
+		if not safe:
+			continue
+		home_gps_status = "Casa GPS: portal fuera de la acera | ajuste interior %.1f m" % setback
+		print(home_gps_status)
+		return _gps_home_and_shop(home)
+	home_gps_status = "Casa GPS: no cabe la huella sin invadir la calle."
+	push_warning(home_gps_status)
+	return []
 
 # Fit the shop to its actual available frontage instead of requiring
 # another full-size 9x9 house. The house centre and rotation stay fixed.
@@ -787,7 +806,9 @@ func _make_frontages() -> void:
 			home_gps_status = "Casa y La Alborada: parcelas intercambiadas."
 		else:
 			var requested: Vector3 = gps.point
-			assert(home_root.position.distance_to(requested)<.001,"La casa GPS no coincide con el punto solicitado.")
+			var tangent: Vector3 = residence.d
+			assert(absf((home_root.position-requested).dot(tangent))<.01,"La casa se desplazó a lo largo de Monte.")
+			assert(street_geometry.clear(_lot_polygon(residence)),"El portal invade el pavimento.")
 		print(home_gps_status)
 	elif pair.size()==1:
 		var residence: Dictionary = pair[0]
@@ -796,7 +817,9 @@ func _make_frontages() -> void:
 		home_relocated = true
 		if fixed_gps:
 			var requested: Vector3 = gps.point
-			assert(home_root.position.distance_to(requested)<.001,"La casa GPS no coincide con el punto solicitado.")
+			var tangent: Vector3 = residence.d
+			assert(absf((home_root.position-requested).dot(tangent))<.01,"La casa se desplazó a lo largo de Monte.")
+			assert(street_geometry.clear(_lot_polygon(residence)),"El portal invade el pavimento.")
 		push_warning("La Alborada necesita una parcela segura a la derecha de la casa.")
 	elif old_home_found and not fixed_gps:
 		for lot in home_candidates:
