@@ -525,10 +525,14 @@ static func junction_gate(state: Dictionary,body: CharacterBody3D,streets: Stree
 			var old_center: Vector3 = old.p
 			var away := _flat_distance(origin,old_center)
 			var radius := float(old.radius)+extent
+			var progress_at: Vector3 = claim.get("progress_at",origin)
+			if _flat_distance(origin,progress_at)>.45:
+				claim.progress_at = origin
+				claim.progress_ms = now
 			if away<radius+.10: state.junction_entered = true
 			if bool(state.get("junction_entered",false)) and away>radius+1.0:
 				_junction_release(state,body,streets)
-			elif not bool(state.get("junction_entered",false)) and now-int(claim.since)>8500:
+			elif not bool(state.get("junction_entered",false)) and now-int(claim.get("progress_ms",claim.since))>2600:
 				_junction_release(state,body,streets)
 			else:
 				body.set_meta("junction_guard",true)
@@ -557,6 +561,12 @@ static func junction_gate(state: Dictionary,body: CharacterBody3D,streets: Stree
 				last = i
 				break
 		if first<0: continue
+		# A departing vehicle on the outer safety ring must not queue
+		# for the intersection it has just left.
+		if first==0 and samples.size()>1:
+			var next_sample: Vector3 = samples[1].p
+			if _flat_distance(origin,center)>=float(junction.radius)+extent-.05 and _flat_distance(next_sample,center)>_flat_distance(origin,center)+.02:
+				continue
 		var limit := 0.0 if first==0 else float(samples[first-1].distance)
 		if limit>=stop_distance: continue
 		selected = junction
@@ -576,7 +586,7 @@ static func junction_gate(state: Dictionary,body: CharacterBody3D,streets: Stree
 		body.set_meta("junction_guard",true)
 		if not streets.intersection_claims.has(id):
 			body.set_meta("junction_extent",extent)
-			streets.intersection_claims[id] = {"owner":owner,"since":now,"junction":selected}
+			streets.intersection_claims[id] = {"owner":owner,"since":now,"junction":selected,"progress_at":origin,"progress_ms":now}
 			state.junction_claim = id
 			state.junction_entered = true
 		return -1.0
@@ -589,9 +599,9 @@ static func junction_gate(state: Dictionary,body: CharacterBody3D,streets: Stree
 			state.junction_signal_wait = 0.0
 		if stop_distance<=.12 and float(state.get("speed",0.0))<.15:
 			state.junction_signal_wait = float(state.junction_signal_wait)+delta
-		if float(state.junction_signal_wait)<2.0: return stop_distance
+		if float(state.junction_signal_wait)<.8: return stop_distance
 	# Don't lock the box far in advance; queue at the line first.
-	if stop_distance>2.0: return stop_distance
+	if stop_distance>4.0: return stop_distance
 	var existing: Dictionary = streets.intersection_claims.get(id,{})
 	if not existing.is_empty():
 		var other := instance_from_id(int(existing.owner)) as CharacterBody3D
@@ -599,7 +609,7 @@ static func junction_gate(state: Dictionary,body: CharacterBody3D,streets: Stree
 			streets.intersection_claims.erase(id)
 		elif int(existing.owner)!=owner:
 			var other_extent := float(other.get_meta("junction_extent",4.5))
-			if now-int(existing.since)>8500 and _flat_distance(other.global_position,center)>float(selected.radius)+other_extent+.2:
+			if now-int(existing.get("progress_ms",existing.since))>2600 and _flat_distance(other.global_position,center)>float(selected.radius)+other_extent+.2:
 				streets.intersection_claims.erase(id)
 			else: return stop_distance
 	# If the route ends inside the crossing, refuse entry. A legal exit
@@ -607,10 +617,11 @@ static func junction_gate(state: Dictionary,body: CharacterBody3D,streets: Stree
 	if exit<0: return stop_distance
 	if now<int(state.get("junction_retry",0)): return stop_distance
 	state.junction_retry = now+250
-	if _junction_occupied(body,selected): return stop_distance
+	# A broad circular occupancy test counts cars on harmless adjacent
+	# lanes as blockers. Check the actual swept travel corridor instead.
 	var last := mini(samples.size()-1,exit+2)
 	if not _junction_exit_clear(body,samples,entry,last,width,length,height): return stop_distance
-	streets.intersection_claims[id] = {"owner":owner,"since":now,"junction":selected}
+	streets.intersection_claims[id] = {"owner":owner,"since":now,"junction":selected,"progress_at":origin,"progress_ms":now}
 	body.set_meta("junction_extent",extent)
 	state.junction_claim = id
 	state.junction_entered = false
@@ -621,3 +632,12 @@ static func junction_speed(speed: float,limit: float,brake: float) -> float:
 
 static func junction_advance(advance: float,limit: float) -> float:
 	return advance if limit<0.0 else minf(advance,maxf(0.0,limit))
+
+# A vehicle at a sharp corner may have zero forward clearance with
+# its old heading. Let it turn in place only if its real body fits.
+static func align_if_clear(body: CharacterBody3D,angle: float) -> void:
+	if absf(angle_difference(body.global_rotation.y,angle))<.005: return
+	var old := body.global_rotation.y
+	body.global_rotation.y = angle
+	if body.test_move(body.global_transform,Vector3.ZERO,null,.001,true):
+		body.global_rotation.y = old
