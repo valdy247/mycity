@@ -45,7 +45,8 @@ func _key(value: String) -> String:
 		if n.begins_with(prefix):
 			n = n.substr(prefix.length()).strip_edges()
 			break
-	if n in ["maximo gomez","jesus del monte"]: return "monte"
+	if n in ["maximo gomez","jesus del monte","maximo gomez (monte)"]: return "monte"
+	if n=="la pila": return "pila"
 	if n=="principe alfonso": return "cerro"
 	return n
 
@@ -84,7 +85,7 @@ func resolve(query: String,start: String) -> Dictionary:
 	var parts := text_value.split("|",false)
 	if parts.is_empty() or parts.size()>2:
 		return {"error":"Escribe una calle o dos calles: Pila y Matadero."}
-	var first := _matches(parts[0])
+	var first := _matches(parts[0].strip_edges())
 	var second: Dictionary = _matches(parts[1]) if parts.size()==2 else {}
 	if first.is_empty() and second.is_empty():
 		return {"error":"No encuentro esas calles en el mapa descargado."}
@@ -104,8 +105,8 @@ func resolve(query: String,start: String) -> Dictionary:
 			candidates.append({"id":id,"first":found_a,"second":found_b})
 	if candidates.is_empty():
 		return {"error":"Las calles existen, pero no encuentro una esquina común en este mapa."}
-	var from: Vector3 = data.points[start]
-	candidates.sort_custom(func(a,b): return from.distance_squared_to(data.points[a.id])<from.distance_squared_to(data.points[b.id]))
+	var origin: Vector3 = data.points[start]
+	candidates.sort_custom(func(a,b): return origin.distance_squared_to(data.points[a.id])<origin.distance_squared_to(data.points[b.id]))
 	var best: Dictionary = {}
 	var best_distance := INF
 	for candidate in candidates:
@@ -118,7 +119,7 @@ func resolve(query: String,start: String) -> Dictionary:
 			best.path = ids
 		# Euclidean distance is a lower bound for route length.
 		var goal: Vector3 = data.points[candidate.id]
-		if best_distance<INF and from.distance_to(goal)>best_distance: break
+		if best_distance<INF and origin.distance_to(goal)>best_distance: break
 	if best.is_empty():
 		return {"error":"No hay una ruta vehicular accesible hasta ese destino."}
 	var label_value := String(canonical_names[best.first])
