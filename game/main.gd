@@ -249,7 +249,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if building_mode:
 		return
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_B:
-		if not driving and builder != null and (city_world == null or (not city_world.seated and not city_world.inside_home)):
+		if not driving and builder != null and (city_world == null or (not city_world.seated and not city_world.inside_home and not city_world.bakery.inside)):
 			building_mode = true
 			player.velocity = Vector3.ZERO
 			status.hide()
@@ -572,6 +572,7 @@ func _finish_exit(destination: Vector3) -> void:
 func _reset_player() -> void:
 	if city_world != null:
 		city_world.reset_interaction(avatar,limb_legs)
+		arm.spring_length = 4.5
 		player_shape.set_deferred("disabled",false)
 	if driving and van != null:
 		van.global_transform = van_home
@@ -675,6 +676,7 @@ func _physics_process(delta: float) -> void:
 				message_time = 2.0
 		elif city_world != null and city_world.interact(player,avatar,limb_legs,limb_arms):
 			player_shape.set_deferred("disabled",city_world.seated)
+			arm.spring_length = 2.15 if city_world.bakery.inside or city_world.inside_home else 4.5
 		elif _near_van():
 			_enter_van()
 	if city_world != null and city_world.seated:
