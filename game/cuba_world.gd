@@ -34,6 +34,8 @@ var van_angle := 0.0
 var home_edge: Dictionary = {}
 var food_factory: Dictionary = {}
 var commerce_sites: Array = []
+var garage_home_site: Dictionary = {}
+var parts_sites: Array = []
 # Walkable portal centre lines and frontage destinations for Monte life.
 var monte_walkways: Array = []
 # Only actual rendered door panels may be used for simulated indoor visits.
@@ -833,6 +835,7 @@ func _make_frontages() -> void:
 		_add_lot(lot)
 		_facade(lot,slots.size(),service_names[service_count])
 		service_count += 1
+	_reserve_garage_sites(proposals)
 	_reserve_commerce(proposals)
 	# Geographic footprints are authoritative; procedural infill is secondary.
 	_make_mapped_buildings(legacy_anchor)
@@ -1037,6 +1040,50 @@ func _reserve_food_factory(proposals: Array) -> void:
 	push_warning("Misión: no se encontró parcela libre para la fábrica de alimentos.")
 
 # Fictional businesses occupy only free parcels, never mapped buildings.
+# Reserve a fictional purchasable residence and parts vendors. The old
+# removed personal house remains untouched; the new interior is separate.
+func _reserve_garage_sites(proposals: Array) -> void:
+	var specs := [
+		{"id":"garage_home","name":"CASA EN VENTA","distance":45.0,"paint":Color("#c4b39c")},
+		{"id":"parts_taller","name":"TALLER DE ERNESTO","distance":115.0,"paint":Color("#9eaaa8")},
+		{"id":"parts_yoyi","name":"REPUESTOS YOYI","distance":205.0,"paint":Color("#c1b48b")}
+	]
+	var market := geography.project(23.1234716,-82.3659728)
+	for spec in specs:
+		var candidates := proposals.duplicate()
+		candidates.sort_custom(func(a,b): return absf(home_spawn.distance_to(a.center)-float(spec.distance))<absf(home_spawn.distance_to(b.center)-float(spec.distance)))
+		for lot in candidates:
+			var c: Vector3 = lot.center
+			var front: Vector3 = lot.front
+			if c.distance_to(home_spawn)<22.0 or c.distance_to(home_spawn)>650.0 or c.distance_to(market)<75.0: continue
+			if float(lot.edge.width)<4.2 or not _lot_clear(c,front,lot.edge) or _overlaps_footprint(lot): continue
+			var basis := Basis(Vector3.UP,atan2(front.x,front.z))
+			_add_lot(lot)
+			var site: Dictionary = {"id":spec.id,"name":spec.name,"center":c,"basis":basis,"door":c+basis*Vector3(0,.0,4.45),"road":lot.curb,"edge":lot.edge}
+			var wall := _mat("garage_site_"+String(spec.id),spec.paint)
+			var trim := _mat("garage_site_trim",Color("#d4c8b4"))
+			var door := _mat("garage_site_door",Color("#48686a"))
+			var is_home := String(spec.id)=="garage_home"
+			if is_home:
+				garage_home_site = site
+				_local_cube(c,basis,Vector3(0,1.6,0),Vector3(8.8,3.2,8.8),wall,true)
+				_local_cube(c,basis,Vector3(0,1.13,4.45),Vector3(1.15,2.25,.12),door)
+				_local_cube(c,basis,Vector3(2.35,1.12,4.45),Vector3(2.9,2.22,.14),door)
+				for i in range(9):
+					_local_cube(c,basis,Vector3(2.35,.15+float(i)*.23,4.53),Vector3(2.85,.025,.035),trim)
+				_local_cube(c,basis,Vector3(-2.5,1.65,4.45),Vector3(1.5,1.4,.11),door)
+			else:
+				parts_sites.append(site)
+				_local_cube(c,basis,Vector3(0,.05,0),Vector3(8.8,.10,9),trim,true)
+				_local_cube(c,basis,Vector3(0,1.6,-4.3),Vector3(8.7,3.2,.22),wall,true)
+				for side in [-1.0,1.0]:
+					_local_cube(c,basis,Vector3(float(side)*4.3,1.6,0),Vector3(.20,3.2,8.8),wall,true)
+					_local_cube(c,basis,Vector3(float(side)*3.4,1.6,4.2),Vector3(1.7,3.2,.24),wall,true)
+				_local_cube(c,basis,Vector3(0,.51,.2),Vector3(3.2,1.02,.75),trim,true)
+			_local_cube(c,basis,Vector3(0,3.24,0),Vector3(8.9,.20,9.0),wall,true)
+			_label(String(spec.name),c+basis*Vector3(0,2.75,4.5),.008,atan2(front.x,front.z),Color("#f8efd9"))
+			break
+
 func _reserve_commerce(proposals: Array) -> void:
 	var specs := [
 		{"id":"cafe_mimi","name":"CAFETERÍA MIMI","kind":"cafe","contact":"Maritza","owner":"Rafael","distance":65.0,"color":Color("#d2b69a")},
