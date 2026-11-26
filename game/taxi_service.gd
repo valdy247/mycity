@@ -19,6 +19,9 @@ var dialog: PanelContainer
 var destination: LineEdit
 var feedback: Label
 var arrived := false
+var speed_mode := 1
+const SPEEDS := [8.0,12.5,16.0]
+const SPEED_NAMES := ["Normal","Rápido","Exprés"]
 var mats: Dictionary = {}
 var meshes: Dictionary = {}
 
@@ -187,6 +190,12 @@ func _make_dialog() -> void:
 	search_button.text = "Buscar"
 	search_button.pressed.connect(func(): _submit(destination.text))
 	search_row.add_child(search_button)
+	var speed_choice := OptionButton.new()
+	for i in range(SPEEDS.size()):
+		speed_choice.add_item("%s · %d km/h" % [SPEED_NAMES[i],roundi(float(SPEEDS[i])*3.6)],i)
+	speed_choice.select(speed_mode)
+	speed_choice.item_selected.connect(func(index): speed_mode = index)
+	search_row.add_child(speed_choice)
 	map_view = TaxiMap.new()
 	map_view.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	col.add_child(map_view)
@@ -366,7 +375,14 @@ func tick(delta: float,clock: float) -> void:
 		passenger.index = index+1
 		return
 	var d := diff.normalized()
-	var speed := minf(8.0,maxf(.9,distance*2.0))
+	# Faster cruise speed, still brake for turns, stops and obstacles.
+	var limit: float = SPEEDS[speed_mode]
+	var speed := minf(limit,maxf(.9,sqrt(2.0*5.0*distance)))
+	if index+1<waypoints.size():
+		var next_target: Vector3 = waypoints[index+1].p
+		var next_dir := (next_target-target).normalized()
+		if next_dir.length_squared()>.1 and d.dot(next_dir)<.86:
+			speed = minf(speed,maxf(2.0,distance*1.5))
 	var node_id := String(item.node)
 	# Stop briefly at mapped traffic signals. No fictional green signal state
 	# is asserted; the existing Cuban city has no coordinated signal controller.
@@ -376,12 +392,12 @@ func tick(delta: float,clock: float) -> void:
 	passenger.signal_wait = maxf(0.0,float(passenger.signal_wait)-delta)
 	if float(passenger.signal_wait)>0.0:
 		speed = 0.0
-	var ray := PhysicsRayQueryParameters3D.create(body.position+Vector3.UP*.85+d*2.5,body.position+Vector3.UP*.85+d*6.5,1|4)
+	var ray := PhysicsRayQueryParameters3D.create(body.position+Vector3.UP*.85+d*2.5,body.position+Vector3.UP*.85+d*(4.0+float(passenger.speed)*.65+pow(float(passenger.speed),2)/10.0),1|4)
 	ray.exclude = [body.get_rid()]
 	var blocked := not get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
 	if blocked:
 		speed = 0.0
-	passenger.speed = move_toward(float(passenger.speed),speed,delta*4.5)
+	passenger.speed = move_toward(float(passenger.speed),speed,delta*(9.0 if speed<float(passenger.speed) else 4.5))
 	body.rotation.y = lerp_angle(body.rotation.y,atan2(d.x,d.z),minf(delta*6.0,1.0))
 	body.velocity = d*minf(float(passenger.speed),distance/maxf(delta,.001))
 	body.move_and_slide()
@@ -436,3 +452,9 @@ func finish_trip() -> void:
 					passenger.next_node = String(id)
 	passenger = {}
 	arrived = false
+
+func cycle_speed() -> void:
+	speed_mode = (speed_mode+1)%SPEEDS.size()
+
+func speed_description() -> String:
+	return "%s | %d km/h" % [SPEED_NAMES[speed_mode],roundi(float(passenger.get("speed",0.0))*3.6)]
