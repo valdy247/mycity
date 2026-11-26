@@ -199,14 +199,17 @@ func _make_stop(mid: Vector3,d: Vector3,width: float,lane: float,line: String,ed
 	root.rotation.y = atan2(d.x,d.z)
 	_part(root,Vector3(0,1.05,0),Vector3(.08,2.1,.08),Color("#77746a"))
 	_part(root,Vector3(0,2.05,0),Vector3(.65,.38,.11),Color("#244d78"))
-	var label := Label3D.new()
-	label.text = "PARADA"
-	label.font_size = 40
-	label.pixel_size = .0032
-	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	label.visibility_range_end = 60.0
-	root.add_child(label)
-	label.position = Vector3(0,2.05,.065)
+	for side in [-1.0,1.0]:
+		var label := Label3D.new()
+		label.text = "PARADA"
+		label.font_size = 40
+		label.pixel_size = .0021
+		label.outline_size = 0
+		label.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+		label.visibility_range_end = 60.0
+		root.add_child(label)
+		label.position = Vector3(0,2.05,float(side)*.067)
+		label.rotation.y = PI if float(side)<0.0 else 0.0
 	var stop := {"position":p,"wait":sidewalk+Vector3.UP*.065,"direction":d,"right":right,"line":line,"name":name_value if not name_value.is_empty() else data.street_label(String(edge.name)),"mapped":mapped,"queue":[],"cooldown":0.0,"root":root,"departing":[]}
 	for i in range(3):
 		_add_waiter(stop)
@@ -465,7 +468,7 @@ func _person(style: int) -> Node3D:
 func _queue_position(stop: Dictionary,index: int) -> Vector3:
 	var base: Vector3 = stop.wait
 	var d: Vector3 = stop.direction
-	return base+d*(-2.3+float(index)*1.10)
+	return base+d*(-2.3+float(index)*1.45)
 
 func _add_waiter(stop: Dictionary) -> void:
 	var queue: Array = stop.queue
