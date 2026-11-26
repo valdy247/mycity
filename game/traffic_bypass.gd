@@ -83,7 +83,66 @@ static func _segment_clear(body: CharacterBody3D,a: Vector3,b: Vector3,d: Vector
 
 # A shorter lane change is useful when the next stop or a tight bend
 # prevents a full overtake. Always resume the same original waypoint.
+# A four-lane road has an overtaking lane in the same direction.
+# Do not search the opposing carriageway for a bypass on this corridor.
+static func _four_lane_pass(body: CharacterBody3D,route: Array,index: int,streets: Streets,width: float,length: float,signals: Dictionary,height: float,lane: Dictionary) -> Dictionary:
+	var origin := body.global_position
+	var forward: Vector3 = lane.direction
+	var right: Vector3 = lane.right
+	var lateral := float(lane.lateral)
+	var half := float(lane.half)
+	var passing := half*.25 if lateral>half*.50 else half*.75
+	var change := passing-lateral
+	if absf(change)<.5: return {}
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(width+.06,height,length+.06)
+	# A short gradual shift can be followed by a longer run in the free lane.
+	# Never skip a service stop, a signal or a destination.
+	var options: Array = []
+	for i in range(index,mini(route.size(),index+65)):
+		var item: Dictionary = route[i]
+		var p: Vector3 = item.p
+		var diff := p-origin
+		var along := diff.dot(forward)
+		var cross := diff.dot(right)
+		if along<-.5 or absf(cross)>half+.5: break
+		var mandatory := item.has("stop") or signals.has(String(item.get("node",""))) or i==route.size()-1
+		if along>=12.0 and along<=55.0:
+			options.append({"index":i,"along":along,"cross":cross})
+		if mandatory or along>55.0: break
+	for option in options:
+		var total := float(option.along)
+		# Give long vehicles more room to change lanes without sweeping
+		# their rear into the other lane or a parked vehicle.
+		var transition := maxf(5.0,length*.9)
+		if total<transition*2.0+2.0: continue
+		for leave in [transition,transition+2.0]:
+			var steps := ceili(total/.8)
+			var previous := origin
+			var points: Array = []
+			var valid := true
+			for j in range(1,steps+1):
+				var along := total*float(j)/float(steps)
+				var out := smoothstep(0.0,float(leave),along)
+				var back := smoothstep(total-transition,total,along)
+				var cross := lerpf(change*out,float(option.cross),back)
+				var p := origin+forward*along+right*cross
+				var d := (p-previous).normalized()
+				if not streets.in_carriageway(p,d,width,length) or not _on_road(streets,p,d,width,length) or not _segment_clear(body,previous,p,d,shape):
+					valid = false
+					break
+				# The normal waypoint remains the final target.
+				if j<steps: points.append({"p":p,"node":"","bypass":true})
+				previous = p
+			if valid and not points.is_empty():
+				return {"path":points,"resume":int(option.index)}
+	return {}
+
 static func recover(body: CharacterBody3D,route: Array,index: int,streets: Streets,width: float,length: float,signals: Dictionary = {},height: float = 1.8) -> Dictionary:
+	if index<0 or index>=route.size(): return {}
+	var lane := streets.four_lane_at(body.global_position,body.global_transform.basis.z)
+	if not lane.is_empty():
+		return _four_lane_pass(body,route,index,streets,width,length,signals,height,lane)
 	var normal := find(body,route,index,streets,width,length,signals,height)
 	if not normal.is_empty(): return normal
 	if index<0 or index>=route.size(): return {}
@@ -271,6 +330,8 @@ static func _yield_path(body: CharacterBody3D,streets: Streets,width: float,leng
 # Ordinary physics safety checks remain active on every movement.
 static func cooperate(state: Dictionary,body: CharacterBody3D,streets: Streets,width: float,length: float,height: float,delta: float,stalled_time: float,target: Vector3) -> bool:
 	body.set_meta("traffic_priority",length)
+	# On Monte, lane discipline replaces arbitrary refuge manoeuvres.
+	if not streets.four_lane_at(body.global_position,body.global_transform.basis.z).is_empty(): return false
 	var now := Time.get_ticks_msec()
 	var points: Array = state.get("cooperative_path",[])
 	if points.is_empty():
