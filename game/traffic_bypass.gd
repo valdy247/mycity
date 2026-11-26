@@ -1,7 +1,7 @@
 extends RefCounted
-# Shared conservative local overtaking planner. No teleporting or driving
-# on sidewalks: validate the swept vehicle footprint on asphalt and check
-# both static geometry and other vehicles before accepting a manoeuvre.
+# Shared conservative local overtaking planner. Ordinary movement checks
+# the swept footprint. The separate watchdog may reposition stranded
+# vehicles only onto a verified free asphalt pose as a last resort.
 const Streets = preload("res://street_geometry.gd")
 
 static func _on_road(streets: Streets,p: Vector3,d: Vector3,w: float,l: float) -> bool:
@@ -229,6 +229,11 @@ static func _recovery_pose_clear(body: CharacterBody3D,streets: Streets,p: Vecto
 
 # Return a valid original-route index or -1. Normal reversing and bypass
 # remain the first response. Reposition only as a last resort on free asphalt.
+static func reset_watchdog(state: Dictionary) -> void:
+	if not state.has("watch_anchor"): return
+	for key in ["watch_anchor","watch_elapsed","watch_still","watch_offroad","watch_safe","watch_retry","watch_report"]:
+		state.erase(key)
+
 static func watchdog(state: Dictionary,body: CharacterBody3D,streets: Streets,route: Array,index: int,width: float,length: float,height: float,delta: float,loop: bool = true) -> int:
 	if route.is_empty() or index<0 or index>=route.size(): return -1
 	state.watch_elapsed = float(state.get("watch_elapsed",0.0))+delta
@@ -249,7 +254,8 @@ static func watchdog(state: Dictionary,body: CharacterBody3D,streets: Streets,ro
 	# Save a small checkpoint only on safe road, outside junctions.
 	if on_road and streets.intersection_clear_for_stop(origin,length,width):
 		state.watch_safe = {"p":origin,"d":heading,"index":index}
-	var offroad := float(state.watch_offroad)>=2.0
+	# Briefly crossing an irregular corner is not the same as being stranded.
+	var offroad := float(state.watch_offroad)>=2.0 and (not streets.point_on_road(origin) or float(state.watch_still)>=3.0)
 	var stuck := float(state.watch_still)>=30.0
 	if not offroad and not stuck: return -1
 	var now := Time.get_ticks_msec()
@@ -287,7 +293,8 @@ static func watchdog(state: Dictionary,body: CharacterBody3D,streets: Streets,ro
 	# A checkpoint is only useful if it belongs to the same pending leg.
 	var saved: Dictionary = state.get("watch_safe",{})
 	if not saved.is_empty() and int(saved.index)==index and origin.distance_to(saved.p)>1.5 and origin.distance_to(saved.p)<35.0:
-		options.append(saved)
+		if offroad: options.push_front(saved)
+		else: options.append(saved)
 	# For off-road cases, a point behind the target can be safer than
 	# forcing a short, impossible turn. Keep the same pending waypoint.
 	var target := _route_point(route,index)
@@ -325,6 +332,9 @@ static func watchdog(state: Dictionary,body: CharacterBody3D,streets: Streets,ro
 		state.watch_safe = {"p":p,"d":d,"index":int(option.index)}
 		print("Tráfico: recuperación ",body.name," · ", "fuera de calzada" if offroad else "bloqueo prolongado")
 		return int(option.index)
+	if now>=int(state.get("watch_report",0)):
+		state.watch_report = now+30000
+		print("Tráfico: ",body.name," sin espacio seguro de recuperación; reintentando.")
 	return -1
 
 static func stalled(state: Dictionary,body: CharacterBody3D,delta: float) -> float:
