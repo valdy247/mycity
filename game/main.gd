@@ -47,6 +47,8 @@ var avatar: Node3D
 var yaw := 0.0
 var pitch := -0.20
 var status: Label
+var controls_expanded := false
+var map_credit: Label
 var city_loaded := false
 var van: CharacterBody3D
 var van_visual: Node3D
@@ -306,7 +308,8 @@ func _make_hud() -> void:
 	add_child(canvas)
 	status = Label.new()
 	status.position = Vector2(18, 16)
-	status.add_theme_font_size_override("font_size", 19)
+	status.add_theme_font_size_override("font_size", 15)
+	status.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	status.add_theme_color_override("font_shadow_color", Color.BLACK)
 	status.add_theme_constant_override("shadow_offset_x", 2)
 	status.add_theme_constant_override("shadow_offset_y", 2)
@@ -339,7 +342,7 @@ func _make_hud() -> void:
 	performance_label.add_theme_color_override("font_shadow_color",Color.BLACK)
 	performance_label.add_theme_constant_override("shadow_offset_x",2)
 	performance_label.add_theme_constant_override("shadow_offset_y",2)
-	performance_label.visible = cuba_world != null
+	performance_label.visible = false
 	gps_label = Label.new()
 	gps_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	canvas.add_child(gps_label)
@@ -353,7 +356,24 @@ func _make_hud() -> void:
 	gps_label.add_theme_color_override("font_shadow_color",Color.BLACK)
 	gps_label.add_theme_constant_override("shadow_offset_x",2)
 	gps_label.add_theme_constant_override("shadow_offset_y",2)
-	gps_label.visible = cuba_world != null
+	gps_label.visible = false
+	map_credit = Label.new()
+	map_credit.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	canvas.add_child(map_credit)
+	map_credit.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
+	map_credit.offset_left = -400
+	map_credit.offset_right = -12
+	map_credit.offset_top = -24
+	map_credit.offset_bottom = -6
+	map_credit.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	map_credit.add_theme_font_size_override("font_size",11)
+	map_credit.add_theme_color_override("font_shadow_color",Color.BLACK)
+	map_credit.add_theme_constant_override("shadow_offset_x",1)
+	map_credit.add_theme_constant_override("shadow_offset_y",1)
+	map_credit.text = "© OpenStreetMap contributors · ODbL | openstreetmap.org/copyright"
+	map_credit.visible = cuba_world!=null
+	gps_label.offset_top = -72
+	gps_label.offset_bottom = -27
 	_update_hud()
 
 func _apply_performance_mode() -> void:
@@ -395,6 +415,10 @@ func _apply_camera_mode() -> void:
 		reticle.visible = first_person and not driving and not building_mode
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode==KEY_H and not building_mode and not (business!=null and business.modal_open()) and not (taxis!=null and taxis.dialog.visible):
+		controls_expanded = not controls_expanded
+		_update_hud()
+		return
 	if business!=null and business.modal_open():
 		if event is InputEventKey and event.pressed and not event.echo and event.keycode in [KEY_ESCAPE,KEY_P]:
 			business.close()
@@ -848,15 +872,23 @@ func _drive(delta: float, movement: Vector2) -> void:
 func _update_hud() -> void:
 	if status == null:
 		return
+	performance_label.visible = controls_expanded and cuba_world!=null and not building_mode
+	gps_label.visible = controls_expanded and cuba_world!=null and not building_mode
+	if business!=null:
+		business.hud_expanded = controls_expanded
+		business._update_hud()
+	if not controls_expanded:
+		_update_compact_hud()
+		return
 	if bus_riding:
 		var bus: Dictionary = urban_buses.player_bus
 		status.text = "GUAGUA | "+String(bus.get("line",""))+"\n"
 		status.text += "Bajada solicitada · próxima parada" if urban_buses.player_exit_requested else "E: solicitar bajar en la siguiente parada"
-		status.text += "\nR: regresar a casa"
+		status.text += "\nR: regresar a casa | H: ocultar controles"
 		if not bus.active_stop.is_empty(): status.text += "\nParada: "+String(bus.active_stop.name)
 		return
 	if taxi_riding:
-		status.text = "TAXI | "+taxis.ride_status+"\n"+taxis.speed_description()+" | T: cambiar velocidad\nE: detener y bajar | R: volver a casa si te bloqueas\n© OpenStreetMap contributors | ODbL"
+		status.text = "TAXI | "+taxis.ride_status+"\n"+taxis.speed_description()+" | T: cambiar velocidad\nE: detener y bajar | R: volver a casa si te bloqueas | H: ocultar controles"
 		return
 	var title := "PILAR-ATARÉS | La Habana" if cuba_world != null else ("VALDY JR TV | Ciudad 2.0" if native_city else "VALDY JR TV | Ciudad original")
 	if not city_loaded:
@@ -885,6 +917,7 @@ func _update_hud() -> void:
 			status.text += "\n[E] Subir a la van"
 		elif van == null:
 			status.text += "\nVan no encontrada en la exportacion."
+	status.text += "\nH: ocultar controles"
 	if not driving:
 		status.text += "\n[V] Primera / tercera persona"
 		status.text += " | [B] Construir ciudad"
@@ -902,6 +935,33 @@ func _update_hud() -> void:
 		status.text += "\n"+monte_services.notice
 	if message_time > 0.0:
 		status.text += "\n" + exit_message
+
+# Gameplay prompts remain visible with the large help overlay collapsed.
+func _update_compact_hud() -> void:
+	var lines: Array[String] = ["[H] Controles"]
+	if bus_riding:
+		var bus: Dictionary = urban_buses.player_bus
+		lines.append("Guagua "+String(bus.get("line",""))+" · "+("Bajada solicitada" if urban_buses.player_exit_requested else "[E] Bajar en próxima parada"))
+	elif taxi_riding:
+		lines.append("Taxi · "+taxis.ride_status+" | [E] Bajar")
+	elif driving:
+		lines.append("%d km/h · [E] Bajar detenido" % roundi(absf(drive_speed)*3.6))
+	else:
+		var action := business.aimed_text(player.global_position) if business!=null else ""
+		if action.is_empty() and _aimed_person()!=null: action = "[E] Saludar"
+		if action.is_empty() and urban_buses!=null and not urban_buses.nearby_boarding(player.global_position).is_empty(): action = "[E] Subir a la guagua"
+		if action.is_empty() and monte_services!=null and (business==null or business.ledger.carry.is_empty()):
+			action = monte_services.action_text(player.global_position)
+		if action.is_empty() and business!=null: action = business.action_text(player.global_position)
+		if action.is_empty() and city_world!=null: action = city_world.interaction_text(player.global_position)
+		if action.is_empty() and cuba_world!=null: action = cuba_world.aimed_text(play_camera,player)
+		if action.is_empty() and taxis!=null and not taxis.nearby(player.global_position).is_empty(): action = "[E] Tomar taxi"
+		if action.is_empty() and _near_van(): action = "[E] Subir a la van"
+		if not action.is_empty(): lines.append(action)
+	if cuba_world!=null and cuba_world.prompt_time>0.0: lines.append(cuba_world.prompt)
+	if monte_services!=null and monte_services.notice_time>0.0: lines.append(monte_services.notice)
+	if message_time>0.0: lines.append(exit_message)
+	status.text = "\n".join(lines)
 
 # The reticle selects a nearby visible NPC; walls occlude greetings.
 func _aimed_person() -> Node3D:
