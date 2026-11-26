@@ -559,6 +559,7 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	bite_anim = maxf(0.0,bite_anim-delta)
 	if active_hand>=0 and bite_anim<=0.0: _finish_bite()
 	state.minutes = fmod(float(state.minutes)+delta,1440.0)
+	world.update_utility_lighting(float(state.minutes),delta)
 	state.fullness = maxf(0.0,float(state.fullness)-delta/9.0)
 	if meal_root!=null:
 		meal_root.visible = not in_vehicle and last_first_person and not state.meal.is_empty()
