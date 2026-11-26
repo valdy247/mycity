@@ -43,11 +43,14 @@ func _mesh(kind: String) -> Mesh:
 			meshes[kind] = box
 	return meshes[kind] as Mesh
 
-func _part(root: Node3D,kind: String,p: Vector3,dims: Vector3,color: Color) -> MeshInstance3D:
+func _part(root: Node3D,kind: String,p: Vector3,dims: Vector3,color: Color,detail: bool = false) -> MeshInstance3D:
 	var node := MeshInstance3D.new()
 	node.mesh = _mesh(kind)
 	node.material_override = _material(color)
 	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	if detail:
+		node.visibility_range_end = 38.0
+		node.visibility_range_end_margin = 4.0
 	root.add_child(node)
 	node.position = p
 	node.scale = dims
@@ -57,38 +60,78 @@ func setup(style: int,worker: bool = false) -> void:
 	style_id = style
 	female = not worker and posmod(style,3)==1
 	add_to_group("social_people")
+	# Deterministic wardrobe: no random allocations or extra per-frame logic.
+	var variant := floori(float(style)/3.0)
 	var skin_colors: Array[Color] = [Color("#9b694b"),Color("#cc9b75"),Color("#70482f"),Color("#e1b797"),Color("#ac7a52")]
-	var shirts: Array[Color] = [Color("#d6cfb6"),Color("#667e99"),Color("#9c6a68"),Color("#72918a"),Color("#e1e0da"),Color("#8d856c")]
+	var shirts: Array[Color] = [Color("#d6cfb6"),Color("#667e99"),Color("#9c6a68"),Color("#72918a"),Color("#e1e0da"),Color("#8d856c"),Color("#d85624"),Color("#922e42"),Color("#282e33"),Color("#c39b39")]
+	var trousers: Array[Color] = [Color("#4d5a64"),Color("#345472"),Color("#32353a"),Color("#718eaa"),Color("#827d65")]
 	var skin: Color = skin_colors[posmod(style,skin_colors.size())]
-	var shirt: Color = Color("#d48a3c") if worker else shirts[posmod(style,shirts.size())]
-	var pants := Color("#4d5a64") if not worker else Color("#526456")
+	var shirt: Color = Color("#d48a3c") if worker else shirts[posmod(variant+style,shirts.size())]
+	var pants: Color = Color("#526456") if worker else trousers[posmod(variant,trousers.size())]
+	var outfit := posmod(variant,5)
+	var shorts := not worker and (outfit==1 or outfit==3)
+	if female and outfit==1:
+		shirt = Color("#d85624")
+		pants = shirt
+	elif female and outfit==3:
+		shirt = Color("#922e42")
+		pants = shirt
+	var build := posmod(variant,4)
+	var torso_width: float = .43 if worker else .37+float(build)*.04
+	var hip_width := .35 if worker else (.36+float(build)*.025 if female else .32+float(build)*.018)
+	var depth := .27 if worker else .24+float(build)*.025
 	var height := 0.94+float(posmod(style,5))*.035
 	scale = Vector3(height,height,height)
-	_part(self,"limb",Vector3(0,1.18,0),Vector3(.43,.58,.27),shirt)
-	_part(self,"box",Vector3(0,.88,0),Vector3(.35,.17,.25),pants)
+	_part(self,"limb",Vector3(0,1.18,0),Vector3(torso_width,.58,depth),shirt)
+	_part(self,"head",Vector3(0,.88,0),Vector3(hip_width,.23,depth),pants)
 	_part(self,"limb",Vector3(0,1.48,0),Vector3(.14,.16,.13),skin)
 	_part(self,"head",Vector3(0,1.66,.015),Vector3(.28,.34,.29),skin)
-	_part(self,"head",Vector3(0,1.77,-.028),Vector3(.29,.17,.29),Color("#302b28") if not worker else Color("#d5c14b"))
-	_part(self,"box",Vector3(0,1.65,.155),Vector3(.064,.075,.055),skin)
+	var hair_colors: Array[Color] = [Color("#231e1b"),Color("#302b28"),Color("#4b3428"),Color("#3c3531")]
+	var hair: Color = Color("#d5c14b") if worker else hair_colors[posmod(variant,hair_colors.size())]
+	_part(self,"head",Vector3(0,1.77,-.028),Vector3(.29,.17,.29),hair)
+	_part(self,"box",Vector3(0,1.65,.155),Vector3(.064,.075,.055),skin,true)
+	var shoe: Color = Color("#393832") if worker or outfit==0 else (Color("#e1ddd4") if outfit%2==1 else Color("#464b50"))
 	for side in [-1.0,1.0]:
 		var x := float(side)
 		var leg := Node3D.new()
 		add_child(leg)
 		leg.position = Vector3(x*.10,.86,0)
 		limbs.append(leg)
-		_part(leg,"limb",Vector3(0,-.21,0),Vector3(.17,.42,.18),pants)
-		_part(leg,"limb",Vector3(0,-.59,0),Vector3(.13,.36,.14),pants)
-		_part(leg,"box",Vector3(0,-.80,.05),Vector3(.16,.12,.27),Color("#393832"))
+		var thigh_width := .17 if worker else .15+float(build)*.014
+		if shorts:
+			_part(leg,"limb",Vector3(0,-.105,0),Vector3(thigh_width,.21,.18),pants)
+			_part(leg,"limb",Vector3(0,-.315,0),Vector3(thigh_width*.88,.21,.16),skin)
+		else:
+			_part(leg,"limb",Vector3(0,-.21,0),Vector3(thigh_width,.42,.18),pants)
+		_part(leg,"limb",Vector3(0,-.59,0),Vector3(.13,.36,.14),skin if shorts else pants)
+		_part(leg,"box",Vector3(0,-.80,.05),Vector3(.16,.12,.27),shoe)
 		var arm := Node3D.new()
 		add_child(arm)
+		# Preserve shoulder/leg pivots used by the rescue choreography.
 		arm.position = Vector3(x*.25,1.38,0)
 		arms.append(arm)
-		_part(arm,"limb",Vector3(0,-.12,0),Vector3(.14,.26,.15),shirt)
+		_part(arm,"limb",Vector3(0,-.12,0),Vector3(.14,.26,.15),shirt if worker or outfit!=3 else skin)
 		_part(arm,"limb",Vector3(0,-.34,0),Vector3(.105,.22,.11),skin)
 		_part(arm,"head",Vector3(0,-.49,0),Vector3(.105,.13,.11),skin)
 	if female:
-		_part(self,"head",Vector3(0,1.61,-.13),Vector3(.30,.31,.20),Color("#302b28"))
-		_part(self,"head",Vector3(0,1.73,-.18),Vector3(.17,.17,.16),Color("#302b28"))
+		var hairstyle := posmod(variant,4)
+		if hairstyle==0:
+			_part(self,"head",Vector3(0,1.61,-.13),Vector3(.30,.31,.20),hair)
+			_part(self,"head",Vector3(0,1.73,-.18),Vector3(.17,.17,.16),hair)
+		elif hairstyle==1:
+			_part(self,"head",Vector3(0,1.41,-.16),Vector3(.32,.73,.21),hair)
+			_part(self,"head",Vector3(0,1.58,-.19),Vector3(.35,.43,.24),hair)
+		elif hairstyle==2:
+			_part(self,"head",Vector3(0,1.61,-.09),Vector3(.37,.42,.33),hair)
+			_part(self,"head",Vector3(0,1.46,-.15),Vector3(.32,.33,.23),hair)
+		else:
+			_part(self,"head",Vector3(0,1.69,-.11),Vector3(.29,.24,.22),hair)
+			_part(self,"head",Vector3(0,1.43,-.18),Vector3(.13,.43,.16),hair)
+		# Everyday shoulder bag; cosmetic only, independent of carried goods.
+		if outfit==1 or outfit==4:
+			var bag := Color("#16734f") if outfit==1 else Color("#343637")
+			_part(self,"box",Vector3(.25,1.02,-.10),Vector3(.25,.34,.13),bag,true)
+			_part(self,"box",Vector3(.22,1.29,-.11),Vector3(.045,.31,.035),bag,true)
 	if worker:
 		social_context = "worker"
 		_part(self,"box",Vector3(0,1.14,.14),Vector3(.38,.075,.018),Color("#eee0a0"))
