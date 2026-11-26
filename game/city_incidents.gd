@@ -6,6 +6,7 @@ const Bypass = preload("res://traffic_bypass.gd")
 const WIDTH := 1.83
 const LENGTH := 4.25
 const HEIGHT := 1.65
+const CASUALTY_LAYER := 32
 var game
 var world
 var router
@@ -793,31 +794,87 @@ func _finish_police(arrived: bool) -> void:
 # prevents a hit; stationary vehicles cannot repeatedly strike someone.
 # Reserve a distinct ground footprint for each fallen person. A prone
 # model occupies a full body length, not just its original standing point.
-func _casualty_slot_free(at: Vector3,axis: Vector3,length: float) -> bool:
+func _casualty_slot_free(at: Vector3,axis: Vector3,length: float,person: Node3D = null) -> bool:
 	var start := _flat(at)
 	var finish := start+axis*length
 	for victim in injured:
 		var other: Node3D = victim.agent.node
-		if not is_instance_valid(other) or not other.is_visible_in_tree(): continue
+		if not is_instance_valid(other) or other==person or not other.is_visible_in_tree(): continue
 		var other_start := _flat(other.global_position)
 		var other_end := other_start+_flat(other.global_transform.basis.y)*1.85
 		var nearest := Geometry3D.get_closest_points_between_segments(start,finish,other_start,other_end)
 		if nearest[0].distance_squared_to(nearest[1])<.64: return false
 	return true
 
+# Cars see the whole prone body, including feet and head. Pedestrian
+# navigation does not use this layer, so medics can still approach.
+func _casualty_shape(pose: Transform3D) -> BoxShape3D:
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(.86,.85,1.85*pose.basis.get_scale().y+.25)
+	return shape
+
+func _casualty_transform(pose: Transform3D) -> Transform3D:
+	var axis := -_flat(pose.basis.z).normalized()
+	if axis.length_squared()<.01: axis = Vector3.FORWARD
+	return Transform3D(Basis(Vector3.UP,atan2(axis.x,axis.z)),pose.origin+axis*(.925*pose.basis.get_scale().y)+Vector3.UP*.45)
+
+func _casualty_vehicle_clear(pose: Transform3D) -> bool:
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = _casualty_shape(pose)
+	query.transform = _casualty_transform(pose)
+	query.collision_mask = 1|4|8|16|CASUALTY_LAYER
+	return get_world_3d().direct_space_state.intersect_shape(query,1).is_empty()
+
+func _remove_casualty_guard(victim: Dictionary) -> void:
+	var guard = victim.get("traffic_guard")
+	if is_instance_valid(guard):
+		guard.collision_layer = 0
+		guard.queue_free()
+	victim.erase("traffic_guard")
+
+func _protect_casualty(victim: Dictionary) -> void:
+	if is_instance_valid(victim.get("traffic_guard")): return
+	var person: Node3D = victim.agent.node
+	if not is_instance_valid(person) or not person.is_visible_in_tree(): return
+	var old: Transform3D = victim.old
+	if not _casualty_vehicle_clear(old):
+		# If the impact left the actor inside a bumper, resolve the initial
+		# fall to nearby free ground before inserting a collision body.
+		if Time.get_ticks_msec()<int(victim.get("guard_retry",0)): return
+		victim.guard_retry = Time.get_ticks_msec()+1500
+		old = _casualty_pose(person,old)
+		if not _casualty_vehicle_clear(old): return
+		victim.old = old
+		person.global_transform = old
+		person.rotation.x = -PI*.5
+		person.global_position.y += .13
+	var guard := StaticBody3D.new()
+	guard.name = "Herido_Proteccion"
+	guard.collision_layer = CASUALTY_LAYER
+	guard.collision_mask = 0
+	var collision := CollisionShape3D.new()
+	collision.shape = _casualty_shape(old)
+	guard.add_child(collision)
+	add_child(guard)
+	guard.global_transform = _casualty_transform(old)
+	victim.traffic_guard = guard
+
 func _casualty_pose(person: Node3D,old: Transform3D) -> Transform3D:
 	var axis := -_flat(old.basis.z).normalized()
 	var length := 1.85*old.basis.get_scale().y
-	if _casualty_slot_free(old.origin,axis,length): return old
+	if _casualty_slot_free(old.origin,axis,length,person) and _casualty_vehicle_clear(old): return old
 	# Try nearby distinct poses, using ground and geometry checks.
-	for radius in [.75,1.2,1.8,2.5,3.2,4.0]:
+	for radius in [.75,1.2,1.8,2.5,3.2,4.0,5.0,6.5]:
 		for i in range(12):
 			var angle := float(i)*TAU/12.0
 			var point := old.origin+Vector3(cos(angle),0,sin(angle))*float(radius)
 			var ground := _foot(point)
 			if ground.is_empty(): continue
 			var at: Vector3 = ground.p
-			if not _casualty_slot_free(at,axis,length): continue
+			if not _casualty_slot_free(at,axis,length,person): continue
+			var candidate := old
+			candidate.origin = at
+			if not _casualty_vehicle_clear(candidate): continue
 			if not world.pedestrian_segment_clear(at,at+axis*length): continue
 			if not world.pedestrian_space_clear(person,at,.55,false) or not world.pedestrian_space_clear(person,at+axis*length,.55,false): continue
 			old.origin = at
@@ -858,7 +915,9 @@ func vehicle_motion(body: CharacterBody3D,before: Transform3D,speed: float,width
 		if person is Person: (person as Person).animate(.2,false)
 		person.rotation.x = -PI*.5
 		person.global_position.y = old.origin.y+.13
-		injured.append({"agent":agent,"severe":severe,"old":old,"time":0.0,"retry":0.0})
+		var victim := {"agent":agent,"severe":severe,"old":old,"time":0.0,"retry":0.0}
+		injured.append(victim)
+		_protect_casualty(victim)
 		print("Accidente: ",person.name," velocidad=",roundi(absf(speed)*3.6)," km/h grave=",severe)
 		if injured.size()>=8: break
 
@@ -867,8 +926,11 @@ func _injury_tick(delta: float) -> void:
 		var victim: Dictionary = injured[i]
 		if not is_instance_valid(victim.agent.node):
 			_first_aid_release(victim)
+			_remove_casualty_guard(victim)
 			injured.remove_at(i)
 			continue
+		var being_carried := String(scene.get("kind",""))=="rescue" and scene.get("victim",{})==victim and String(scene.get("phase","")) in ["lift","carry","load","hospital","hospital_retry","hospital_reposition"]
+		if not being_carried: _protect_casualty(victim)
 		if bool(victim.severe):
 			victim.time = float(victim.time)+delta
 			continue
@@ -893,6 +955,7 @@ func _injury_tick(delta: float) -> void:
 				if float(victim.time)>10.0: victim.severe = true
 				continue
 			old.origin = safe.p
+		_remove_casualty_guard(victim)
 		p.global_transform = old
 		p.set_meta("impact_immunity",Time.get_ticks_msec()+2500)
 		_release(victim.agent)
@@ -1483,6 +1546,7 @@ func _rescue_tick(delta: float) -> void:
 					helper.walk_to(target,delta,2.0)
 				if float(scene.time)<2.5: return
 				_release_helper()
+		_remove_casualty_guard(victim)
 		scene.phase = "lift"
 		scene.time = 0.0
 	elif phase=="lift":
@@ -1625,6 +1689,7 @@ func _end_rescue(delivered: bool) -> void:
 	car.speed = 0.0
 	_rejoin_car(car)
 	if delivered:
+		_remove_casualty_guard(victim)
 		person.set_meta("impact_immunity",Time.get_ticks_msec()+5000)
 		victim.agent.delivered = true
 		_release(victim.agent)
@@ -1650,6 +1715,8 @@ func _end_rescue(delivered: bool) -> void:
 		person.global_position.y += .13
 		person.show()
 		victim.severe = true
+		_remove_casualty_guard(victim)
+		_protect_casualty(victim)
 		victim.retry = .5
 		var failed: Dictionary = victim.get("failed_cars",{})
 		failed[body.get_instance_id()] = Time.get_ticks_msec()+30000
