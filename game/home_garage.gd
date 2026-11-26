@@ -107,7 +107,10 @@ func _prepare_progression() -> void:
 		if String(token).begins_with("bicicleta:"): state.inventory.erase(token)
 	for i in range(state.deliveries.size()-1,-1,-1):
 		if String(state.deliveries[i].token).begins_with("bicicleta:"): state.deliveries.remove_at(i)
-	if String(state.part).begins_with("bicicleta:"): state.part = ""
+	if not String(state.part).is_empty():
+		var held := String(state.part)
+		if not held.begins_with("bicicleta:"): state.inventory[held] = int(state.inventory.get(held,0))+1
+		state.part = ""
 	if String(state.get("wanted","")).begins_with("bicicleta:"): state.wanted = ""
 	state.project = "bicicleta"
 
@@ -304,7 +307,7 @@ func _refresh_preview() -> void:
 		preview.remove_child(child)
 		child.queue_free()
 	var kind := String(state.project)
-	if Kit.KITS.has(kind): Kit.build(preview,kind,_project())
+	if Kit.KITS.has(kind) and _unlocked(kind): Kit.build(preview,kind,_project())
 	preview.visible = not owned.has(kind)
 
 func _free_hands() -> bool:
@@ -462,7 +465,7 @@ func action_text(at: Vector3) -> String:
 	if not _vendor_at(at).is_empty(): return "[E] Comprar repuestos"
 	for kind in owned:
 		var body: CharacterBody3D = owned[kind]
-		if at.distance_to(body.global_position+Vector3.UP*.6)<2.8: return "[E] Montar "+String(Kit.KITS[kind].name)
+		if at.distance_to(body.global_position+Vector3.UP*.6)<2.8 and not _listed(String(kind)): return "[E] Montar "+String(Kit.KITS[kind].name)
 	return ""
 
 func interact(at: Vector3) -> bool:
@@ -505,7 +508,7 @@ func interact(at: Vector3) -> bool:
 		return true
 	for kind in owned:
 		var body: CharacterBody3D = owned[kind]
-		if at.distance_to(body.global_position+Vector3.UP*.6)<2.8 and _free_hands():
+		if at.distance_to(body.global_position+Vector3.UP*.6)<2.8 and _free_hands() and not _listed(String(kind)):
 			_mount(String(kind))
 			return true
 	return false
@@ -807,7 +810,9 @@ func _make_rider(body: CharacterBody3D,kind: String,style: int) -> Node3D:
 	return person
 
 func _mount(kind: String) -> void:
-	if not _unlocked(kind) or _listed(kind): return
+	if not _unlocked(kind) or _listed(kind):
+		business._notify("Este vehículo está reservado o bloqueado.")
+		return
 	var body: CharacterBody3D = owned[kind]
 	if kind!="carro": rider = _make_rider(body,kind,691)
 	riding = true
