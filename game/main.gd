@@ -3,6 +3,10 @@ extends Node3D
 const CITY_PATH = "res://city.glb"
 const CityBuilder = preload("res://city_builder.gd")
 const CityWorld = preload("res://city_world.gd")
+const CubaWorld = preload("res://cuba_world.gd")
+var cuba_world: CubaWorld
+var first_person := false
+var reticle: Label
 var city_world: CityWorld
 var native_city := true
 var spawn_position := Vector3(-2.4,1.0,5.5)
@@ -52,22 +56,32 @@ func _ready() -> void:
 	sun.light_energy = 1.1
 	sun.shadow_enabled = false
 	add_child(sun)
-	native_city = not OS.get_cmdline_user_args().has("--legacy-city")
+	var args := OS.get_cmdline_user_args()
+	native_city = not args.has("--legacy-city")
+	if native_city and not args.has("--classic-city") and FileAccess.file_exists("res://pilar_atares.osm"):
+		var candidate := CubaWorld.new()
+		if candidate.load_map():
+			cuba_world = candidate
+		else:
+			candidate.free()
+			push_warning("Mapa OSM invalido; se conserva Ciudad 2.0.")
 	builder = CityBuilder.new()
 	builder.native_city = native_city
 	if native_city:
-		builder.save_path = "user://mycity_v2_buildings.json"
+		builder.save_path = "user://pilar_atares_buildings.json" if cuba_world != null else "user://mycity_v2_buildings.json"
 	add_child(builder)
 	if native_city:
-		city_world = CityWorld.new()
+		city_world = cuba_world if cuba_world != null else CityWorld.new()
 		add_child(city_world)
 		city_world.setup(builder)
-		spawn_position = CityWorld.HOME_OUT
+		spawn_position = cuba_world.home_spawn if cuba_world != null else CityWorld.HOME_OUT
 		_restore_original_vehicles()
 		if van == null:
 			_make_demo_van()
 			push_warning("MyCity: van original no disponible; exporta city.glb desde Blender.")
-		van.global_position = CityWorld.VAN_PARK + Vector3.UP * .055
+		van.global_position = cuba_world.van_spawn if cuba_world != null else CityWorld.VAN_PARK + Vector3.UP * .055
+		if cuba_world != null:
+			van.rotation.y = cuba_world.van_angle
 		van_home = van.global_transform
 		city_loaded = true
 	elif ResourceLoader.exists(CITY_PATH):
@@ -87,6 +101,9 @@ func _ready() -> void:
 		_make_demo_van()
 	_make_player()
 	_make_hud()
+	if cuba_world != null:
+		first_person = true
+		_apply_camera_mode()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 # Recognize terrain even when GLB import renames its mesh node or wraps it
@@ -240,7 +257,36 @@ func _make_hud() -> void:
 	status.add_theme_constant_override("shadow_offset_x", 2)
 	status.add_theme_constant_override("shadow_offset_y", 2)
 	canvas.add_child(status)
+	reticle = Label.new()
+	reticle.text = "·"
+	reticle.add_theme_font_size_override("font_size",38)
+	reticle.add_theme_color_override("font_shadow_color",Color.BLACK)
+	reticle.add_theme_constant_override("shadow_offset_x",1)
+	reticle.add_theme_constant_override("shadow_offset_y",1)
+	reticle.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	canvas.add_child(reticle)
+	reticle.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	reticle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	reticle.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	reticle.offset_left = -16
+	reticle.offset_right = 16
+	reticle.offset_top = -24
+	reticle.offset_bottom = 24
+	reticle.hide()
 	_update_hud()
+
+func _apply_camera_mode() -> void:
+	if player == null or arm == null:
+		return
+	if driving:
+		arm.spring_length = 7.5
+		avatar.hide()
+	else:
+		avatar.visible = not first_person
+		arm.spring_length = 0.0 if first_person else (2.15 if city_world != null and (city_world.inside_home or (city_world.bakery != null and city_world.bakery.inside)) else 4.5)
+		pivot.position.y = .65
+	if reticle != null:
+		reticle.visible = first_person and not driving and not building_mode
 
 func _unhandled_input(event: InputEvent) -> void:
 	if builder != null and builder.active:
@@ -249,6 +295,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	if building_mode:
 		return
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_B:
+		if cuba_world != null:
+			exit_message = "Editor de Pilar-Atarés pendiente; las calles reales estan protegidas."
+			message_time = 3.0
+			return
 		if not driving and builder != null and (city_world == null or (not city_world.seated and not city_world.inside_home and not city_world.bakery.inside and not city_world.family_home.pool_inside)):
 			building_mode = true
 			player.velocity = Vector3.ZERO
@@ -261,6 +311,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
 			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		elif event.keycode == KEY_V and player != null and not driving:
+			first_person = not first_person
+			_apply_camera_mode()
 		elif event.keycode == KEY_R and player != null:
 			reset_requested = true
 		elif event.keycode == KEY_E and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
@@ -529,6 +582,7 @@ func _enter_van() -> void:
 	pitch = -0.24
 	pivot.rotation = Vector3(pitch, yaw, 0)
 	arm.spring_length = 7.5
+	_apply_camera_mode()
 
 func _safe_exit() -> bool:
 	# Test both sides against ground and physical world, including the road.
@@ -567,12 +621,12 @@ func _finish_exit(destination: Vector3) -> void:
 	yaw = van.rotation.y + PI
 	pitch = -0.20
 	pivot.rotation = Vector3(pitch, yaw, 0)
-	arm.spring_length = 4.5
+	_apply_camera_mode()
 
 func _reset_player() -> void:
 	if city_world != null:
 		city_world.reset_interaction(avatar,limb_legs)
-		arm.spring_length = 4.5
+		_apply_camera_mode()
 		player_shape.set_deferred("disabled",false)
 	if driving and van != null:
 		van.global_transform = van_home
@@ -615,7 +669,7 @@ func _drive(delta: float, movement: Vector2) -> void:
 		drive_speed = 0.0
 	if van.get_slide_collision_count() > 0:
 		drive_speed *= 0.35
-	if van.global_position.y < -8.0 or absf(van.global_position.x) > (253.0 if native_city else 79.0) or absf(van.global_position.z) > (253.0 if native_city else 109.0):
+	if van.global_position.y < -8.0 or absf(van.global_position.x) > (610.0 if cuba_world != null else (253.0 if native_city else 79.0)) or absf(van.global_position.z) > (610.0 if cuba_world != null else (253.0 if native_city else 109.0)):
 		van.global_transform = van_home
 		van.velocity = Vector3.ZERO
 		drive_speed = 0.0
@@ -623,7 +677,7 @@ func _drive(delta: float, movement: Vector2) -> void:
 func _update_hud() -> void:
 	if status == null:
 		return
-	var title := "VALDY JR TV | Ciudad 2.0" if native_city else "VALDY JR TV | Ciudad original"
+	var title := "PILAR-ATARÉS | La Habana" if cuba_world != null else ("VALDY JR TV | Ciudad 2.0" if native_city else "VALDY JR TV | Ciudad original")
 	if not city_loaded:
 		title = "MODO DE PRUEBA | Exporta city.glb desde Blender"
 	if driving:
@@ -634,12 +688,20 @@ func _update_hud() -> void:
 		var action := city_world.interaction_text(player.global_position) if city_world != null else ""
 		if action != "":
 			status.text += "\n" + action
+		elif cuba_world != null and cuba_world.aimed_product(play_camera,player)!=null:
+			status.text += "\n[E] Consultar producto"
 		elif _near_van():
 			status.text += "\n[E] Subir a la van"
 		elif van == null:
 			status.text += "\nVan no encontrada en la exportacion."
 	if not driving:
-		status.text += "\n[B] Construir ciudad"
+		status.text += "\n[V] Primera / tercera persona"
+		if cuba_world == null:
+			status.text += " | [B] Construir ciudad"
+	if cuba_world != null:
+		status.text += "\n© OpenStreetMap contributors | ODbL | openstreetmap.org/copyright"
+		if cuba_world.prompt_time > 0.0:
+			status.text += "\n"+cuba_world.prompt
 	if message_time > 0.0:
 		status.text += "\n" + exit_message
 
@@ -653,6 +715,7 @@ func _physics_process(delta: float) -> void:
 		building_mode = false
 		play_camera.current = true
 		status.show()
+		_apply_camera_mode()
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		interact_requested = false
 		reset_requested = false
@@ -674,9 +737,11 @@ func _physics_process(delta: float) -> void:
 			elif not _safe_exit():
 				exit_message = "No hay espacio para salir. Mueve la van."
 				message_time = 2.0
+		elif cuba_world != null and cuba_world.inspect_product(play_camera,player):
+			pass
 		elif city_world != null and city_world.interact(player,avatar,limb_legs,limb_arms):
 			player_shape.set_deferred("disabled",city_world.seated)
-			arm.spring_length = 2.15 if city_world.bakery.inside or city_world.inside_home else 4.5
+			_apply_camera_mode()
 		elif _near_van():
 			_enter_van()
 	if city_world != null and city_world.seated:
@@ -689,7 +754,7 @@ func _physics_process(delta: float) -> void:
 	else:
 		var direction := Vector3(movement.x, 0, movement.y).normalized().rotated(Vector3.UP, yaw)
 		var speed: float = 8.0 if Input.is_physical_key_pressed(KEY_SHIFT) else 4.5
-		if city_world != null and city_world.family_home.pool_inside:
+		if city_world != null and city_world.family_home != null and city_world.family_home.pool_inside:
 			speed = 2.0
 		player.velocity.x = direction.x * speed
 		player.velocity.z = direction.z * speed
@@ -701,7 +766,7 @@ func _physics_process(delta: float) -> void:
 			player.velocity.y = 5.5
 		player.move_and_slide()
 		_animate_avatar(delta, Vector2(player.velocity.x, player.velocity.z).length())
-		if player.global_position.y < -15 or absf(player.global_position.x) > (258.0 if native_city else 90.0) or absf(player.global_position.z) > (258.0 if native_city else 120.0):
+		if player.global_position.y < -15 or absf(player.global_position.x) > (615.0 if cuba_world != null else (258.0 if native_city else 90.0)) or absf(player.global_position.z) > (615.0 if cuba_world != null else (258.0 if native_city else 120.0)):
 			_reset_player()
 		# Parked vehicle stays grounded; no dynamic vertical collision recovery.
 		if van != null:
