@@ -24,6 +24,9 @@ var limb_legs: Array[Node3D] = []
 var step_phase := 0.0
 var player_shape: CollisionShape3D
 var van_home := Transform3D.IDENTITY
+var van_ground_initialized := false
+const GROUND_LAYER = 2
+const VAN_LAYER = 4
 var exit_message := ""
 var message_time := 0.0
 
@@ -73,11 +76,18 @@ func _add_world_collision(node: Node) -> void:
 				solid = false
 		if solid and m.mesh != null and m.mesh.get_surface_count() > 0:
 			m.create_trimesh_collision()
+			var key := _normalized_name(name_key)
+			var is_ground := key.begins_with("terreno") or key.begins_with("calleprincipalasphalt") or key.begins_with("calleprincipalconcrete") or key.begins_with("calleprincipalcurb") or key.begins_with("boulevardcalleprincipalasphalt") or key.begins_with("boulevardcalleprincipalconcrete") or key.begins_with("boulevardcalleprincipalcurb") or key.begins_with("boulevardboulevardasphalt") or key.begins_with("boulevardboulevardconcrete") or key.begins_with("boulevardboulevardcurb")
+			if is_ground:
+				for child in m.get_children():
+					if child is StaticBody3D:
+						(child as StaticBody3D).collision_layer = GROUND_LAYER
 	for child in node.get_children():
 		_add_world_collision(child)
 
 func _make_demo_floor() -> void:
 	var floor_body := StaticBody3D.new()
+	floor_body.collision_layer = GROUND_LAYER
 	var mesh := MeshInstance3D.new()
 	var box := BoxMesh.new()
 	box.size = Vector3(160, 0.4, 220)
@@ -97,6 +107,7 @@ func _make_demo_floor() -> void:
 func _make_player() -> void:
 	player = CharacterBody3D.new()
 	player.name = "Player"
+	player.collision_mask = 1 | GROUND_LAYER | VAN_LAYER
 	player.floor_snap_length = 0.30
 	var col := CollisionShape3D.new()
 	var capsule := CapsuleShape3D.new()
@@ -114,6 +125,7 @@ func _make_player() -> void:
 	arm = SpringArm3D.new()
 	arm.spring_length = 4.5
 	arm.margin = 0.15
+	arm.collision_mask = 1 | GROUND_LAYER
 	pivot.add_child(arm)
 	var cam := Camera3D.new()
 	cam.fov = 68.0
@@ -170,13 +182,16 @@ func _find_named(node: Node, prefix: String) -> Node3D:
 func _new_van_body(position_world: Vector3) -> CharacterBody3D:
 	var car := CharacterBody3D.new()
 	car.name = "DrivableVan"
-	car.floor_snap_length = 0.50
+	car.motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
+	car.collision_layer = VAN_LAYER
+	car.collision_mask = 1
+	car.floor_snap_length = 0.0
 	car.floor_max_angle = deg_to_rad(40.0)
 	var collision := CollisionShape3D.new()
 	var shape := BoxShape3D.new()
-	shape.size = Vector3(2.18, 2.0, 5.12)
+	shape.size = Vector3(2.18, 1.90, 5.12)
 	collision.shape = shape
-	collision.position.y = 1.0
+	collision.position.y = 1.12
 	car.add_child(collision)
 	add_child(car)
 	car.global_position = position_world + Vector3.UP * 0.04
@@ -197,10 +212,51 @@ func _install_city_van(city: Node) -> void:
 	original.reparent(van, true)
 	van_visual = original
 	original.global_position = van.global_position
+	# Correct any offset introduced by the importer from actual tire geometry.
+	var tire_nodes: Array[MeshInstance3D] = []
+	_collect_tires(original, tire_nodes)
+	if not tire_nodes.is_empty():
+		var bottom := INF
+		for tire in tire_nodes:
+			var bounds := tire.get_aabb()
+			for index in range(8):
+				var world_point := tire.to_global(bounds.get_endpoint(index))
+				bottom = minf(bottom, van.to_local(world_point).y)
+		if is_finite(bottom):
+			original.position.y -= bottom
 	van_home = van.global_transform
 	driver_door = _find_named(original, "bisagrapuertadelantera")
 	if driver_door != null:
 		door_closed = driver_door.rotation.y
+
+func _collect_tires(node: Node, result: Array[MeshInstance3D]) -> void:
+	if node is MeshInstance3D and _normalized_name(String(node.name)).begins_with("neum"):
+		result.append(node as MeshInstance3D)
+	for child in node.get_children():
+		_collect_tires(child, result)
+
+# Independent ground support for arcade driving. No gravity-induced collision
+# recovery against thin road meshes or accidental stacking on other objects.
+func _support_van() -> bool:
+	if van == null:
+		return false
+	var space := get_world_3d().direct_space_state
+	var heights: Array[float] = []
+	for offset in [Vector3.ZERO, Vector3(-0.98, 0, -1.63), Vector3(0.98, 0, -1.63), Vector3(-0.98, 0, 1.63), Vector3(0.98, 0, 1.63)]:
+		var sample := van.to_global(offset)
+		var ray := PhysicsRayQueryParameters3D.create(sample + Vector3.UP * 8.0, sample - Vector3.UP * 12.0, GROUND_LAYER)
+		ray.hit_back_faces = true
+		var hit := space.intersect_ray(ray)
+		if not hit.is_empty():
+			heights.append(float(hit.position.y))
+	if heights.size() < 3:
+		return false
+	var level := -INF
+	for h in heights:
+		level = maxf(level, h)
+	van.global_position.y = level + 0.015
+	van.velocity.y = 0.0
+	return true
 
 func _material(color: Color) -> StandardMaterial3D:
 	var mat := StandardMaterial3D.new()
@@ -413,13 +469,17 @@ func _drive(delta: float, movement: Vector2) -> void:
 	drive_speed = move_toward(drive_speed, target, delta * (14.0 if brake else 5.0))
 	if absf(drive_speed) > 0.15:
 		van.rotation.y -= movement.x * signf(drive_speed) * delta * 1.35 * minf(absf(drive_speed) / 3.0, 1.0)
+	var prior := van.global_transform
 	var forward := van.global_transform.basis.z.normalized()
 	van.velocity.x = forward.x * drive_speed
 	van.velocity.z = forward.z * drive_speed
-	if not van.is_on_floor():
-		van.velocity.y -= 18.0 * delta
+	van.velocity.y = 0.0
 	van.move_and_slide()
-	if van.is_on_wall():
+	if not _support_van():
+		van.global_transform = prior
+		van.velocity = Vector3.ZERO
+		drive_speed = 0.0
+	if van.get_slide_collision_count() > 0:
 		drive_speed *= 0.35
 	if van.global_position.y < -8.0 or absf(van.global_position.x) > 79.0 or absf(van.global_position.z) > 109.0:
 		van.global_transform = van_home
@@ -447,6 +507,10 @@ func _update_hud() -> void:
 func _physics_process(delta: float) -> void:
 	if player == null:
 		return
+	if van != null and not van_ground_initialized:
+		if _support_van():
+			van_home = van.global_transform
+			van_ground_initialized = true
 	if reset_requested:
 		reset_requested = false
 		_reset_player()
@@ -479,9 +543,8 @@ func _physics_process(delta: float) -> void:
 		_animate_avatar(delta, Vector2(player.velocity.x, player.velocity.z).length())
 		if player.global_position.y < -15 or absf(player.global_position.x) > 90 or absf(player.global_position.z) > 120:
 			_reset_player()
-		# Keep the stationary van supported by the terrain without moving it horizontally.
-		if van != null and not van.is_on_floor():
-			van.velocity = Vector3(0, van.velocity.y - 18.0 * delta, 0)
-			van.move_and_slide()
+		# Parked vehicle stays grounded; no dynamic vertical collision recovery.
+		if van != null:
+			_support_van()
 	message_time = maxf(0.0, message_time - delta)
 	_update_hud()
