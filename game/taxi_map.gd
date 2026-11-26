@@ -7,6 +7,7 @@ var zoom := .75
 var origin := Vector2.ZERO
 var marker := Vector2.ZERO
 var has_marker := false
+var business_markers: Array = []
 var route := PackedVector2Array()
 var local_roads := PackedVector2Array()
 var main_roads := PackedVector2Array()
@@ -64,6 +65,13 @@ func show_route(points: Array, destination: Vector3) -> void:
 		var v: Vector3 = p
 		route.append(Vector2(v.x,v.z))
 	route.append(marker)
+	queue_redraw()
+
+func set_business_markers(factory: Vector3,home: Vector3,enabled: bool) -> void:
+	business_markers.clear()
+	if enabled:
+		business_markers.append({"p":Vector2(factory.x,factory.z),"label":"FÁBRICA"})
+		business_markers.append({"p":Vector2(home.x,home.z),"label":"MI CASA"})
 	queue_redraw()
 
 func clear_route() -> void:
@@ -150,6 +158,13 @@ func _draw() -> void:
 			draw_rect(rect,Color(.13,.17,.20,.87))
 			draw_string(font,rect.position+Vector2(4,12),name_value,HORIZONTAL_ALIGNMENT_LEFT,-1,11,Color("#e5e9ed"))
 			if used.size()>=38: break
+	for place in business_markers:
+		var point: Vector2 = place.p
+		var screen_point := _screen(point)
+		if not Rect2(Vector2.ZERO,size).has_point(screen_point): continue
+		draw_circle(screen_point,8.0,Color("#2a353a"))
+		draw_circle(screen_point,5.5,Color("#79df94"))
+		draw_string(font,screen_point+Vector2(10,-7),String(place.label),HORIZONTAL_ALIGNMENT_LEFT,-1,12,Color("#b8ffcc"))
 	var taxi := _screen(origin)
 	draw_circle(taxi,9.0,Color("#151b21"))
 	draw_circle(taxi,6.5,Color("#ffd259"))
