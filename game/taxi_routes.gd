@@ -135,3 +135,69 @@ func resolve(query: String,start: String) -> Dictionary:
 func lane(a: Vector3,b: Vector3) -> Vector3:
 	var d := (b-a).normalized()
 	return Vector3(-d.z,0,d.x)*1.10
+
+# Resolve a map click to an accessible road point, respecting one-way
+# edges. Prefer a real junction within 10 metres, otherwise use the
+# closest position on a driveable segment.
+func resolve_point(point: Vector3,start: String) -> Dictionary:
+	if not node_ids.has(start):
+		return {"error":"El taxi no está conectado a la red vial."}
+	var candidates: Array = []
+	var seen: Dictionary = {}
+	for edge in data.roads_near(point,85.0):
+		if not bool(edge.driveable): continue
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		var aid := String(edge.a_id)
+		var bid := String(edge.b_id)
+		var key := aid+":"+bid
+		if seen.has(key): continue
+		seen[key] = true
+		var p := Geometry3D.get_closest_point_to_segment(point,a,b)
+		var distance := p.distance_to(point)
+		if distance>85.0: continue
+		candidates.append({"edge":edge,"p":p,"distance":distance})
+	if candidates.is_empty():
+		return {"error":"Marca una calle del mapa."}
+	candidates.sort_custom(func(a,b): return float(a.distance)<float(b.distance))
+	var corners: Dictionary = {}
+	for candidate in candidates:
+		var edge: Dictionary = candidate.edge
+		for id in [String(edge.a_id),String(edge.b_id)]:
+			var p: Vector3 = data.points[id]
+			var names_here: Dictionary = node_streets.get(id,{})
+			if p.distance_to(point)<=10.0 and names_here.size()>=2:
+				corners[id] = p.distance_to(point)
+	var corner_ids := corners.keys()
+	corner_ids.sort_custom(func(a,b): return float(corners[a])<float(corners[b]))
+	for id in corner_ids:
+		var ids := path(start,String(id))
+		if ids.is_empty(): continue
+		var labels: Array[String] = []
+		for name_key in node_streets.get(id,{}):
+			labels.append(String(canonical_names.get(name_key,name_key)))
+		var position: Vector3 = data.points[id]
+		return {"id":String(id),"path":ids,"label":" y ".join(labels),"note":"","point":position,"distance":route_length(ids),"partial":false}
+	var best: Dictionary = {}
+	var best_click := INF
+	var best_length := INF
+	for i in range(mini(candidates.size(),20)):
+		var candidate: Dictionary = candidates[i]
+		if float(candidate.distance)>best_click+.3: break
+		var edge: Dictionary = candidate.edge
+		var p: Vector3 = candidate.p
+		for order in [0,1]:
+			var entry := String(edge.a_id) if order==0 else String(edge.b_id)
+			var exit_id := String(edge.b_id) if order==0 else String(edge.a_id)
+			if not data.graph.get(entry,[]).has(exit_id): continue
+			var ids := path(start,entry)
+			if ids.is_empty(): continue
+			var entry_point: Vector3 = data.points[entry]
+			var length := route_length(ids)+entry_point.distance_to(p)
+			if float(candidate.distance)<best_click-.3 or length<best_length:
+				best_click = float(candidate.distance)
+				best_length = length
+				best = {"id":exit_id,"path":ids,"label":data.street_label(String(edge.name)),"note":"","point":p,"distance":length,"partial":true,"entry":entry,"exit":exit_id}
+	if best.is_empty():
+		return {"error":"No existe una ruta vehicular hasta ese punto. Prueba otra calle."}
+	return best
