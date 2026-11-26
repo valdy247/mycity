@@ -15,6 +15,9 @@ var inventory: Dictionary = {}
 var residents: Array = []
 var road_names: Array = []
 var service_count := 0
+var public_rooms: Array = []
+var current_room := -1
+var upstairs := false
 var prompt := ""
 var prompt_time := 0.0
 var travel: Array = []
@@ -102,7 +105,7 @@ func _make_osm_streets() -> void:
 			if _street_clear(p,0.0,edge):
 				_cube(p+Vector3.UP*2.65,Vector3(.17,5.3,.17),pole,0,true)
 				_cube(p+Vector3.UP*5.12,Vector3(1.0,.12,.13),pole)
-				var end := b-right*.0+right*(width*.5+.55)
+				var end := b+right*(width*.5+.55)
 				for offset in [-.32,.32]:
 					_line(p+Vector3(float(offset),0,0),end+Vector3(float(offset),0,0),.026,.026,5.04,wires)
 		if String(edge.name)!="Calle sin nombre" and not road_names.has(edge.name) and road_names.size()<55:
@@ -209,7 +212,10 @@ func _facade(lot: Dictionary,index: int,service: String) -> void:
 	var h: float = float(upper)*3.1
 	# Deep covered portal, facade behind columns, upper floors above walkway.
 	_local_cube(c,basis,Vector3(0,.065,2.8),Vector3(8.8,.13,3.3),stone,true)
-	_local_cube(c,basis,Vector3(0,1.55,-1.45),Vector3(8.8,3.1,5.9),plaster,true)
+	if service in ["BODEGA","HOSPITAL • LA DEPENDIENTE"]:
+		_public_room(c,basis,plaster,service)
+	else:
+		_local_cube(c,basis,Vector3(0,1.55,-1.45),Vector3(8.8,3.1,5.9),plaster,true)
 	_local_cube(c,basis,Vector3(0,3.05,0),Vector3(8.8,.24,9.0),stone,true)
 	if upper>1:
 		_local_cube(c,basis,Vector3(0,3.1+(h-3.1)*.5,0),Vector3(8.8,h-3.1,8.8),plaster,true)
@@ -219,7 +225,8 @@ func _facade(lot: Dictionary,index: int,service: String) -> void:
 		_local_cube(c,basis,Vector3(float(x),.18,4.10),Vector3(.52,.31,.52),weathered)
 		_local_cube(c,basis,Vector3(float(x),2.96,4.10),Vector3(.50,.21,.50),stone)
 	for x in [-2.7,0.0,2.7]:
-		_local_cube(c,basis,Vector3(float(x),1.35,1.52),Vector3(1.12,2.55,.06),doors)
+		if service not in ["BODEGA","HOSPITAL • LA DEPENDIENTE"] or float(x)!=0.0:
+			_local_cube(c,basis,Vector3(float(x),1.35,1.52),Vector3(1.12,2.55,.06),doors)
 		_local_cube(c,basis,Vector3(float(x),2.77,1.56),Vector3(1.34,.16,.12),stone)
 		for floor in range(1,upper):
 			var y := float(floor)*3.1+1.5
@@ -242,6 +249,33 @@ func _facade(lot: Dictionary,index: int,service: String) -> void:
 		_vendor(lot,index)
 	elif index%5==0 and residents.size()<65:
 		_citizen(lot,index,false)
+
+func _public_room(c: Vector3,basis: Basis,wall: StandardMaterial3D,service: String) -> void:
+	var floor_mat := _mat("public_floor",Color("#b9b5a5"))
+	var wood := _mat("public_wood",Color("#8e785f"))
+	var metal := _mat("public_metal",Color("#b7bdb8"))
+	_local_cube(c,basis,Vector3(0,.045,-1.45),Vector3(8.8,.09,5.9),floor_mat,true)
+	_local_cube(c,basis,Vector3(0,1.55,-4.28),Vector3(8.8,3.10,.18),wall,true)
+	for side in [-1.0,1.0]:
+		var v: float = float(side)
+		_local_cube(c,basis,Vector3(v*4.3,1.55,-1.45),Vector3(.18,3.1,5.9),wall,true)
+		_local_cube(c,basis,Vector3(v*2.65,1.55,1.48),Vector3(3.3,3.1,.15),wall,true)
+	# Use the central doorway to enter and leave; keep other premises closed.
+	_local_cube(c,basis,Vector3(0,1.2,1.48),Vector3(1.95,2.4,.13),wood,true)
+	_local_cube(c,basis,Vector3(0,2.8,1.48),Vector3(1.95,.7,.13),wall,true)
+	_local_cube(c,basis,Vector3(0,.60,-2.4),Vector3(3.1,1.0,.85),wood,true)
+	if service=="BODEGA":
+		for y in [.55,1.05,1.55]:
+			_local_cube(c,basis,Vector3(-3.6,float(y),-1.65),Vector3(.85,.09,3.6),wood,true)
+			for k in range(5):
+				_local_cube(c,basis,Vector3(-3.6,float(y)+.15,-3.0+float(k)*.64),Vector3(.34,.24,.25),_mat("food_package",Color("#c5a773")))
+	else:
+		for x in [-3.1,3.1]:
+			_local_cube(c,basis,Vector3(float(x),.50,-1.0),Vector3(1.1,.15,2.1),metal,true)
+			_local_cube(c,basis,Vector3(float(x),.66,-1.0),Vector3(1.02,.18,2.0),_mat("hospital_linen",Color("#e3e5dc")))
+		_local_cube(c,basis,Vector3(0,2.35,-4.10),Vector3(.25,.85,.05),_mat("hospital_cross",Color("#9f4941")))
+		_local_cube(c,basis,Vector3(0,2.35,-4.10),Vector3(.85,.25,.05),_mat("hospital_cross",Color("#9f4941")))
+	public_rooms.append({"name":service,"center":c,"basis":basis})
 
 func _citizen(lot: Dictionary,index: int,sitting: bool) -> Node3D:
 	var c: Vector3 = lot.center
@@ -357,15 +391,47 @@ func _make_humble_home(lot: Dictionary) -> void:
 	_label("MI CASA",home_root.to_global(Vector3(0,2.64,1.67)),.010,angle,Color("#f1e2c4"))
 
 func interaction_text(at: Vector3) -> String:
+	for i in range(public_rooms.size()):
+		var room: Dictionary = public_rooms[i]
+		var c: Vector3 = room.center
+		var basis: Basis = room.basis
+		var local: Vector3 = basis.inverse()*(at-c)
+		if absf(local.x)<1.3 and absf(local.z-1.48)<1.55 and local.y<2.5:
+			return "[E] Salir de "+String(room.name) if current_room==i else "[E] Entrar a "+String(room.name)
 	if home_root!=null:
 		var p := home_root.to_local(at)
+		if inside_home and p.x>2.0 and not upstairs and p.z>-.3 and p.y<2.2:
+			return "[E] Subir al segundo piso"
+		if inside_home and upstairs and p.x>1.0 and p.z< -2.7 and p.y>3.4:
+			return "[E] Bajar al primer piso"
 		if absf(p.x)<1.4 and absf(p.z-1.55)<1.65 and p.y<2.6:
 			return "[E] Salir de casa" if inside_home else "[E] Entrar a mi casa"
 	return ""
 
 func interact(player: CharacterBody3D,avatar: Node3D,legs: Array,arms: Array) -> bool:
-	if interaction_text(player.global_position).is_empty():
+	var action := interaction_text(player.global_position)
+	if action.is_empty():
 		return false
+	for i in range(public_rooms.size()):
+		var room: Dictionary = public_rooms[i]
+		if not action.ends_with(String(room.name)):
+			continue
+		var c: Vector3 = room.center
+		var basis: Basis = room.basis
+		current_room = -1 if current_room==i else i
+		player.global_position = c+basis*Vector3(0,.95,2.55 if current_room<0 else .52)
+		player.velocity = Vector3.ZERO
+		return true
+	if action.contains("segundo piso"):
+		upstairs = true
+		player.global_position = home_root.to_global(Vector3(1.30,4.16,-3.85))
+		player.velocity = Vector3.ZERO
+		return true
+	if action.contains("primer piso"):
+		upstairs = false
+		player.global_position = home_root.to_global(Vector3(2.4,.95,1.0))
+		player.velocity = Vector3.ZERO
+		return true
 	inside_home = not inside_home
 	player.global_position = home_root.to_global(Vector3(0,.96,.62 if inside_home else 2.60))
 	player.velocity = Vector3.ZERO
@@ -373,6 +439,8 @@ func interact(player: CharacterBody3D,avatar: Node3D,legs: Array,arms: Array) ->
 
 func reset_interaction(avatar: Node3D,legs: Array) -> void:
 	inside_home = false
+	current_room = -1
+	upstairs = false
 	seated = false
 	avatar.position.y = 0.0
 
@@ -386,7 +454,9 @@ func aimed_product(camera: Camera3D,player: CharacterBody3D) -> Node:
 	var hit := get_world_3d().direct_space_state.intersect_ray(ray)
 	if hit.is_empty():
 		return null
-	var obj: Node = hit.collider
+	var obj := hit.collider as Node3D
+	if obj == null:
+		return null
 	if obj.has_meta("product") and player.global_position.distance_to(obj.global_position)<3.0:
 		return obj
 	return null
