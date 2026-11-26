@@ -512,6 +512,9 @@ func _route_blocked(body: CharacterBody3D,waypoints: Array,index: int) -> bool:
 		var ray := PhysicsRayQueryParameters3D.create(previous+Vector3.UP*.85,end+Vector3.UP*.85,1|4)
 		ray.exclude = [body.get_rid()]
 		if not space.intersect_ray(ray).is_empty(): return true
+		var low_ray := PhysicsRayQueryParameters3D.create(previous+Vector3.UP*.27,end+Vector3.UP*.27,1|4)
+		low_ray.exclude = [body.get_rid()]
+		if not space.intersect_ray(low_ray).is_empty(): return true
 		remaining -= distance
 		checks += 1
 		if remaining<=0.0 or checks>=24: break
