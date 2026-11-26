@@ -29,6 +29,7 @@ var home_spawn := Vector3.ZERO
 var van_spawn := Vector3.ZERO
 var van_angle := 0.0
 var home_edge: Dictionary = {}
+var food_factory: Dictionary = {}
 var home_local_door := Vector3(0,0,1.65)
 var slots: Array = []
 var box_groups: Dictionary = {}
@@ -829,6 +830,7 @@ func _make_frontages() -> void:
 				_make_humble_home(lot)
 				break
 		push_warning("Monte: no hay dos parcelas contiguas seguras. Usa clic derecho > Ubicar mi casa aquí en Monte.")
+	_reserve_food_factory(proposals)
 	# Keep special interiors from the prototype in small unrecorded lots.
 	proposals.sort_custom(func(a,b): return a.center.distance_squared_to(public_anchor)<b.center.distance_squared_to(public_anchor))
 	for lot in proposals:
@@ -871,6 +873,73 @@ func _make_frontages() -> void:
 
 # Extrude the original OSM polygon, not a rectangular approximation.
 # Combine the visible meshes and collision by spatial tile for the iGPU.
+# Fictional wholesale warehouse, reserved before generic buildings are
+# rendered. Its location uses the same local-metre road geometry as taxis.
+func _reachable_food_nodes(start: String,reverse: bool = false) -> Dictionary:
+	var links: Dictionary = geography.graph
+	if reverse:
+		links = {}
+		for id in geography.graph:
+			for dest in geography.graph[id]:
+				if not links.has(dest): links[dest] = []
+				links[dest].append(id)
+	var visited: Dictionary = {start:true}
+	var pending: Array = [start]
+	var cursor := 0
+	while cursor<pending.size():
+		var id: String = pending[cursor]
+		cursor += 1
+		for dest in links.get(id,[]):
+			if not visited.has(dest):
+				visited[dest] = true
+				pending.append(dest)
+	return visited
+
+func _reserve_food_factory(proposals: Array) -> void:
+	var home := home_spawn
+	var candidates := proposals.duplicate()
+	candidates.sort_custom(func(a,b): return absf(home.distance_to(a.center)-280.0)<absf(home.distance_to(b.center)-280.0))
+	var reach: Dictionary = {}
+	var return_reach: Dictionary = {}
+	if not home_edge.is_empty():
+		var id := String(home_edge.a_id)
+		reach = _reachable_food_nodes(id)
+		return_reach = _reachable_food_nodes(id,true)
+	var market := geography.project(23.1234716,-82.3659728)
+	for pass_index in range(2):
+		for lot in candidates:
+			var c: Vector3 = lot.center
+			var front: Vector3 = lot.front
+			var edge: Dictionary = lot.edge
+			var dist := c.distance_to(home)
+			if dist<90.0 or dist>1000.0 or c.distance_to(market)<75.0: continue
+			if float(edge.width)<5.6: continue
+			if pass_index==0 and (dist<170.0 or dist>520.0 or not bool(edge.portal)): continue
+			if not reach.is_empty():
+				var a_id := String(edge.a_id)
+				var b_id := String(edge.b_id)
+				if not reach.has(a_id) or not reach.has(b_id) or not return_reach.has(a_id) or not return_reach.has(b_id): continue
+			if not _lot_clear(c,front,edge) or _overlaps_footprint(lot): continue
+			var basis := Basis(Vector3.UP,atan2(front.x,front.z))
+			_add_lot(lot)
+			food_factory = {"center":c,"basis":basis,"counter":c+basis*Vector3(-1.6,.96,2.95),"pickup":c+basis*Vector3(1.55,.96,2.95),"road":lot.curb,"name":"Fábrica de alimentos"}
+			var wall := _mat("factory_wall",Color("#c8c3ae"))
+			var trim := _mat("factory_trim",Color("#638795"))
+			var floor_mat := _mat("public_floor",Color("#b9b5a5"))
+			var dark := _mat("factory_dark",Color("#454d50"))
+			_local_cube(c,basis,Vector3(0,.05,0),Vector3(8.8,.10,9.0),floor_mat,true)
+			_local_cube(c,basis,Vector3(0,1.9,-4.30),Vector3(8.7,3.8,.22),wall,true)
+			for side in [-1.0,1.0]:
+				_local_cube(c,basis,Vector3(float(side)*4.28,1.9,0),Vector3(.22,3.8,8.75),wall,true)
+				_local_cube(c,basis,Vector3(float(side)*3.75,1.65,4.25),Vector3(1.0,3.3,.20),trim,true)
+			_local_cube(c,basis,Vector3(0,3.70,0),Vector3(8.9,.30,9.0),wall,true)
+			_local_cube(c,basis,Vector3(0,3.25,4.28),Vector3(6.3,.55,.18),trim)
+			_local_cube(c,basis,Vector3(-1.6,.56,1.58),Vector3(2.5,1.02,.78),dark,true)
+			_local_cube(c,basis,Vector3(1.55,.43,1.60),Vector3(2.0,.78,.80),trim,true)
+			_label("FÁBRICA DE ALIMENTOS",c+basis*Vector3(0,3.26,4.40),.010,atan2(front.x,front.z),Color("#fff4d7"))
+			return
+	push_warning("Misión: no se encontró parcela libre para la fábrica de alimentos.")
+
 func _face(a: Vector3,b: Vector3,c: Vector3,normal: Vector3,mat: StandardMaterial3D,tile: Vector2i) -> void:
 	mat = _textured(mat,Vector3(float(tile.x)*96.0+48.0,0,float(tile.y)*96.0+48.0))
 	var key := str(tile)+":"+str(mat.get_instance_id())
