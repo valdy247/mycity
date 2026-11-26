@@ -16,6 +16,8 @@ var destinations: Array = []
 var walkers: Array = []
 var next_id := 1
 var initialized := false
+var building_graph := false
+const BUILD_BUDGET_USEC := 4000
 var build_wait := .20
 var elapsed := 0.0
 var population_clock := 0.0
@@ -90,11 +92,16 @@ func _run(a: Vector3,b: Vector3,cost: float) -> void:
 		_add(a.lerp(b,float(i)/float(count)),cost)
 
 func _build() -> void:
+	var started := Time.get_ticks_msec()
+	var slice_start := Time.get_ticks_usec()
 	# Start from the actual traversable portal strips created by CubaWorld.
 	for strip in world.monte_walkways:
 		_run(strip.a,strip.b,PORTAL_COST)
 		# Approximate strip points are navigation only, never entry doors.
 		_add(strip.door,PORTAL_COST)
+		if Time.get_ticks_usec()-slice_start>=BUILD_BUDGET_USEC:
+			await get_tree().physics_frame
+			slice_start = Time.get_ticks_usec()
 	# Extend the existing Monte network into adjoining streets without
 	# building a city-wide physics graph at startup.
 	var corridor_nodes: Dictionary = {}
@@ -108,6 +115,9 @@ func _build() -> void:
 			adjacent[edge.a_id] = true
 			adjacent[edge.b_id] = true
 	for edge in world.geography.roads:
+		if Time.get_ticks_usec()-slice_start>=BUILD_BUDGET_USEC:
+			await get_tree().physics_frame
+			slice_start = Time.get_ticks_usec()
 		if not adjacent.has(edge.a_id) and not adjacent.has(edge.b_id): continue
 		var a: Vector3 = edge.a
 		var b: Vector3 = edge.b
@@ -131,11 +141,17 @@ func _build() -> void:
 				var curb := center+outward*maxf(0.0,half_width-.55)
 				if world.street_geometry.point_on_road(curb):
 					_add(curb,ROAD_COST)
+				if Time.get_ticks_usec()-slice_start>=BUILD_BUDGET_USEC:
+					await get_tree().physics_frame
+					slice_start = Time.get_ticks_usec()
 	if world.home_root!=null:
 		var home := world.home_root
 		_run(home.to_global(Vector3(-3.3,0,2.75)),home.to_global(Vector3(3.3,0,2.75)),PORTAL_COST)
 		_add(home.to_global(Vector3(1.25,0,2.65)),PORTAL_COST)
 	for id in graph.get_point_ids():
+		if Time.get_ticks_usec()-slice_start>=BUILD_BUDGET_USEC:
+			await get_tree().physics_frame
+			slice_start = Time.get_ticks_usec()
 		var p := graph.get_point_position(id)
 		for other in _near_ids(p,3.8):
 			if int(other)<=id: continue
@@ -150,6 +166,9 @@ func _build() -> void:
 			if _clear(p,q): graph.connect_points(id,int(other),true)
 	# Bridge gaps at small side streets, only along unobstructed routes.
 	for id in graph.get_point_ids():
+		if Time.get_ticks_usec()-slice_start>=BUILD_BUDGET_USEC:
+			await get_tree().physics_frame
+			slice_start = Time.get_ticks_usec()
 		if graph.get_point_connections(id).size()>1: continue
 		var p := graph.get_point_position(id)
 		for other in _near_ids(p,7.0):
@@ -160,7 +179,7 @@ func _build() -> void:
 			if _clear(p,q):
 				graph.connect_points(id,int(other),true)
 				break
-	_register_doors()
+	await _register_doors()
 	if buses!=null:
 		for stop in buses.stops:
 			var p: Vector3 = stop.wait
@@ -171,13 +190,20 @@ func _build() -> void:
 			stop["pedestrian_managed"] = true
 			destinations.append({"id":nearest,"kind":"bus","stop":stop})
 		buses.alight_handler = Callable(self,"accept_alighting")
-	print("Monte: ",graph.get_point_count()," pedestrian waypoints, ",destinations.size()," destinations.")
+	print("Monte: ",graph.get_point_count()," pedestrian waypoints, ",destinations.size()," destinations; carga distribuida ",Time.get_ticks_msec()-started," ms.")
+	initialized = true
+	building_graph = false
+	_populate()
 
 # Only generated door panels on reachable facades are indoor destinations.
 func _register_doors() -> void:
-	var space := get_world_3d().direct_space_state
+	var slice_start := Time.get_ticks_usec()
 	var used: Dictionary = {}
 	for entry in world.npc_doorways:
+		if Time.get_ticks_usec()-slice_start>=BUILD_BUDGET_USEC:
+			await get_tree().physics_frame
+			slice_start = Time.get_ticks_usec()
+		var space := get_world_3d().direct_space_state
 		var threshold: Vector3 = entry.threshold
 		var normal: Vector3 = entry.normal
 		var outside := threshold+normal*.48
@@ -382,11 +408,12 @@ func yield_to_bus(stop: Dictionary,bus: CharacterBody3D) -> void:
 
 func tick(delta: float) -> void:
 	if not initialized:
+		if building_graph: return
 		build_wait -= delta
 		if build_wait>0.0: return
-		initialized = true
+		building_graph = true
 		_build()
-		_populate()
+		return
 	elapsed += delta
 	if elapsed<.065: return
 	var dt := elapsed
@@ -446,7 +473,16 @@ func tick(delta: float) -> void:
 		# Recheck the live scene: walkers use scripted movement rather than
 		# CharacterBody3D, so never advance into a new obstacle.
 		var step := person.global_position.move_toward(p,maxf(.12,float(agent.speed)*dt))
-		if not world.pedestrian_segment_clear(person.global_position,step) or (person.global_position.distance_to(p)>.12 and not _clear(person.global_position,p)):
+		# Always sweep the actual next step; the longer preview only needs
+		# refreshing when the waypoint changes or every quarter second.
+		var preview_due := int(agent.get("preview_index",-1))!=index or float(agent.get("preview_wait",0.0))<=0.0
+		agent.preview_wait = float(agent.get("preview_wait",0.0))-dt
+		var route_clear := true
+		if preview_due:
+			agent.preview_index = index
+			agent.preview_wait = .25
+			route_clear = person.global_position.distance_to(p)<=.12 or _clear(person.global_position,p)
+		if not world.pedestrian_segment_clear(person.global_position,step) or not route_clear:
 			person.animate(dt,false)
 			agent["blocked_time"] = float(agent.get("blocked_time",0.0))+dt
 			if float(agent.blocked_time)>=.65:
