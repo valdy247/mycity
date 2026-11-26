@@ -159,6 +159,9 @@ func _ready() -> void:
 		monte_pedestrians = MontePedestrians.new()
 		add_child(monte_pedestrians)
 		monte_pedestrians.setup(cuba_world,urban_buses)
+		urban_buses.stop_priority.connect(taxis.yield_to_bus)
+		urban_buses.stop_priority.connect(monte_pedestrians.yield_to_bus)
+		urban_buses.stop_priority.connect(_bus_priority_notice)
 		garage = HomeGarage.new()
 		add_child(garage)
 		garage.setup(self)
@@ -1138,6 +1141,18 @@ func _open_pilar_editor(at: Vector3,context: bool) -> void:
 	reticle.hide()
 	pilar_editor.open(at,context)
 
+func _bus_priority_notice(stop: Dictionary,bus: CharacterBody3D) -> void:
+	if player==null or bus_riding or taxi_riding or (garage!=null and garage.inside): return
+	var at := van.global_position if driving else player.global_position
+	var center: Vector3 = stop.position
+	var direction: Vector3 = stop.direction
+	var side := Vector3(-direction.z,0,direction.x)
+	var offset := at-center
+	var approach := maxf(0.0,(center-bus.global_position).dot(direction))
+	if absf(offset.dot(side))<2.1 and offset.dot(direction)>-approach-4.0 and offset.dot(direction)<7.0:
+		exit_message = "La guagua está pidiendo paso. Deja libre la parada."
+		message_time = 3.0
+
 func _physics_process(delta: float) -> void:
 	if player == null:
 		return
@@ -1252,6 +1267,7 @@ func _physics_process(delta: float) -> void:
 		city_world.tick(delta)
 	if urban_buses!=null:
 		urban_buses.tick(delta)
+	if taxis!=null: taxis.tick(delta,cuba_world.cuba_clock)
 	if monte_services!=null:
 		monte_services.tick(delta)
 	if monte_pedestrians!=null:
