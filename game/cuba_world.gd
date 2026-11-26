@@ -2892,6 +2892,10 @@ func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool
 				# Small, sparse laundry on existing upper-floor railings, never the market.
 				if not market and level<=2 and posmod(idx*7+i*3+level,7)==0 and _havana_detail_near(p):
 					_balcony_laundry(p,t,n,y,w,angle,idx+i+level)
+				if not market and level<=2 and posmod(idx*5+i+level,9)==0 and _havana_detail_near(p):
+					_balcony_planter(p,t,n,y,w,angle)
+			if not market and posmod(idx+i*3+level,5)==0 and _havana_detail_near(p):
+				_window_shutters(p,t,n,y,w,angle,door_mat)
 		if not market:
 			var wear_seed := posmod(idx*13+i*7,11)
 			var wear_x := minf(step*.22,.62)*(1.0 if wear_seed%2==0 else -1.0)
@@ -2905,6 +2909,21 @@ func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool
 # detail distance; no collision, individual NPC, texture download or physics.
 func _havana_detail_near(p: Vector3) -> bool:
 	return p.distance_squared_to(texture_anchor)<=62500.0 or p.distance_squared_to(texture_market)<=32400.0
+
+func _balcony_planter(p: Vector3,t: Vector3,n: Vector3,y: float,w: float,angle: float) -> void:
+	var center := p+t*w*.26+n*.38+Vector3.UP*(y-.80)
+	var terracotta := _mat("havana_planter",Color("#9f684b"))
+	var leaf := _mat("havana_plant",Color("#557b43"))
+	_cube(center,Vector3(.22,.16,.20),terracotta,angle)
+	_cube(center+Vector3.UP*.17,Vector3(.23,.19,.13),leaf,angle)
+	_cube(center+Vector3.UP*.24,Vector3(.11,.16,.11),leaf,angle+.55)
+
+func _window_shutters(p: Vector3,t: Vector3,n: Vector3,y: float,w: float,angle: float,material: StandardMaterial3D) -> void:
+	# Thin panels stay inside each window bay and never occupy the walkway.
+	var width := w*.31
+	for side in [-1.0,1.0]:
+		var q := p+t*float(side)*w*.32+n*.13+Vector3.UP*y
+		_cube(q,Vector3(width,1.72,.045),material,angle+float(side)*.12)
 
 func _balcony_laundry(p: Vector3,t: Vector3,n: Vector3,y: float,w: float,angle: float,seed_value: int) -> void:
 	var colors: Array[Color] = [Color("#e0d9ca"),Color("#39699a"),Color("#9c3d49"),Color("#7a8c80"),Color("#ccad63")]
