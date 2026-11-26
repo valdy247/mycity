@@ -198,7 +198,7 @@ func load_map() -> bool:
 				ways.append({"id":way_id,"refs":refs,"tags":tags})
 				active = ""
 			elif parser.get_node_name() == "node":
-				if node_tags.has("name"):
+				if node_tags.has("name") or node_tags.get("highway","")=="bus_stop" or node_tags.get("public_transport","") in ["platform","stop_position"]:
 					poi.append({"id":node_id,"position":points[node_id],"tags":node_tags})
 				active = ""
 	var seen: Dictionary = {}
