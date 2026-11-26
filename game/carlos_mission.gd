@@ -156,6 +156,10 @@ func _locate() -> bool:
 	if home.is_empty():
 		home = _home_from_gps()
 		if home.is_empty():
+			if _stage()==2 and not locate_reported:
+				var anchor: Vector3 = world.geography.project(CARLOS_LAT,CARLOS_LON)
+				game.garage._set_waypoint(anchor,"GPS de Carlos · confirmar puerta")
+				_save()
 			_location_notice("GPS de Carlos localizado, pero falta una puerta residencial segura junto al punto. Puedes confirmarla en el teléfono.")
 			return false
 		_remember("home",home)
