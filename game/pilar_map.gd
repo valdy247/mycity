@@ -38,6 +38,52 @@ func project(lat: float,lon: float) -> Vector3:
 	var north := -sin(phi0)*cos(lam0)*dx-sin(phi0)*sin(lam0)*dy+cos(phi0)*dz
 	return Vector3(east,0,-north)
 
+# Invert the existing WGS84 tangent-plane projection. Latitude and
+# longitude stay in scalar 64-bit floats; do not store them in Vector2
+# (its default float32 precision would lose metres of longitude).
+func unproject(at: Vector3) -> Dictionary:
+	var phi0 := deg_to_rad(LAT)
+	var eccentricity := 0.00669437999014
+	var w := 1.0-eccentricity*sin(phi0)*sin(phi0)
+	var metres_lat := 6378137.0*(1.0-eccentricity)/pow(w,1.5)*PI/180.0
+	var metres_lon := 6378137.0*cos(phi0)/sqrt(w)*PI/180.0
+	var latitude := LAT-float(at.z)/metres_lat
+	var longitude := LON+float(at.x)/metres_lon
+	# Iteratively correct curvature against the same forward projection.
+	for i in range(4):
+		var estimated := project(latitude,longitude)
+		latitude -= float(at.z-estimated.z)/metres_lat
+		longitude += float(at.x-estimated.x)/metres_lon
+	return {"lat":latitude,"lon":longitude}
+
+func coordinate_text(at: Vector3) -> String:
+	var gps := unproject(at)
+	return "%.7f, %.7f" % [float(gps.lat),float(gps.lon)]
+
+func parse_coordinates(value: String) -> Dictionary:
+	var cleaned := value.strip_edges().replace(";",",")
+	var parts := cleaned.split(",",false)
+	if parts.size()!=2:
+		parts = cleaned.split(" ",false)
+	if parts.size()!=2:
+		return {"error":"Usa latitud, longitud en grados decimales."}
+	var lat_text := parts[0].strip_edges()
+	var lon_text := parts[1].strip_edges()
+	if not lat_text.is_valid_float() or not lon_text.is_valid_float():
+		return {"error":"Coordenadas no válidas."}
+	var latitude := float(lat_text)
+	var longitude := float(lon_text)
+	if not is_finite(latitude) or not is_finite(longitude) or absf(latitude)>90.0 or absf(longitude)>180.0:
+		return {"error":"Latitud o longitud fuera de rango."}
+	# Reject remote points before projection (the tangent plane alone
+	# is not a unique representation of the whole globe).
+	if absf(latitude-LAT)>.025 or absf(longitude-LON)>.025:
+		return {"error":"El destino está fuera del mapa de Pilar-Atarés."}
+	var point := project(latitude,longitude)
+	if absf(point.x)>LIMIT or absf(point.z)>LIMIT:
+		return {"error":"El destino está fuera de los límites del mapa."}
+	return {"point":point,"lat":latitude,"lon":longitude}
+
 func normalized(value: String) -> String:
 	return value.to_lower().replace("á","a").replace("é","e").replace("í","i").replace("ó","o").replace("ú","u").replace("ü","u")
 
