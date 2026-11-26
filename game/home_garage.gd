@@ -696,6 +696,7 @@ func drive(delta: float,movement: Vector2) -> void:
 	var brake := Input.is_physical_key_pressed(KEY_SPACE)
 	ride_speed = move_toward(ride_speed,0.0 if brake else target,delta*(12.0 if brake else 4.0))
 	var old := body.global_transform
+	var impact_speed := ride_speed
 	if absf(ride_speed)>.1: body.rotation.y -= movement.x*signf(ride_speed)*delta*1.65*minf(absf(ride_speed)/2.0,1.0)
 	var direction := body.global_transform.basis.z.normalized()
 	body.velocity = direction*ride_speed
@@ -706,6 +707,7 @@ func drive(delta: float,movement: Vector2) -> void:
 		body.global_transform = old
 		ride_speed = 0.0
 	else: body.global_position.y = float(hit.position.y)+.035
+	if game.incidents!=null: game.incidents.vehicle_motion(body,old,impact_speed,float(spec.width),float(spec.length))
 	if body.get_slide_collision_count()>0: ride_speed *= .35
 	game.player.global_position = body.global_position+Vector3.UP*.8
 	last_save += delta
