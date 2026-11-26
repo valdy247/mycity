@@ -483,6 +483,24 @@ func _walk(person: Node3D,target: Vector3,delta: float) -> bool:
 		return (person as StreetPerson).walk_to(target,delta,1.8)
 	return false
 
+# Transfer ownership of an injured waiting, boarding, or departing passenger.
+# Remove all queue references before the incident controller moves the NPC.
+func detach_incident_person(person: Node3D) -> bool:
+	var found := false
+	for stop in stops:
+		for key in ["queue","departing"]:
+			var entries: Array = stop[key]
+			for i in range(entries.size()-1,-1,-1):
+				if entries[i].node==person:
+					entries.remove_at(i)
+					found = true
+	for bus in buses:
+		var transfer: Dictionary = bus.transfer
+		if not transfer.is_empty() and transfer.node==person:
+			bus.transfer = {}
+			found = true
+	return found
+
 func join_stop(stop: Dictionary,person: Node3D) -> bool:
 	var queue: Array = stop.queue
 	if queue.size()>=4 or not person is StreetPerson: return false
