@@ -581,6 +581,22 @@ func _plan(agent: Dictionary,goal: Vector3,task: String) -> bool:
 func _cafe_cost(key: String) -> int:
 	return ceili(float(Ledger.PRODUCTS[key].cost)*.40)
 
+# Visiting residents consume actual ingredients and pay from their profile.
+# Returns the price only when a sale succeeded.
+func citizen_purchase(id: String,budget: int) -> int:
+	if not state.cafes.has(id) or not _clerk_present(id): return 0
+	var cafe: Dictionary = state.cafes[id]
+	var keys := MENU.keys()
+	keys.shuffle()
+	for key in keys:
+		var price := int(MENU[key].price)
+		if budget<price or not _can_make(id,String(key)): continue
+		for ingredient in MENU[key].needs:
+			cafe[ingredient] = int(cafe[ingredient])-int(MENU[key].needs[ingredient])
+		_cafe_sale(cafe,price)
+		return price
+	return 0
+
 func _cafe_sale(cafe: Dictionary,amount: int) -> void:
 	var repayment := mini(int(cafe.get("supplier_debt",0)),floori(float(amount)*.25))
 	cafe.supplier_debt = int(cafe.get("supplier_debt",0))-repayment
