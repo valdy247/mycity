@@ -1,0 +1,6 @@
+.godot/
+city.glb
+city.glb.import
+city_export_tmp.glb
+*.tmp.glb
+exports/
