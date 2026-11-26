@@ -237,7 +237,7 @@ func _make_osm_streets() -> void:
 		var d := (b-a).normalized()
 		var right := Vector3(-d.z,0,d.x)
 		# Geometry comes from the shared polygon layer, not overlapping strips.
-		if a.distance_to(b)>8 and (width>=8 or _is_monte_edge(edge)) and bool(edge.driveable):
+		if int(edge.get("lanes_per_direction",1))!=2 and a.distance_to(b)>8 and (width>=8 or _is_monte_edge(edge)) and bool(edge.driveable):
 			for i in range(int(a.distance_to(b)/9.0)):
 				var p := a+d*(float(i)*9.0+3.0)
 				if street_geometry.point_on_road(p) and street_geometry.point_on_road(p+d*2.5):
@@ -2685,7 +2685,7 @@ func tick(delta: float) -> void:
 			continue
 		entry.cooldown = maxf(0.0,float(entry.get("cooldown",0.0))-delta)
 		if blocked: speed = minf(speed,sqrt(12.0*maxf(0.0,free-.7)))
-		if float(entry.get("retreat_remaining",0.0))<=0.0 and stalled>1.0 and float(entry.stop)<=0.0 and float(entry.cooldown)<=0.0:
+		if float(entry.get("retreat_remaining",0.0))<=0.0 and (stalled>1.0 or (not active and TrafficBypass.early_lane_pass(car,street_geometry,blocked,free))) and float(entry.stop)<=0.0 and float(entry.cooldown)<=0.0:
 			entry.cooldown = 1.8
 			if active:
 				entry.detour = []
