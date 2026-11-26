@@ -1,6 +1,7 @@
 extends "res://city_world.gd"
 # Real road centerlines; reconstructed facades and gameplay premises.
 const MapData = preload("res://pilar_map.gd")
+const INVENTORY_PATH := "user://pilar_atares_inventory.json"
 var geography := MapData.new()
 var home_root: Node3D
 var home_spawn := Vector3.ZERO
@@ -39,6 +40,7 @@ func setup(builder: Builder) -> void:
 	add_child(road_ground)
 	_visual_box(road_ground,Vector3(0,-.25,0),Vector3(1240,.50,1240),_mat("urban_ground",Color("#aaa394")))
 	_shape(road_ground,Vector3(0,-.25,0),Vector3(1240,.50,1240))
+	_load_inventory()
 	_make_osm_streets()
 	_make_frontages()
 	_flush_city_boxes()
@@ -389,6 +391,8 @@ func _make_humble_home(lot: Dictionary) -> void:
 		for x in range(5):
 			_local_cube(c,basis,Vector3(-3.05+float(x)*.27,float(y)+.55,1.71),Vector3(.035,1.1,.04),trim)
 	_label("MI CASA",home_root.to_global(Vector3(0,2.64,1.67)),.010,angle,Color("#f1e2c4"))
+	_pickup("llaves_casa","Llaves",home_root.to_global(Vector3(-2.0,1.16,-3.8)),Vector3(.16,.07,.10),_mat("keys",Color("#b3a47b")))
+	_pickup("libreta_casa","Libreta",home_root.to_global(Vector3(-1.5,1.16,-3.8)),Vector3(.22,.05,.31),_mat("notebook",Color("#596c86")))
 
 func interaction_text(at: Vector3) -> String:
 	for i in range(public_rooms.size()):
@@ -444,6 +448,29 @@ func reset_interaction(avatar: Node3D,legs: Array) -> void:
 	seated = false
 	avatar.position.y = 0.0
 
+func _load_inventory() -> void:
+	if not FileAccess.file_exists(INVENTORY_PATH):
+		return
+	var file := FileAccess.open(INVENTORY_PATH,FileAccess.READ)
+	if file==null:
+		return
+	var data: Variant = JSON.parse_string(file.get_as_text())
+	if data is Dictionary:
+		inventory = data
+
+func _pickup(id: String,title_value: String,at: Vector3,size: Vector3,material: StandardMaterial3D) -> void:
+	if inventory.has(id):
+		return
+	var body := StaticBody3D.new()
+	body.collision_layer = 16
+	body.collision_mask = 0
+	add_child(body)
+	body.position = at
+	_visual_box(body,Vector3.ZERO,size,material)
+	_shape(body,Vector3.ZERO,size+Vector3(.10,.15,.10))
+	body.set_meta("product",title_value)
+	body.set_meta("pickup_id",id)
+
 func aimed_product(camera: Camera3D,player: CharacterBody3D) -> Node:
 	if camera==null or player==null:
 		return null
@@ -461,19 +488,33 @@ func aimed_product(camera: Camera3D,player: CharacterBody3D) -> Node:
 		return obj
 	return null
 
+func aimed_text(camera: Camera3D,player: CharacterBody3D) -> String:
+	var item := aimed_product(camera,player)
+	if item==null:
+		return ""
+	return ("[E] Recoger " if item.has_meta("pickup_id") else "[E] Consultar ")+String(item.get_meta("product"))
+
 func inspect_product(camera: Camera3D,player: CharacterBody3D) -> bool:
 	var item := aimed_product(camera,player)
 	if item==null:
 		return false
-	prompt = "Vendedor: Tengo "+String(item.get_meta("product"))+". Compra disponible cuando incorporemos dinero."
+	if item.has_meta("pickup_id"):
+		var id := String(item.get_meta("pickup_id"))
+		inventory[id] = String(item.get_meta("product"))
+		item.queue_free()
+		prompt = "Recogiste: "+String(inventory[id])+" | Inventario: "+str(inventory.size())
+		var file := FileAccess.open(INVENTORY_PATH,FileAccess.WRITE)
+		if file!=null:
+			file.store_string(JSON.stringify(inventory))
+	else:
+		prompt = "Vendedor: Tengo "+String(item.get_meta("product"))+". Compra disponible cuando incorporemos dinero."
 	prompt_time = 4.0
 	return true
 
 func add_school_bus(original: Node3D) -> void:
 	var route := geography.bus_loop(String(home_edge.get("a_id","")),String(home_edge.get("b_id","")))
 	if route.size()<4:
-		push_warning("Pilar-Atarés: no safe bus loop found in imported road graph.")
-		return
+		push_warning("Pilar-Atarés: no safe bus loop found; original bus parked.")
 	var bus := CharacterBody3D.new()
 	bus.name = "SchoolBus_Original"
 	bus.motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
@@ -491,8 +532,17 @@ func add_school_bus(original: Node3D) -> void:
 	col.shape = shape
 	bus.add_child(col)
 	col.position.y = 1.48
-	bus.position = route[0].lerp(route[1],.4)+Vector3.UP*.055
-	travel.append({"node":bus,"route":route,"next":1,"speed":0.0,"stop":0.0})
+	if route.size()>=4:
+		bus.position = route[0].lerp(route[1],.4)+Vector3.UP*.055
+		var d := (route[1]-route[0]).normalized()
+		bus.rotation.y = atan2(d.x,d.z)
+		travel.append({"node":bus,"route":route,"next":1,"speed":0.0,"stop":0.0})
+	else:
+		var edge: Dictionary = geography.roads[0]
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		bus.position = a.lerp(b,.5)+Vector3.UP*.055
+		bus.rotation.y = atan2((b-a).x,(b-a).z)
 	print("Pilar-Atarés: original bus loop, ",route.size()," road graph nodes.")
 
 func tick(delta: float) -> void:
