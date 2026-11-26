@@ -763,6 +763,12 @@ func _traffic_tick(delta: float) -> void:
 		var free := Bypass.clear_distance(body,d,reach,width,length,height)
 		var blocked := free<reach-.05
 		var stalled := Bypass.stalled(entry,body,delta)
+		if Bypass.cooperate(entry,body,world.street_geometry,width,length,height,delta,stalled,target): continue
+		if bool(entry.get("cooperative_rejoin",false)):
+			entry.cooperative_rejoin = false
+			entry.detour = []
+			entry.index = Bypass.rejoin_index(body,route,int(entry.index),world.street_geometry,width,length,height)
+			continue
 		entry.cooldown = maxf(0.0,float(entry.cooldown)-delta)
 		var speed := minf(3.2 if active else float(spec.speed)*.65,maxf(.75,distance))
 		if blocked: speed = minf(speed,sqrt(10.0*maxf(0.0,free-.55)))
