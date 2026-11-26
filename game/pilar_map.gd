@@ -195,7 +195,7 @@ func load_map() -> bool:
 			if seen.has(pair):
 				continue
 			seen[pair] = true
-			var edge := {"a":a,"b":b,"a_id":a_id,"b_id":b_id,"width":width,"name":street,"kind":kind,"portal":portal,"driveable":driveable}
+			var edge := {"a":a,"b":b,"a_id":a_id,"b_id":b_id,"width":width,"name":street,"kind":kind,"portal":portal,"driveable":driveable,"aliases":[String(t.get("alt_name","")),String(t.get("old_name","")),String(t.get("official_name","")),String(t.get("loc_name",""))]}
 			roads.append(edge)
 			_index(road_cells,a.min(b)-Vector3(width*.5+3,0,width*.5+3),a.max(b)+Vector3(width*.5+3,0,width*.5+3),edge)
 			if street!="Calle sin nombre": names[street] = true
