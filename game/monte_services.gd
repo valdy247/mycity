@@ -68,7 +68,9 @@ func _new_site(p: Vector3,d: Vector3,width: float) -> Dictionary:
 	for previous in sites:
 		var old: Vector3 = previous.curb
 		if old.distance_to(curb)<65.0: return {}
-	var root := Node3D.new()
+	var root := StaticBody3D.new()
+	root.collision_layer = 1
+	root.collision_mask = 0
 	add_child(root)
 	root.position = curb+Vector3.UP*.07
 	root.rotation.y = atan2(d.x,d.z)
@@ -76,6 +78,12 @@ func _new_site(p: Vector3,d: Vector3,width: float) -> Dictionary:
 		_part(root,Vector3(0,.44,float(z)),Vector3(.65,.82,1.0),Color("#2f6389"))
 		_part(root,Vector3(0,.87,float(z)),Vector3(.72,.09,1.06),Color("#344d59"))
 		_part(root,Vector3(-.35,.20,float(z)),Vector3(.07,.19,.70),Color("#252d31"))
+		var collider := CollisionShape3D.new()
+		var shape := BoxShape3D.new()
+		shape.size = Vector3(.65,.88,1.0)
+		collider.shape = shape
+		root.add_child(collider)
+		collider.position = Vector3(0,.44,float(z))
 	var site := {"root":root,"curb":curb+Vector3.UP*.07,"parking":parking,"direction":d,"bags":[],"refill":0.0}
 	sites.append(site)
 	_fill(site)
@@ -85,7 +93,7 @@ func _fill(site: Dictionary) -> void:
 	var root: Node3D = site.root
 	var bags: Array = site.bags
 	for i in range(7):
-		var p := Vector3(-.05+float(i%2)*.15,.20+float(i/3)*.12,-1.35+float(i%3)*.36)
+		var p := Vector3(-.05+float(i%2)*.15,.20+floorf(float(i)/3.0)*.12,-1.35+float(i%3)*.36)
 		if i>=3: p = Vector3(0,.98+float((i-3)%2)*.10,-.65+float(i-3)*.38)
 		var bag := _part(root,p,Vector3(.38,.34,.40),[Color("#353935"),Color("#ccc5ac"),Color("#8a806b")][i%3],bag_mesh)
 		bag.rotation.y = float(i)*.86
@@ -99,7 +107,7 @@ func _body(truck: bool,index: int) -> CharacterBody3D:
 	body.collision_layer = 1
 	body.collision_mask = 1|4
 	add_child(body)
-	var paint := Color("#537c72") if truck else [Color("#a47155"),Color("#6990a1"),Color("#a7a19a")][index%3]
+	var paint: Color = Color("#537c72") if truck else [Color("#a47155"),Color("#6990a1"),Color("#a7a19a")][index%3]
 	var black := Color("#303538")
 	var glass := Color("#587681")
 	var width := 2.3 if truck else 1.83
@@ -159,6 +167,8 @@ func _make_vehicle(route: Array,truck: bool,index: int) -> void:
 		if not clear: continue
 		var next: Vector3 = route[(i+1)%route.size()].p
 		var d := (next-p).normalized()
+		if item.has("stop"): d = item.stop.direction
+		if not Bypass._on_road(world.street_geometry,p,d,2.3 if truck else 1.83,6.2 if truck else 4.25): continue
 		if d.length_squared()<.1: continue
 		if not _free_box(p,d,Vector3(2.3 if truck else 1.83,2.7 if truck else 1.5,6.2 if truck else 4.25)): continue
 		start = i
