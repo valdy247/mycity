@@ -10,7 +10,20 @@ const COLS := 8
 const ROWS := 4
 const TOTAL := COLS*ROWS*4
 const OLD_PAINT := Color("#a99d88")
-const NEW_PAINT := Color("#f1e6cb")
+const BLUE := Color("#4c92c9")
+const YELLOW := Color("#e9bf43")
+const DOOR_SURFACE := 4
+var buckets: Array[Node3D] = []
+var worker_charge := 0
+var worker_color := ""
+var worker_phase := "choose"
+var worker_job: Dictionary = {}
+var warning_clock := 0.0
+var farewell := false
+var farewell_time := 0.0
+var follow_stall := 0.0
+var hand_tip: MeshInstance3D
+var worker_tip: MeshInstance3D
 var game
 var world
 var business
@@ -49,6 +62,21 @@ func setup(controller) -> void:
 	var life: Dictionary = business.ledger.life_data
 	if not life.has("carlos_paint"): life.carlos_paint = {"stage":0,"painted":{},"brush":false,"charge":0}
 	state = life.carlos_paint
+	if int(state.get("paint_version",0))<2:
+		var converted: Dictionary = {}
+		for key in state.painted:
+			var parts := String(key).split(":")
+			if parts.size()!=3: continue
+			var wall := int(parts[0])
+			var x := int(parts[1])
+			var y := int(parts[2])
+			if wall<0 or wall>=4 or x<0 or x>=COLS or y<0 or y>=ROWS or _covered(wall,x,y): continue
+			converted[key] = "blue"
+		state.painted = converted
+		state.paint_version = 2
+		state.color = "blue"
+		state.charge = 0
+		_save()
 	# Re-enter the client house to resume a partially painted job.
 	marker = Node3D.new()
 	add_child(marker)
@@ -276,7 +304,7 @@ func objective() -> String:
 		1: return "Carlos te llama · P: teléfono"
 		2: return "Busca a Carlos en Flores y Estévez."
 		3: return "Ve con Carlos a casa del cliente."
-		4: return "Pinta todas las paredes · %d%%" % roundi(100.0*float(state.painted.size())/float(TOTAL))
+		4: return "Paredes azules · puerta amarilla · %d%% correcto" % roundi(100.0*float(_correct_count())/float(TOTAL))
 		5:
 			if String(game.garage.state.part)=="bicicleta:wheel_a": return "Misión cumplida · instala la goma en tu garaje."
 			return ""
@@ -319,11 +347,13 @@ func _aim_door_at(site: Dictionary) -> bool:
 
 func action_text() -> String:
 	if inside:
-		if _stage()==4 and state.painted.size()>=TOTAL and _aim_node(client,Vector3.UP,Vector3(.45,.95,.35)): return "[E] Cobrar al cliente"
+		if _stage()==4 and _finished() and _aim_node(client,Vector3.UP,Vector3(.45,.95,.35)): return "[E] Cobrar al cliente"
 		if not bool(state.brush) and _aim_node(brush_item,Vector3.ZERO,Vector3(.28,.16,.28)): return "[E] Recoger brocha"
-		if bool(state.brush) and _aim_node(bucket,Vector3.ZERO,Vector3(.32,.32,.32)): return "[E] Mojar brocha"
+		if bool(state.brush) and _stage()==4:
+			for i in range(buckets.size()):
+				if _aim_node(buckets[i],Vector3.ZERO,Vector3(.32,.32,.32)): return "[E] Mojar brocha · "+("Azul" if i==0 else "Amarillo")
 		if _exit_aim(): return "[E] Salir de la casa"
-		if bool(state.brush): return "Clic izquierdo: pintar · carga %d/12" % int(state.charge)
+		if bool(state.brush): return "Clic izquierdo: pintar · %s · carga %d/12" % ["Azul" if String(state.get("color","blue"))=="blue" else "Amarillo",int(state.charge)]
 		return "Mira la brocha del suelo y pulsa E"
 	if _stage()==2 and _aim_node(carlos,Vector3.UP,Vector3(.38,.95,.35)): return "[E] Hablar con Carlos"
 	if _stage() in [3,4] and _aim_door(): return "[E] Entrar a casa del cliente"
@@ -339,7 +369,9 @@ func interact() -> bool:
 			_refresh_hand()
 			_save()
 		elif action.contains("Mojar"):
+			state.color = "blue" if action.contains("Azul") else "yellow"
 			state.charge = 12
+			_refresh_hand()
 			_save()
 		elif action.contains("Salir"): _exit()
 		return true
@@ -348,6 +380,8 @@ func interact() -> bool:
 			business._notify("Deja primero lo que llevas en las manos.")
 			return true
 		state.stage = 3
+		follow_clock = 0.0
+		follow_stall = 0.0
 		business._notify("Carlos: Vamos, es aquí cerca. Te sigo.")
 		_target(customer,"Casa del cliente")
 		_save()
@@ -378,48 +412,38 @@ func _make_room() -> void:
 		var p := Vector3(sign_value*3.95,1.4,0) if side else Vector3(0,1.4,sign_value*2.95)
 		var body := _solid(p,Vector3(.10,2.8,6) if side else Vector3(8,2.8,.10),OLD_PAINT)
 		body.set_meta("paint_wall",i)
-		var quad := QuadMesh.new()
-		quad.size = Vector2(5.8 if side else 7.8,2.8)
-		var visual := MeshInstance3D.new()
-		visual.mesh = quad
-		room.add_child(visual)
-		visual.position = p-(Vector3.RIGHT if side else Vector3.BACK)*sign_value*.056
-		visual.rotation.y = (-sign_value*PI*.5 if side else (PI if sign_value>0 else 0.0))
-		var img := Image.create(COLS,ROWS,false,Image.FORMAT_RGB8)
-		img.fill(OLD_PAINT)
-		for y in range(ROWS):
-			for x in range(COLS):
-				if state.painted.has(_cell_key(i,x,y)): img.set_pixel(x,y,NEW_PAINT)
-		var tex := ImageTexture.create_from_image(img)
-		var mat := StandardMaterial3D.new()
-		mat.albedo_texture = tex
-		mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
-		visual.material_override = mat
-		visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		walls.append(visual)
-		images.append(img)
-		textures.append(tex)
+		_add_surface(i,p-(Vector3.RIGHT if side else Vector3.BACK)*sign_value*.056,Vector2(5.8 if side else 7.8,2.8),-sign_value*PI*.5 if side else (PI if sign_value>0 else 0.0))
+	# Door covers exactly six wall cells; these are not counted as wall.
+	var door := _solid(Vector3(0,1.05,2.83),Vector3(1.95,2.10,.10),Color("#79644e"))
+	door.set_meta("paint_wall",DOOR_SURFACE)
+	_add_surface(DOOR_SURFACE,Vector3(0,1.05,2.774),Vector2(1.95,2.10),PI)
+	business._box(room,Vector3(.78,1.05,2.72),Vector3(.12,.08,.10),Color("#514a40"))
 	var light := OmniLight3D.new()
 	room.add_child(light)
 	light.position = Vector3(0,2.65,0)
 	light.omni_range = 10.0
 	light.light_energy = 1.5
-	bucket = Node3D.new()
-	room.add_child(bucket)
-	bucket.position = Vector3(0,.25,0)
-	var can := CylinderMesh.new()
-	can.top_radius = .22
-	can.bottom_radius = .19
-	can.height = .42
-	can.radial_segments = 12
-	var mesh := MeshInstance3D.new()
-	mesh.mesh = can
-	mesh.material_override = business._mat(Color("#537c86"))
-	bucket.add_child(mesh)
-	business._box(bucket,Vector3(0,.22,0),Vector3(.29,.03,.29),NEW_PAINT)
+	buckets.clear()
+	for i in range(2):
+		var can_root := Node3D.new()
+		room.add_child(can_root)
+		can_root.position = Vector3(-.65 if i==0 else .15,.25,0)
+		var can := CylinderMesh.new()
+		can.top_radius = .22
+		can.bottom_radius = .19
+		can.height = .42
+		can.radial_segments = 12
+		var mesh := MeshInstance3D.new()
+		mesh.mesh = can
+		mesh.material_override = business._mat(Color("#537c86"))
+		can_root.add_child(mesh)
+		business._box(can_root,Vector3(0,.22,0),Vector3(.29,.03,.29),BLUE if i==0 else YELLOW)
+		business._label(can_root,"AZUL" if i==0 else "AMARILLO",Vector3(0,.42,0))
+		buckets.append(can_root)
+	bucket = buckets[0]
 	brush_item = Node3D.new()
 	room.add_child(brush_item)
-	brush_item.position = Vector3(.55,.07,0)
+	brush_item.position = Vector3(.85,.07,.55)
 	_make_brush(brush_item)
 	_make_brush(brush_item,Vector3(.25,0,.15))
 	brush_item.visible = not bool(state.brush)
@@ -431,13 +455,17 @@ func _make_room() -> void:
 	carlos.arms[1].add_child(worker_brush)
 	worker_brush.position = Vector3(0,-.51,.045)
 	worker_brush.rotation.x = PI*.5
-	_make_brush(worker_brush)
+	worker_tip = _make_brush(worker_brush)
+	worker_charge = 0
+	worker_phase = "choose"
+	worker_job = {}
+	work_clock = 0.0
 	_refresh_hand()
 	_refresh_client()
 
-func _make_brush(root: Node3D,offset: Vector3 = Vector3.ZERO) -> void:
+func _make_brush(root: Node3D,offset: Vector3 = Vector3.ZERO) -> MeshInstance3D:
 	business._box(root,offset+Vector3(0,0,.10),Vector3(.07,.06,.23),Color("#95633d"))
-	business._box(root,offset+Vector3(0,0,-.08),Vector3(.16,.055,.15),Color("#cab99a"))
+	return business._box(root,offset+Vector3(0,0,-.08),Vector3(.16,.055,.15),Color("#cab99a"))
 
 func _refresh_hand() -> void:
 	if not is_instance_valid(hand):
@@ -445,8 +473,9 @@ func _refresh_hand() -> void:
 		game.play_camera.add_child(hand)
 		hand.position = Vector3(.28,-.30,-.72)
 		hand.rotation.x = -.5
-		_make_brush(hand)
-	hand.visible = inside and bool(state.brush) and state.painted.size()<TOTAL
+		hand_tip = _make_brush(hand)
+	hand.visible = inside and _stage()==4 and bool(state.brush) and not _finished()
+	if is_instance_valid(hand_tip): hand_tip.material_override = business._mat(_paint_color(String(state.get("color","blue"))) if int(state.charge)>0 else Color("#cab99a"))
 
 func _enter() -> void:
 	inside = true
@@ -461,6 +490,7 @@ func _enter() -> void:
 	game.pitch = -.20
 	game.pivot.rotation = Vector3(game.pitch,game.yaw,0)
 	game._apply_camera_mode()
+	business._notify("Carlos: Azul para las paredes, amarillo para la puerta. Recoge una brocha y mójala en la lata correcta.")
 	_save()
 
 func _exit_aim() -> bool:
@@ -472,7 +502,7 @@ func _exit_aim() -> bool:
 	var depth := (2.88-origin.z)/direction.z
 	if depth<=0.0 or depth>3.0: return false
 	var p := origin+direction*depth
-	return absf(p.x)<.65 and p.y>.05 and p.y<2.65
+	return absf(p.x)<.975 and p.y>.05 and p.y<2.10
 
 func _destroy_room() -> void:
 	if is_instance_valid(hand): hand.hide()
@@ -485,6 +515,7 @@ func _destroy_room() -> void:
 	walls.clear()
 	images.clear()
 	textures.clear()
+	buckets.clear()
 
 func _exit() -> void:
 	inside = false
@@ -495,10 +526,15 @@ func _exit() -> void:
 	game.first_person = previous_first
 	game._apply_camera_mode()
 	if _stage()==4:
-		_spawn_carlos(point)
+		_spawn_carlos(_companion_exit(point))
 		_target(customer,"Casa del cliente")
 	else:
-		if is_instance_valid(carlos): carlos.hide()
+		_spawn_carlos(_companion_exit(point))
+		farewell = true
+		farewell_time = 0.0
+		follow_path = PackedVector3Array()
+		follow_index = 0
+		business._notify("Carlos: Bueno, dale mano. Nos vemos después. Lleva esa goma al garaje.")
 		if not world.garage_home_site.is_empty(): game.garage._set_waypoint(world.garage_home_site.door,"Mi garaje")
 	_save()
 
@@ -514,17 +550,69 @@ func reset() -> void:
 func _cell_key(wall: int,x: int,y: int) -> String:
 	return "%d:%d:%d" % [wall,x,y]
 
-func _paint_cell(wall: int,x: int,y: int) -> bool:
+func _covered(wall: int,x: int,y: int) -> bool:
+	return wall==1 and x in [3,4] and y>=1
+
+func _columns(wall: int) -> int:
+	return 2 if wall==DOOR_SURFACE else COLS
+
+func _rows(wall: int) -> int:
+	return 3 if wall==DOOR_SURFACE else ROWS
+
+func _required(wall: int) -> String:
+	return "yellow" if wall==DOOR_SURFACE else "blue"
+
+func _paint_color(color: String) -> Color:
+	return BLUE if color=="blue" else YELLOW
+
+func _correct_count() -> int:
+	var count := 0
+	for wall in range(5):
+		for y in range(_rows(wall)):
+			for x in range(_columns(wall)):
+				if _covered(wall,x,y): continue
+				if String(state.painted.get(_cell_key(wall,x,y),""))==_required(wall): count += 1
+	return count
+
+func _finished() -> bool:
+	return _correct_count()==TOTAL
+
+func _add_surface(wall: int,p: Vector3,dimensions: Vector2,angle: float) -> void:
+	var quad := QuadMesh.new()
+	quad.size = dimensions
+	var visual := MeshInstance3D.new()
+	visual.mesh = quad
+	room.add_child(visual)
+	visual.position = p
+	visual.rotation.y = angle
+	var img := Image.create(_columns(wall),_rows(wall),false,Image.FORMAT_RGB8)
+	img.fill(Color("#79644e") if wall==DOOR_SURFACE else OLD_PAINT)
+	for y in range(_rows(wall)):
+		for x in range(_columns(wall)):
+			var color := String(state.painted.get(_cell_key(wall,x,y),""))
+			if color in ["blue","yellow"]: img.set_pixel(x,y,_paint_color(color))
+	var tex := ImageTexture.create_from_image(img)
+	var mat := StandardMaterial3D.new()
+	mat.albedo_texture = tex
+	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	visual.material_override = mat
+	visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	walls.append(visual)
+	images.append(img)
+	textures.append(tex)
+
+func _paint_cell(wall: int,x: int,y: int,color: String) -> bool:
+	if _covered(wall,x,y) or not color in ["blue","yellow"]: return false
 	var key := _cell_key(wall,x,y)
-	if state.painted.has(key): return false
-	state.painted[key] = true
+	if String(state.painted.get(key,""))==color: return false
+	state.painted[key] = color
 	paint_dirty = true
-	images[wall].set_pixel(x,y,NEW_PAINT)
+	images[wall].set_pixel(x,y,_paint_color(color))
 	textures[wall].update(images[wall])
 	return true
 
 func _paint() -> void:
-	if not bool(state.brush) or int(state.charge)<=0: return
+	if not bool(state.brush) or int(state.charge)<=0 or _finished(): return
 	var camera: Camera3D = game.play_camera
 	var origin := camera.global_position
 	var ray := PhysicsRayQueryParameters3D.create(origin,origin-camera.global_basis.z*2.8,1)
@@ -535,14 +623,88 @@ func _paint() -> void:
 	var mesh := walls[wall]
 	var quad := mesh.mesh as QuadMesh
 	var local := mesh.to_local(hit.position)
-	var x := clampi(floori((local.x/quad.size.x+.5)*COLS),0,COLS-1)
-	var y := clampi(floori((.5-local.y/quad.size.y)*ROWS),0,ROWS-1)
-	if _paint_cell(wall,x,y):
+	var x := clampi(floori((local.x/quad.size.x+.5)*_columns(wall)),0,_columns(wall)-1)
+	var y := clampi(floori((.5-local.y/quad.size.y)*_rows(wall)),0,_rows(wall)-1)
+	var color := String(state.get("color","blue"))
+	if _paint_cell(wall,x,y,color):
 		state.charge = int(state.charge)-1
-		if is_instance_valid(hand): hand.rotation.x = -.5+sin(float(state.painted.size())*1.8)*.22
+		if is_instance_valid(hand): hand.rotation.x = -.5+sin(float(state.charge)*1.8)*.22
+		_refresh_hand()
+		if color!=_required(wall) and warning_clock<=0.0:
+			warning_clock = 6.0
+			business._notify("Carlos: ¡Ey, recuerda! Azul para la pared y amarillo para la puerta.")
+
+func _worker_next() -> Dictionary:
+	for wall in [2,0,1,3,4]:
+		for y in range(_rows(wall)):
+			for x in range(_columns(wall)):
+				if _covered(wall,x,y): continue
+				var color := String(state.painted.get(_cell_key(wall,x,y),""))
+				if color==_required(wall): continue
+				if wall==2 or not color.is_empty(): return {"wall":wall,"x":x,"y":y,"color":_required(wall),"repair":not color.is_empty() and color!=_required(wall)}
+	return {}
+
+func _worker_position(job: Dictionary) -> Vector3:
+	var wall := int(job.wall)
+	var mesh := walls[wall]
+	var quad := mesh.mesh as QuadMesh
+	var x := (float(job.x)+.5)/float(_columns(wall))-.5
+	var point := mesh.to_global(Vector3(x*quad.size.x,0,.65))
+	point.y = ROOM.y
+	point.x = clampf(point.x,ROOM.x-3.1,ROOM.x+3.1)
+	point.z = clampf(point.z,ROOM.z-2.2,ROOM.z+2.2)
+	return point
+
+func _worker_tick(delta: float) -> void:
+	if not is_instance_valid(carlos) or _finished():
+		if is_instance_valid(carlos): carlos.animate(delta,false)
+		return
+	if worker_phase=="choose":
+		worker_job = _worker_next()
+		if worker_job.is_empty():
+			carlos.animate(delta,false)
+			return
+		worker_phase = "refill_walk" if worker_charge<=0 or worker_color!=String(worker_job.color) else "walk"
+		work_clock = 0.0
+	if worker_phase=="refill_walk":
+		var can := buckets[0 if String(worker_job.color)=="blue" else 1]
+		var at := can.global_position+Vector3(0,-.25,-.65)
+		if carlos.walk_to(at,delta,1.8):
+			worker_phase = "dip"
+			work_clock = 0.0
+		return
+	if worker_phase=="dip":
+		work_clock += delta
+		carlos.rotation.y = 0.0
+		carlos.arms[1].rotation.x = -.35+sin(work_clock*5.0)*.22
+		carlos.rotation.x = .35*sin(minf(1.0,work_clock)*PI)
+		if work_clock>=1.0:
+			carlos.rotation.x = 0.0
+			worker_charge = 12
+			worker_color = String(worker_job.color)
+			if is_instance_valid(worker_tip): worker_tip.material_override = business._mat(_paint_color(worker_color))
+			worker_phase = "walk"
+		return
+	if worker_phase=="walk":
+		if carlos.walk_to(_worker_position(worker_job),delta,1.8):
+			worker_phase = "paint"
+			work_clock = 0.0
+		return
+	work_clock += delta
+	var wall := int(worker_job.wall)
+	var facing := -walls[wall].global_basis.z
+	carlos.rotation.y = atan2(facing.x,facing.z)
+	carlos.arms[1].rotation.x = -1.65+float(worker_job.y)*.35+sin(work_clock*8.0)*.18
+	if work_clock>=.85:
+		if _paint_cell(wall,int(worker_job.x),int(worker_job.y),worker_color):
+			worker_charge -= 1
+			if bool(worker_job.repair) and warning_clock<=0.0:
+				warning_clock = 6.0
+				business._notify("Carlos: Voy a corregir esta parte, mano.")
+		worker_phase = "choose"
 
 func _refresh_client() -> void:
-	if state.painted.size()<TOTAL or is_instance_valid(client): return
+	if not _finished() or is_instance_valid(client): return
 	client = Person.new()
 	add_child(client)
 	client.setup(945)
@@ -553,12 +715,12 @@ func _refresh_client() -> void:
 	_refresh_hand()
 
 func _payment() -> void:
-	if _stage()!=4 or state.painted.size()<TOTAL: return
+	if _stage()!=4 or not _finished(): return
 	business._open("Cliente","Asere, me robaron el dinero al salir del cajero. No tengo efectivo. Tengo una goma de bicicleta en buen estado. ¿Te sirve como pago?")
 	business._button("Aceptar la goma",_accept_wheel)
 
 func _accept_wheel() -> void:
-	if _stage()!=4 or state.painted.size()<TOTAL: return
+	if _stage()!=4 or not _finished(): return
 	if not game.garage.receive_paint_wheel():
 		business._notify("Libera las manos para recibir la goma.")
 		return
@@ -571,8 +733,36 @@ func _accept_wheel() -> void:
 	_save()
 	business.close()
 	_refresh_hand()
-	business._notify("MISIÓN CUMPLIDA · Una goma para empezar")
-	_exit()
+	business._notify("MISIÓN CUMPLIDA · Sal de la casa con la goma y vuelve a tu garaje.")
+	if not world.garage_home_site.is_empty(): game.garage._set_waypoint(world.garage_home_site.door,"Mi garaje")
+	_save()
+
+func _companion_exit(point: Vector3) -> Vector3:
+	for offset in [Vector3(1.1,0,0),Vector3(-1.1,0,0),Vector3(0,0,1.1),Vector3(0,0,-1.1)]:
+		var ground := _ground(point+offset)
+		if not ground.is_empty() and world.pedestrian_space_clear(carlos,ground.p,.65,false): return ground.p
+	return point
+
+func _farewell_tick(delta: float) -> void:
+	if not is_instance_valid(carlos): 
+		farewell = false
+		return
+	farewell_time += delta
+	if farewell_time<2.0:
+		carlos.animate(delta,false)
+		return
+	if follow_path.is_empty() and not home.is_empty():
+		follow_path = game.monte_pedestrians.route_between(carlos.global_position,home.p)
+		if follow_path.is_empty(): follow_path = PackedVector3Array([home.p]) if world.pedestrian_segment_clear(carlos.global_position,home.p) else PackedVector3Array()
+	if follow_index<follow_path.size():
+		var next := follow_path[follow_index]
+		var step := carlos.global_position.move_toward(next,delta*1.8)
+		if world.pedestrian_segment_clear(carlos.global_position,step) and world.pedestrian_space_clear(carlos,step):
+			if carlos.walk_to(next,delta,1.8): follow_index += 1
+	if follow_index>=follow_path.size() or farewell_time>60.0:
+		if carlos.global_position.distance_to(game.player.global_position)>20.0 or (not home.is_empty() and carlos.global_position.distance_to(home.p)<1.0):
+			carlos.hide()
+			farewell = false
 
 func _follow(delta: float) -> void:
 	if not is_instance_valid(carlos): return
@@ -582,6 +772,7 @@ func _follow(delta: float) -> void:
 		was_vehicle = true
 		return
 	var target: Vector3 = game.player.global_position-Vector3.UP*.86
+	if target.distance_to(customer.p)<7.0: target = customer.p
 	if was_vehicle:
 		# Passenger ride uses existing taxi/van; find a free sidewalk exit.
 		for offset in [Vector3(1.2,0,0),Vector3(-1.2,0,0),Vector3(0,0,1.2),Vector3(0,0,-1.2),Vector3.ZERO]:
@@ -603,15 +794,28 @@ func _follow(delta: float) -> void:
 		follow_clock = 1.0
 		var ground := _ground(target)
 		if not ground.is_empty(): target = ground.p
-		if world.pedestrian_segment_clear(carlos.global_position,target):
+		if carlos.global_position.distance_to(target)<8.0 and world.pedestrian_segment_clear(carlos.global_position,target):
 			follow_path = PackedVector3Array([target])
-		else: follow_path = game.monte_pedestrians.route_between(carlos.global_position,target)
+		else:
+			follow_path = game.monte_pedestrians.route_between(carlos.global_position,target)
+			if follow_path.is_empty(): follow_path = game.monte_pedestrians.route_between(carlos.global_position,customer.p)
 		follow_index = 0
 	if follow_index>=follow_path.size(): return
 	var next := follow_path[follow_index]
 	var step := carlos.global_position.move_toward(next,delta*3.6)
 	if world.pedestrian_segment_clear(carlos.global_position,step) and world.pedestrian_space_clear(carlos,step):
+		follow_stall = 0.0
 		if carlos.walk_to(next,delta,3.6): follow_index += 1
+	else:
+		follow_stall += delta
+		var heading := (next-carlos.global_position).normalized()
+		var side := Vector3(-heading.z,0,heading.x)
+		for sign_value in [-1.0,1.0]:
+			var candidate := step+side*float(sign_value)*minf(.15,delta*3.6)
+			if world.pedestrian_segment_clear(carlos.global_position,candidate) and world.pedestrian_space_clear(carlos,candidate):
+				carlos.walk_to(candidate,delta,3.6)
+				break
+		if follow_stall>2.0: follow_clock = 0.0
 
 func tick(delta: float) -> void:
 	if _stage()==0:
@@ -624,7 +828,10 @@ func tick(delta: float) -> void:
 		business.phone_ring.play()
 		open_call()
 		return
-	if _stage()==1 or _stage()==5: return
+	if _stage()==1: return
+	if _stage()==5:
+		if farewell: _farewell_tick(delta)
+		return
 	if not inside and not is_instance_valid(carlos):
 		locate_wait -= delta
 		if locate_wait>0.0: return
@@ -634,7 +841,7 @@ func tick(delta: float) -> void:
 		_target(home if _stage()==2 else customer,"Casa de Carlos · Flores y Estévez" if _stage()==2 else "Casa del cliente")
 	if inside:
 		if business.modal_open() or _stage()!=4: return
-		work_clock += delta
+		warning_clock = maxf(0.0,warning_clock-delta)
 		brush_clock += delta
 		paint_save_clock += delta
 		if paint_dirty and paint_save_clock>=2.0:
@@ -642,25 +849,11 @@ func tick(delta: float) -> void:
 			paint_save_clock = 0.0
 			_save()
 		if is_instance_valid(client): client.walk_to(ROOM+Vector3(1.4,0,1.7),delta,1.4)
-		# Carlos paints one wall independently; the player finishes the rest.
-		if work_clock>=2.0:
-			work_clock = 0.0
-			for y in range(ROWS):
-				var done := false
-				for x in range(COLS):
-					if _paint_cell(2,x,y):
-						done = true
-						# Move Carlos along the wall as he finishes each section.
-						var z := -2.45+float(x)*.70
-						carlos.global_position = ROOM+Vector3(-3.0,0,z)
-						carlos.arms[1].rotation.x = -1.7+float(y)*.35
-						break
-				if done: break
-			if is_instance_valid(carlos) and state.painted.size()>=TOTAL: carlos.arms[1].rotation.x = 0.0
+		_worker_tick(delta)
 		if brush_clock>=.13 and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
 			brush_clock = 0.0
 			_paint()
-		if state.painted.size()>=TOTAL and paint_dirty:
+		if _finished() and paint_dirty:
 			paint_dirty = false
 			_save()
 		_refresh_client()
