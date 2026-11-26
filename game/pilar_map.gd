@@ -460,3 +460,171 @@ func lane_offset(a: Vector3,b: Vector3,vehicle_width: float,curbside: bool = fal
 			best = score
 			road = edge
 	return Vector3(-d.z,0,d.x)*lane_distance(road,vehicle_width,curbside)
+
+# Recover the actual bounded street face even when a geocoder pin sits
+# on its entrance, a street alias is missing, or a service spur enters it.
+func _market_street_term(edge: Dictionary) -> String:
+	var values: Array = [String(edge.get("name",""))]
+	values.append_array(edge.get("aliases",[]))
+	for value in values:
+		var n := normalized(String(value))
+		if n.contains("monte") or n.contains("maximo gomez"): return "monte"
+		if n.contains("matadero"): return "matadero"
+		if n.contains("cristina") or n.contains("mexico"): return "cristina"
+		if n.contains("arroyo"): return "arroyo"
+	return ""
+
+func _market_area(poly: PackedVector2Array) -> float:
+	var area := 0.0
+	for i in range(poly.size()): area += poly[i].cross(poly[(i+1)%poly.size()])
+	return area*.5
+
+func _market_pair(a: String,b: String) -> String:
+	return a+":"+b if a<b else b+":"+a
+
+func _market_face_distance(poly: PackedVector2Array,p: Vector2) -> float:
+	if Geometry2D.is_point_in_polygon(p,poly): return 0.0
+	var best := INF
+	for i in range(poly.size()):
+		best = minf(best,p.distance_to(Geometry2D.get_closest_point_to_segment(p,poly[i],poly[(i+1)%poly.size()])))
+	return best
+
+func market_street_block(anchor: Vector3) -> Dictionary:
+	var adjacency: Dictionary = {}
+	var edge_by_pair: Dictionary = {}
+	for edge in roads:
+		if not bool(edge.driveable): continue
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		if a.distance_to(anchor)>240.0 or b.distance_to(anchor)>240.0: continue
+		var first := String(edge.a_id)
+		var second := String(edge.b_id)
+		if not adjacency.has(first): adjacency[first] = []
+		if not adjacency.has(second): adjacency[second] = []
+		adjacency[first].append(second)
+		adjacency[second].append(first)
+		edge_by_pair[_market_pair(first,second)] = edge
+	# Peel dead ends from the perimeter search; they are not block sides.
+	var queue: Array = []
+	var peeled: Dictionary = {}
+	for id in adjacency:
+		if adjacency[id].size()<2: queue.append(id)
+	while not queue.is_empty():
+		var id := String(queue.pop_back())
+		if not adjacency.has(id) or adjacency[id].size()>=2: continue
+		for other in adjacency[id].duplicate():
+			peeled[_market_pair(id,String(other))] = true
+			adjacency[other].erase(id)
+			if adjacency[other].size()<2: queue.append(other)
+		adjacency.erase(id)
+	for id in adjacency:
+		var center: Vector3 = points[id]
+		adjacency[id].sort_custom(func(a,b):
+			var u: Vector3 = points[a]-center
+			var v: Vector3 = points[b]-center
+			return atan2(u.z,u.x)<atan2(v.z,v.x))
+	var visited: Dictionary = {}
+	var best: Dictionary = {}
+	var best_score := INF
+	var pin := Vector2(anchor.x,anchor.z)
+	for id in adjacency:
+		for neighbor in adjacency[id]:
+			var start := String(id)
+			var second := String(neighbor)
+			var a := start
+			var b := second
+			var ids: Array = []
+			var closed := false
+			for step in range(250):
+				var directed := a+">"+b
+				if visited.has(directed):
+					closed = a==start and b==second
+					break
+				visited[directed] = true
+				ids.append(a)
+				var around: Array = adjacency.get(b,[])
+				var at := around.find(a)
+				if at<0 or around.size()<2: break
+				var next := String(around[posmod(at-1,around.size())])
+				a = b
+				b = next
+			if not closed or ids.size()<3: continue
+			var unique: Dictionary = {}
+			var poly := PackedVector2Array()
+			var terms: Dictionary = {}
+			var perimeter: Dictionary = {}
+			var max_width := 0.0
+			var midpoint := Vector2.ZERO
+			for i in range(ids.size()):
+				var node := String(ids[i])
+				var next := String(ids[(i+1)%ids.size()])
+				unique[node] = true
+				var p: Vector3 = points[node]
+				var v := Vector2(p.x,p.z)
+				poly.append(v)
+				midpoint += v
+				var pair := _market_pair(node,next)
+				perimeter[pair] = true
+				var edge: Dictionary = edge_by_pair[pair]
+				var term := _market_street_term(edge)
+				if not term.is_empty(): terms[term] = true
+				max_width = maxf(max_width,float(edge.width))
+			if unique.size()!=ids.size(): continue
+			var area := _market_area(poly)
+			# The other winding is the exterior of the local network.
+			if area<1800.0 or area>30000.0: continue
+			if Geometry2D.triangulate_polygon(poly).is_empty(): continue
+			midpoint /= float(poly.size())
+			var distance := _market_face_distance(poly,pin)
+			if distance>45.0 or midpoint.distance_to(pin)>125.0: continue
+			# Require geographic evidence: known boundary streets, or a
+			# large block containing the exact published market location.
+			if terms.size()<2 and (distance>2.0 or midpoint.distance_to(pin)>65.0 or area<3200.0): continue
+			var score := distance*3.0+midpoint.distance_to(pin)*.28-float(terms.size())*24.0
+			if score>=best_score: continue
+			best_score = score
+			best = {"poly":poly,"perimeter":perimeter,"width":max_width,"terms":terms,"area":area}
+	if best.is_empty(): return {}
+	# Only remove dead-end links that were peeled and lie INSIDE this
+	# selected block. Never delete perimeter or through-street links.
+	var block: PackedVector2Array = best.poly
+	var removed: Dictionary = {}
+	for edge in roads:
+		var a := String(edge.a_id)
+		var b := String(edge.b_id)
+		var key := _market_pair(a,b)
+		if best.perimeter.has(key): continue
+		var eligible := peeled.has(key) or (not bool(edge.driveable) and String(edge.get("kind","")) in ["service","footway","path","pedestrian","steps"])
+		if not eligible or not _market_street_term(edge).is_empty(): continue
+		var p: Vector3 = edge.a
+		var q: Vector3 = edge.b
+		var inside := true
+		for fraction in [.12,.35,.65,.88]:
+			var v := p.lerp(q,float(fraction))
+			if not Geometry2D.is_point_in_polygon(Vector2(v.x,v.z),block): inside = false
+		if inside: removed[key] = true
+	best["removed"] = removed
+	return best
+
+func remove_market_spurs(block: Dictionary) -> void:
+	var removed: Dictionary = block.get("removed",{})
+	if removed.is_empty(): return
+	for i in range(roads.size()-1,-1,-1):
+		var edge: Dictionary = roads[i]
+		var a := String(edge.a_id)
+		var b := String(edge.b_id)
+		if not removed.has(_market_pair(a,b)): continue
+		if graph.has(a): graph[a].erase(b)
+		if graph.has(b): graph[b].erase(a)
+		for id in [a,b]:
+			if junctions.has(id):
+				junctions[id].erase(edge)
+				if junctions[id].is_empty(): junctions.erase(id)
+		roads.remove_at(i)
+	road_cells.clear()
+	for edge in roads:
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		var radius := float(edge.width)*.5+3.0
+		_index(road_cells,a.min(b)-Vector3(radius,0,radius),a.max(b)+Vector3(radius,0,radius),edge)
+	print("Cuatro Caminos: ",removed.size()," accesos interiores retirados; calles exteriores intactas.")
