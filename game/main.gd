@@ -10,6 +10,8 @@ const UrbanBuses = preload("res://urban_buses.gd")
 const BusinessMission = preload("res://business_mission.gd")
 const HomeGarage = preload("res://home_garage.gd")
 var garage: HomeGarage
+const CarlosMission = preload("res://carlos_mission.gd")
+var carlos_mission: CarlosMission
 const StreetMarket = preload("res://street_market.gd")
 var street_market: StreetMarket
 const Backpack = preload("res://backpack.gd")
@@ -189,6 +191,11 @@ func _ready() -> void:
 		add_child(backpack)
 		backpack.setup(self)
 		business.backpack_inventory = backpack.open_inventory
+		carlos_mission = CarlosMission.new()
+		add_child(carlos_mission)
+		carlos_mission.setup(self)
+		business.carlos_call = carlos_mission.open_call
+		business.carlos_objective = carlos_mission.objective
 		incidents = CityIncidents.new()
 		add_child(incidents)
 		incidents.setup(self)
@@ -540,6 +547,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			pivot.rotation = Vector3(pitch,yaw,0)
 		return
 	if business!=null and not bus_riding and not building_mode and not (taxis!=null and taxis.dialog.visible) and event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode==KEY_I and carlos_mission!=null and carlos_mission.inside: return
 		if event.keycode==KEY_I and backpack!=null and not driving and not taxi_riding and not (garage!=null and garage.riding):
 			backpack.open_inventory()
 			return
@@ -590,6 +598,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		pilar_editor.handle(event)
 		return
 	if pilar_editor != null and not driving and not (garage!=null and garage.inside) and event is InputEventMouseButton and event.pressed and event.button_index==MOUSE_BUTTON_RIGHT:
+		if carlos_mission!=null and carlos_mission.inside: return
 		context_requested = true
 		return
 	if builder != null and builder.active:
@@ -598,7 +607,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if building_mode:
 		return
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_B:
-		if garage!=null and garage.inside: return
+		if (garage!=null and garage.inside) or (carlos_mission!=null and carlos_mission.inside): return
 		if pilar_editor != null:
 			if not driving:
 				_open_pilar_editor(player.global_position,false)
@@ -617,6 +626,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.keycode == KEY_ESCAPE:
 			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		elif event.keycode == KEY_V and player != null and not driving:
+			if carlos_mission!=null and carlos_mission.inside: return
 			first_person = not first_person
 			_apply_camera_mode()
 		elif event.keycode == KEY_R and player != null:
@@ -936,6 +946,7 @@ func _face_cuba_home() -> void:
 	pivot.rotation = Vector3(pitch,yaw,0)
 
 func _reset_player() -> void:
+	if carlos_mission!=null: carlos_mission.reset()
 	if garage!=null: garage.reset()
 	if monte_services!=null:
 		monte_services.return_player_bag()
@@ -1025,7 +1036,8 @@ func _update_hud() -> void:
 		status.text += "\nW/S: acelerar y retroceder | A/D: girar | Espacio: frenar\nE: salir detenido | R: reiniciar | Esc: liberar mouse"
 	else:
 		status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
-		var action := backpack.action_text() if backpack!=null else ""
+		var action := carlos_mission.action_text() if carlos_mission!=null else ""
+		if action.is_empty() and backpack!=null: action = backpack.action_text()
 		if action.is_empty(): action = _albertico_action()
 		if action.is_empty() and garage!=null: action = garage.action_text(player.global_position)
 		if action.is_empty() and street_market!=null: action = street_market.action_text()
@@ -1082,7 +1094,8 @@ func _update_compact_hud() -> void:
 	elif driving:
 		lines.append("%d km/h · [E] Bajar detenido" % roundi(absf(drive_speed)*3.6))
 	else:
-		var action := backpack.action_text() if backpack!=null else ""
+		var action := carlos_mission.action_text() if carlos_mission!=null else ""
+		if action.is_empty() and backpack!=null: action = backpack.action_text()
 		if action.is_empty(): action = _albertico_action()
 		if action.is_empty() and garage!=null: action = garage.action_text(player.global_position)
 		if action.is_empty() and street_market!=null: action = street_market.action_text()
@@ -1280,6 +1293,7 @@ func _bus_priority_notice(stop: Dictionary,bus: CharacterBody3D) -> void:
 func _physics_process(delta: float) -> void:
 	if player == null:
 		return
+	if carlos_mission!=null and not building_mode: carlos_mission.tick(delta)
 	if incidents!=null and not building_mode and not business.modal_open(): incidents.tick(delta)
 	if backpack!=null and not building_mode: backpack.tick(delta)
 	if street_market!=null:
@@ -1441,6 +1455,10 @@ func _physics_process(delta: float) -> void:
 			elif not _safe_exit():
 				exit_message = "No hay espacio para salir. Mueve la van."
 				message_time = 2.0
+		elif carlos_mission!=null and carlos_mission.interact():
+			player.velocity = Vector3.ZERO
+			_update_hud()
+			return
 		elif backpack!=null and backpack.interact():
 			player.velocity = Vector3.ZERO
 			return
