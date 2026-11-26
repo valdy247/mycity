@@ -2,6 +2,8 @@ extends Node3D
 const MapData = preload("res://pilar_map.gd")
 const StreetGeometry = preload("res://street_geometry.gd")
 const Planner = preload("res://urban_bus_routes.gd")
+const StreetPerson = preload("res://street_person.gd")
+var alight_handler: Callable
 const BUS_LENGTH := 9.4
 const BUS_WIDTH := 2.45
 const MAX_PASSENGERS := 18
@@ -382,15 +384,9 @@ func _set_bus_door(door: Node3D,opened: bool) -> void:
 		leaf.position.x = -.065 if opened else 0.0
 
 func _person(style: int) -> Node3D:
-	var root := Node3D.new()
+	var root := StreetPerson.new()
 	add_child(root)
-	var shirts: Array[Color] = [Color("#ad8954"),Color("#7197ad"),Color("#d0c2a4"),Color("#976f7f"),Color("#839975")]
-	var skin: Array[Color] = [Color("#c79a77"),Color("#886044"),Color("#ddb291")]
-	_part(root,Vector3(0,1.0,0),Vector3(.36,.53,.25),shirts[posmod(style,shirts.size())])
-	_part(root,Vector3(0,1.43,0),Vector3(.28,.31,.28),skin[posmod(style,skin.size())])
-	for side in [-1.0,1.0]:
-		_part(root,Vector3(float(side)*.10,.36,0),Vector3(.15,.62,.19),Color("#46525a"))
-		_part(root,Vector3(float(side)*.23,.96,0),Vector3(.12,.41,.13),skin[posmod(style,skin.size())])
+	root.setup(style)
 	return root
 
 func _queue_position(stop: Dictionary,index: int) -> Vector3:
@@ -409,14 +405,18 @@ func _add_waiter(stop: Dictionary) -> void:
 	queue.append({"node":person,"style":serial})
 
 func _walk(person: Node3D,target: Vector3,delta: float) -> bool:
-	var diff := target-person.position
-	if diff.length()<.12:
-		person.position = target
-		return true
-	var dir := diff.normalized()
-	person.rotation.y = atan2(dir.x,dir.z)
-	person.position = person.position.move_toward(target,delta*1.8)
+	if person is StreetPerson:
+		return (person as StreetPerson).walk_to(target,delta,1.8)
 	return false
+
+func join_stop(stop: Dictionary,person: Node3D) -> bool:
+	var queue: Array = stop.queue
+	if queue.size()>=4 or not person is StreetPerson: return false
+	var walker := person as StreetPerson
+	walker.reparent(self,true)
+	walker.show()
+	queue.append({"node":walker,"style":walker.style_id})
+	return true
 
 func _start_stop(bus: Dictionary,stop: Dictionary) -> void:
 	bus.active_stop = stop
@@ -448,8 +448,12 @@ func _transfer_tick(bus: Dictionary,delta: float) -> void:
 				person.queue_free()
 				bus.served = int(bus.served)+1
 			else:
-				var departing: Array = stop.departing
-				departing.append({"node":person,"time":2.0,"target":exit_point+stop_direction*2.0})
+				var accepted := false
+				if alight_handler.is_valid():
+					accepted = bool(alight_handler.call(person))
+				if not accepted:
+					var departing: Array = stop.departing
+					departing.append({"node":person,"time":12.0,"target":exit_point+stop_direction*8.0})
 			bus.transfer = {}
 		return
 	# Alight passengers whose destination was this stop before boarding.
@@ -539,6 +543,6 @@ func tick(delta: float) -> void:
 				person.queue_free()
 				departing.remove_at(i)
 		stop.cooldown = maxf(0.0,float(stop.cooldown)-elapsed)
-		if float(stop.cooldown)<=0.0 and queue.size()<3:
+		if float(stop.cooldown)<=0.0 and queue.size()<3 and not bool(stop.get("pedestrian_managed",false)):
 			_add_waiter(stop)
 			stop.cooldown = 12.0
