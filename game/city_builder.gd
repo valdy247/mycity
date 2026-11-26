@@ -5,7 +5,13 @@ const ROAD_STEP := 0.25
 const ROAD_N := 33
 const ROAD_LIFT := 0.18
 const LIMIT := 300
-const SAVE_PATH := "user://mycity_buildings_v1.json"
+var save_path := "user://mycity_buildings_v1.json"
+var native_city := false
+var reserved: Dictionary = {}
+var box_meshes: Dictionary = {}
+
+func reserve_cell(x: int, z: int, kind: String = "lot") -> void:
+	reserved[_key(x,z)] = kind
 const TYPES := ["road", "cross", "house", "shop", "school", "park"]
 const LABELS := ["Calle", "Cruce", "Casa", "Tienda", "Escuela", "Parque"]
 var active := false
@@ -29,7 +35,7 @@ func _ready() -> void:
 	camera = Camera3D.new()
 	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
 	camera.size = 55.0
-	camera.far = 350.0
+	camera.far = 800.0
 	add_child(camera)
 	valid_mat = _color("valid", Color(0.18, 0.9, 0.42, 0.45), true)
 	invalid_mat = _color("invalid", Color(0.95, 0.18, 0.20, 0.48), true)
@@ -54,10 +60,12 @@ func _color(key: String, color: Color, transparent: bool = false) -> StandardMat
 	return mat
 
 func _box(parent: Node3D, p: Vector3, size: Vector3, mat: StandardMaterial3D) -> MeshInstance3D:
-	var mesh := BoxMesh.new()
-	mesh.size = size
+	if not box_meshes.has(size):
+		var mesh := BoxMesh.new()
+		mesh.size = size
+		box_meshes[size] = mesh
 	var ob := MeshInstance3D.new()
-	ob.mesh = mesh
+	ob.mesh = box_meshes[size] as BoxMesh
 	ob.material_override = mat
 	parent.add_child(ob)
 	ob.position = p
@@ -170,10 +178,10 @@ func handle(event: InputEvent) -> void:
 		elif event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			camera.size = maxf(22.0, camera.size - 6.0)
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			camera.size = minf(115.0, camera.size + 6.0)
+			camera.size = minf(320.0 if native_city else 115.0, camera.size + 6.0)
 
 func _update_camera() -> void:
-	camera.position = focus + Vector3(0, 48, 34)
+	camera.position = focus + Vector3(0, 48, 34) * maxf(1.0,camera.size/55.0)
 	camera.look_at(focus, Vector3.UP)
 
 func _key(x: int, z: int) -> String:
@@ -205,10 +213,24 @@ func _assessment(cell: Vector2i) -> Dictionary:
 	var key := _key(cell.x, cell.y)
 	if selected == "delete":
 		return {"ok": pieces.has(key), "y": float(pieces[key]["y"]) if pieces.has(key) else 0.0, "reason": "Eliminar pieza" if pieces.has(key) else "Solo puedes borrar tus construcciones"}
-	if absf(x) > 72.0 or absf(z) > 104.0:
+	if absf(x) > (248.0 if native_city else 72.0) or absf(z) > (248.0 if native_city else 104.0):
 		return {"ok": false, "y": 0.0, "reason": "Fuera de la ciudad"}
 	if pieces.has(key):
 		return {"ok": false, "y": float(pieces[key]["y"]), "reason": "Casilla ocupada"}
+	if native_city:
+		if reserved.has(key):
+			return {"ok":false,"y":0.055,"reason":"Zona original protegida"}
+		if pieces.size() >= LIMIT:
+			return {"ok":false,"y":0.055,"reason":"Limite de piezas"}
+		var check := PhysicsShapeQueryParameters3D.new()
+		var check_shape := BoxShape3D.new()
+		check_shape.size = Vector3(7.7,5.0,7.7)
+		check.shape = check_shape
+		check.transform = Transform3D(Basis.IDENTITY,Vector3(x,2.6,z))
+		check.collision_mask = 1|4
+		if not get_world_3d().direct_space_state.intersect_shape(check,1).is_empty():
+			return {"ok":false,"y":0.055,"reason":"Hay un objeto en ese lugar"}
+		return {"ok":true,"y":0.055,"bottom":-0.065,"reason":"Listo para construir","road_heights":[]}
 	var heights: Array[float] = []
 	for dx in [-3.7, 0.0, 3.7]:
 		for dz in [-3.7, 0.0, 3.7]:
@@ -276,8 +298,8 @@ func tick(delta: float) -> void:
 	if Input.is_physical_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT): move.x -= 1
 	if Input.is_physical_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT): move.x += 1
 	focus += move.normalized() * camera.size * delta * 0.65
-	focus.x = clampf(focus.x, -78.0, 78.0)
-	focus.z = clampf(focus.z, -108.0, 108.0)
+	focus.x = clampf(focus.x, -250.0 if native_city else -78.0, 250.0 if native_city else 78.0)
+	focus.z = clampf(focus.z, -250.0 if native_city else -108.0, 250.0 if native_city else 108.0)
 	_update_camera()
 	var cell := _cell()
 	var result := _assessment(cell)
@@ -319,6 +341,9 @@ func _make_model(root: Node3D, kind: String, physical: bool, foundation: float) 
 		_solid(root, Vector3(0, -base_depth / 2.0, 0), Vector3(8, base_depth, 8), 2)
 	if road:
 		if kind == "road":
+			if native_city:
+				for side in [-1.0,1.0]:
+					_box(root,Vector3(float(side)*3.65,.018,0),Vector3(.65,.036,8),concrete)
 			for z in [-3.0, 0.0, 3.0]:
 				_box(root, Vector3(0, 0.012, z), Vector3(0.10, 0.024, 1.5), line)
 		else:
@@ -371,6 +396,21 @@ func _make_model(root: Node3D, kind: String, physical: bool, foundation: float) 
 		if kind == "school":
 			_box(root, Vector3(x, 3.52, depth/2 + 0.04), Vector3(1.3, 0.85, 0.08), glass)
 	_box(root, Vector3(0, 0.06, 3.2), Vector3(1.15, 0.08, 1.5), concrete)
+
+# Cover existing sidewalk bands only at connected starter-road entrances.
+func _connect_native_road(root: Node3D,x: int,z: int,turn: int,kind: String) -> void:
+	var patch := _color("asphalt",Color(0.20,0.23,0.27))
+	for d in [Vector2i(-1,0),Vector2i(1,0),Vector2i(0,-1),Vector2i(0,1)]:
+		var direction: Vector2i = d
+		if reserved.get(_key(x+direction.x,z+direction.y),"") != "road":
+			continue
+		if kind == "road" and ((turn%2==0 and direction.x!=0) or (turn%2==1 and direction.y!=0)):
+			continue
+		var local := Vector3(direction.x*4.32,.045,direction.y*4.32).rotated(Vector3.UP,-turn*PI/2.0)
+		var size := Vector3(.72,.02,6.5) if direction.x!=0 else Vector3(6.5,.02,.72)
+		if turn%2==1:
+			size=Vector3(size.z,size.y,size.x)
+		_box(root,local,size,patch)
 
 func _solid(root: Node3D, p: Vector3, size: Vector3, layer: int) -> void:
 	var body := StaticBody3D.new()
@@ -516,7 +556,7 @@ func _road_mesh(parent: Node3D, samples: Array, base_y: float, grid_x: int, grid
 func _add_piece(kind: String, x: int, z: int, y: float, bottom: float, turn: int, road_heights: Array = []) -> bool:
 	var road: bool = kind in ["road","cross"]
 	var dense: Array = []
-	if road:
+	if road and not native_city:
 		dense = _dense_road_samples(x,z)
 		if dense.size() != ROAD_N * ROAD_N:
 			pending_message = "No se pudo ajustar la calle al terreno."
@@ -533,10 +573,12 @@ func _add_piece(kind: String, x: int, z: int, y: float, bottom: float, turn: int
 	add_child(root)
 	root.position = Vector3(x * GRID, y, z * GRID)
 	root.rotation.y = turn * PI / 2.0
-	if road:
+	if road and not native_city:
 		_road_mesh(root, dense, y, x, z, turn, kind)
 	else:
 		_make_model(root, kind, true, y-bottom)
+		if road and native_city:
+			_connect_native_road(root,x,z,turn,kind)
 	# Keep the compact old format; dense road meshes are regenerated on load.
 	pieces[_key(x,z)] = {"kind": kind, "x": x, "z": z, "y": y, "bottom": bottom, "turn": turn, "road_heights": road_heights, "node": root}
 	return true
@@ -554,21 +596,21 @@ func _save_city() -> void:
 		var record: Dictionary = value.duplicate()
 		record.erase("node")
 		records.append(record)
-	var file := FileAccess.open(SAVE_PATH + ".tmp", FileAccess.WRITE)
+	var file := FileAccess.open(save_path + ".tmp", FileAccess.WRITE)
 	if file == null:
 		pending_message = "No se pudo guardar."
 		message_timer = 4.0
 		return
 	file.store_string(JSON.stringify({"version": 1, "pieces": records}))
 	file.close()
-	var err := DirAccess.rename_absolute(ProjectSettings.globalize_path(SAVE_PATH + ".tmp"), ProjectSettings.globalize_path(SAVE_PATH))
+	var err := DirAccess.rename_absolute(ProjectSettings.globalize_path(save_path + ".tmp"), ProjectSettings.globalize_path(save_path))
 	pending_message = "Ciudad guardada" if err == OK else "Error al guardar la ciudad"
 	message_timer = 2.0
 
 func _load_city() -> void:
-	if not FileAccess.file_exists(SAVE_PATH):
+	if not FileAccess.file_exists(save_path):
 		return
-	var file := FileAccess.open(SAVE_PATH, FileAccess.READ)
+	var file := FileAccess.open(save_path, FileAccess.READ)
 	if file == null:
 		return
 	var data: Variant = JSON.parse_string(file.get_as_text())
@@ -585,7 +627,7 @@ func _load_city() -> void:
 		var y := float(raw.get("y", 999))
 		var bottom := float(raw.get("bottom", 999))
 		var turn := int(raw.get("turn", 0))
-		if abs(x) > 9 or abs(z) > 13 or not is_finite(y) or not is_finite(bottom) or absf(y) > 20 or y-bottom < 0 or (y-bottom > 3.0 and not kind in ["road","cross"]) or turn < 0 or turn > 3 or pieces.has(_key(x,z)):
+		if abs(x) > (31 if native_city else 9) or abs(z) > (31 if native_city else 13) or reserved.has(_key(x,z)) or not is_finite(y) or not is_finite(bottom) or absf(y) > 20 or y-bottom < 0 or (y-bottom > 3.0 and not kind in ["road","cross"]) or turn < 0 or turn > 3 or pieces.has(_key(x,z)):
 			continue
 		var samples: Array = []
 		if raw.get("road_heights") is Array:
