@@ -66,6 +66,31 @@ func _initialize() -> void:
 	replay.stage = 3
 	garage._restart_carlos_once()
 	_check(int(replay.stage)==3,"replay migration runs only once")
+	# Phone purchase availability does not install any parts.
+	garage.state.inventory["bicicleta:wheel_b"] = 1
+	_check(garage._part_already_available("bicicleta","wheel_b"),"already purchased part cannot be ordered twice")
+	garage._part_menu("bicicleta","wheel_b")
+	_check(int(garage.state.inventory["bicicleta:wheel_b"])==1 and not bool(garage.state.projects.bicicleta.get("wheel_b",false)),"no installation outside the garage")
+	garage.state.paint_tool = "brush"
+	garage.state.paint_active = ""
+	garage.state.paint_charge = 0
+	garage.state.paint_stock = {"azul":Garage.CAN_CAPACITY}
+	for i in range(10):
+		garage._dip_home_brush("azul")
+		_check(int(garage.state.paint_charge)==Garage.BRUSH_LOAD,"dip loads physical brush")
+		garage.state.paint_charge = 0
+	_check(int(garage.state.paint_stock.azul)==0,"one can covers exactly 100 fresh paint strokes")
+	garage._dip_home_brush("azul")
+	_check(int(garage.state.paint_charge)==0,"empty can cannot refill")
+	garage.state.floor_marks = {}
+	var spot := Garage.ROOM+Vector3(2,0,2)
+	garage._floor_mark(spot,"azul")
+	_check(String(garage.state.floor_marks.get(garage._floor_key(spot),""))=="azul","paint spill persists")
+	garage._sweep_at(spot)
+	_check(garage.state.floor_marks.is_empty(),"broom clears paint spill")
+	garage._floor_mark(spot,"dirt")
+	garage._sweep_at(spot)
+	_check(garage.state.floor_marks.is_empty(),"broom clears house dirt")
 	mission.free()
 	garage.free()
 	business.free()
