@@ -10,6 +10,10 @@ var context_requested := false
 var cuba_world: CubaWorld
 var first_person := false
 var reticle: Label
+var performance_label: Label
+var low_graphics := true
+var hud_time := 0.0
+var fps_time := 0.0
 var city_world: CityWorld
 var native_city := true
 var spawn_position := Vector3(-2.4,1.0,5.5)
@@ -110,6 +114,7 @@ func _ready() -> void:
 		pilar_editor.setup(cuba_world)
 		first_person = true
 		_apply_camera_mode()
+		_apply_performance_mode()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 # Recognize terrain even when GLB import renames its mesh node or wraps it
@@ -242,7 +247,7 @@ func _make_player() -> void:
 	pivot.add_child(arm)
 	var cam := Camera3D.new()
 	cam.fov = 68.0
-	cam.far = 1400.0 if cuba_world != null else 800.0
+	cam.far = 320.0 if cuba_world != null else 800.0
 	arm.add_child(cam)
 	add_child(player)
 	player.position = spawn_position
@@ -279,7 +284,38 @@ func _make_hud() -> void:
 	reticle.offset_top = -24
 	reticle.offset_bottom = 24
 	reticle.hide()
+	performance_label = Label.new()
+	performance_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	canvas.add_child(performance_label)
+	performance_label.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	performance_label.offset_left = -240
+	performance_label.offset_right = -12
+	performance_label.offset_top = 8
+	performance_label.offset_bottom = 36
+	performance_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	performance_label.add_theme_color_override("font_shadow_color",Color.BLACK)
+	performance_label.add_theme_constant_override("shadow_offset_x",2)
+	performance_label.add_theme_constant_override("shadow_offset_y",2)
+	performance_label.visible = cuba_world != null
 	_update_hud()
+
+func _apply_performance_mode() -> void:
+	# Compatibility renderer: render the actual viewport at a smaller size,
+	# not Forward+ only FSR. The world keeps its geographic dimensions.
+	var window := get_window()
+	window.content_scale_mode = Window.CONTENT_SCALE_MODE_VIEWPORT
+	window.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
+	window.content_scale_size = Vector2i(960,540) if low_graphics else Vector2i(1280,720)
+	play_camera.far = 320.0 if low_graphics else 550.0
+	if pilar_editor != null:
+		pilar_editor.camera.far = 1000.0 if low_graphics else 1800.0
+
+func _process(delta: float) -> void:
+	fps_time += delta
+	if fps_time>=.5:
+		fps_time = 0.0
+		if performance_label != null and cuba_world != null:
+			performance_label.text = "%d FPS | %s | F6" % [Engine.get_frames_per_second(),"Rendimiento" if low_graphics else "Normal"]
 
 func _apply_camera_mode() -> void:
 	if player == null or arm == null:
@@ -295,6 +331,10 @@ func _apply_camera_mode() -> void:
 		reticle.visible = first_person and not driving and not building_mode
 
 func _unhandled_input(event: InputEvent) -> void:
+	if cuba_world != null and event is InputEventKey and event.pressed and not event.echo and event.keycode==KEY_F6:
+		low_graphics = not low_graphics
+		_apply_performance_mode()
+		return
 	if pilar_editor != null and pilar_editor.active:
 		pilar_editor.handle(event)
 		return
@@ -699,10 +739,11 @@ func _update_hud() -> void:
 	else:
 		status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
 		var action := city_world.interaction_text(player.global_position) if city_world != null else ""
+		var aimed: String = cuba_world.aimed_text(play_camera,player) if cuba_world != null and action.is_empty() else ""
 		if action != "":
 			status.text += "\n" + action
-		elif cuba_world != null and not cuba_world.aimed_text(play_camera,player).is_empty():
-			status.text += "\n"+cuba_world.aimed_text(play_camera,player)
+		elif cuba_world != null and not aimed.is_empty():
+			status.text += "\n"+aimed
 		elif _near_van():
 			status.text += "\n[E] Subir a la van"
 		elif van == null:
@@ -799,11 +840,15 @@ func _physics_process(delta: float) -> void:
 		elif Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and Input.is_physical_key_pressed(KEY_SPACE):
 			player.velocity.y = 5.5
 		player.move_and_slide()
-		_animate_avatar(delta, Vector2(player.velocity.x, player.velocity.z).length())
+		if not first_person:
+			_animate_avatar(delta, Vector2(player.velocity.x, player.velocity.z).length())
 		if player.global_position.y < -15 or absf(player.global_position.x) > (1255.0 if cuba_world != null else (258.0 if native_city else 90.0)) or absf(player.global_position.z) > (1255.0 if cuba_world != null else (258.0 if native_city else 120.0)):
 			_reset_player()
 		# Parked vehicle stays grounded; no dynamic vertical collision recovery.
-		if van != null:
+		if van != null and (cuba_world == null or not van_ground_initialized):
 			_support_van()
 	message_time = maxf(0.0, message_time - delta)
-	_update_hud()
+	hud_time += delta
+	if hud_time>=.12:
+		hud_time = 0.0
+		_update_hud()
