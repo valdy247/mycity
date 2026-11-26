@@ -4,6 +4,10 @@ const Person = preload("res://street_person.gd")
 const UrbanBuses = preload("res://urban_buses.gd")
 const MAX_WALKERS := 38
 const CELL := 4.0
+# A shared route priority: covered portal > sidewalk > curbside roadway.
+const PORTAL_COST := .62
+const SIDEWALK_COST := 1.0
+const ROAD_COST := 18.0
 var world: World
 var buses: UrbanBuses
 var graph := AStar3D.new()
@@ -56,54 +60,80 @@ func _clear(a: Vector3,b: Vector3) -> bool:
 	var space := get_world_3d().direct_space_state
 	var d := (b-a).normalized()
 	var side := Vector3(-d.z,0,d.x)*.22
-	for shift in [Vector3.ZERO,side,-side]:
-		var ray := PhysicsRayQueryParameters3D.create(a+Vector3.UP*.75+shift,b+Vector3.UP*.75+shift,1|4|8|16)
-		if not space.intersect_ray(ray).is_empty(): return false
+	# Check low obstructions, body and head, not just the centre of the torso.
+	for height in [.25,.75,1.35]:
+		for shift in [Vector3.ZERO,side,-side]:
+			var lift := Vector3.UP*float(height)
+			var ray := PhysicsRayQueryParameters3D.create(a+lift+shift,b+lift+shift,1|4|8|16)
+			if not space.intersect_ray(ray).is_empty(): return false
 	return true
 
-func _add(p: Vector3,covered: bool) -> int:
+func _add(p: Vector3,cost: float) -> int:
 	var ground := _ground(p)
 	if ground.is_empty(): return -1
 	var at: Vector3 = ground.p
 	for id in _near_ids(at,.45):
-		if covered: graph.set_point_weight_scale(int(id),.62)
+		graph.set_point_weight_scale(int(id),minf(cost,graph.get_point_weight_scale(int(id))))
 		return int(id)
 	var id := next_id
 	next_id += 1
-	graph.add_point(id,at,.62 if covered else 1.0)
+	graph.add_point(id,at,cost)
 	var key := _cell(at)
 	if not cells.has(key): cells[key] = []
 	cells[key].append(id)
 	return id
 
-func _run(a: Vector3,b: Vector3,covered: bool) -> void:
+func _run(a: Vector3,b: Vector3,cost: float) -> void:
 	var count := maxi(1,ceili(a.distance_to(b)/2.1))
 	for i in range(count+1):
-		_add(a.lerp(b,float(i)/float(count)),covered)
+		_add(a.lerp(b,float(i)/float(count)),cost)
 
 func _build() -> void:
 	# Start from the actual traversable portal strips created by CubaWorld.
 	for strip in world.monte_walkways:
-		_run(strip.a,strip.b,true)
-		var door := _add(strip.door,true)
+		_run(strip.a,strip.b,PORTAL_COST)
+		var door := _add(strip.door,PORTAL_COST)
 		if door>0: destinations.append({"id":door,"kind":String(strip.kind)})
-	# Connect the covered arcade to the exterior sidewalks of Monte.
+	# Extend the existing Monte network into adjoining streets without
+	# building a city-wide physics graph at startup.
+	var corridor_nodes: Dictionary = {}
 	for edge in world.geography.roads:
-		if not world._is_monte_edge(edge): continue
+		if world._is_monte_edge(edge):
+			corridor_nodes[edge.a_id] = true
+			corridor_nodes[edge.b_id] = true
+	var adjacent := corridor_nodes.duplicate()
+	for edge in world.geography.roads:
+		if corridor_nodes.has(edge.a_id) or corridor_nodes.has(edge.b_id):
+			adjacent[edge.a_id] = true
+			adjacent[edge.b_id] = true
+	for edge in world.geography.roads:
+		if not adjacent.has(edge.a_id) and not adjacent.has(edge.b_id): continue
 		var a: Vector3 = edge.a
 		var b: Vector3 = edge.b
+		if a.distance_to(b)<.15: continue
+		if not bool(edge.driveable):
+			_run(a,b,SIDEWALK_COST)
+			continue
 		var d := (b-a).normalized()
 		var right := Vector3(-d.z,0,d.x)
+		var half_width := float(edge.width)*.5
+		var count := maxi(1,ceili(a.distance_to(b)/2.0))
 		for side in [-1.0,1.0]:
-			var off := right*float(side)*(float(edge.width)*.5+.71)
-			var count := maxi(1,ceili(a.distance_to(b)/2.2))
+			var outward := right*float(side)
 			for i in range(count+1):
-				var p := a.lerp(b,float(i)/float(count))+off
-				if not world.street_geometry.point_on_road(p): _add(p,false)
+				var center := a.lerp(b,float(i)/float(count))
+				var sidewalk := center+outward*(half_width+.70)
+				if not world.street_geometry.point_on_road(sidewalk):
+					_add(sidewalk,SIDEWALK_COST)
+				# A costly alternative along the curb, never down the middle
+				# of the carriageway when there is room at the edge.
+				var curb := center+outward*maxf(0.0,half_width-.55)
+				if world.street_geometry.point_on_road(curb):
+					_add(curb,ROAD_COST)
 	if world.home_root!=null:
 		var home := world.home_root
-		_run(home.to_global(Vector3(-3.3,0,2.75)),home.to_global(Vector3(3.3,0,2.75)),true)
-		var home_id := _add(home.to_global(Vector3(1.25,0,2.65)),true)
+		_run(home.to_global(Vector3(-3.3,0,2.75)),home.to_global(Vector3(3.3,0,2.75)),PORTAL_COST)
+		var home_id := _add(home.to_global(Vector3(1.25,0,2.65)),PORTAL_COST)
 		if home_id>0: destinations.append({"id":home_id,"kind":"shop"})
 	for id in graph.get_point_ids():
 		var p := graph.get_point_position(id)
@@ -112,7 +142,11 @@ func _build() -> void:
 			var q := graph.get_point_position(int(other))
 			# Long connections over traffic lanes are not shortcuts.
 			var middle := p.lerp(q,.5)
-			if world.street_geometry.point_on_road(middle) and p.distance_to(q)>3.1: continue
+			var curb_link := graph.get_point_weight_scale(id)>=ROAD_COST or graph.get_point_weight_scale(int(other))>=ROAD_COST
+			if world.street_geometry.point_on_road(middle) and not curb_link and p.distance_to(q)>3.1: continue
+			# Don't connect across the full roadway just because two curb nodes
+			# happen to be within the graph search radius.
+			if curb_link and p.distance_to(q)>2.9: continue
 			if _clear(p,q): graph.connect_points(id,int(other),true)
 	# Bridge gaps at small side streets, only along unobstructed routes.
 	for id in graph.get_point_ids():
@@ -121,6 +155,8 @@ func _build() -> void:
 		for other in _near_ids(p,7.0):
 			if int(other)==id or graph.are_points_connected(id,int(other)): continue
 			var q := graph.get_point_position(int(other))
+			if graph.get_point_weight_scale(id)>=ROAD_COST or graph.get_point_weight_scale(int(other))>=ROAD_COST: continue
+			if world.street_geometry.point_on_road(p.lerp(q,.5)): continue
 			if _clear(p,q):
 				graph.connect_points(id,int(other),true)
 				break
@@ -142,7 +178,7 @@ func _nearest(p: Vector3,radius: float) -> int:
 	for id in _near_ids(p,radius):
 		if graph.get_point_connections(int(id)).is_empty(): continue
 		var dist := graph.get_point_position(int(id)).distance_to(p)
-		if dist<best:
+		if dist<best and _clear(p,graph.get_point_position(int(id))):
 			best = dist
 			found = int(id)
 	return found
@@ -213,6 +249,8 @@ func _populate() -> void:
 	for id in candidates:
 		if walkers.size()>=MAX_WALKERS or added>=6: break
 		if graph.get_point_connections(int(id)).is_empty(): continue
+		# Roadway nodes are for fallback travel, not ordinary population spawns.
+		if graph.get_point_weight_scale(int(id))>=ROAD_COST: continue
 		var p := graph.get_point_position(int(id))
 		if p.distance_to(at)<7.0: continue
 		var safe := true
@@ -271,5 +309,21 @@ func tick(delta: float) -> void:
 			agent.pause = 3.0+float(posmod(person.style_id,8)) if String(dest.get("kind","")) in ["shop","home"] else .5
 			continue
 		var p: Vector3 = path[index]
+		# Recheck the live scene: walkers use scripted movement rather than
+		# CharacterBody3D, so never advance into a new obstacle.
+		if person.global_position.distance_to(p)>.12 and not _clear(person.global_position,p):
+			person.animate(dt,false)
+			agent["blocked_time"] = float(agent.get("blocked_time",0.0))+dt
+			if float(agent.blocked_time)>=.65:
+				agent.blocked_time = 0.0
+				var from_id := -1
+				var to_id := graph.get_closest_point(p)
+				if index>0: from_id = graph.get_closest_point(path[index-1])
+				var disconnected := from_id>0 and to_id>0 and from_id!=to_id and graph.are_points_connected(from_id,to_id)
+				if disconnected: graph.disconnect_points(from_id,to_id,true)
+				_choose_route(agent)
+				if disconnected: graph.connect_points(from_id,to_id,true)
+			continue
+		agent["blocked_time"] = 0.0
 		if person.walk_to(p,dt,float(agent.speed)):
 			agent.index = index+1
