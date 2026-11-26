@@ -20,6 +20,7 @@ var destination: LineEdit
 var feedback: Label
 var arrived := false
 var speed_mode := 1
+var speed_choice: OptionButton
 const SPEEDS := [8.0,12.5,16.0]
 const SPEED_NAMES := ["Normal","Rápido","Exprés"]
 var mats: Dictionary = {}
@@ -190,7 +191,7 @@ func _make_dialog() -> void:
 	search_button.text = "Buscar"
 	search_button.pressed.connect(func(): _submit(destination.text))
 	search_row.add_child(search_button)
-	var speed_choice := OptionButton.new()
+	speed_choice = OptionButton.new()
 	for i in range(SPEEDS.size()):
 		speed_choice.add_item("%s · %d km/h" % [SPEED_NAMES[i],roundi(float(SPEEDS[i])*3.6)],i)
 	speed_choice.select(speed_mode)
@@ -235,6 +236,7 @@ func open_dialog(at: Vector3) -> bool:
 	selected = nearby(at)
 	if selected.is_empty(): return false
 	destination.clear()
+	speed_choice.select(speed_mode)
 	selected_route = {}
 	trip_confirmed = false
 	pending_query = ""
