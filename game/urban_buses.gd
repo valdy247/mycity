@@ -5,6 +5,8 @@ const Planner = preload("res://urban_bus_routes.gd")
 const TrafficBypass = preload("res://traffic_bypass.gd")
 const StreetPerson = preload("res://street_person.gd")
 var alight_handler: Callable
+signal stop_priority(stop: Dictionary,bus: CharacterBody3D)
+var horn_stream: AudioStreamWAV
 const BUS_LENGTH := 9.4
 const BUS_WIDTH := 2.45
 const MAX_PASSENGERS := 18
@@ -27,6 +29,7 @@ var player_exit_requested := false
 func setup(map_data: MapData,street_geometry: StreetGeometry,anchor: Vector3,avoid: Array) -> void:
 	data = map_data
 	streets = street_geometry
+	_make_horn()
 	safety_shape.size = Vector3(BUS_WIDTH+.12,2.96,BUS_LENGTH+.12)
 	planner.setup(data)
 	for line in ["MONTE","CERRO"]:
@@ -63,6 +66,49 @@ func setup(map_data: MapData,street_geometry: StreetGeometry,anchor: Vector3,avo
 		buses.append(bus)
 		avoid.append(body.position)
 	print("Guaguas urbanas: ",buses.size()," circuitos, ",stops.size()," paradas.")
+
+func _make_horn() -> void:
+	horn_stream = AudioStreamWAV.new()
+	horn_stream.format = AudioStreamWAV.FORMAT_16_BITS
+	horn_stream.mix_rate = 22050
+	var samples := PackedByteArray()
+	samples.resize(22050)
+	for i in range(11025):
+		var t := float(i)/22050.0
+		var envelope := minf(t/.025,1.0)*clampf((.50-t)/.08,0.0,1.0)
+		var pulse := 1.0 if t<.20 or t>.27 else 0.0
+		var wave := sin(t*TAU*310.0)*.65+sin(t*TAU*392.0)*.35
+		samples.encode_s16(i*2,int(wave*envelope*pulse*11000.0))
+	horn_stream.data = samples
+
+func _horn(body: CharacterBody3D) -> void:
+	var audio := body.get_node_or_null("Claxon") as AudioStreamPlayer3D
+	if audio==null:
+		audio = AudioStreamPlayer3D.new()
+		audio.name = "Claxon"
+		audio.stream = horn_stream
+		audio.unit_size = 9.0
+		audio.max_distance = 75.0
+		audio.volume_db = -5.0
+		body.add_child(audio)
+		audio.position = Vector3(0,1.2,4.3)
+	audio.play()
+
+# Only walkers in the actual vehicle corridor count as obstacles;
+# passengers waiting on the sidewalk do not trigger the horn.
+func _pedestrian_blocks(stop: Dictionary,body: CharacterBody3D) -> bool:
+	var center: Vector3 = stop.position
+	var d: Vector3 = stop.direction
+	var side := Vector3(-d.z,0,d.x)
+	var approach := maxf(0.0,(center-body.global_position).dot(d))
+	for node in get_tree().get_nodes_in_group("bus_yield_walkers"):
+		var person := node as Node3D
+		if person==null or not person.is_visible_in_tree(): continue
+		var offset := person.global_position-center
+		if absf(offset.y)>.8: continue
+		if absf(offset.dot(side))<BUS_WIDTH*.5+.32 and offset.dot(d)>=-approach-BUS_LENGTH*.5 and offset.dot(d)<=BUS_LENGTH*.5+.8:
+			return true
+	return false
 
 func _make_itinerary(route: Array[String],line: String) -> Array:
 	var result: Array = []
@@ -600,6 +646,24 @@ func tick(delta: float) -> void:
 		target.y = body.position.y
 		var diff := target-body.position
 		var distance := diff.length()
+		bus.horn_cooldown = maxf(0.0,float(bus.get("horn_cooldown",0.0))-delta)
+		var approaching_stop := not detouring and item.has("stop") and distance<22.0
+		var pedestrian_blocked := false
+		if approaching_stop:
+			pedestrian_blocked = _pedestrian_blocks(item.stop,body)
+			var berth := _safety_query(body,target,atan2(item.stop.direction.x,item.stop.direction.z))
+			var berth_blocked := not get_world_3d().direct_space_state.intersect_shape(berth,1).is_empty()
+			var approach_blocked := distance>.3 and _clear_distance(body,diff.normalized(),distance)<distance-.08
+			if pedestrian_blocked or berth_blocked or approach_blocked:
+				if float(bus.horn_cooldown)<=0.0:
+					bus.horn_cooldown = 3.5
+					_horn(body)
+					stop_priority.emit(item.stop,body)
+				# Never open doors or drive over a walker in the reserved berth.
+				if pedestrian_blocked or distance<.30:
+					body.velocity = Vector3.ZERO
+					bus.speed = 0.0
+					continue
 		if distance<.30:
 			body.velocity = Vector3.ZERO
 			if item.has("stop"):
@@ -625,6 +689,7 @@ func tick(delta: float) -> void:
 		if detouring: reach = maxf(2.0,current_speed*current_speed/(2.0*BUS_BRAKE)+1.2)
 		elif next_dir.length_squared()>.1 and d.dot(next_dir)<.85:
 			reach = minf(reach,distance+2.0)
+		if approaching_stop: reach = minf(reach,distance+.30)
 		var free := _clear_distance(body,d,reach)
 		var blocked := free<reach-.05
 		var safe_speed := sqrt(2.0*BUS_BRAKE*maxf(0.0,free-BUS_SAFE_GAP))
@@ -633,7 +698,7 @@ func tick(delta: float) -> void:
 		bus.bypass_cooldown = maxf(0.0,float(bus.get("bypass_cooldown",0.0))-delta)
 		if blocked:
 			bus.blocked = float(bus.blocked)+delta
-			if not detouring and float(bus.blocked)>.35 and float(bus.bypass_cooldown)<=0.0:
+			if not approaching_stop and not detouring and float(bus.blocked)>.35 and float(bus.bypass_cooldown)<=0.0:
 				bus.bypass_cooldown = 1.5
 				var choice := TrafficBypass.find(body,original,index,streets,BUS_WIDTH,BUS_LENGTH,data.signal_nodes)
 				if not choice.is_empty():
@@ -645,7 +710,7 @@ func tick(delta: float) -> void:
 					bus.speed = minf(current_speed,2.0)
 					body.velocity = Vector3.ZERO
 					continue
-			if not detouring and free<BUS_SAFE_GAP+.3 and current_speed<.1 and float(bus.blocked)>2.0:
+			if not approaching_stop and not detouring and free<BUS_SAFE_GAP+.3 and current_speed<.1 and float(bus.blocked)>2.0:
 				if _back_up(bus,body,delta):
 					bus.speed = 0.0
 					continue
