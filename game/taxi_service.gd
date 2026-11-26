@@ -561,6 +561,7 @@ func yield_to_bus(stop: Dictionary,bus: CharacterBody3D) -> void:
 		if absf(forward.dot(direction))<.8: continue
 		var left := Vector3(forward.z,0,-forward.x)
 		var origin := body.global_position
+		var four_lane := not streets.four_lane_at(origin,forward).is_empty()
 		var goal_distance := 0.0
 		# Stay on the current directed road, without jumping a junction.
 		var next_id := String(taxi.next_node)
@@ -570,14 +571,14 @@ func yield_to_bus(stop: Dictionary,bus: CharacterBody3D) -> void:
 		var candidates: Array = []
 		for distance in [9.0,12.0,16.0,20.0,24.0]:
 			if float(distance)>goal_distance: continue
-			for shift in [0.0,2.4,3.0]:
+			for shift in ([0.0] if four_lane else [0.0,2.4,3.0]):
 				var goal := origin+forward*float(distance)+left*float(shift)
 				var relative := goal-center
 				if absf(relative.dot(side))<2.75 and absf(relative.dot(direction))<9.0: continue
 				candidates.append({"distance":distance,"shift":shift})
 		# If the road ends too close, clear the berth laterally instead.
 		for shift in [2.7,3.2,3.7]:
-			if goal_distance>=4.0:
+			if not four_lane and goal_distance>=4.0:
 				candidates.append({"distance":minf(goal_distance,7.0),"shift":shift})
 		var shape := BoxShape3D.new()
 		shape.size = Vector3(2.0,1.65,4.9)
@@ -590,7 +591,7 @@ func yield_to_bus(stop: Dictionary,bus: CharacterBody3D) -> void:
 				var t := float(i)/float(steps)
 				var p := origin+forward*float(candidate.distance)*t+left*float(candidate.shift)*smoothstep(0.0,1.0,t)
 				var d := (p-last).normalized()
-				if not TrafficBypass._on_road(streets,p,d,1.90,4.80) or not TrafficBypass._clear(body,p,d,shape):
+				if (four_lane and not streets.in_carriageway(p,d,1.90,4.80)) or not TrafficBypass._on_road(streets,p,d,1.90,4.80) or not TrafficBypass._segment_clear(body,last,p,d,shape):
 					valid = false
 					break
 				points.append(p)
@@ -712,7 +713,7 @@ func tick(delta: float,_clock: float) -> void:
 		passenger.index = index
 		return
 	passenger.bypass_cooldown = maxf(0.0,float(passenger.get("bypass_cooldown",0.0))-delta)
-	if float(passenger.get("retreat_remaining",0.0))<=0.0 and stalled>1.0 and not stop_requested and float(passenger.signal_wait)<=0.0 and float(passenger.bypass_cooldown)<=0.0:
+	if float(passenger.get("retreat_remaining",0.0))<=0.0 and (stalled>1.0 or (not bool(waypoints[index].get("bypass",false)) and TrafficBypass.early_lane_pass(body,streets,blocked,free))) and not stop_requested and float(passenger.signal_wait)<=0.0 and float(passenger.bypass_cooldown)<=0.0:
 		passenger.bypass_cooldown = 1.8
 		# Discard only pending bypass samples, not the original destination.
 		var base := index
