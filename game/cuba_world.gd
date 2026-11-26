@@ -19,6 +19,8 @@ var home_cutaway: Array = []
 const INVENTORY_PATH := "user://pilar_atares_inventory.json"
 var geography := MapData.new()
 var home_root: Node3D
+var business_frontage: Node3D
+var custom_home_enabled := false
 var alborada_lot: Dictionary = {}
 var old_home_transform: Transform3D = Transform3D.IDENTITY
 var old_home_found := false
@@ -208,7 +210,7 @@ func _make_osm_streets() -> void:
 		var d := (b-a).normalized()
 		var right := Vector3(-d.z,0,d.x)
 		# Geometry comes from the shared polygon layer, not overlapping strips.
-		if a.distance_to(b)>8 and width>=8:
+		if a.distance_to(b)>8 and (width>=8 or _is_monte_edge(edge)) and bool(edge.driveable):
 			for i in range(int(a.distance_to(b)/9.0)):
 				var p := a+d*(float(i)*9.0+3.0)
 				if street_geometry.point_on_road(p) and street_geometry.point_on_road(p+d*2.5):
@@ -553,6 +555,7 @@ func _private_home_pin() -> Dictionary:
 
 func _is_monte_edge(edge: Dictionary) -> bool:
 	if not bool(edge.driveable): return false
+	if bool(edge.get("monte_corridor",false)): return true
 	for name_value in [String(edge.name)]+edge.get("aliases",[]):
 		var n := geography.normalized(String(name_value))
 		if geography.street_label(String(name_value))=="MONTE" or n.contains("monte") or n.contains("maximo gomez"):
@@ -786,54 +789,29 @@ func _make_frontages() -> void:
 			if c.distance_to(old_home_transform.origin)<.01:
 				pair = _pair_at_parked_van(candidate)
 				break
-	if pair.size()==2:
-		# Swap the existing premises, not the geographic anchors.
-		# Both lots have already passed the same street/sidewalk checks.
-		var former_home: Dictionary = pair[0]
-		var former_shop: Dictionary = pair[1]
-		# For an explicit GPS pin, pair[0] is already the requested home.
-		# Historical swaps apply ONLY to generated, non-GPS placements.
-		var residence: Dictionary = former_home.duplicate(true) if fixed_gps else former_shop.duplicate(true)
-		alborada_lot = former_shop.duplicate(true) if fixed_gps else former_home.duplicate(true)
-		residence.landmark = "home"
-		alborada_lot.landmark = "alborada"
-		var prior_front: Vector3 = former_home.front
-		var prior_center: Vector3 = former_home.center
-		old_home_transform = Transform3D(Basis(Vector3.UP,atan2(prior_front.x,prior_front.z)),prior_center)
-		old_home_found = true
-		_add_lot(residence)
-		_make_humble_home(residence)
-		_add_lot(alborada_lot)
-		_make_alborada(alborada_lot)
-		paired_landmarks = true
-		home_relocated = true
-		if not fixed_gps:
-			home_gps_status = "Casa y La Alborada: parcelas intercambiadas."
-		else:
-			var requested: Vector3 = gps.point
-			var tangent: Vector3 = residence.d
-			assert(absf((home_root.position-requested).dot(tangent))<.01,"La casa se desplazó a lo largo de Monte.")
-			assert(street_geometry.clear(_lot_polygon(residence)),"El portal invade el pavimento.")
-		print(home_gps_status)
-	elif pair.size()==1:
-		var residence: Dictionary = pair[0]
-		_add_lot(residence)
-		_make_humble_home(residence)
-		home_relocated = true
-		if fixed_gps:
-			var requested: Vector3 = gps.point
-			var tangent: Vector3 = residence.d
-			assert(absf((home_root.position-requested).dot(tangent))<.01,"La casa se desplazó a lo largo de Monte.")
-			assert(street_geometry.clear(_lot_polygon(residence)),"El portal invade el pavimento.")
-		push_warning("La Alborada necesita una parcela segura a la derecha de la casa.")
-	elif old_home_found and not fixed_gps:
+	# Keep the old GPS/layout on disk, but do not reserve or render the
+	# custom dwelling or its paired shop. Restore geographic frontages.
+	var anchor_lot: Dictionary = {}
+	if not pair.is_empty():
+		anchor_lot = pair[0] if fixed_gps or pair.size()==1 else pair[1]
+	elif old_home_found:
 		for lot in home_candidates:
 			var center: Vector3 = lot.center
 			if center.distance_to(old_home_transform.origin)<.01:
-				_add_lot(lot)
-				_make_humble_home(lot)
+				anchor_lot = lot
 				break
-		push_warning("Monte: no hay dos parcelas contiguas seguras. Usa clic derecho > Ubicar mi casa aquí en Monte.")
+	if not anchor_lot.is_empty():
+		var c: Vector3 = anchor_lot.center
+		var front: Vector3 = anchor_lot.front
+		var basis := Basis(Vector3.UP,atan2(front.x,front.z))
+		home_edge = anchor_lot.edge
+		home_spawn = c+basis*Vector3(0,.96,3.35)
+		old_home_transform = Transform3D(basis,c)
+		old_home_found = true
+	else:
+		home_edge = _nearest_street(public_anchor)
+		home_spawn = public_anchor+Vector3.UP*.96
+	home_gps_status = "Vivienda personalizada retirada · Monte en reconstrucción"
 	_reserve_food_factory(proposals)
 	# Keep special interiors from the prototype in small unrecorded lots.
 	proposals.sort_custom(func(a,b): return a.center.distance_squared_to(public_anchor)<b.center.distance_squared_to(public_anchor))
@@ -859,26 +837,118 @@ func _make_frontages() -> void:
 			continue
 		_add_lot(lot)
 		_facade(lot,slots.size(),"")
-	if home_root!=null:
-		_repark_home_van()
-	if home_root==null:
-		push_warning("Pilar-Atarés: "+home_gps_status)
-		if fixed_gps and gps.has("point"):
-			var requested: Vector3 = gps.point
-			var closest := _nearest_street(requested)
-			if not closest.is_empty():
-				var q := Geometry3D.get_closest_point_to_segment(requested,closest.a,closest.b)
-				home_spawn = q+Vector3.UP*.96
-				van_spawn = q+Vector3(0,.06,5)
-				return
-		var edge: Dictionary = geography.roads[0]
-		home_spawn = edge.a+Vector3.UP*.9
-		van_spawn = home_spawn+Vector3(0,0,5)
+	_fill_monte_frontage_gaps()
+	_place_temporary_business()
 
 # Extrude the original OSM polygon, not a rectangular approximation.
 # Combine the visible meshes and collision by spatial tile for the iGPU.
 # Fictional wholesale warehouse, reserved before generic buildings are
 # rendered. Its location uses the same local-metre road geometry as taxis.
+# Fill missing frontage in short, variable-width lots, leaving real
+# mapped footprints and protected street/sidewalk surfaces untouched.
+func _fill_monte_frontage_gaps() -> void:
+	for edge in geography.roads:
+		if not _is_monte_edge(edge): continue
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		var d := (b-a).normalized()
+		var length := a.distance_to(b)
+		if length<6.0: continue
+		var right := Vector3(-d.z,0,d.x)
+		for side in [-1.0,1.0]:
+			var outward := right*float(side)
+			var cursor := 2.0
+			while cursor<length-3.0:
+				var placed := false
+				for width_value in [8.8,6.0,4.0,2.8]:
+					var w := minf(float(width_value),length-2.0-cursor)
+					if w<2.8: continue
+					var p := a+d*(cursor+w*.5)
+					var c := p+outward*(float(edge.width)*.5+1.47+4.5)
+					var lot := {"center":c,"front":-outward,"edge":edge,"curb":p,"outward":outward,"d":d,"portal":true,"lot_width":w,"lot_depth":9.0}
+					var poly := _lot_polygon(lot)
+					if not street_geometry.clear(poly) or _overlaps_footprint(lot): continue
+					if not market_block.is_empty() and not Geometry2D.intersect_polygons(poly,market_block).is_empty(): continue
+					var free := true
+					for other in _lots_near(c):
+						if not Geometry2D.intersect_polygons(poly,_lot_polygon(other)).is_empty():
+							free = false
+							break
+					if not free: continue
+					_add_lot(lot)
+					_monte_infill(lot,slots.size())
+					cursor += w+.025
+					placed = true
+					break
+				if not placed: cursor += .65
+
+func _monte_infill(lot: Dictionary,index: int) -> void:
+	var c: Vector3 = lot.center
+	var front: Vector3 = lot.front
+	var basis := Basis(Vector3.UP,atan2(front.x,front.z))
+	var angle := atan2(front.x,front.z)
+	var w := float(lot.lot_width)
+	var h := float(2+index%2)*3.1
+	var paint := _mat("monte_wall"+str(index%7),_monte_color(index))
+	var lower := _mat("monte_shaded_infill"+str(index%7),_monte_color(index).darkened(.18))
+	var trim := _mat("monte_capital",Color("#d1c8b7"))
+	var shade := _mat("monte_portal_shade",Color("#817c71"))
+	var door := _mat("monte_joinery"+str(index%3),[Color("#397e8d"),Color("#496b62"),Color("#80604b")][index%3])
+	_local_cube(c,basis,Vector3(0,1.55,-1.43),Vector3(w-.015,3.1,6.1),lower,true)
+	_local_cube(c,basis,Vector3(0,3.05,0),Vector3(w-.015,.24,9.0),trim,true)
+	_local_cube(c,basis,Vector3(0,3.1+(h-3.1)*.5,0),Vector3(w-.015,h-3.1,9.0),paint,true)
+	_local_cube(c,basis,Vector3(0,.065,2.98),Vector3(w-.015,.13,3.0),shade,true)
+	var count := maxi(1,roundi(w/3.0))
+	for i in range(count):
+		var x := -w*.5+(float(i)+.5)*w/float(count)
+		_monte_column(c+basis*Vector3(x,0,4.12),3.0,paint,angle)
+		_local_cube(c,basis,Vector3(x,1.38,1.65),Vector3(minf(w/float(count)*.62,1.45),2.55,.075),door)
+		for floor in range(1,roundi(h/3.1)):
+			var y := float(floor)*3.1+1.50
+			_local_cube(c,basis,Vector3(x,y,4.53),Vector3(1.05,1.85,.08),door)
+			_local_cube(c,basis,Vector3(x,y-.96,4.68),Vector3(1.43,.14,.40),trim)
+	monte_walkways.append({"a":c+basis*Vector3(-w*.5+.15,0,2.85),"b":c+basis*Vector3(w*.5-.15,0,2.85),"door":c+basis*Vector3(0,0,2.10),"kind":"home"})
+
+func _place_temporary_business() -> void:
+	var requested := home_spawn
+	var chosen: Dictionary = {}
+	var best := INF
+	for strip in monte_walkways:
+		var a: Vector3 = strip.a
+		var b: Vector3 = strip.b
+		if a.distance_to(b)<2.0: continue
+		var p := (a+b)*.5
+		var door: Vector3 = strip.door
+		var toward := (p-door).normalized()
+		if toward.length_squared()<.5: continue
+		var score := p.distance_squared_to(requested)
+		if score<best:
+			best = score
+			chosen = {"p":p,"front":toward,"door":door,"a":a,"b":b}
+	if chosen.is_empty():
+		return
+	var front: Vector3 = chosen.front
+	var p: Vector3 = chosen.p
+	# Invisible interaction reference, not a dwelling or lot reservation.
+	business_frontage = Node3D.new()
+	business_frontage.name = "Puesto_temporal_Albertico"
+	add_child(business_frontage)
+	var basis := Basis(Vector3.UP,atan2(front.x,front.z))
+	business_frontage.transform = Transform3D(basis,p-basis*Vector3(-2.55,0,2.85))
+	home_spawn = p+Vector3.UP*.96+basis.x*.85
+	home_edge = _nearest_street(p)
+	if not home_edge.is_empty():
+		var a: Vector3 = home_edge.a
+		var b: Vector3 = home_edge.b
+		var d := (b-a).normalized()
+		var q := Geometry3D.get_closest_point_to_segment(p,a,b)
+		var side := Vector3(-d.z,0,d.x)
+		if side.dot(p-q)<0.0:
+			side = -side
+			d = -d
+		van_spawn = q+side*geography.lane_distance(home_edge,2.18,true)+Vector3.UP*.06
+		van_angle = atan2(d.x,d.z)
+
 func _reachable_food_nodes(start: String,reverse: bool = false) -> Dictionary:
 	var links: Dictionary = geography.graph
 	if reverse:
@@ -1659,7 +1729,7 @@ func _facade(lot: Dictionary,index: int,service: String) -> void:
 	if service=="LA ALBORADA":
 		plaster = _mat("alborada_wall",Color("#91a9a9"))
 		doors = _mat("alborada_blue",Color("#47677e"))
-	var portal: bool = bool(lot.get("portal",false))
+	var portal: bool = bool(lot.get("portal",false)) or monte
 	var face_z: float = 1.52 if portal else 4.43
 	# Deep covered portal, facade behind columns, upper floors above walkway.
 	if portal or service in ["BODEGA","HOSPITAL • LA DEPENDIENTE"]:
