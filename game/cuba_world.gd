@@ -270,8 +270,7 @@ func _lot_clear(center: Vector3,front: Vector3,edge: Dictionary) -> bool:
 	if not street_geometry.clear(candidate):
 		return false
 	for existing in _lots_near(center):
-		var other: Vector3 = existing.center
-		if center.distance_squared_to(other)<210.0 and not Geometry2D.intersect_polygons(candidate,_lot_polygon(existing)).is_empty():
+		if not Geometry2D.intersect_polygons(candidate,_lot_polygon(existing)).is_empty():
 			return false
 	return true
 
@@ -305,7 +304,8 @@ func _lot_polygon(lot: Dictionary) -> PackedVector2Array:
 
 func _overlaps_footprint(lot: Dictionary) -> bool:
 	var shape := _lot_polygon(lot)
-	for fp in geography.footprints_near(lot.center,9.0):
+	var radius := Vector2(float(lot.get("lot_width",8.90)),float(lot.get("lot_depth",9.0))).length()*.5+2.0
+	for fp in geography.footprints_near(lot.center,radius):
 		if not Geometry2D.intersect_polygons(shape,fp.poly).is_empty():
 			return true
 	for fp in suppressed_infill:
@@ -743,7 +743,7 @@ func _make_frontages() -> void:
 			for i in range(count):
 				var p := a+d*((length-float(count-1)*9.0)*.5+float(i)*9.0)
 				var center := p+outward*(float(edge.width)*.5+1.65+4.5)
-				proposals.append({"center":center,"front":-outward,"edge":edge,"curb":p,"outward":outward,"d":d,"portal":bool(edge.portal)})
+				proposals.append({"center":center,"front":-outward,"edge":edge,"curb":p,"outward":outward,"d":d,"portal":_is_monte_edge(edge)})
 	# Use a public landmark as a general neighborhood reference. The game
 	# residence is fictional; do not encode a private dwelling's address.
 	var home_candidates: Array = proposals.duplicate()
@@ -827,6 +827,7 @@ func _make_frontages() -> void:
 		service_count += 1
 	# Geographic footprints are authoritative; procedural infill is secondary.
 	_make_mapped_buildings(legacy_anchor)
+	_make_residential_passages(public_anchor)
 	proposals.sort_custom(func(a,b): return a.center.length_squared()<b.center.length_squared())
 	for lot in proposals:
 		if slots.size()>=1400:
@@ -846,6 +847,83 @@ func _make_frontages() -> void:
 # rendered. Its location uses the same local-metre road geometry as taxis.
 # Fill missing frontage in short, variable-width lots, leaving real
 # mapped footprints and protected street/sidewalk surfaces untouched.
+
+# Design invariant: Monte has arcades; side streets have direct facades.
+# Reserve each passage and its houses as one compound BEFORE generic infill,
+# so later buildings cannot close the entrance or occupy the pedestrian lane.
+func _make_residential_passages(anchor: Vector3) -> void:
+	var candidates: Array = []
+	for edge in geography.roads:
+		if not bool(edge.driveable) or _is_monte_edge(edge): continue
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		var length := a.distance_to(b)
+		if length<18.0: continue
+		var d := (b-a).normalized()
+		var right := Vector3(-d.z,0,d.x)
+		for along in [.25,.50,.75]:
+			if minf(float(along),1.0-float(along))*length<7.2: continue
+			var curb := a.lerp(b,float(along))
+			if curb.distance_to(anchor)>550.0: continue
+			for side in [-1.0,1.0]:
+				var inward := right*float(side)
+				var mouth := curb+inward*(float(edge.width)*.5+StreetGeometry.WALK_WIDTH+.07)
+				var center := mouth+inward*10.4
+				candidates.append({"center":center,"front":-inward,"edge":edge,"curb":curb,"outward":inward,"d":d,"portal":false,"lot_width":14.0,"lot_depth":20.8,"mouth":mouth})
+	candidates.sort_custom(func(a,b): return a.center.distance_squared_to(anchor)<b.center.distance_squared_to(anchor))
+	var passages := 0
+	for lot in candidates:
+		if passages>=12: break
+		var poly := _lot_polygon(lot)
+		if not street_geometry.clear(poly) or _overlaps_footprint(lot): continue
+		var within_map := true
+		for point in poly:
+			if not _inside_downloaded_map(point):
+				within_map = false
+				break
+		if not within_map: continue
+		if not market_block.is_empty() and not Geometry2D.intersect_polygons(poly,market_block).is_empty(): continue
+		var center: Vector3 = lot.center
+		if center.distance_to(home_spawn)<25.0: continue
+		var free := true
+		for other in _lots_near(center):
+			if not Geometry2D.intersect_polygons(poly,_lot_polygon(other)).is_empty():
+				free = false
+				break
+		if not free: continue
+		# The entire reservation is protected by the lot index, including the
+		# passage itself. No new road is inserted into the vehicle graph.
+		_add_lot(lot)
+		var mouth: Vector3 = lot.mouth
+		var inward: Vector3 = lot.outward
+		var across: Vector3 = lot.d
+		var lane := street_geometry.rect(mouth,mouth+inward*20.8,3.0)
+		_draw_street_polygon(lane,.061,_mat("passage_paving",Color("#a39c89")),"residential_passage")
+		for row in range(3):
+			for side in [-1.0,1.0]:
+				var pos := mouth+inward*(3.25+float(row)*6.45)+across*float(side)*4.22
+				_passage_house(pos,-across*float(side),passages*6+row*2+int(side>0.0))
+		passages += 1
+	print("Residential passages: ",passages," open entrances; ",passages*6," direct homes.")
+
+func _passage_house(c: Vector3,front: Vector3,index: int) -> void:
+	var angle := atan2(front.x,front.z)
+	var basis := Basis(Vector3.UP,angle)
+	var h := 3.05 if index%3!=0 else 6.10
+	var paint := _mat("passage_wall"+str(index%7),_monte_color(index).darkened(.13))
+	var trim := _mat("passage_trim",Color("#bcb3a0"))
+	var door := _mat("passage_door"+str(index%3),[Color("#397e8d"),Color("#496b62"),Color("#80604b")][index%3])
+	# Width runs along the passage; depth extends AWAY from its open lane.
+	# Doors are direct to the passage, no portal, columns or solid projections.
+	_local_cube(c,basis,Vector3(0,h*.5,0),Vector3(6.40,h,5.35),paint,true)
+	_local_cube(c,basis,Vector3(0,h+.06,0),Vector3(6.43,.12,5.40),trim)
+	_local_cube(c,basis,Vector3(-1.25,1.28,2.70),Vector3(1.04,2.45,.06),door)
+	_local_cube(c,basis,Vector3(-1.25,2.58,2.70),Vector3(1.26,.13,.07),trim)
+	_local_cube(c,basis,Vector3(1.20,1.65,2.70),Vector3(1.12,1.16,.06),door)
+	if h>4.0:
+		for x in [-1.65,1.65]:
+			_local_cube(c,basis,Vector3(float(x),4.60,2.70),Vector3(1.10,1.45,.06),door)
+
 func _fill_monte_frontage_gaps() -> void:
 	for edge in geography.roads:
 		if not _is_monte_edge(edge): continue
@@ -1128,8 +1206,8 @@ func _front_edge(poly: PackedVector2Array,monte_only: bool = false) -> Dictionar
 			continue
 		var m := (a+b)*.5
 		var road := _nearest_street(m)
-		if monte_only:
-			road = _nearest_monte_street(m,(b-a).normalized())
+		if monte_only and (road.is_empty() or not _is_monte_edge(road)):
+			continue
 		if road.is_empty():
 			continue
 		var ra: Vector3 = road.a
@@ -1142,6 +1220,9 @@ func _front_edge(poly: PackedVector2Array,monte_only: bool = false) -> Dictionar
 		var normal := Vector3(-tangent.z,0,tangent.x)
 		if normal.dot(nearest-m)<0.0:
 			normal = -normal
+		# The road must actually face this exterior edge, not lie behind the building.
+		if Geometry2D.is_point_in_polygon(Vector2(m.x+normal.x*.18,m.z+normal.z*.18),poly):
+			continue
 		if dist<best:
 			best = dist
 			result = {"a":a,"b":b,"mid":m,"normal":normal,"road":road}
@@ -1373,7 +1454,7 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		var portal := false
 		var portal_depth := 2.85 if monte else 2.25
 		var portal_ceiling := minf(3.4,h-.26) if monte else 3.4
-		if not front.is_empty() and bool(edit.get("portal",front.road.portal or monte)) and h>(3.10 if monte else 3.8):
+		if monte and not front.is_empty() and h>3.10:
 			var clipped := _clip_inward(poly,front,portal_depth)
 			# Fall back to the mapped solid if the inset is too small/invalid.
 			if clipped.size()>=3 and not Geometry2D.triangulate_polygon(clipped).is_empty():
@@ -1487,6 +1568,11 @@ func _nearest_monte_street(p: Vector3,tangent: Vector3) -> Dictionary:
 	return result
 
 func _monte_column(p: Vector3,h: float,paint: StandardMaterial3D,angle: float) -> void:
+	# Even the widest column base must remain off every protected street,
+	# crossing and sidewalk. Check the full conservative ground footprint.
+	var footprint := street_geometry.rect(p-Vector3.RIGHT*.40,p+Vector3.RIGHT*.40,.80)
+	if not street_geometry.clear(footprint):
+		return
 	var stone := _mat("monte_stone",Color("#a29d91"))
 	var trim := _mat("monte_capital",Color("#d1c8b7"))
 	_cube(p+Vector3.UP*.12,Vector3(.54,.24,.54),stone,angle,true)
@@ -1550,9 +1636,15 @@ func _monte_portal(front: Dictionary,poly: PackedVector2Array,depth: float,ceili
 		if Geometry2D.is_point_in_polygon(Vector2(p.x,p.z),poly):
 			_monte_column(p,ceiling,mat,angle)
 		var door := a+t*(float(i)+.5)*step-n*(depth-.40)
-		var run_a := a+t*float(i)*step-n*1.37
-		var run_b := a+t*float(i+1)*step-n*1.37
-		if Geometry2D.is_point_in_polygon(Vector2(door.x,door.z),poly):
+		var run_a := a+t*(float(i)*step+.12)-n*1.37
+		var run_b := a+t*(float(i+1)*step-.12)-n*1.37
+		# Do not publish a pedestrian strip whose ends or door leave the polygon.
+		var usable := true
+		for point in [run_a,run_b,(run_a+run_b)*.5,door]:
+			if not Geometry2D.is_point_in_polygon(Vector2(point.x,point.z),poly):
+				usable = false
+				break
+		if usable:
 			monte_walkways.append({"a":run_a,"b":run_b,"door":door,"kind":"shop" if (idx+i)%3==0 else "home"})
 	_cube((a+b)*.5-n*.07+Vector3.UP*(ceiling-.03),Vector3(length,.22,.27),trim,angle)
 	_cube((a+b)*.5-n*.07+Vector3.UP*(ceiling+.18),Vector3(length,.14,.21),trim,angle)
@@ -1740,7 +1832,7 @@ func _facade(lot: Dictionary,index: int,service: String) -> void:
 	if service=="LA ALBORADA":
 		plaster = _mat("alborada_wall",Color("#91a9a9"))
 		doors = _mat("alborada_blue",Color("#47677e"))
-	var portal: bool = bool(lot.get("portal",false)) or monte
+	var portal: bool = monte
 	var face_z: float = 1.52 if portal else 4.43
 	# Deep covered portal, facade behind columns, upper floors above walkway.
 	if portal or service in ["BODEGA","HOSPITAL • LA DEPENDIENTE"]:
