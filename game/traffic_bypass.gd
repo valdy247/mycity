@@ -196,3 +196,127 @@ static func retreat(state: Dictionary,body: CharacterBody3D,streets: Streets,wid
 	state.traffic_last = body.global_position
 	state.traffic_stall = 4.0
 	return true
+
+# Cooperative gridlock recovery. Requests use deterministic priority, so
+# two drivers cannot order each other to yield at the same time.
+static func _traffic_rank(body: CharacterBody3D,length: float) -> float:
+	return float(body.get_meta("traffic_priority",length))
+
+static func request_space(body: CharacterBody3D,target: Vector3,length: float,width: float) -> void:
+	var now := Time.get_ticks_msec()
+	if now<int(body.get_meta("traffic_request_after",0)): return
+	body.set_meta("traffic_request_after",now+1800)
+	var forward := target-body.global_position
+	forward.y = 0.0
+	if forward.length_squared()<.01: forward = body.global_transform.basis.z
+	forward = forward.normalized()
+	var side := Vector3(-forward.z,0,forward.x)
+	var best: CharacterBody3D
+	var best_distance := INF
+	var rank := _traffic_rank(body,length)
+	for node in body.get_tree().get_nodes_in_group("autonomous_traffic"):
+		var other := node as CharacterBody3D
+		if other==null or other==body or bool(other.get_meta("traffic_servicing",false)): continue
+		if not other.has_meta("traffic_priority"): continue
+		var other_rank := _traffic_rank(other,0.0)
+		if other_rank>rank or (is_equal_approx(other_rank,rank) and other.get_instance_id()<body.get_instance_id()): continue
+		var offset := other.global_position-body.global_position
+		var along := offset.dot(forward)
+		if absf(offset.y)>1.0 or along<-.5 or along>length*.5+9.0 or absf(offset.dot(side))>width*.5+2.0: continue
+		if other.velocity.length()>1.0: continue
+		if offset.length_squared()<best_distance:
+			best = other
+			best_distance = offset.length_squared()
+	if best!=null:
+		best.set_meta("traffic_yield_from",body.global_position)
+		best.set_meta("traffic_yield_until",now+5500)
+
+# Find an independent refuge, not a full overtake that requires the
+# original blocked lane to be free before the first wheel can move.
+static func _yield_path(body: CharacterBody3D,streets: Streets,width: float,length: float,height: float,requester: Vector3) -> Dictionary:
+	var origin := body.global_position
+	var heading := body.global_transform.basis.z.normalized()
+	var side := Vector3(-heading.z,0,heading.x)
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(maxf(.15,width-.03),height,maxf(.2,length-.03))
+	for sign_value in [1.0,-1.0]:
+		for shift in [width+.65,-width-.65,0.0,width+1.55,-width-1.55]:
+			for advance in [3.5,5.5,8.0,11.0]:
+				var goal := origin+heading*float(sign_value)*float(advance)+side*float(shift)
+				# Move away from the requesting vehicle or out of its lane.
+				var before := origin-requester
+				var after := goal-requester
+				if after.length_squared()<before.length_squared()+1.0 and absf(after.dot(side))<absf(before.dot(side))+1.0: continue
+				var points: Array = []
+				var previous := origin
+				var valid := true
+				var steps := ceili(float(advance)/.65)
+				for i in range(1,steps+1):
+					var t := float(i)/float(steps)
+					var p := origin+heading*float(sign_value)*float(advance)*t+side*float(shift)*smoothstep(0.0,1.0,t)
+					var motion := (p-previous).normalized()
+					var face := motion*float(sign_value)
+					if not _on_road(streets,p,face,width,length) or not _segment_clear(body,previous,p,face,shape):
+						valid = false
+						break
+					points.append(p)
+					previous = p
+				if valid and not points.is_empty():
+					return {"points":points,"reverse":float(sign_value)<0.0}
+	return {}
+
+# Return true only when this vehicle owns a temporary yielding maneuver.
+# Ordinary physics safety checks remain active on every movement.
+static func cooperate(state: Dictionary,body: CharacterBody3D,streets: Streets,width: float,length: float,height: float,delta: float,stalled_time: float,target: Vector3) -> bool:
+	body.set_meta("traffic_priority",length)
+	var now := Time.get_ticks_msec()
+	var points: Array = state.get("cooperative_path",[])
+	if points.is_empty():
+		if now<int(state.get("cooperative_hold",0)):
+			body.velocity = Vector3.ZERO
+			state.speed = 0.0
+			return true
+		if now<int(body.get_meta("traffic_yield_until",0)) and now>=int(state.get("cooperative_retry",0)):
+			state.cooperative_retry = now+1800
+			var requester: Vector3 = body.get_meta("traffic_yield_from",body.global_position)
+			var choice := _yield_path(body,streets,width,length,height,requester)
+			if not choice.is_empty():
+				points = choice.points
+				state.cooperative_path = points
+				state.cooperative_index = 0
+				state.cooperative_reverse = bool(choice.reverse)
+				state.retreat_remaining = 0.0
+				body.remove_meta("traffic_yield_until")
+		if points.is_empty():
+			if stalled_time>2.0: request_space(body,target,length,width)
+			return false
+	var index := int(state.cooperative_index)
+	var next: Vector3 = points[index]
+	var diff := next-body.global_position
+	diff.y = 0.0
+	if diff.length()<.10:
+		index += 1
+		state.cooperative_index = index
+		if index>=points.size():
+			state.cooperative_path = []
+			state.cooperative_hold = now+1300
+			state.traffic_stall = 0.0
+			state.stalled = 0.0
+			state.backed_up = 0.0
+			state["cooperative_rejoin"] = true
+		body.velocity = Vector3.ZERO
+		state.speed = 0.0
+		return true
+	var d := diff.normalized()
+	var face := -d if bool(state.cooperative_reverse) else d
+	var angle := lerp_angle(body.global_rotation.y,atan2(face.x,face.z),minf(delta*6.0,1.0))
+	var step := minf(diff.length(),1.7*delta)
+	if not safe_step(body,d,step,angle,delta):
+		state.cooperative_path = []
+		state.cooperative_hold = now+500
+		body.velocity = Vector3.ZERO
+	state.speed = 0.0
+	state.traffic_last = body.global_position
+	state.traffic_stall = 0.0
+	state.stalled = 0.0
+	return true
