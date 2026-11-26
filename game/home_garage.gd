@@ -21,6 +21,22 @@ var paint_clock := 0.0
 var paint_save_clock := 0.0
 var home_paint_dirty := false
 var paint_previous_first := true
+const CAN_CAPACITY := 100
+const BRUSH_LOAD := 10
+const FLOOR_COLS := 56
+const FLOOR_ROWS := 48
+const PAPER_POS := Vector3(5.35,.042,3.9)
+const BROOM_POS := Vector3(6.35,0,5.25)
+var paper: MeshInstance3D
+var resting_brush: Node3D
+var resting_tip: MeshInstance3D
+var resting_broom: Node3D
+var held_broom: Node3D
+var paint_cans: Dictionary = {}
+var floor_image: Image
+var floor_texture: ImageTexture
+var dirt_clock := 0.0
+var stroke_count := 0
 const FURNITURE := {
 	"sofa":{"name":"Sofá","p":[-4.6,0,1.6],"size":Vector3(1.9,.75,.85),"color":Color("#a3866d")},
 	"mesa":{"name":"Mesa","p":[-3.5,0,-.7],"size":Vector3(1.20,.75,.8),"color":Color("#82644d")},
@@ -72,9 +88,14 @@ func setup(controller) -> void:
 			state[key] = {"paint_stock":{},"paint_order":{},"paint_carry":"","paint_active":"","paint_charge":0,"paint_cells":{},"wheel_tutorial":false}[key]
 	# A reload begins outdoors: return unused brush paint to the saved can.
 	var active_color := String(state.paint_active)
-	if PAINT_COLORS.has(active_color): state.paint_stock[active_color] = int(state.paint_stock.get(active_color,0))+maxi(0,int(state.paint_charge))
-	state.paint_active = ""
-	state.paint_charge = 0
+	if int(state.get("house_tools_version",0))<1:
+		if PAINT_COLORS.has(active_color): state.paint_stock[active_color] = int(state.paint_stock.get(active_color,0))+maxi(0,int(state.paint_charge))
+		state.paint_active = ""
+		state.paint_charge = 0
+		state.house_tools_version = 1
+	state.paint_tool = ""
+	if not state.has("paper_color"): state.paper_color = ""
+	if not state.has("floor_marks"): state.floor_marks = {}
 	if bool(state.projects.get("bicicleta",{}).get("wheel_a",false)) or int(state.vehicle_sales.get("bicicleta",0))>0: state.wheel_tutorial = true
 	for id in FURNITURE:
 		if not state.furniture.has(id): state.furniture[id] = {"p":FURNITURE[id].p.duplicate(),"removed":false}
@@ -306,9 +327,8 @@ func _build_interior() -> void:
 	preview.position = BENCH
 	paint_station = Node3D.new()
 	interior.add_child(paint_station)
-	paint_station.position = Vector3(5.4,0,3.9)
-	business._box(paint_station,Vector3(0,.12,0),Vector3(.85,.24,.7),Color("#8b7561"))
-	business._label(paint_station,"PINTURA",Vector3(0,.85,0))
+	paint_station.position = Vector3.ZERO
+	_build_house_tools()
 	_refresh_paint_station()
 	for id in FURNITURE: _refresh_furniture(String(id))
 	_refresh_preview()
@@ -379,7 +399,7 @@ func _refresh_preview() -> void:
 
 func _free_hands() -> bool:
 	if game.backpack!=null and not game.backpack.empty_hands(): return false
-	return business.ledger.carry.is_empty() and business.life.state.meal.is_empty() and (game.monte_services==null or game.monte_services.player_bag==null) and String(state.part).is_empty() and String(state.held_furniture).is_empty() and String(state.get("paint_carry","")).is_empty() and String(state.get("paint_active","")).is_empty()
+	return business.ledger.carry.is_empty() and business.life.state.meal.is_empty() and (game.monte_services==null or game.monte_services.player_bag==null) and String(state.part).is_empty() and String(state.held_furniture).is_empty() and String(state.get("paint_carry","")).is_empty() and String(state.get("paint_tool","")).is_empty()
 
 func _home_menu() -> void:
 	business._open("Comprar vivienda","Casa con sala, dormitorio y garaje independiente.\nPrecio: %d CUP" % HOUSE_COST)
@@ -524,8 +544,8 @@ func action_text(at: Vector3) -> String:
 	if riding: return "[E] Bajar detenido"
 	if inside:
 		if at.distance_to(ROOM+Vector3(-.7,.86,5.25))<1.55: return "[E] Salir de casa"
-		if _near_paint_station(at): return "[E] Pintura de mi casa"
-		if not String(state.paint_active).is_empty(): return "Clic izquierdo: pintar · "+String(state.paint_active)+" · "+str(int(state.paint_charge))+" cargas | E: guardar brocha"
+		var tool_action := _house_tool_action(at)
+		if not tool_action.is_empty(): return tool_action
 		if _aimed_project(at): return "[E] Mejorar / ensamblar "+String(Kit.KITS.get(String(state.project),{}).get("name","vehículo"))
 		if not String(state.held_furniture).is_empty(): return "[E] Colocar mueble · llévalo afuera para desechar"
 		var id := _aimed_furniture()
@@ -547,10 +567,7 @@ func interact(at: Vector3) -> bool:
 		if at.distance_to(ROOM+Vector3(-.7,.86,5.25))<1.55:
 			_exit()
 		elif not business.life.state.meal.is_empty(): return false
-		elif _near_paint_station(at):
-			_paint_station_menu()
-		elif not String(state.paint_active).is_empty():
-			_stop_home_paint()
+		elif _house_tool_interact(at): pass
 		elif _aimed_project(at):
 			if _unlocked(String(state.project)):
 				if not state.projects.has(String(state.project)): state.projects[String(state.project)] = {}
@@ -591,6 +608,7 @@ func interact(at: Vector3) -> bool:
 	return false
 
 func _garage_menu() -> void:
+	if not inside: return
 	if not String(state.held_furniture).is_empty():
 		business._notify("Primero coloca el mueble o llévalo al basurero.")
 		return
@@ -602,7 +620,7 @@ func _garage_menu() -> void:
 	business._button("Cerrar",business.close)
 
 func _select(kind: String) -> void:
-	if not _unlocked(kind): return
+	if not inside or not _unlocked(kind): return
 	state.project = kind
 	if not state.projects.has(kind): state.projects[kind] = {}
 	_refresh_preview()
@@ -610,6 +628,7 @@ func _select(kind: String) -> void:
 	_project_menu()
 
 func _project_menu() -> void:
+	if not inside: return
 	var kind := String(state.project)
 	if not Kit.KITS.has(kind) or not _unlocked(kind): return
 	if _complete(kind):
@@ -646,7 +665,7 @@ func _project_menu() -> void:
 	business._button("Cerrar",business.close)
 
 func _part_menu(kind: String,key: String) -> void:
-	if not _unlocked(kind): return
+	if not inside or game.player.global_position.distance_to(ROOM+BENCH)>3.5 or not _unlocked(kind): return
 	var token := kind+":"+key
 	if bool(state.projects[kind].get(key,false)): return
 	if String(state.part)==token or int(state.inventory.get(token,0))>0:
@@ -671,19 +690,20 @@ func _part_menu(kind: String,key: String) -> void:
 	business._button("Ir a buscarla · %d CUP" % price,_find_part.bind(kind,key),world.parts_sites.is_empty())
 	business._button("Volver",_project_menu)
 
-func _order_part(kind: String,key: String) -> void:
+func _order_part(kind: String,key: String,from_phone: bool = false) -> void:
 	if not _unlocked(kind): return
 	if not bool(state.house):
 		business._notify("Necesitas una vivienda con garaje para recibir repuestos.")
 		return
 	var token := kind+":"+key
 	var price := int(Kit.KITS[kind].parts[key])+100
-	if business.ledger.cash<price: return
+	if business.ledger.cash<price or _part_already_available(kind,key): return
 	state.deliveries.append({"token":token,"remaining":35.0})
 	business.ledger.spend(price)
 	business.ledger.add_message("Marketplace","Tu repuesto está en camino al garaje.")
 	_save()
-	_project_menu()
+	if from_phone: _phone_parts(kind)
+	else: _project_menu()
 
 func _seller(kind: String,key: String) -> Dictionary:
 	if world.parts_sites.is_empty(): return {}
@@ -722,12 +742,28 @@ func _show_map(point: Vector3,label_value: String) -> void:
 	business._button("Cerrar",business.close)
 
 func open_phone_market() -> void:
-	business._open("Facebook Marketplace (juego)",_progression_hint()+"\nCompra repuestos o vende vehículos terminados.")
+	business._open("Facebook Marketplace (juego)",_progression_hint()+"\nCompra repuestos. Instálalos mirando el vehículo en tu garaje.")
 	for kind in Kit.KITS:
-		business._button(String(Kit.KITS[kind].name)+(" · Bloqueado" if not _unlocked(String(kind)) else ""),_select.bind(String(kind)),not _unlocked(String(kind)))
+		business._button(String(Kit.KITS[kind].name)+(" · Bloqueado" if not _unlocked(String(kind)) else ""),_phone_parts.bind(String(kind)),not _unlocked(String(kind)))
 	business._button("Comprar pintura para mi casa",_paint_shop.bind(false))
 	business._button("Mi casa / mapa",_home_map,world.garage_home_site.is_empty())
 	business._button("Inicio",business.open_phone_home)
+
+func _part_already_available(kind: String,key: String) -> bool:
+	var token := kind+":"+key
+	if bool(state.projects.get(kind,{}).get(key,false)) or String(state.part)==token or int(state.inventory.get(token,0))>0: return true
+	for delivery in state.deliveries:
+		if String(delivery.token)==token: return true
+	return false
+
+func _phone_parts(kind: String) -> void:
+	if not _unlocked(kind): return
+	business._open("Comprar · "+String(Kit.KITS[kind].name),"Los pedidos llegan al garaje. Aquí no se instalan piezas.")
+	for key in Kit.KITS[kind].parts:
+		var price := int(Kit.KITS[kind].parts[key])+100
+		var available := _part_already_available(kind,String(key))
+		business._button(String(Kit.PART_NAMES[key])+(" · Ya disponible" if available else " · %d CUP" % price),_order_part.bind(kind,String(key),true),available or business.ledger.cash<price)
+	business._button("Volver",open_phone_market)
 
 func _home_map() -> void:
 	if not world.garage_home_site.is_empty(): _show_map(world.garage_home_site.road,"Mi casa")
@@ -1220,21 +1256,185 @@ func _make_paint_can(parent: Node3D,color: String) -> void:
 	parent.add_child(mesh)
 	business._box(parent,Vector3(0,.17,0),Vector3(.25,.025,.25),Color(PAINT_COLORS.get(color,"#e0d8c5")))
 
+func _make_brush_model(root: Node3D,color: Color) -> MeshInstance3D:
+	business._box(root,Vector3(0,0,.10),Vector3(.07,.06,.23),Color("#95633d"))
+	return business._box(root,Vector3(0,0,-.08),Vector3(.16,.055,.15),color)
+
+func _make_broom_model(root: Node3D) -> void:
+	business._box(root,Vector3(0,.68,0),Vector3(.045,1.25,.045),Color("#9c7646"))
+	business._box(root,Vector3(0,.10,0),Vector3(.34,.17,.13),Color("#b6a16b"))
+
+func _brush_color() -> Color:
+	return Color(PAINT_COLORS.get(String(state.paint_active),"#cab99a"))
+
+func _build_house_tools() -> void:
+	paper = business._box(paint_station,PAPER_POS,Vector3(.65,.008,.47),Color("#e9e6dd"))
+	resting_brush = Node3D.new()
+	paint_station.add_child(resting_brush)
+	resting_brush.position = PAPER_POS+Vector3.UP*.04
+	resting_tip = _make_brush_model(resting_brush,_brush_color())
+	resting_broom = Node3D.new()
+	paint_station.add_child(resting_broom)
+	resting_broom.position = BROOM_POS
+	resting_broom.rotation.z = -.12
+	floor_image = Image.create(FLOOR_COLS,FLOOR_ROWS,false,Image.FORMAT_RGBA8)
+	floor_image.fill(Color(0,0,0,0))
+	floor_texture = ImageTexture.create_from_image(floor_image)
+	var quad := QuadMesh.new()
+	quad.size = Vector2(13.6,11.6)
+	var visual := MeshInstance3D.new()
+	visual.mesh = quad
+	interior.add_child(visual)
+	visual.position = Vector3(0,.036,0)
+	visual.rotation.x = -PI*.5
+	visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var mat := StandardMaterial3D.new()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.albedo_texture = floor_texture
+	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	visual.material_override = mat
+	_refresh_floor_marks()
+	_refresh_tools()
+
+func _refresh_tools() -> void:
+	if not is_instance_valid(resting_brush): return
+	var tool := String(state.paint_tool)
+	resting_brush.visible = tool!="brush"
+	resting_broom.visible = tool!="broom"
+	resting_tip.material_override = business._mat(_brush_color())
+	paper.material_override = business._mat(Color(PAINT_COLORS.get(String(state.paper_color),"#e9e6dd")))
+	if is_instance_valid(paint_brush):
+		paint_brush.visible = inside and tool=="brush"
+		paint_tip.material_override = business._mat(_brush_color())
+	if is_instance_valid(held_broom): held_broom.visible = inside and tool=="broom"
+
 func _refresh_paint_station() -> void:
 	if not is_instance_valid(paint_station): return
-	if is_instance_valid(paint_prop):
-		paint_station.remove_child(paint_prop)
-		paint_prop.queue_free()
-	paint_prop = Node3D.new()
-	paint_station.add_child(paint_prop)
-	paint_prop.position = Vector3(0,.43,0)
-	for color in state.paint_stock:
-		if int(state.paint_stock[color])>0:
-			_make_paint_can(paint_prop,String(color))
-			return
+	# A single visual can per owned color, showing the current can's level.
+	var slot := 0
+	for key in PAINT_COLORS:
+		var color := String(key)
+		var amount := int(state.paint_stock.get(color,0))
+		var can: Node3D = paint_cans.get(color)
+		if amount<=0:
+			if is_instance_valid(can): can.hide()
+			slot += 1
+			continue
+		if not is_instance_valid(can):
+			can = Node3D.new()
+			paint_station.add_child(can)
+			can.position = Vector3(6.20,.18,1.85+float(slot)*.49)
+			var shell := CylinderMesh.new()
+			shell.top_radius = .19
+			shell.bottom_radius = .17
+			shell.height = .34
+			shell.radial_segments = 12
+			shell.cap_top = false
+			var mesh := MeshInstance3D.new()
+			mesh.mesh = shell
+			mesh.material_override = business._mat(Color("#737c80"))
+			can.add_child(mesh)
+			var fill_mesh := CylinderMesh.new()
+			fill_mesh.top_radius = .165
+			fill_mesh.bottom_radius = .165
+			fill_mesh.height = .025
+			fill_mesh.radial_segments = 12
+			var fill := MeshInstance3D.new()
+			fill.name = "PaintLevel"
+			fill.mesh = fill_mesh
+			fill.material_override = business._mat(Color(PAINT_COLORS[color]))
+			can.add_child(fill)
+			business._box(can,Vector3(-.17,0,0),Vector3(.025,.14,.16),Color(PAINT_COLORS[color]))
+			paint_cans[color] = can
+		can.show()
+		var level := float((amount-1)%CAN_CAPACITY+1)/float(CAN_CAPACITY)
+		var fill_node := can.get_node("PaintLevel") as Node3D
+		fill_node.position.y = -.145+.28*level
+		slot += 1
 
-func _near_paint_station(at: Vector3) -> bool:
-	return inside and is_instance_valid(paint_station) and at.distance_to(paint_station.global_position)<2.1
+func _aim_tool(node: Node3D,center: Vector3,extent: Vector3) -> bool:
+	if not is_instance_valid(node): return false
+	var cam: Camera3D = game.play_camera
+	var start := cam.global_position
+	var finish := start-cam.global_basis.z*3.0
+	var hit: Variant = AABB(center-extent,extent*2.0).intersects_segment(node.to_local(start),node.to_local(finish))
+	if hit==null: return false
+	var at := node.to_global(hit)
+	if game.player.global_position.distance_to(at)>3.0: return false
+	var ray := PhysicsRayQueryParameters3D.create(start,at,1|2)
+	ray.exclude = [game.player.get_rid()]
+	return get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
+
+func _aim_can() -> String:
+	for color in paint_cans:
+		var can: Node3D = paint_cans[color]
+		if can.visible and _aim_tool(can,Vector3.ZERO,Vector3(.23,.19,.23)): return String(color)
+	return ""
+
+func _house_tool_action(at: Vector3) -> String:
+	var tool := String(state.paint_tool)
+	if not String(state.paint_carry).is_empty():
+		if at.distance_to(ROOM+PAPER_POS)<2.5: return "[E] Dejar cubo de pintura"
+		return ""
+	if tool=="brush":
+		if not _aim_can().is_empty(): return "[E] Embarrar brocha"
+		if _aim_tool(resting_brush,Vector3.ZERO,Vector3(.38,.14,.28)): return "[E] Dejar brocha sobre el papel"
+		return "Clic izquierdo: pintar" if int(state.paint_charge)>0 else "Moja la brocha en un cubo de pintura"
+	if tool=="broom":
+		if _aim_tool(resting_broom,Vector3(0,.65,0),Vector3(.30,.75,.25)): return "[E] Dejar escoba"
+		return "Clic izquierdo: barrer"
+	if not _free_hands(): return ""
+	if _aim_tool(resting_brush,Vector3.ZERO,Vector3(.27,.12,.24)): return "[E] Recoger brocha"
+	if _aim_tool(resting_broom,Vector3(0,.65,0),Vector3(.30,.75,.25)): return "[E] Recoger escoba"
+	return ""
+
+func _house_tool_interact(at: Vector3) -> bool:
+	var action := _house_tool_action(at)
+	if action.is_empty(): return false
+	if action.contains("Dejar cubo"):
+		var color := String(state.paint_carry)
+		state.paint_stock[color] = int(state.paint_stock.get(color,0))+CAN_CAPACITY
+		state.paint_carry = ""
+		_refresh_carried()
+		_refresh_paint_station()
+		_save()
+	elif action.contains("Recoger brocha"): _take_home_tool("brush")
+	elif action.contains("Recoger escoba"): _take_home_tool("broom")
+	elif action.contains("Embarrar"): _dip_home_brush(_aim_can())
+	elif action.contains("Dejar brocha") or action.contains("Dejar escoba"): _stop_home_paint()
+	return true
+
+func _take_home_tool(tool: String) -> void:
+	if not inside or not _free_hands(): return
+	state.paint_tool = tool
+	paint_previous_first = game.first_person
+	game.first_person = true
+	game._apply_camera_mode()
+	if tool=="brush" and not is_instance_valid(paint_brush):
+		paint_brush = Node3D.new()
+		game.play_camera.add_child(paint_brush)
+		paint_brush.position = Vector3(.28,-.30,-.72)
+		paint_tip = _make_brush_model(paint_brush,_brush_color())
+	if tool=="broom" and not is_instance_valid(held_broom):
+		held_broom = Node3D.new()
+		game.play_camera.add_child(held_broom)
+		held_broom.position = Vector3(.38,-.85,-.84)
+		held_broom.rotation.x = -.65
+		_make_broom_model(held_broom)
+	_refresh_tools()
+	_save()
+
+func _dip_home_brush(color: String) -> void:
+	if String(state.paint_tool)!="brush" or not PAINT_COLORS.has(color): return
+	var existing := int(state.paint_charge) if String(state.paint_active)==color else 0
+	var amount := mini(BRUSH_LOAD-existing,int(state.paint_stock.get(color,0)))
+	if amount<=0: return
+	state.paint_stock[color] = int(state.paint_stock[color])-amount
+	state.paint_active = color
+	state.paint_charge = existing+amount
+	_refresh_paint_station()
+	_refresh_tools()
+	_save()
 
 func _paint_shop(local_shop: bool) -> void:
 	business._open("Pintura para tu casa","Elige un color. "+("Lleva la lata a tu casa." if local_shop else "Entrega de Facebook simulada: recoge la lata en la zona de pintura de tu casa."))
@@ -1258,7 +1458,7 @@ func _buy_paint(color: String,local_shop: bool) -> void:
 	business.ledger.spend(price)
 	_refresh_carried()
 	business.close()
-	business._notify("Lleva la lata a la zona de pintura de tu casa." if local_shop else "Pedido de pintura realizado. Llegará a tu casa.")
+	business._notify("Lleva la lata a casa y déjala en el suelo junto a la brocha." if local_shop else "Pedido de pintura realizado. Llegará a tu casa.")
 
 func _tick_paint_order(delta: float) -> void:
 	var order: Dictionary = state.paint_order
@@ -1266,79 +1466,103 @@ func _tick_paint_order(delta: float) -> void:
 	order.remaining = float(order.remaining)-delta
 	if float(order.remaining)>0.0: return
 	var color := String(order.color)
-	state.paint_stock[color] = int(state.paint_stock.get(color,0))+72
+	state.paint_stock[color] = int(state.paint_stock.get(color,0))+CAN_CAPACITY
 	state.paint_order = {}
 	_refresh_paint_station()
 	_save()
 	business._notify("Tu pintura de Facebook llegó a casa.")
 
-func _paint_station_menu() -> void:
-	var carried := String(state.paint_carry)
-	if not carried.is_empty():
-		state.paint_stock[carried] = int(state.paint_stock.get(carried,0))+72
-		state.paint_carry = ""
-		_refresh_carried()
-		_refresh_paint_station()
-		_save()
-	if not String(state.paint_active).is_empty(): _stop_home_paint()
-	business._open("Pintar mi casa","Elige una pintura disponible y moja la brocha. Mantén clic izquierdo sobre la pared. Vuelve a esta zona para recargar o guardar la brocha.")
-	for color in PAINT_COLORS:
-		var amount := int(state.paint_stock.get(color,0))
-		if amount>0: business._button("Mojar brocha · "+String(color).capitalize()+" · "+str(amount)+" zonas",_start_home_paint.bind(String(color)),not _free_hands())
-	business._button("Comprar más pintura",_paint_shop.bind(false))
-	business._button("Cerrar",business.close)
-
-func _start_home_paint(color: String) -> void:
-	if not inside or not _free_hands() or not PAINT_COLORS.has(color): return
-	var amount := mini(12,int(state.paint_stock.get(color,0)))
-	if amount<=0: return
-	state.paint_stock[color] = int(state.paint_stock[color])-amount
-	state.paint_active = color
-	state.paint_charge = amount
-	paint_previous_first = game.first_person
-	game.first_person = true
-	game._apply_camera_mode()
-	if not is_instance_valid(paint_brush):
-		paint_brush = Node3D.new()
-		game.play_camera.add_child(paint_brush)
-		paint_brush.position = Vector3(.28,-.30,-.72)
-		business._box(paint_brush,Vector3(0,0,.10),Vector3(.07,.06,.23),Color("#95633d"))
-		paint_tip = business._box(paint_brush,Vector3(0,0,-.08),Vector3(.16,.055,.15),Color(PAINT_COLORS[color]))
-	paint_tip.material_override = business._mat(Color(PAINT_COLORS[color]))
-	paint_brush.show()
-	_refresh_paint_station()
-	_save()
-	business.close()
-
 func _stop_home_paint() -> void:
-	var color := String(state.paint_active)
-	if not color.is_empty():
-		state.paint_stock[color] = int(state.paint_stock.get(color,0))+int(state.paint_charge)
-		state.paint_active = ""
-		state.paint_charge = 0
-		game.first_person = paint_previous_first
-		game._apply_camera_mode()
-		_refresh_paint_station()
-		_save()
-	if is_instance_valid(paint_brush): paint_brush.hide()
+	var tool := String(state.paint_tool)
+	if tool.is_empty(): return
+	if tool=="brush" and not String(state.paint_active).is_empty():
+		state.paper_color = String(state.paint_active)
+	state.paint_tool = ""
+	game.first_person = paint_previous_first
+	game._apply_camera_mode()
+	_refresh_tools()
+	_save()
+
+func _floor_key(at: Vector3) -> String:
+	var p := at-ROOM
+	if absf(p.x)>=6.8 or absf(p.z)>=5.8: return ""
+	var x := clampi(floori((p.x+6.8)/13.6*FLOOR_COLS),0,FLOOR_COLS-1)
+	var y := clampi(floori((p.z+5.8)/11.6*FLOOR_ROWS),0,FLOOR_ROWS-1)
+	return str(y*FLOOR_COLS+x)
+
+func _refresh_floor_marks() -> void:
+	if floor_image==null: return
+	floor_image.fill(Color(0,0,0,0))
+	for key in state.floor_marks:
+		var index := int(key)
+		if index<0 or index>=FLOOR_COLS*FLOOR_ROWS: continue
+		var kind := String(state.floor_marks[key])
+		var color := Color(PAINT_COLORS.get(kind,"#655548"))
+		color.a = .84 if PAINT_COLORS.has(kind) else .52
+		floor_image.set_pixel(index%FLOOR_COLS,floori(float(index)/FLOOR_COLS),color)
+	floor_texture.update(floor_image)
+
+func _floor_mark(at: Vector3,color: String) -> void:
+	var key := _floor_key(at)
+	if key.is_empty() or String(state.floor_marks.get(key,""))==color: return
+	if state.floor_marks.size()>=160 and not state.floor_marks.has(key): return
+	state.floor_marks[key] = color
+	_refresh_floor_marks()
+	home_paint_dirty = true
+
+func _tick_dirt(delta: float) -> void:
+	if not inside: return
+	dirt_clock += delta
+	if dirt_clock<45.0: return
+	dirt_clock = 0.0
+	var count := 0
+	for value in state.floor_marks.values():
+		if String(value)=="dirt": count += 1
+	if count>=20: return
+	var spots := [Vector3(-5.7,0,4.6),Vector3(-2.0,0,4.5),Vector3(-2.1,0,.9),Vector3(-5.9,0,-.5),Vector3(-2.5,0,-3.3),Vector3(1.4,0,4.6),Vector3(4.5,0,2.1),Vector3(1.8,0,-4.8),Vector3(5.9,0,-.1),Vector3(3.2,0,3.0)]
+	for i in range(6):
+		var at: Vector3 = ROOM+spots[randi()%spots.size()]+Vector3(randf_range(-.35,.35),0,randf_range(-.35,.35))
+		var key := _floor_key(at)
+		if key.is_empty() or state.floor_marks.has(key): continue
+		_floor_mark(at,"dirt")
+		break
+
+func _sweep_at(at: Vector3) -> void:
+	var key := _floor_key(at)
+	if key.is_empty(): return
+	var index := int(key)
+	var x := index%FLOOR_COLS
+	var y := floori(float(index)/FLOOR_COLS)
+	var changed := false
+	for row in range(maxi(0,y-1),mini(FLOOR_ROWS,y+2)):
+		for col in range(maxi(0,x-1),mini(FLOOR_COLS,x+2)):
+			if state.floor_marks.erase(str(row*FLOOR_COLS+col)): changed = true
+	if changed:
+		_refresh_floor_marks()
+		home_paint_dirty = true
+	if is_instance_valid(held_broom): held_broom.rotation.z = sin(float(Time.get_ticks_msec())*.012)*.22
 
 func _tick_home_paint(delta: float) -> void:
-	if not inside or String(state.paint_active).is_empty(): return
+	_tick_dirt(delta)
 	if home_paint_dirty:
 		paint_save_clock += delta
 		if paint_save_clock>=2.0:
 			paint_save_clock = 0.0
 			home_paint_dirty = false
 			_save()
-	if business.modal_open() or int(state.paint_charge)<=0 or Input.mouse_mode!=Input.MOUSE_MODE_CAPTURED or not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT): return
+	if not inside or String(state.paint_tool).is_empty() or business.modal_open() or Input.mouse_mode!=Input.MOUSE_MODE_CAPTURED or not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT): return
 	paint_clock += delta
 	if paint_clock<.15: return
 	paint_clock = 0.0
 	var cam: Camera3D = game.play_camera
-	var ray := PhysicsRayQueryParameters3D.create(cam.global_position,cam.global_position-cam.global_basis.z*2.8,1)
+	var ray := PhysicsRayQueryParameters3D.create(cam.global_position,cam.global_position-cam.global_basis.z*2.8,1|2)
 	ray.exclude = [game.player.get_rid()]
 	var hit := get_world_3d().direct_space_state.intersect_ray(ray)
-	if hit.is_empty() or not hit.collider.has_meta("home_paint_wall"): return
+	if hit.is_empty(): return
+	if String(state.paint_tool)=="broom":
+		if hit.normal.y>.7 and absf(float(hit.position.y)-ROOM.y)<.12: _sweep_at(hit.position)
+		return
+	if int(state.paint_charge)<=0 or not hit.collider.has_meta("home_paint_wall"): return
 	var id := String(hit.collider.get_meta("home_paint_wall"))
 	var normal: Vector3 = hit.normal
 	var key := id+":"+str(1 if (normal.x if id in ["west","east","partition_a","partition_b"] else normal.z)>0.0 else -1)
@@ -1359,10 +1583,14 @@ func _tick_home_paint(delta: float) -> void:
 	texture.update(img)
 	state.paint_charge = int(state.paint_charge)-1
 	home_paint_dirty = true
+	stroke_count += 1
+	if stroke_count%3==0:
+		var drip: Vector3 = hit.position+normal*.28
+		_floor_mark(drip,color)
 	if is_instance_valid(paint_brush): paint_brush.rotation.x = -.5+sin(float(state.paint_charge)*1.8)*.22
 	if int(state.paint_charge)==0:
 		_save()
-		business._notify("Brocha seca. Regresa a la pintura para mojarla otra vez.")
+		business._notify("Brocha seca. Embárrala de pintura otra vez.")
 
 func gps_hint() -> String:
 	if not waypoint_active or inside: return ""
