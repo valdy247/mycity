@@ -749,6 +749,8 @@ func open_phone_market() -> void:
 	business._open("Facebook Marketplace (juego)",_progression_hint()+"\nCompra repuestos. Instálalos mirando el vehículo en tu garaje.")
 	for kind in Kit.KITS:
 		business._button(String(Kit.KITS[kind].name)+(" · Bloqueado" if not _unlocked(String(kind)) else ""),_phone_parts.bind(String(kind)),not _unlocked(String(kind)))
+	if game.yordi_mission!=null and game.yordi_mission.can_list():
+		business._button("Publicar PS5 de Yordi",game.yordi_mission.open_listing)
 	business._button("Comprar pintura para mi casa",_paint_shop.bind(false))
 	business._button("Mi casa / mapa",_home_map,world.garage_home_site.is_empty())
 	business._button("Inicio",business.open_phone_home)
