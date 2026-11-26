@@ -121,6 +121,7 @@ func _ready() -> void:
 		add_child(taxis)
 		taxis.setup(cuba_world.geography,cuba_world.street_geometry,cuba_world.home_spawn,van.global_position)
 		first_person = true
+		_face_cuba_home()
 		_apply_camera_mode()
 		_apply_performance_mode()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -699,6 +700,13 @@ func _finish_exit(destination: Vector3) -> void:
 	pivot.rotation = Vector3(pitch, yaw, 0)
 	_apply_camera_mode()
 
+func _face_cuba_home() -> void:
+	if cuba_world==null or cuba_world.home_root==null or pivot==null:
+		return
+	yaw = cuba_world.home_root.rotation.y
+	pitch = -.06
+	pivot.rotation = Vector3(pitch,yaw,0)
+
 func _reset_player() -> void:
 	if city_world != null:
 		city_world.reset_interaction(avatar,limb_legs)
@@ -710,6 +718,7 @@ func _reset_player() -> void:
 		_finish_exit(spawn_position)
 	player.global_position = spawn_position
 	player.velocity = Vector3.ZERO
+	_face_cuba_home()
 
 func _read_controls() -> Vector2:
 	var movement := Vector2.ZERO
@@ -783,6 +792,8 @@ func _update_hud() -> void:
 			status.text += "\nClic derecho: editar objeto o terreno"
 	if cuba_world != null:
 		status.text += "\n© OpenStreetMap contributors | ODbL | openstreetmap.org/copyright"
+		if not cuba_world.paired_landmarks:
+			status.text += "\nCasa: ubicación pendiente | clic derecho para señalarla en Monte"
 		if cuba_world.prompt_time > 0.0:
 			status.text += "\n"+cuba_world.prompt
 	if message_time > 0.0:
