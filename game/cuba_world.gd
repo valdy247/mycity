@@ -1206,7 +1206,7 @@ func _make_frontages() -> void:
 # mapped footprints and protected street/sidewalk surfaces untouched.
 func _fill_monte_frontage_gaps() -> void:
 	for edge in geography.roads:
-		if not _is_monte_edge(edge): continue
+		if not _arcade_edge(edge): continue
 		var a: Vector3 = edge.a
 		var b: Vector3 = edge.b
 		var d := (b-a).normalized()
@@ -1618,6 +1618,107 @@ func _nearest_street(p: Vector3) -> Dictionary:
 			result = road
 	return result
 
+# Match every actual outward-facing wall to a parallel nearby street.
+# Sample long OSM walls instead of relying on their single midpoint.
+func _arcade_edge(edge: Dictionary) -> bool:
+	return bool(edge.get("arcade_corridor",false)) or _is_monte_edge(edge)
+
+func _avenue_edge(edge: Dictionary) -> bool:
+	return _arcade_edge(edge) or (bool(edge.driveable) and (float(edge.width)>=10.0 or String(edge.kind) in ["primary","secondary","trunk"]))
+
+func _street_facing_walls(poly: PackedVector2Array) -> Array:
+	var faces: Array = []
+	for i in range(poly.size()):
+		var a := Vector3(poly[i].x,0,poly[i].y)
+		var b := Vector3(poly[(i+1)%poly.size()].x,0,poly[(i+1)%poly.size()].y)
+		var length := a.distance_to(b)
+		if length<2.8: continue
+		var t := (b-a).normalized()
+		var mid := (a+b)*.5
+		var n := Vector3(-t.z,0,t.x)
+		var test := mid+n*.10
+		if Geometry2D.is_point_in_polygon(Vector2(test.x,test.z),poly): n = -n
+		var chosen: Dictionary = {}
+		var best := INF
+		var samples := maxi(1,ceili(length/7.0))
+		for j in range(samples):
+			var p := a.lerp(b,(float(j)+.5)/float(samples))
+			for road in geography.roads_near(p,18.0):
+				if not bool(road.driveable): continue
+				var ra: Vector3 = road.a
+				var rb: Vector3 = road.b
+				var axis := (rb-ra).normalized()
+				if absf(axis.dot(t))<.78: continue
+				var q := Geometry3D.get_closest_point_to_segment(p,ra,rb)
+				var distance := p.distance_to(q)
+				if distance<.1 or n.dot((q-p)/distance)<.85: continue
+				var gap := distance-float(road.width)*.5
+				if gap<-.20 or gap>7.5: continue
+				# A segment endpoint is not a parallel frontage on the
+				# adjoining street. Require a point directly across it.
+				if absf((q-p).dot(t))>1.8: continue
+				var score := gap+(0.0 if _arcade_edge(road) else 1.25)
+				if score<best:
+					best = score
+					chosen = road
+		if not chosen.is_empty():
+			faces.append({"a":a,"b":b,"mid":mid,"normal":n,"road":chosen,"score":best})
+	return faces
+
+func _same_wall(a: Dictionary,b: Dictionary) -> bool:
+	if a.is_empty() or b.is_empty(): return false
+	var first: Vector3 = a.mid
+	var second: Vector3 = b.mid
+	return first.distance_to(second)<.12
+
+func _wall_has_opening(poly: PackedVector2Array,p: Vector3,n: Vector3) -> bool:
+	var inside := p-n*.18
+	var outside := p+n*.18
+	return Geometry2D.is_point_in_polygon(Vector2(inside.x,inside.z),poly) and not Geometry2D.is_point_in_polygon(Vector2(outside.x,outside.z),poly)
+
+func _arcade_cut(poly: PackedVector2Array,front: Dictionary,depth: float) -> PackedVector2Array:
+	var clipped := _clip_inward(poly,front,depth)
+	if clipped.size()<3 or Geometry2D.triangulate_polygon(clipped).is_empty(): return PackedVector2Array()
+	var a: Vector3 = front.a
+	var b: Vector3 = front.b
+	var n: Vector3 = front.normal
+	var valid := 0
+	var samples := maxi(3,ceili(a.distance_to(b)/3.0))
+	for i in range(samples):
+		var p := a.lerp(b,(float(i)+.5)/float(samples))-n*(depth-.07)
+		if _wall_has_opening(clipped,p,n): valid += 1
+	if float(valid)/float(samples)<.55: return PackedVector2Array()
+	return clipped
+
+# Visually break long continuous walls into house-width bays without
+# changing the mapped footprint, collision or roof silhouette.
+func _avenue_bays(front: Dictionary,h: float,ceiling: float,depth: float,lower: PackedVector2Array,idx: int,paint: Color,portal: bool) -> void:
+	var a: Vector3 = front.a
+	var b: Vector3 = front.b
+	var n: Vector3 = front.normal
+	var t := (b-a).normalized()
+	var length := a.distance_to(b)
+	if length<11.0: return
+	var count := maxi(2,roundi(length/7.5))
+	var step := length/float(count)
+	var angle := atan2(n.x,n.z)
+	var trim := _mat("facade_trim",Color("#bcb3a0"))
+	for i in range(count):
+		var p := a+t*(float(i)+.5)*step
+		var shade := paint.lerp(_monte_color(idx+i),.42)
+		var mat := _mat("avenue_bay_"+shade.to_html(false),shade)
+		var bottom := ceiling if portal else minf(3.0,h)
+		if h-bottom>.18:
+			_cube(p+n*.016+Vector3.UP*((h+bottom)*.5),Vector3(step-.10,h-bottom-.06,.025),mat,angle)
+		var q := p+n*(-depth+.07 if portal else .045)
+		var ground_height := minf(ceiling if portal else h,2.96)
+		if ground_height>2.4 and _wall_has_opening(lower,q,n):
+			# Ground divisions are narrow vertical masonry strips only.
+			for side in [-1.0,1.0]:
+				var at := q+t*float(side)*(step*.5-.12)
+				if _wall_has_opening(lower,at,n):
+					_cube(at+n*.055+Vector3.UP*(ground_height*.5),Vector3(.15,ground_height,.10),trim,angle)
+
 func _front_edge(poly: PackedVector2Array,monte_only: bool = false) -> Dictionary:
 	var best: float = INF
 	var result: Dictionary = {}
@@ -1859,8 +1960,23 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		var edit: Dictionary = map_edits.get(String(fp.id),{})
 		var front := _front_edge(poly)
 		var monte_front := _front_edge(poly,true)
-		var monte := not monte_front.is_empty() and not market
-		if monte: front = monte_front
+		var faces := _street_facing_walls(poly)
+		var avenue_faces: Array = []
+		for face in faces:
+			if _avenue_edge(face.road): avenue_faces.append(face)
+		avenue_faces.sort_custom(func(a,b): return (0.0 if _arcade_edge(a.road) else 10.0)+float(a.score)<(0.0 if _arcade_edge(b.road) else 10.0)+float(b.score))
+		# Keep the previously selected wall on the original house/landmark
+		# intact. Only improve surrounding fronts and previously bare sides.
+		var home_pin := geography.project(23.1223007,-82.3668138)
+		var home_wall := monte_front if not monte_front.is_empty() else front
+		var preserve_home := false
+		if not home_wall.is_empty():
+			var home_at: Vector3 = Geometry3D.get_closest_point_to_segment(home_pin,home_wall.a,home_wall.b)
+			preserve_home = home_at.distance_to(home_pin)<9.0
+		if not monte_front.is_empty() and not market: front = monte_front
+		if not market and not preserve_home and not avenue_faces.is_empty(): front = avenue_faces[0]
+		if front.is_empty() and not faces.is_empty(): front = faces[0]
+		var monte := not front.is_empty() and _arcade_edge(front.road) and not market
 		var base_color: Color = _monte_color(idx) if monte else (palette[idx] if not market else Color("#ded4bc"))
 		var paint := String(edit.get("paint",""))
 		if Color.html_is_valid(paint):
@@ -1872,25 +1988,59 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		var portal := false
 		var portal_depth := 2.85 if monte else 2.25
 		var portal_ceiling := minf(3.4,h-.26) if monte else 3.4
+		var lower := poly
+		var extra: Array = []
 		if not front.is_empty() and bool(edit.get("portal",front.road.portal or monte)) and h>(3.10 if monte else 3.8):
-			var clipped := _clip_inward(poly,front,portal_depth)
-			# Fall back to the mapped solid if the inset is too small/invalid.
+			var clipped := _arcade_cut(poly,front,portal_depth)
+			# Preserve the earlier home geometry when its original valid cut
+			# would be rejected by the stricter new frontage validation.
+			if preserve_home and clipped.is_empty():
+				clipped = _clip_inward(poly,front,portal_depth)
 			if clipped.size()>=3 and not Geometry2D.triangulate_polygon(clipped).is_empty():
-				var lower_wall := wall
-				if monte:
-					lower_wall = _mat("monte_shaded_"+wall_key,base_color.darkened(.18))
-					lower_wall.cull_mode = BaseMaterial3D.CULL_DISABLED
-				portal = _extrude(clipped,0.0,portal_ceiling,lower_wall,tile)
-		var ok := _extrude(poly,portal_ceiling if portal else 0.0,h,wall,tile)
+				lower = clipped
+				portal = true
+		# A corner block may face Monte and an intersecting street. Add
+		# the second arcade only when its cut is valid and preserves the
+		# original home frontage. Side streets get direct wall detail.
+		if not market and not avenue_faces.is_empty():
+			for face in faces:
+				if _same_wall(face,front): continue
+				var face_arcade := _arcade_edge(face.road)
+				var recessed := false
+				if not preserve_home and face_arcade and h>3.10 and bool(edit.get("portal",true)):
+					var candidate := _arcade_cut(lower,face,2.85)
+					if not candidate.is_empty():
+						lower = candidate
+						portal_ceiling = minf(3.4,h-.26)
+						recessed = true
+				extra.append({"face":face,"portal":recessed,"arcade":face_arcade})
+		var has_arcade := portal
+		for entry in extra:
+			if bool(entry.portal): has_arcade = true
+		if has_arcade:
+			var lower_wall := _mat("monte_shaded_"+wall_key,base_color.darkened(.18)) if monte else wall
+			lower_wall.cull_mode = BaseMaterial3D.CULL_DISABLED
+			_extrude(lower,0.0,portal_ceiling,lower_wall,tile)
+		var ok := _extrude(poly,portal_ceiling if has_arcade else 0.0,h,wall,tile)
 		if not ok:
 			continue
 		mapped_buildings += 1
 		kept_footprints.append(fp)
 		editable_buildings[String(fp.id)] = {"poly":poly,"center":center,"height":h,"name":String(tags.get("name","Edificio")),"protected":market or String(fp.id)==alborada_poly_id,"front":front}
 		if not front.is_empty():
-			_detail_front(front,h,idx,portal,market,monte,portal_depth)
+			_detail_front(front,h,idx,portal,market,monte,portal_depth,PackedVector2Array() if preserve_home or market else lower)
 			if monte and portal:
 				_monte_portal(front,poly,portal_depth,portal_ceiling,idx,base_color)
+			if not preserve_home and not market and _avenue_edge(front.road):
+				_avenue_bays(front,h,portal_ceiling,portal_depth,lower,idx,base_color,portal)
+			for entry in extra:
+				var side_front: Dictionary = entry.face
+				var side_portal := bool(entry.portal)
+				var side_arcade := bool(entry.arcade)
+				_detail_front(side_front,h,idx,side_portal,false,side_arcade,2.85,lower)
+				if side_portal:
+					_monte_portal(side_front,poly,2.85,portal_ceiling,idx,base_color)
+				if _avenue_edge(side_front.road): _avenue_bays(side_front,h,portal_ceiling,2.85,lower,idx,base_color,side_portal)
 			if market:
 				_market_side_details(poly,front,h)
 			var name_value := String(tags.get("name",""))
@@ -2083,7 +2233,7 @@ func _monte_portal(front: Dictionary,poly: PackedVector2Array,depth: float,ceili
 	_cube((a+b)*.5-n*.07+Vector3.UP*(ceiling-.03),Vector3(length,.22,.27),trim,angle)
 	_cube((a+b)*.5-n*.07+Vector3.UP*(ceiling+.18),Vector3(length,.14,.21),trim,angle)
 
-func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool,monte: bool = false,portal_depth: float = 2.25) -> void:
+func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool,monte: bool = false,portal_depth: float = 2.25,lower: PackedVector2Array = PackedVector2Array()) -> void:
 	var a: Vector3 = front.a
 	var b: Vector3 = front.b
 	var n: Vector3 = front.normal
@@ -2102,6 +2252,7 @@ func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool
 		var p := a+t*(float(i)+.5)*step
 		var q := p+n*offset
 		var door_width := minf(step*.58,1.5)
+		if not lower.is_empty() and not _wall_has_opening(lower,q,n): continue
 		_cube(q+Vector3.UP*1.38,Vector3(door_width,2.50,.065),door_mat,angle)
 		if not market:
 			_register_npc_door(q+n*.04,n,"home",door_width)
@@ -2257,7 +2408,7 @@ func _facade(lot: Dictionary,index: int,service: String) -> void:
 	var angle := atan2(front.x,front.z)
 	var basis := Basis(Vector3.UP,angle)
 	var palette: Array[Color] = [Color("#9bafa3"),Color("#b4ab92"),Color("#8eabb1"),Color("#b69883"),Color("#c1b995"),Color("#92918b"),Color("#a8a18c")]
-	var monte := _is_monte_edge(lot.edge)
+	var monte := _arcade_edge(lot.edge)
 	var plaster := _mat("monte_wall"+str(index%7),_monte_color(index)) if monte else _mat("plaster"+str(index%7),palette[index%7])
 	var weathered := _mat("weathered",Color("#8d8574"))
 	var stone := _mat("old_stone",Color("#b3aa96"))
