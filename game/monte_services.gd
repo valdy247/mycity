@@ -769,8 +769,15 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 	var half := 3.1 if bool(vehicle.truck) else 2.125
 	var width := 2.3 if bool(vehicle.truck) else 1.83
 	var height := 2.8 if bool(vehicle.truck) else 1.65
+	# A car needs room to steer around a stationary vehicle, not just brake.
+	# On straight multi-lane sections, look past intermediate waypoints.
 	var gap := .65
 	var reach := minf(maxf(5.0,float(vehicle.speed)*float(vehicle.speed)/12.0+3.0),distance+gap)
+	if not active and direction.dot(next_dir)>.92 and direction.dot(body.global_transform.basis.z)>.92:
+		var lane := world.street_geometry.four_lane_at(body.global_position,direction)
+		if not lane.is_empty():
+			gap = 3.2
+			reach = maxf(reach,13.0)
 	var free := Bypass.clear_distance(body,direction,reach,width,half*2.0,height)
 	var blocked := free<reach-.05
 	var safe_speed := sqrt(12.0*maxf(0.0,free-gap)) if blocked else speed
@@ -799,6 +806,7 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 			vehicle.detour_index = 0
 			vehicle.resume = int(choice.resume)
 			vehicle.stalled = 0.0
+			vehicle.backed_up = 0.0
 			return
 		if stalled>2.5 and world.street_geometry.four_lane_at(body.global_position,body.global_transform.basis.z).is_empty():
 			var recovery := _local_recovery(body,target,width,half*2.0,height)
