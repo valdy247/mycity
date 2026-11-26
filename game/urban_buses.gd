@@ -7,6 +7,7 @@ const StreetPerson = preload("res://street_person.gd")
 var alight_handler: Callable
 signal stop_priority(stop: Dictionary,bus: CharacterBody3D)
 var horn_stream: AudioStreamWAV
+var pedestrian_world: Node
 const BUS_LENGTH := 9.4
 const BUS_WIDTH := 2.45
 const MAX_PASSENGERS := 18
@@ -26,7 +27,8 @@ var player_bus: Dictionary = {}
 var player_board_stop: Dictionary = {}
 var player_exit_requested := false
 
-func setup(map_data: MapData,street_geometry: StreetGeometry,anchor: Vector3,avoid: Array) -> void:
+func setup(map_data: MapData,street_geometry: StreetGeometry,anchor: Vector3,avoid: Array,city: Node = null) -> void:
+	pedestrian_world = city
 	data = map_data
 	streets = street_geometry
 	_make_horn()
@@ -480,6 +482,15 @@ func _add_waiter(stop: Dictionary) -> void:
 	var right: Vector3 = stop.right
 	person.rotation.y = atan2(-right.x,-right.z)
 	queue.append({"node":person,"style":serial})
+
+func _walk_waiting(person: Node3D,target: Vector3,delta: float) -> bool:
+	# Queue and sidewalk movement obey shared spacing. Boarding and
+	# alighting still use the dedicated door-transfer choreography.
+	if pedestrian_world!=null:
+		var step := person.global_position.move_toward(target,1.8*delta)
+		if not pedestrian_world.call("pedestrian_space_clear",person,step,.65):
+			return false
+	return _walk(person,target,delta)
 
 func _walk(person: Node3D,target: Vector3,delta: float) -> bool:
 	if person is StreetPerson:
@@ -979,7 +990,7 @@ func tick(delta: float) -> void:
 			var person: Node3D = queue[i].node
 			person.visible = near
 			if near:
-				_walk(person,_queue_position(stop,i),elapsed)
+				_walk_waiting(person,_queue_position(stop,i),elapsed)
 		var departing: Array = stop.departing
 		for i in range(departing.size()-1,-1,-1):
 			var entry: Dictionary = departing[i]
@@ -987,7 +998,7 @@ func tick(delta: float) -> void:
 			entry.time = float(entry.time)-elapsed
 			var target: Vector3 = entry.target
 			if near and _on_sidewalk(target):
-				_walk(person,target,elapsed)
+				_walk_waiting(person,target,elapsed)
 			person.visible = near
 			if float(entry.time)<=0.0:
 				person.queue_free()
