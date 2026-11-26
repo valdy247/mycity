@@ -235,6 +235,21 @@ func customer_trip(stand_at: Vector3,frontage: Basis) -> Dictionary:
 			return {"path":path,"door":door}
 	return {}
 
+# Persistent named residents use the same collision-checked public network.
+func route_between(a: Vector3,b: Vector3) -> PackedVector3Array:
+	if not initialized: return PackedVector3Array()
+	var start := _nearest(a,7.0)
+	var finish := _nearest(b,7.0)
+	if start<0 or finish<0: return PackedVector3Array()
+	if not world.pedestrian_segment_clear(a,graph.get_point_position(start)): return PackedVector3Array()
+	if not world.pedestrian_segment_clear(graph.get_point_position(finish),b): return PackedVector3Array()
+	var middle := graph.get_point_path(start,finish)
+	if middle.is_empty(): return PackedVector3Array()
+	var path := PackedVector3Array([a])
+	for point in middle: path.append(point)
+	path.append(b)
+	return path
+
 func _nearest(p: Vector3,radius: float) -> int:
 	var best := radius
 	var found := -1
