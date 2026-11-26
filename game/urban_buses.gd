@@ -693,6 +693,68 @@ func _back_up(bus: Dictionary,body: CharacterBody3D,delta: float) -> bool:
 	bus.backed_up = float(bus.get("backed_up",0.0))+step
 	return true
 
+# A long bus cannot steer towards every short offset at a map corner.
+# Try a forward curve towards a later waypoint, keeping all pending stops.
+# Use the real collision body, not the enlarged sensor, and never move
+# the bus during planning. The junction controller still gates execution.
+func _recover_bus_route(body: CharacterBody3D,route: Array,index: int) -> Dictionary:
+	var origin := body.global_position
+	var heading := body.global_basis.z.normalized()
+	heading.y = 0.0
+	var options: Array = []
+	for offset in range(mini(9,route.size())):
+		var at := (index+offset)%route.size()
+		var item: Dictionary = route[at]
+		var target: Vector3 = item.p
+		target.y = origin.y
+		var distance := origin.distance_to(target)
+		if distance>32.0: break
+		if distance>=3.5 and (target-origin).dot(heading)>1.0:
+			options.append({"index":at,"target":target})
+		# A mandatory stop is a possible endpoint, never a skipped point.
+		if item.has("stop") or data.signal_nodes.has(String(item.get("node",""))): break
+	for option in options.slice(0,5):
+		var at := int(option.index)
+		var target: Vector3 = option.target
+		var next: Vector3 = route[(at+1)%route.size()].p
+		next.y = origin.y
+		var exit_heading := (next-target).normalized()
+		var item: Dictionary = route[at]
+		if item.has("stop"): exit_heading = item.stop.direction
+		if exit_heading.length_squared()<.1: exit_heading = (target-origin).normalized()
+		var distance := origin.distance_to(target)
+		for reach in [.32,.48]:
+			var handle := clampf(distance*float(reach),1.5,9.0)
+			var control_a := origin+heading*handle
+			var control_b := target-exit_heading*handle
+			var previous := origin
+			var previous_heading := heading
+			var points: Array = []
+			var valid := true
+			var count := maxi(5,ceili(distance/.65))
+			for i in range(1,count+1):
+				var t := float(i)/float(count)
+				var p := origin.bezier_interpolate(control_a,control_b,target,t)
+				var motion := p-previous
+				if motion.length_squared()<.0025:
+					valid = false
+					break
+				var d := motion.normalized()
+				# Avoid impossible pivot turns or curves with tight curvature.
+				if d.dot(previous_heading)<.94 or not TrafficBypass._on_road(streets,p,d,BUS_WIDTH,BUS_LENGTH):
+					valid = false
+					break
+				var pose := Transform3D(Basis(Vector3.UP,atan2(d.x,d.z)),previous)
+				if body.test_move(pose,Vector3.ZERO,null,.001,true) or body.test_move(pose,motion,null,.001):
+					valid = false
+					break
+				points.append({"p":p,"node":"","bypass":true})
+				previous = p
+				previous_heading = d
+			if valid and not points.is_empty():
+				return {"path":points,"resume":at}
+	return {}
+
 func tick(delta: float) -> void:
 	for bus in buses:
 		var body: CharacterBody3D = bus.body
@@ -714,15 +776,8 @@ func tick(delta: float) -> void:
 		var diff := target-body.position
 		var distance := diff.length()
 		var stalled := TrafficBypass.stalled(bus,body,delta)
-		if stalled>10.0 and Time.get_ticks_msec()>=int(bus.get("stall_report_after",0)):
-			bus.stall_report_after = Time.get_ticks_msec()+15000
-			var probe := _safety_query(body,body.global_position,body.global_rotation.y)
-			var blockers := get_world_3d().direct_space_state.intersect_shape(probe,6)
-			var names: Array[String] = []
-			for hit in blockers:
-				if is_instance_valid(hit.collider): names.append(String(hit.collider.name))
-			print("Guagua detenida ",bus.line," posición=",body.global_position," destino=",target," obstáculos=",names)
 		var junction_limit := TrafficBypass.junction_gate(bus,body,streets,route,index,not detouring,BUS_WIDTH,BUS_LENGTH,2.96,delta,original if detouring else [],int(bus.get("resume_index",0)))
+		bus.junction_limit = junction_limit
 		if TrafficBypass.cooperate(bus,body,streets,BUS_WIDTH,BUS_LENGTH,2.96,delta,stalled,target): continue
 		if bool(bus.get("cooperative_rejoin",false)):
 			bus.cooperative_rejoin = false
@@ -835,14 +890,39 @@ func tick(delta: float) -> void:
 				stop_priority.emit({"position":ahead,"direction":d,"wait":safe_wait},body)
 		var free := minf(_clear_distance(body,d,reach),walker_free)
 		var blocked := free<reach-.05
+		# Distinguish a short impossible steering target from a legitimate
+		# wait at a crossing or a blocked stop. Probe at most every 4s.
+		if stalled>4.0 and not detouring and distance>.30 and float(bus.get("retreat_remaining",0.0))<=0.0 and Time.get_ticks_msec()>=int(bus.get("route_recovery_after",0)):
+			bus.route_recovery_after = Time.get_ticks_msec()+4000
+			var repair := _recover_bus_route(body,original,index)
+			if not repair.is_empty():
+				bus.detour = repair.path
+				bus.detour_index = 0
+				bus.resume_index = int(repair.resume)
+				bus.traffic_stall = 0.0
+				bus.speed = 0.0
+				body.velocity = Vector3.ZERO
+				print("Guagua ",bus.line,": trayectoria de recuperación validada; punto ",index," -> ",bus.resume_index)
+				continue
+		if stalled>10.0 and Time.get_ticks_msec()>=int(bus.get("stall_report_after",0)):
+			bus.stall_report_after = Time.get_ticks_msec()+30000
+			var collision := KinematicCollision3D.new()
+			var names: Array[String] = []
+			if body.test_move(body.global_transform,d*minf(distance,3.0),collision,.001):
+				for k in range(collision.get_collision_count()):
+					var collider := collision.get_collider(k)
+					if is_instance_valid(collider) and collider is Node: names.append(String(collider.get_path()))
+			print("Guagua detenida ",bus.line," punto=",index," parada=",item.has("stop")," posición=",body.global_position," destino=",target," espacio=",snappedf(free,.01)," cruce=",snappedf(junction_limit,.01)," peatones=",snappedf(walker_free,.01)," colisión real=",names)
 		var safe_speed := sqrt(2.0*BUS_BRAKE*maxf(0.0,free-BUS_SAFE_GAP))
 		if blocked:
 			speed = minf(speed,safe_speed)
 		speed = TrafficBypass.junction_speed(speed,junction_limit,BUS_BRAKE)
 		bus.bypass_cooldown = maxf(0.0,float(bus.get("bypass_cooldown",0.0))-delta)
-		if not bool(body.get_meta("junction_guard",false)) and float(bus.get("retreat_remaining",0.0))<=0.0 and (stalled>1.0 or (not detouring and not approaching_stop and TrafficBypass.early_lane_pass(body,streets,blocked,free))) and float(bus.bypass_cooldown)<=0.0:
+		if not bool(body.get_meta("junction_guard",false)) and float(bus.get("retreat_remaining",0.0))<=0.0 and (stalled>(5.0 if detouring else 1.0) or (not detouring and not approaching_stop and TrafficBypass.early_lane_pass(body,streets,blocked,free))) and float(bus.bypass_cooldown)<=0.0:
 			bus.bypass_cooldown = 1.8
 			if detouring:
+				# A detour stopped at a crossing is not a failed detour.
+				if stalled<5.0: continue
 				bus.detour = []
 				bus.index = int(bus.resume_index)
 				continue
