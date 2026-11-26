@@ -1296,7 +1296,11 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 			var clipped := _clip_inward(poly,front,portal_depth)
 			# Fall back to the mapped solid if the inset is too small/invalid.
 			if clipped.size()>=3 and not Geometry2D.triangulate_polygon(clipped).is_empty():
-				portal = _extrude(clipped,0.0,portal_ceiling,wall,tile)
+				var lower_wall := wall
+				if monte:
+					lower_wall = _mat("monte_shaded_"+wall_key,base_color.darkened(.18))
+					lower_wall.cull_mode = BaseMaterial3D.CULL_DISABLED
+				portal = _extrude(clipped,0.0,portal_ceiling,lower_wall,tile)
 		var ok := _extrude(poly,portal_ceiling if portal else 0.0,h,wall,tile)
 		if not ok:
 			continue
@@ -1480,7 +1484,7 @@ func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool
 	var length := a.distance_to(b)
 	var angle := atan2(n.x,n.z)
 	var stone := _mat("facade_trim",Color("#bcb3a0"))
-	var door_mat := _mat("facade_door",Color("#627873"))
+	var door_mat := _mat("monte_joinery"+str(idx%3),[Color("#397e8d"),Color("#496b62"),Color("#80604b")][idx%3]) if monte else _mat("facade_door",Color("#627873"))
 	var dark := _mat("facade_shadow",Color("#4a514c"))
 	var iron := _mat("facade_iron",Color("#393d3a"))
 	var patch := _mat("facade_wear",Color("#938a77"))
@@ -1492,6 +1496,11 @@ func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool
 		var q := p+n*offset
 		_cube(q+Vector3.UP*1.38,Vector3(minf(step*.58,1.5),2.50,.065),door_mat,angle)
 		_cube(q+Vector3.UP*2.71,Vector3(minf(step*.74,1.85),.17,.12),stone,angle)
+		if monte:
+			var opening := minf(step*.58,1.5)
+			for side in [-1.0,1.0]:
+				_cube(q+t*float(side)*(opening*.5+.065)+n*.07+Vector3.UP*1.37,Vector3(.13,2.55,.14),stone,angle)
+			_cube(q+n*.07+Vector3.UP*.15,Vector3(opening+.20,.16,.16),stone,angle)
 		if portal and not monte:
 			var col := a+t*(float(i)+.12)*step+n*.04
 			_cube(col+Vector3.UP*1.65,Vector3(.34,3.30,.34),stone,angle,true)
@@ -1659,7 +1668,8 @@ func _facade(lot: Dictionary,index: int,service: String) -> void:
 		face_z = 1.52
 		_public_room(c,basis,plaster,service)
 	else:
-		_local_cube(c,basis,Vector3(0,1.55,-1.45 if portal else 0.0),Vector3(8.8,3.1,5.9 if portal else 8.8),plaster,true)
+		var lower_wall := _mat("monte_shaded_infill"+str(index%7),_monte_color(index).darkened(.18)) if monte and portal else plaster
+		_local_cube(c,basis,Vector3(0,1.55,-1.45 if portal else 0.0),Vector3(8.8,3.1,5.9 if portal else 8.8),lower_wall,true)
 	_local_cube(c,basis,Vector3(0,3.05,0),Vector3(8.8,.24,9.0),stone,true)
 	if upper>1:
 		_local_cube(c,basis,Vector3(0,3.1+(h-3.1)*.5,0),Vector3(8.8,h-3.1,8.8),plaster,true)
