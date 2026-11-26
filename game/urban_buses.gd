@@ -659,7 +659,7 @@ func tick(delta: float) -> void:
 			var stop_at: Vector3 = priority_stop.position
 			var stop_dir: Vector3 = priority_stop.direction
 			var stop_diff := stop_at-body.global_position
-			approaching_stop = stop_diff.length()<22.0 and stop_diff.dot(stop_dir)>-.5 and body.global_transform.basis.z.dot(stop_dir)>.75
+			approaching_stop = (item.has("stop") and distance<.30) or (stop_diff.length()<22.0 and stop_diff.dot(stop_dir)>-.5 and body.global_transform.basis.z.dot(stop_dir)>.75)
 		var pedestrian_blocked := false
 		if approaching_stop:
 			pedestrian_blocked = _pedestrian_blocks(priority_stop,body)
