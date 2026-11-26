@@ -2889,10 +2889,32 @@ func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool
 				for k in range(5):
 					var pos := p+t*(float(k)/4.0-.5)*(w+.4)+n*.56
 					_cube(pos+Vector3.UP*(y-.70),Vector3(.04,.50,.04),iron,angle)
+				# Small, sparse laundry on existing upper-floor railings, never the market.
+				if not market and level<=2 and posmod(idx*7+i*3+level,7)==0 and _havana_detail_near(p):
+					_balcony_laundry(p,t,n,y,w,angle,idx+i+level)
 		if not market:
-			var worn := q+t*.60+Vector3.UP*(.55+float((i+idx)%3)*.42)
-			_cube(worn+n*.01,Vector3(.47,.28,.012),patch,angle)
+			var wear_seed := posmod(idx*13+i*7,11)
+			var wear_x := minf(step*.22,.62)*(1.0 if wear_seed%2==0 else -1.0)
+			var worn := q+t*wear_x+Vector3.UP*(.32+float(wear_seed%4)*.32)
+			var patch_width := minf(step*.32,.28+float(wear_seed%5)*.11)
+			if lower.is_empty() or _wall_has_opening(lower,worn,n):
+				_cube(worn+n*.01,Vector3(patch_width,.18+float(wear_seed%3)*.11,.012),patch,angle)
 	_cube((a+b)*.5+n*.08+Vector3.UP*(h-.16),Vector3(length,.24,.19),stone,angle)
+
+# Residential dressing shares the existing spatial MultiMesh batches and
+# detail distance; no collision, individual NPC, texture download or physics.
+func _havana_detail_near(p: Vector3) -> bool:
+	return p.distance_squared_to(texture_anchor)<=62500.0 or p.distance_squared_to(texture_market)<=32400.0
+
+func _balcony_laundry(p: Vector3,t: Vector3,n: Vector3,y: float,w: float,angle: float,seed_value: int) -> void:
+	var colors: Array[Color] = [Color("#e0d9ca"),Color("#39699a"),Color("#9c3d49"),Color("#7a8c80"),Color("#ccad63")]
+	for i in range(2):
+		var index := posmod(seed_value+i*2,colors.size())
+		var cloth := _mat("havana_laundry_"+str(index),colors[index])
+		var width := minf(.34,w*.30)
+		var height := .29+float(posmod(seed_value+i,3))*.075
+		var center := p+t*(float(i)-.5)*w*.45+n*.61+Vector3.UP*(y-.45-height*.5)
+		_cube(center,Vector3(width,height,.025),cloth,angle)
 
 # Beveled Cuban enamel plate: eight corners, dark outline, white center.
 func _plaque_layer(p: Vector3,normal: Vector3,width: float,height: float,material: StandardMaterial3D) -> void:
@@ -3072,6 +3094,8 @@ func _facade(lot: Dictionary,index: int,service: String) -> void:
 				_local_cube(c,basis,Vector3(float(x),y-.43,4.90),Vector3(1.65,.05,.07),iron)
 				for k in range(5):
 					_local_cube(c,basis,Vector3(float(x)-.7+float(k)*.35,y-.68,4.90),Vector3(.045,.48,.045),iron)
+				if service.is_empty() and floor<=2 and posmod(index+floor+roundi(float(x)),7)==0 and _havana_detail_near(c):
+					_balcony_laundry(c+basis*Vector3(float(x),0,4.34),basis.x,front,y+.02,1.0,angle,index+floor)
 	# Irregular weathering patches; graphics deliberately lightweight.
 	for k in range(4):
 		var px := -3.85+fmod(float(index*17+k*13)*.37,7.7)
