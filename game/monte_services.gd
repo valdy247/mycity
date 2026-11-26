@@ -69,7 +69,7 @@ func _free_box(p: Vector3,d: Vector3,size_value: Vector3) -> bool:
 func _new_site(p: Vector3,d: Vector3,width: float) -> Dictionary:
 	var right := Vector3(-d.z,0,d.x)
 	var curb := p+right*(width*.5+.43)
-	var parking := p+d*7.0+right*maxf(0.0,width*.5-1.35)
+	var parking := p-d*6.5+right*world.geography.lane_distance({"width":width},2.3,true)
 	if world.street_geometry.point_on_road(curb): return {}
 	if not _free_box(curb,d,Vector3(.80,1.05,2.40)): return {}
 	if not Bypass._on_road(world.street_geometry,parking,d,2.3,6.2): return {}
@@ -108,10 +108,10 @@ func _fill(site: Dictionary) -> void:
 		if i<6:
 			p = Vector3(.02,.99+float(i%2)*.16,-.93+floorf(float(i)/2.0)*.57)
 		elif i<13:
-			p = Vector3(-.34-float(i%2)*.28,.23,-1.48+float(i-6)*.45)
+			p = Vector3(.32+float(i%2)*.25,.23,-1.48+float(i-6)*.45)
 		else:
 			# Extra bags form a mound over the curb and in the outer lane.
-			p = Vector3(-.77-float((i-13)%3)*.38,.24+float((i-13)%2)*.20,-1.68+floorf(float(i-13)/3.0)*.70)
+			p = Vector3(.85+float((i-13)%3)*.65,.24+float((i-13)%2)*.20,-1.68+floorf(float(i-13)/3.0)*.70)
 		var bag := StaticBody3D.new()
 		bag.collision_layer = 1
 		bag.collision_mask = 0
@@ -198,7 +198,7 @@ func return_player_bag() -> void:
 		bag.collision_layer = 1
 		bag.collision_mask = 0
 		root.add_child(bag)
-		bag.position = Vector3(-.55,.23,-1.1)
+		bag.position = Vector3(.55,.23,-1.1)
 		_part(bag,Vector3.ZERO,Vector3(.5,.45,.5),Color("#353935"),bag_mesh)
 		var bags: Array = player_site.bags
 		bags.append(bag)
@@ -377,12 +377,18 @@ func _collect(vehicle: Dictionary,delta: float) -> void:
 				if person.walk_to(hopper,delta,1.65):
 					person.set_bag(false)
 					worker.state = "to_bin" if not bags.is_empty() else "return"
+			"idle":
+				if not bags.is_empty():
+					person.global_position = cab
+					person.show()
+					worker.state = "to_bin"
+					done = false
 			"return":
 				done = false
 				if person.walk_to(cab,delta,1.7):
 					person.hide()
 					worker.state = "idle"
-	if done and player_site!=site:
+	if done and player_site!=site and bags.is_empty():
 		site.refill = 170.0
 		vehicle.site = {}
 		var route: Array = vehicle.route
@@ -426,6 +432,10 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 	var ray := PhysicsRayQueryParameters3D.create(body.position+Vector3.UP*.85+direction*(half+.06),body.position+Vector3.UP*.85+direction*(half+2.5+float(vehicle.speed)*.9),1|4)
 	ray.exclude = [body.get_rid()]
 	var blocked := not get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
+	if not blocked:
+		var low_ray := PhysicsRayQueryParameters3D.create(ray.from-Vector3.UP*.58,ray.to-Vector3.UP*.58,1|4)
+		low_ray.exclude = [body.get_rid()]
+		blocked = not get_world_3d().direct_space_state.intersect_ray(low_ray).is_empty()
 	vehicle.cooldown = maxf(0.0,float(vehicle.cooldown)-delta)
 	if blocked:
 		speed = 0.0
