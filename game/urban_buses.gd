@@ -46,7 +46,8 @@ func setup(map_data: MapData,street_geometry: StreetGeometry,anchor: Vector3,avo
 		var item: Dictionary = itinerary[start_index]
 		var stop: Dictionary = item.stop
 		var direction: Vector3 = stop.direction
-		body.position = Vector3(item.p)+Vector3.UP*.065
+		var start_point: Vector3 = item.p
+		body.position = start_point+Vector3.UP*.065
 		body.rotation.y = atan2(direction.x,direction.z)
 		var bus := {"body":body,"door":model.door,"route":itinerary,"index":start_index,"speed":0.0,"line":line,"dwell":0.0,"active_stop":{},"onboard":[],"transfer":{},"served":0,"blocked":0.0}
 		buses.append(bus)
@@ -171,8 +172,17 @@ func _make_bus(line: String,index: int) -> Dictionary:
 	var ivory := Color("#e1dfd1")
 	var glass := Color("#526b73")
 	var dark := Color("#353a3c")
-	_part(body,Vector3(0,1.03,0),Vector3(BUS_WIDTH,1.25,BUS_LENGTH),paint)
-	_part(body,Vector3(0,2.16,0),Vector3(2.27,1.15,7.92),ivory)
+	# Leave a real opening on the right side at the front door.
+	# The rest of the bus remains a few inexpensive box meshes.
+	_part(body,Vector3(0,1.03,-.98),Vector3(BUS_WIDTH,1.25,6.04),paint)
+	_part(body,Vector3(0,2.16,-.98),Vector3(2.27,1.15,5.96),ivory)
+	_part(body,Vector3(0,1.03,3.61),Vector3(BUS_WIDTH,1.25,.78),paint)
+	_part(body,Vector3(0,2.16,3.59),Vector3(2.27,1.15,.74),ivory)
+	_part(body,Vector3(.62,1.03,2.60),Vector3(1.11,1.25,1.25),paint)
+	_part(body,Vector3(.62,2.16,2.60),Vector3(1.03,1.15,1.25),ivory)
+	_part(body,Vector3(-.56,.48,2.60),Vector3(1.16,.18,1.18),dark)
+	_part(body,Vector3(-.83,.28,2.60),Vector3(.60,.18,1.18),dark)
+	_part(body,Vector3(-.50,2.58,2.60),Vector3(1.25,.22,1.25),ivory)
 	_part(body,Vector3(0,2.78,0),Vector3(2.32,.17,8.0),ivory)
 	_part(body,Vector3(0,2.1,4.015),Vector3(2.02,.86,.06),glass)
 	_part(body,Vector3(0,2.18,-4.015),Vector3(1.9,.65,.06),glass)
@@ -276,7 +286,9 @@ func _transfer_tick(bus: Dictionary,delta: float) -> void:
 	var transfer: Dictionary = bus.transfer
 	var door_point := body.to_global(Vector3(-1.32,0,2.6))
 	door_point.y = .065
-	var exit_point: Vector3 = stop.wait+Vector3(stop.direction)*2.3
+	var stop_direction: Vector3 = stop.direction
+	var wait_point: Vector3 = stop.wait
+	var exit_point: Vector3 = wait_point+stop_direction*2.3
 	if not transfer.is_empty():
 		var person: Node3D = transfer.node
 		var target: Vector3 = transfer.target
@@ -287,7 +299,7 @@ func _transfer_tick(bus: Dictionary,delta: float) -> void:
 				bus.served = int(bus.served)+1
 			else:
 				var departing: Array = stop.departing
-				departing.append({"node":person,"time":1.4,"target":exit_point})
+				departing.append({"node":person,"time":2.0,"target":exit_point+stop_direction*2.0})
 			bus.transfer = {}
 		return
 	# Alight passengers whose destination was this stop before boarding.
@@ -369,6 +381,10 @@ func tick(delta: float) -> void:
 			var entry: Dictionary = departing[i]
 			var person: Node3D = entry.node
 			entry.time = float(entry.time)-elapsed
+			var target: Vector3 = entry.target
+			if near and _on_sidewalk(target):
+				_walk(person,target,elapsed)
+			person.visible = near
 			if float(entry.time)<=0.0:
 				person.queue_free()
 				departing.remove_at(i)
