@@ -517,6 +517,63 @@ func _pair_at_parked_van(home: Dictionary) -> Array:
 				return result
 	return result
 
+# Explicit private GPS pin is read only from the player's local save.
+# Never publish the real home coordinates in the shared repository.
+const HOME_GPS_FILE := "user://pilar_home_gps.json"
+
+func _private_home_pin() -> Dictionary:
+	if not FileAccess.file_exists(HOME_GPS_FILE):
+		return {}
+	var file := FileAccess.open(HOME_GPS_FILE,FileAccess.READ)
+	if file==null: return {}
+	var data: Variant = JSON.parse_string(file.get_as_text())
+	file.close()
+	if not data is Dictionary or not data.has("lat") or not data.has("lon"):
+		return {}
+	return geography.parse_coordinates("%s, %s" % [str(data.lat),str(data.lon)])
+
+func _home_from_gps(pin: Vector3) -> Array:
+	# Preserve the longitudinal position of the user-confirmed pin.
+	# Only a minimal inward setback is allowed to clear road/sidewalk.
+	var nearest: Dictionary = {}
+	var best := INF
+	for edge in geography.roads_near(pin,45.0):
+		if not bool(edge.driveable) or geography.street_label(String(edge.name))!="MONTE":
+			continue
+		var q := Geometry3D.get_closest_point_to_segment(pin,edge.a,edge.b)
+		var distance := q.distance_to(pin)
+		if distance<best:
+			best = distance
+			nearest = edge
+	if nearest.is_empty():
+		return []
+	var a: Vector3 = nearest.a
+	var b: Vector3 = nearest.b
+	var direction := (b-a).normalized()
+	var curb := a+direction*(pin-a).dot(direction)
+	var outward := Vector3(-direction.z,0,direction.x)
+	if outward.dot(pin-curb)<0.0:
+		outward = -outward
+	var front := -outward
+	for step in range(81):
+		var center := pin+outward*(float(step)*.10)
+		var home := {"center":center,"front":front,"edge":nearest,"curb":curb,"outward":outward,"d":direction,"portal":true,"landmark":"home"}
+		var poly := _lot_polygon(home)
+		if not street_geometry.clear(poly):
+			continue
+		var safe := true
+		for fp in geography.footprints_near(center,12.0):
+			var tags: Dictionary = fp.tags
+			var label_value := geography.normalized(String(tags.get("name","")))
+			var extent: Vector3 = fp.high-fp.low
+			if (label_value.contains("cuatro caminos") or label_value.contains("mercado unico") or extent.x*extent.z>1500.0) and not Geometry2D.intersect_polygons(poly,fp.poly).is_empty():
+				safe = false
+				break
+		if safe:
+			print("GPS vivienda: posicion confirmada; ajuste perpendicular de ",float(step)*.10," metros.")
+			return _pair_at_parked_van(home)
+	return []
+
 func request_home_placement(at: Vector3) -> String:
 	var pair := _monte_pair(Vector3(at.x,0,at.z),true)
 	if not pair.is_empty():
@@ -580,14 +637,22 @@ func _make_frontages() -> void:
 		break
 	var manual := _saved_home_anchor()
 	var target: Vector3 = manual.get("point",public_anchor)
-	var pair := _monte_pair(target,not manual.is_empty())
+	var gps := _private_home_pin()
+	var pair: Array = []
+	var fixed_gps := gps.has("point")
+	if fixed_gps:
+		pair = _home_from_gps(gps.point)
+		if pair.is_empty():
+			push_warning("GPS vivienda: la posición indicada no admite la geometría de la casa sin invadir la calle.")
+	else:
+		pair = _monte_pair(target,not manual.is_empty())
 	# The screenshot identifies the white van's parked frontage. Its spawn
 	# is derived from the selected residence lot, not the POI. Pin that
 	# lot rather than letting the neighboring shop change its position.
-	if not pair.is_empty():
+	if not fixed_gps and not pair.is_empty():
 		var pinned_home: Dictionary = pair[0]
 		pair = _pair_at_parked_van(pinned_home)
-	elif old_home_found:
+	elif not fixed_gps and old_home_found:
 		for candidate in home_candidates:
 			var c: Vector3 = candidate.center
 			if c.distance_to(old_home_transform.origin)<.01:
