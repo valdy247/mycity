@@ -195,8 +195,25 @@ func _walk(actor: Person,target: Vector3,delta: float,speed: float,stop_range: f
 	if float(memory.time)<=0.0:
 		memory.time = 1.1
 		var path := PackedVector3Array()
-		if world.pedestrian_segment_clear(actor.global_position,target): path.append(target)
-		else: path = game.monte_pedestrians.route_between(actor.global_position,target)
+		var destination := target
+		var player_ground: Vector3 = game.player.global_position-Vector3.UP*.86
+		# The player has a physical capsule. Aim for its outside edge,
+		# not the blocked centre of the capsule.
+		if target.distance_to(player_ground)<.6:
+			var toward := actor.global_position-target
+			toward.y = 0.0
+			if toward.length_squared()<.01: toward = Vector3.FORWARD
+			toward = toward.normalized()
+			var found := false
+			for angle in [0.0,.6,-.6,1.2,-1.2,PI]:
+				var option := target+toward.rotated(Vector3.UP,float(angle))*maxf(1.25,stop_range*.8)
+				if not world.pedestrian_segment_clear(option,option): continue
+				destination = option
+				found = true
+				break
+			if not found: destination = actor.global_position
+		if world.pedestrian_segment_clear(actor.global_position,destination): path.append(destination)
+		else: path = game.monte_pedestrians.route_between(actor.global_position,destination)
 		memory.path = path
 		memory.index = 0
 		memory.target = target
@@ -488,7 +505,12 @@ func _aim(actor: Node3D,center: Vector3,extent: Vector3,reach: float = 3.0) -> b
 	var finish := origin-cam.global_basis.z*5.0
 	var hit: Variant = AABB(center-extent,extent*2.0).intersects_segment(actor.to_local(origin),actor.to_local(finish))
 	if hit==null: return false
-	return game.player.global_position.distance_to(actor.to_global(hit))<=reach
+	var point := actor.to_global(hit)
+	if game.player.global_position.distance_to(point)>reach: return false
+	var ray := PhysicsRayQueryParameters3D.create(origin,point,1|4|8|16|32)
+	ray.exclude = [game.player.get_rid()]
+	if actor is CollisionObject3D: ray.exclude.append(actor.get_rid())
+	return get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
 
 func action_text() -> String:
 	if _busy(): return ""
@@ -557,7 +579,7 @@ func _spawn_foes(at: Vector3) -> bool:
 			var angle := float(i)*TAU/12.0
 			var p := _ground(at+Vector3(cos(angle),0,sin(angle))*float(radius),false)
 			if not p.is_finite() or not world.pedestrian_space_clear(null,p,.85,false): continue
-			if not world.pedestrian_segment_clear(p,at): continue
+			if not world.pedestrian_segment_clear(p,at+(p-at).normalized()*1.45): continue
 			var free := true
 			for slot in slots:
 				if slot.distance_to(p)<1.5: free = false
@@ -661,7 +683,7 @@ func _chase_tick(delta: float) -> void:
 		else:
 			run_clock = maxf(0.0,run_clock-elapsed*1.8)
 			slow_clock += elapsed
-	if chase_grace<=0.0 and slow_clock>=1.25 and nearest<1.15:
+	if chase_grace<=0.0 and slow_clock>=1.25 and nearest<1.85:
 		_retry_chase()
 		return
 	if run_clock>=11.0 and player_at.distance_to(chase_origin)>=55.0 and nearest>=12.0:
@@ -726,13 +748,16 @@ func _publish() -> void:
 	business.close()
 	business._notify("PS5 publicado. Esperando comprador.")
 
+static func settle_sale(mission: Dictionary,ledger) -> bool:
+	if int(mission.get("stage",0))!=13 or bool(mission.get("reward_paid",false)) or not bool(mission.get("delivered",false)): return false
+	mission.reward_paid = true
+	mission.stage = 14
+	ledger.cash += REWARD
+	ledger.add_message("Yordi","Ya vendimos el PS5. Aquí tienes tus mil pesos, como te prometí.")
+	return true
+
 func _complete_sale() -> void:
-	if _stage()!=13 or bool(state.get("reward_paid",false)): return
-	# Atomic logical transaction: money and paid flag are saved together.
-	state.reward_paid = true
-	state.stage = 14
-	business.ledger.cash += REWARD
-	business.ledger.add_message("Yordi","Ya vendimos el PS5. Aquí tienes tus mil pesos, como te prometí.")
+	if not settle_sale(state,business.ledger): return
 	_save()
 	if is_instance_valid(console_box): console_box.queue_free()
 	console_box = null
