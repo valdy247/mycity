@@ -55,6 +55,7 @@ var map_surfaces: Dictionary = {}
 var map_collision: Dictionary = {}
 var street_collision: Dictionary = {}
 var physics_chunks: Dictionary = {}
+var static_box_shapes: Dictionary = {}
 var detail_batches := 0
 var npc_update_time := 0.0
 var kept_footprints: Array = []
@@ -171,9 +172,13 @@ func _cube(at: Vector3, size: Vector3, material: StandardMaterial3D, angle: floa
 	box_groups[key].transforms.append(Transform3D(basis.scaled_local(size),at-origin))
 	if solid:
 		var col := CollisionShape3D.new()
-		var shape := BoxShape3D.new()
-		shape.size = size
-		col.shape = shape
+		# Immutable repeated collision dimensions share one shape resource.
+		# Each building still has its own collision transform.
+		if not static_box_shapes.has(size):
+			var shape := BoxShape3D.new()
+			shape.size = size
+			static_box_shapes[size] = shape
+		col.shape = static_box_shapes[size]
 		var body := _chunk_body(tile,1)
 		body.add_child(col)
 		col.transform = Transform3D(basis,at-body.position)
@@ -766,7 +771,9 @@ func _make_frontages() -> void:
 	# Use a public landmark as a general neighborhood reference. The game
 	# residence is fictional; do not encode a private dwelling's address.
 	var home_candidates: Array = proposals.duplicate()
-	home_candidates.sort_custom(func(a,b): return _home_score(a,legacy_anchor)<_home_score(b,legacy_anchor))
+	for lot in home_candidates:
+		lot["_home_score"] = _home_score(lot,legacy_anchor)
+	home_candidates.sort_custom(func(a,b): return float(a._home_score)<float(b._home_score))
 	for lot in home_candidates:
 		var c: Vector3 = lot.center
 		if not bool(lot.portal) or c.distance_to(legacy_anchor)<10.0 or not _lot_clear(c,lot.front,lot.edge):
