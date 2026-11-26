@@ -2,6 +2,10 @@ extends "res://city_world.gd"
 # Real road centerlines; reconstructed facades and gameplay premises.
 const MapData = preload("res://pilar_map.gd")
 const StreetGeometry = preload("res://street_geometry.gd")
+const HavanaTextures = preload("res://havana_textures.gd")
+var havana_textures := HavanaTextures.new()
+var texture_anchor := Vector3.ZERO
+var texture_market := Vector3.ZERO
 var street_geometry := StreetGeometry.new()
 const EDIT_FILE := "user://pilar_atares_edits_v1.json"
 var map_edits: Dictionary = {}
@@ -67,6 +71,12 @@ func setup(builder: Builder) -> void:
 	_visual_box(road_ground,Vector3(0,-.25,0),Vector3(2520,.50,2520),_mat("urban_ground",Color("#aaa394")))
 	_shape(road_ground,Vector3(0,-.25,0),Vector3(2520,.50,2520))
 	_load_inventory()
+	texture_anchor = geography.project(23.12230,-82.36677)
+	texture_market = geography.project(23.1234716,-82.3659728)
+	for place in geography.poi:
+		if String(place.id)=="5233654525":
+			texture_anchor = place.position
+			break
 	street_geometry.build(geography)
 	_load_map_edits()
 	_make_osm_streets()
@@ -91,7 +101,29 @@ func _chunk_body(tile: Vector2i, layer_id: int) -> StaticBody3D:
 	physics_chunks[key] = body
 	return body
 
+func _textured(base: StandardMaterial3D,at: Vector3) -> StandardMaterial3D:
+	if at.distance_squared_to(texture_anchor)>62500.0 and at.distance_squared_to(texture_market)>32400.0:
+		return base
+	var kind := ""
+	for key in mats:
+		if mats[key]!=base:
+			continue
+		var k := String(key)
+		if k.begins_with("mapped_wall") or k.begins_with("custom_wall") or k.begins_with("plaster") or k in ["home_old","alborada_wall","market_wall"]:
+			kind = "plaster"
+		elif k in ["asphalt_cuba"]:
+			kind = "asphalt"
+		elif k in ["home_floor_cuba","public_floor"]:
+			kind = "tile"
+		elif k in ["home_wood_cuba","old_door","facade_door","alborada_blue","public_wood"]:
+			kind = "wood"
+		elif k in ["old_sidewalk","old_stone","facade_trim","home_trim"]:
+			kind = "stone"
+		break
+	return base if kind.is_empty() else havana_textures.material(base,kind)
+
 func _cube(at: Vector3, size: Vector3, material: StandardMaterial3D, angle: float = 0.0, solid: bool = false) -> void:
+	material = _textured(material,at)
 	var basis := Basis(Vector3.UP,angle)
 	var level := 0
 	if home_building:
@@ -187,6 +219,7 @@ func _draw_street_polygon(poly: PackedVector2Array,y: float,mat: StandardMateria
 		return
 	var p := poly[0]
 	var tile := Vector2i(floori(p.x/96.0),floori(p.y/96.0))
+	mat = _textured(mat,Vector3(float(tile.x)*96.0+48.0,0,float(tile.y)*96.0+48.0))
 	var key := kind+":"+str(tile)
 	if not map_surfaces.has(key):
 		var surface := SurfaceTool.new()
@@ -432,6 +465,7 @@ func _make_frontages() -> void:
 # Extrude the original OSM polygon, not a rectangular approximation.
 # Combine the visible meshes and collision by spatial tile for the iGPU.
 func _face(a: Vector3,b: Vector3,c: Vector3,normal: Vector3,mat: StandardMaterial3D,tile: Vector2i) -> void:
+	mat = _textured(mat,Vector3(float(tile.x)*96.0+48.0,0,float(tile.y)*96.0+48.0))
 	var key := str(tile)+":"+str(mat.get_instance_id())
 	if not map_surfaces.has(key):
 		var surface := SurfaceTool.new()
