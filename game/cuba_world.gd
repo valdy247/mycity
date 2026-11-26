@@ -61,6 +61,7 @@ var npc_update_time := 0.0
 var kept_footprints: Array = []
 var market_drawn := false
 var market_block: PackedVector2Array = PackedVector2Array()
+var market_reservation: PackedVector2Array = PackedVector2Array()
 var mapped_buildings := 0
 var plaque_count := 0
 var service_count := 0
@@ -110,6 +111,7 @@ func setup(builder: Builder) -> void:
 	street_geometry.build(geography)
 	var street_ms := Time.get_ticks_msec()
 	_load_map_edits()
+	_reserve_market_block()
 	_make_osm_streets()
 	_make_frontages()
 	_make_corner_plaques()
@@ -615,6 +617,7 @@ func _street_clear(p: Vector3,padding: float,ignore: Dictionary = {}) -> bool:
 
 func _lot_clear(center: Vector3,front: Vector3,edge: Dictionary) -> bool:
 	var candidate := _lot_polygon({"center":center,"front":front})
+	if _market_reserved(candidate): return false
 	if not street_geometry.clear(candidate):
 		return false
 	for existing in _lots_near(center):
@@ -655,6 +658,7 @@ func _lot_polygon(lot: Dictionary) -> PackedVector2Array:
 
 func _overlaps_footprint(lot: Dictionary) -> bool:
 	var shape := _lot_polygon(lot)
+	if _market_reserved(shape): return true
 	for fp in geography.footprints_near(lot.center,9.0):
 		if not Geometry2D.intersect_polygons(shape,fp.poly).is_empty():
 			return true
@@ -1226,7 +1230,7 @@ func _fill_monte_frontage_gaps() -> void:
 					var lot := {"center":c,"front":-outward,"edge":edge,"curb":p,"outward":outward,"d":d,"portal":true,"lot_width":w,"lot_depth":9.0}
 					var poly := _lot_polygon(lot)
 					if not street_geometry.clear(poly) or _overlaps_footprint(lot): continue
-					if not market_block.is_empty() and not Geometry2D.intersect_polygons(poly,market_block).is_empty(): continue
+					if _market_reserved(poly): continue
 					var free := true
 					for other in _lots_near(c):
 						if not Geometry2D.intersect_polygons(poly,_lot_polygon(other)).is_empty():
@@ -1782,32 +1786,40 @@ func _building_height(tags: Dictionary,index: int) -> float:
 		return clampf(float(levels)*3.25,3.0,80.0)
 	return float(1+index%3)*3.25
 
+# Reserve the historic block before any fictional services or infill.
+# Its boundary is the four street centerlines; the building itself is
+# inset beyond the current protected road and sidewalk polygons.
+func _market_reserved(poly: PackedVector2Array) -> bool:
+	return not market_reservation.is_empty() and not Geometry2D.intersect_polygons(poly,market_reservation).is_empty()
+
+func _market_named(edge: Dictionary,term: String) -> bool:
+	var values: Array = [String(edge.name)]
+	values.append_array(edge.get("aliases",[]))
+	for value in values:
+		var label: String = geography.normalized(String(value))
+		if label.contains(term): return true
+		if term=="monte" and label.contains("maximo gomez"): return true
+		if term=="cristina" and label.contains("mexico"): return true
+	return false
+
 func _market_corner(first: String,second: String,anchor: Vector3) -> Vector3:
 	var best := INF
 	var answer := Vector3(INF,0,INF)
 	for id in geography.junctions:
 		var p: Vector3 = geography.points[id]
-		if p.distance_to(anchor)>250.0:
-			continue
+		if p.distance_to(anchor)>250.0: continue
 		var has_first := false
 		var has_second := false
 		for edge in geography.junctions[id]:
-			var label: String = geography.normalized(String(edge.name))
-			if first=="monte" and geography.street_label(String(edge.name))=="MONTE":
-				has_first = true
-			elif label.contains(first):
-				has_first = true
-			if second=="monte" and geography.street_label(String(edge.name))=="MONTE":
-				has_second = true
-			elif label.contains(second) or (second=="cristina" and label.contains("mexico")):
-				has_second = true
+			if not bool(edge.driveable): continue
+			has_first = has_first or _market_named(edge,first)
+			has_second = has_second or _market_named(edge,second)
 		if has_first and has_second and p.distance_to(anchor)<best:
 			best = p.distance_to(anchor)
 			answer = p
 	return answer
 
 func _market_from_intersections(anchor: Vector3) -> PackedVector2Array:
-	# A fallback based on all four actual shared street nodes; not a survey.
 	var corners: Array[Vector3] = [
 		_market_corner("monte","matadero",anchor),
 		_market_corner("matadero","cristina",anchor),
@@ -1816,25 +1828,85 @@ func _market_from_intersections(anchor: Vector3) -> PackedVector2Array:
 	]
 	var poly := PackedVector2Array()
 	for p in corners:
-		if not p.is_finite():
-			return PackedVector2Array()
+		if not p.is_finite(): return PackedVector2Array()
 		poly.append(Vector2(p.x,p.z))
-	if Geometry2D.triangulate_polygon(poly).is_empty():
-		return PackedVector2Array()
-	var inset := Geometry2D.offset_polygon(poly,-6.5,Geometry2D.JOIN_MITER)
-	if inset.is_empty():
-		return PackedVector2Array()
-	var candidate: PackedVector2Array = inset[0]
-	if candidate.size()<3 or not Geometry2D.is_point_in_polygon(Vector2(anchor.x,anchor.z),candidate):
-		return PackedVector2Array()
-	for i in range(candidate.size()):
-		var a := candidate[i]
-		var b := candidate[(i+1)%candidate.size()]
-		for fraction in [0.0,.25,.5,.75]:
-			var v := a.lerp(b,float(fraction))
-			if not _street_clear(Vector3(v.x,0,v.y),.2):
-				return PackedVector2Array()
-	return candidate
+	if Geometry2D.triangulate_polygon(poly).is_empty(): return PackedVector2Array()
+	if not Geometry2D.is_point_in_polygon(Vector2(anchor.x,anchor.z),poly): return PackedVector2Array()
+	var safe := poly.duplicate()
+	var terms := ["matadero","cristina","arroyo","monte"]
+	for i in range(4):
+		var a: Vector3 = corners[i]
+		var b: Vector3 = corners[(i+1)%4]
+		var mid := (a+b)*.5
+		var t := (b-a).normalized()
+		var n := Vector3(-t.z,0,t.x)
+		if n.dot(anchor-mid)>0.0: n = -n
+		var width := 0.0
+		for edge in geography.roads_near(mid,a.distance_to(b)*.5+10.0):
+			if not bool(edge.driveable) or not _market_named(edge,String(terms[i])): continue
+			var ra: Vector3 = edge.a
+			var rb: Vector3 = edge.b
+			if absf((rb-ra).normalized().dot(t))<.75: continue
+			var q := Geometry3D.get_closest_point_to_segment(mid,ra,rb)
+			if mid.distance_to(q)>12.0: continue
+			width = maxf(width,float(edge.width))
+		if width<=0.0: return PackedVector2Array()
+		safe = _clip_inward(safe,{"mid":mid,"normal":n},width*.5+2.10)
+		if safe.size()<3: return PackedVector2Array()
+	# The additional setback accommodates the cornice and shallow trim.
+	# If a curved road intrudes, clip against the actual protected area.
+	var pieces: Array = [safe] if street_geometry.clear(safe) else street_geometry.subtract(safe,street_geometry.protected_index)
+	var best := 0.0
+	var result := PackedVector2Array()
+	for piece in pieces:
+		var inner: Array[PackedVector2Array] = Geometry2D.offset_polygon(piece,-.35,Geometry2D.JOIN_MITER)
+		for candidate in inner:
+			if candidate.size()<3 or not street_geometry.clear(candidate): continue
+			if not Geometry2D.is_point_in_polygon(Vector2(anchor.x,anchor.z),candidate): continue
+			var area := street_geometry.bounds(candidate).get_area()
+			if area>best:
+				best = area
+				result = candidate
+	if result.is_empty(): return result
+	market_reservation = poly
+	return result
+
+func _reserve_market_block() -> void:
+	var anchor := geography.project(23.1234716,-82.3659728)
+	market_block = _market_from_intersections(anchor)
+	if not market_block.is_empty():
+		print("Cuatro Caminos: manzana completa Monte / Matadero / Cristina / Arroyo reservada.")
+		return
+	# Fallback only to a named original market or a large mapped building
+	# containing the historic pin. Never put a guessed building on roads.
+	var selected: Dictionary = {}
+	for fp in original_footprints.values():
+		var tags: Dictionary = fp.tags
+		var name_value: String = geography.normalized(String(tags.get("name","")))
+		var center: Vector3 = fp.center
+		if center.distance_to(anchor)>130.0: continue
+		if name_value.contains("cuatro caminos") or name_value.contains("mercado unico"):
+			selected = fp
+			break
+		var extent: Vector3 = fp.high-fp.low
+		if extent.x*extent.z>1500.0 and Geometry2D.is_point_in_polygon(Vector2(anchor.x,anchor.z),fp.poly):
+			selected = fp
+	if selected.is_empty():
+		push_warning("Cuatro Caminos: no se pudo verificar el perímetro.")
+		return
+	var original: PackedVector2Array = selected.poly
+	var pieces: Array = [original] if street_geometry.clear(original) else street_geometry.subtract(original,street_geometry.protected_index)
+	var best := 0.0
+	for piece in pieces:
+		for candidate in Geometry2D.offset_polygon(piece,-.35,Geometry2D.JOIN_MITER):
+			if not street_geometry.clear(candidate): continue
+			var area := street_geometry.bounds(candidate).get_area()
+			if area>best:
+				best = area
+				market_block = candidate
+	if not market_block.is_empty():
+		market_reservation = original
+		print("Cuatro Caminos: perímetro OSM original; faltan cruces verificables para reservar toda la manzana.")
 
 func _load_map_edits() -> void:
 	if FileAccess.file_exists(EDIT_FILE):
@@ -1921,7 +1993,7 @@ func build_allowed(poly: PackedVector2Array,ignore_id: String = "") -> String:
 	for lot in nearby_lots:
 		if not Geometry2D.intersect_polygons(poly,_lot_polygon(lot)).is_empty():
 			return "Parcela ocupada"
-	if not market_block.is_empty() and not Geometry2D.intersect_polygons(poly,market_block).is_empty():
+	if _market_reserved(poly):
 		return "Plaza de Cuatro Caminos protegida"
 	return ""
 
@@ -1932,20 +2004,16 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 	var home_pin := geography.project(23.1223007,-82.3668138)
 	var alborada_poly_id := ""
 	var best: float = INF
-	for fp in geography.footprints_near(market_pos,80.0):
-		var tags: Dictionary = fp.tags
-		var n: String = geography.normalized(String(tags.get("name","")))
-		var extent: Vector3 = fp.high-fp.low
-		var poly: PackedVector2Array = fp.poly
-		var inside := Geometry2D.is_point_in_polygon(Vector2(market_pos.x,market_pos.z),poly)
-		if n.contains("cuatro caminos") or n.contains("mercado unico"):
-			market_poly_id = String(fp.id)
-			break
-		if inside and extent.x*extent.z>1500.0:
-			market_poly_id = String(fp.id)
-			break
-	if market_poly_id.is_empty():
-		market_block = _market_from_intersections(market_pos)
+	if not market_block.is_empty():
+		_make_market_landmark(market_block,market_pos)
+	else:
+		# Preserve existing mapped buildings if no usable block was found.
+		for fp in geography.footprints_near(market_pos,80.0):
+			var tags: Dictionary = fp.tags
+			var n: String = geography.normalized(String(tags.get("name","")))
+			if n.contains("cuatro caminos") or n.contains("mercado unico"):
+				market_poly_id = String(fp.id)
+				break
 	for fp in geography.footprints_near(public_anchor,20.0):
 		var front := _front_edge(fp.poly)
 		if front.is_empty():
@@ -1959,7 +2027,7 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		if _overlaps_game_lot(fp):
 			continue
 		var poly: PackedVector2Array = fp.poly
-		if not market_block.is_empty() and not Geometry2D.intersect_polygons(market_block,poly).is_empty():
+		if market_drawn and _market_reserved(poly):
 			continue
 		var center: Vector3 = fp.center
 		var tile := Vector2i(floori(center.x/96.0),floori(center.z/96.0))
@@ -2077,21 +2145,6 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 				var n: Vector3 = front.normal
 				var z: float = -portal_depth+.07 if portal else .08
 				_label(name_value.to_upper(),m+n*z+Vector3.UP*2.85,.010,atan2(n.x,n.z),Color("#f5ead0"))
-	# Missing source polygon: never invent a market footprint or obstruct roads.
-	if not market_drawn and not market_block.is_empty():
-		var tile := Vector2i(floori(market_pos.x/96.0),floori(market_pos.z/96.0))
-		var wall := _mat("market_wall",Color("#ded4bc"))
-		wall.cull_mode = BaseMaterial3D.CULL_DISABLED
-		if _extrude(market_block,0.0,10.0,wall,tile):
-			var front := _front_edge(market_block)
-			if not front.is_empty():
-				_detail_front(front,10.0,0,false,true)
-				_market_side_details(market_block,front,10.0)
-				var m: Vector3 = front.mid
-				var n: Vector3 = front.normal
-				_label("PLAZA DE CUATRO CAMINOS",m+n*.15+Vector3.UP*3.15,.013,atan2(n.x,n.z),Color("#554d3e"))
-			market_drawn = true
-			print("Cuatro Caminos: approximate facade from four mapped intersections (not exact building footprint).")
 	if not market_drawn:
 		print("Cuatro Caminos: no verified market footprint or four safe corners in this OSM extract.")
 	if alborada_poly_id.is_empty() and not home_relocated:
@@ -2106,6 +2159,126 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 
 # Cuatro Caminos: repeated bays, pilasters and upper windows on each
 # long street-facing edge. Keep all decoration inside the legal footprint.
+# Monumental two-storey market, not a collection of domestic facades.
+# Use shared materials/box batches and one structural mesh per tile.
+func _market_arch(p: Vector3,n: Vector3,t: Vector3,w: float,h: float,mat: StandardMaterial3D) -> void:
+	var tile := Vector2i(floori(p.x/96.0),floori(p.z/96.0))
+	var key := "market_arch:"+str(tile)+":"+str(mat.get_instance_id())
+	if not map_surfaces.has(key):
+		var surface := SurfaceTool.new()
+		surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		surface.set_material(mat)
+		map_surfaces[key] = surface
+	var st: SurfaceTool = map_surfaces[key]
+	var vertices: Array[Vector2] = [
+		Vector2(-w*.5,0),Vector2(w*.5,0),Vector2(w*.5,h*.76),
+		Vector2(w*.36,h*.90),Vector2(0,h),Vector2(-w*.36,h*.90),Vector2(-w*.5,h*.76)
+	]
+	for i in range(1,vertices.size()-1):
+		for v in [vertices[0],vertices[i],vertices[i+1]]:
+			st.set_normal(n)
+			st.add_vertex(p+t*v.x+Vector3.UP*v.y)
+
+func _market_roof_band(outer: PackedVector2Array,inner: PackedVector2Array,bottom: float,top: float,mat: StandardMaterial3D,tile: Vector2i) -> void:
+	for i in range(outer.size()):
+		var j := (i+1)%outer.size()
+		var a := Vector3(outer[i].x,bottom,outer[i].y)
+		var b := Vector3(outer[j].x,bottom,outer[j].y)
+		var c := Vector3(inner[j].x,top,inner[j].y)
+		var d := Vector3(inner[i].x,top,inner[i].y)
+		var normal := (b-a).cross(d-a).normalized()
+		if normal.y<0.0: normal = -normal
+		_face(a,b,c,normal,mat,tile)
+		_face(a,c,d,normal,mat,tile)
+
+func _market_scaled(poly: PackedVector2Array,center: Vector2,factor: float) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	for p in poly: out.append(center+(p-center)*factor)
+	return out
+
+func _make_market_landmark(poly: PackedVector2Array,anchor: Vector3) -> void:
+	var tile := Vector2i(floori(anchor.x/96.0),floori(anchor.z/96.0))
+	var wall := _mat("cuatro_caminos_ivory",Color("#e2dfd5"))
+	var trim := _mat("cuatro_caminos_stone",Color("#f0eee6"))
+	var shadow := _mat("cuatro_caminos_recess",Color("#343c43"))
+	var glass := _mat("cuatro_caminos_glass",Color("#586874"))
+	var roof := _mat("cuatro_caminos_roof",Color("#929ba6"))
+	var cap := _mat("cuatro_caminos_roof_cap",Color("#858b93"))
+	for material in [wall,trim,shadow,glass,roof,cap]:
+		material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var h := 10.8
+	if not _extrude(poly,0.0,h,wall,tile): return
+	var middle := Vector2.ZERO
+	for p in poly: middle += p
+	middle /= float(poly.size())
+	var hull := Geometry2D.convex_hull(poly)
+	if hull.size()>1 and hull[0].is_equal_approx(hull[hull.size()-1]): hull.remove_at(hull.size()-1)
+	# The reference has a broad hipped roof and a raised central monitor.
+	# Use a flat cap only on an irregular, nonconvex clipped source.
+	if hull.size()==poly.size():
+		var inner := _market_scaled(poly,middle,.81)
+		var monitor := _market_scaled(poly,middle,.68)
+		var monitor_top := _market_scaled(poly,middle,.61)
+		_market_roof_band(poly,inner,h,13.1,roof,tile)
+		_extrude(inner,13.05,13.15,roof,tile)
+		_extrude(monitor,13.1,14.0,cap,tile)
+		_market_roof_band(monitor,monitor_top,14.0,14.85,roof,tile)
+		_extrude(monitor_top,14.80,14.90,cap,tile)
+	else:
+		_extrude(poly,h,h+.28,roof,tile)
+	var primary := _front_edge(poly,true)
+	if primary.is_empty(): primary = _front_edge(poly)
+	for i in range(poly.size()):
+		var a := Vector3(poly[i].x,0,poly[i].y)
+		var b := Vector3(poly[(i+1)%poly.size()].x,0,poly[(i+1)%poly.size()].y)
+		var length := a.distance_to(b)
+		if length<1.0: continue
+		var t := (b-a).normalized()
+		var mid := (a+b)*.5
+		var n := Vector3(-t.z,0,t.x)
+		if Geometry2D.is_point_in_polygon(Vector2(mid.x+n.x*.12,mid.z+n.z*.12),poly): n = -n
+		var angle := atan2(n.x,n.z)
+		for band in [[.40,.32],[5.18,.32],[5.66,.24],[9.92,.26],[10.62,.36]]:
+			_cube(mid+n*.09+Vector3.UP*float(band[0]),Vector3(length,float(band[1]),.30),trim,angle)
+		if length<3.0: continue
+		var count := maxi(1,roundi(length/3.65))
+		var step := length/float(count)
+		var opening := minf(step*.66,2.45)
+		var main_side := not primary.is_empty() and mid.distance_to(primary.mid)<.3
+		var entrance := floori(float(count)/2.0)
+		for k in range(count):
+			var p := a+t*(float(k)+.5)*step
+			var central := main_side and k==entrance
+			var door_height := 4.15 if central else 3.82
+			_market_arch(p+n*.10+Vector3.UP*.32,n,t,opening+.28,door_height+.24,trim)
+			_market_arch(p+n*.18+Vector3.UP*.39,n,t,opening,door_height,shadow)
+			_cube(p+n*.10+Vector3.UP*7.62,Vector3(opening+.20,2.62,.22),trim,angle)
+			_cube(p+n*.23+Vector3.UP*7.62,Vector3(opening,2.38,.20),glass,angle)
+			_cube(p+n*.31+Vector3.UP*7.62,Vector3(.09,2.38,.17),trim,angle)
+			_cube(p+n*.28+Vector3.UP*8.78,Vector3(opening+.27,.22,.31),trim,angle)
+			_cube(p+n*.28+Vector3.UP*6.42,Vector3(opening+.27,.22,.31),trim,angle)
+			if k>0:
+				var pier := a+t*float(k)*step
+				_cube(pier+n*.10+Vector3.UP*2.68,Vector3(.38,4.65,.34),trim,angle)
+				_cube(pier+n*.12+Vector3.UP*7.92,Vector3(.40,3.95,.35),trim,angle)
+				_cube(pier+n*.15+Vector3.UP*9.76,Vector3(.63,.34,.42),trim,angle)
+		for corner in [a,b]:
+			_cube(corner+Vector3.UP*5.4,Vector3(.55,10.8,.55),trim,angle)
+		if main_side:
+			var p := a+t*(float(entrance)+.5)*step
+			var gable := minf(step*1.20,4.6)
+			var left := p-t*gable*.5+n*.18+Vector3.UP*10.6
+			var right := p+t*gable*.5+n*.18+Vector3.UP*10.6
+			var peak := p+n*.18+Vector3.UP*12.65
+			_face(left,right,peak,n,trim,tile)
+			_market_arch(p+n*.33+Vector3.UP*9.02,n,t,opening*.84,2.4,glass)
+			_label("MERCADO DE CUATRO CAMINOS",p+n*.37+Vector3.UP*4.85,.011,angle,Color("#464c51"))
+	market_drawn = true
+	mapped_buildings += 1
+	editable_buildings["landmark_cuatro_caminos"] = {"poly":poly,"center":Vector3(middle.x,0,middle.y),"height":14.9,"name":"Mercado de Cuatro Caminos","protected":true,"front":primary}
+	print("Cuatro Caminos: mercado monumental generado, ",poly.size()," frentes del perímetro.")
+
 func _market_side_details(poly: PackedVector2Array,primary: Dictionary,h: float) -> void:
 	var stone := _mat("market_trim",Color("#c0b39b"))
 	for i in range(poly.size()):
