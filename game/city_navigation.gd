@@ -219,6 +219,48 @@ func _search() -> void:
 	var point: Vector3 = geography.points[result.id]
 	_set_destination(point,String(result.label))
 
+# Start from the closest real road segment rather than drawing a line
+# from an arbitrary nearest junction across a building.
+func _vehicle_route(at: Vector3,goal: Vector3) -> Dictionary:
+	var geography = game.cuba_world.geography
+	var router = game.taxis.router
+	var edge_best: Dictionary = {}
+	var projection := at
+	var distance := INF
+	for edge in geography.roads_near(at,35.0):
+		if not bool(edge.driveable): continue
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		var p := Geometry3D.get_closest_point_to_segment(at,a,b)
+		if at.distance_to(p)<distance:
+			distance = at.distance_to(p)
+			edge_best = edge
+			projection = p
+	if edge_best.is_empty(): return {"error":"No hay una calle de circulación cerca de tu posición."}
+	var best: Dictionary = {}
+	var best_length := INF
+	for order in [0,1]:
+		var entry := String(edge_best.a_id) if order==0 else String(edge_best.b_id)
+		var exit_id := String(edge_best.b_id) if order==0 else String(edge_best.a_id)
+		if not geography.graph.get(entry,[]).has(exit_id): continue
+		# Handle a destination directly ahead on this same street segment.
+		var a: Vector3 = geography.points[entry]
+		var b: Vector3 = geography.points[exit_id]
+		var target := Geometry3D.get_closest_point_to_segment(goal,a,b)
+		if target.distance_to(goal)<=4.0 and (target-projection).dot(b-a)>=0.0:
+			var length := projection.distance_to(target)
+			if length<best_length:
+				best_length = length
+				best = {"path":[],"point":target,"start_point":projection}
+		var result: Dictionary = router.resolve_point(goal,exit_id)
+		if result.has("error"): continue
+		var total: float = projection.distance_to(b)+float(result.get("distance",0.0))
+		if total<best_length:
+			best_length = total
+			best = result
+			best.start_point = projection
+	return best if not best.is_empty() else {"error":"No existe una ruta vehicular desde esta calle."}
+
 func _draw_route(fit: bool) -> void:
 	var path: Array = []
 	var route_end := selected
@@ -246,10 +288,11 @@ func _draw_route(fit: bool) -> void:
 							note = "Ruta hasta la acera accesible más cercana."
 			if path.is_empty(): note = "No hay una ruta peatonal comprobada para este punto. Prueba una acera o el modo vehículo."
 	else:
-		var result: Dictionary = game.taxis.router.resolve_point(selected,_start_node())
+		var result: Dictionary = _vehicle_route(from,selected)
 		if result.has("error"):
 			note = String(result.error)
 		else:
+			if result.has("start_point"): path.append(result.start_point)
 			for id in result.path: path.append(game.cuba_world.geography.points[id])
 			var last: Vector3 = path.back() if not path.is_empty() else from
 			route_end = result.get("point",last)
