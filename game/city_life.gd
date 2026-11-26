@@ -34,6 +34,8 @@ var meal_arms: Array = []
 var last_first_person := true
 var save_clock := 0.0
 var economy_clock := 0.0
+var agent_tick_clock := 0.0
+var hud_tick_clock := 0.0
 var state: Dictionary = {}
 var rng := RandomNumberGenerator.new()
 
@@ -571,7 +573,10 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 			var item := String(MENU[order.key].name).to_lower()
 			business._notify(name_value+": "+String(["¡Muchacho, tu "+item+"!","¡Ya está listo tu pedido de "+item+"!","¡Ven a buscar tu "+item+"!","¡Mi hermano, aquí tienes tu "+item+"!","¡Orden lista, pasa por el mostrador!"].pick_random()))
 			ledger.save_game()
-	_tick_agents(delta)
+	agent_tick_clock += delta
+	if agent_tick_clock>=.065:
+		_tick_agents(agent_tick_clock)
+		agent_tick_clock = 0.0
 	economy_clock += delta
 	if economy_clock>=60.0:
 		economy_clock = 0.0
@@ -598,6 +603,7 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	if save_clock>=15.0:
 		save_clock = 0.0
 		ledger.save_game()
-		_update_hud()
-	else:
+	hud_tick_clock += delta
+	if hud_tick_clock>=.20:
+		hud_tick_clock = 0.0
 		_update_hud()
