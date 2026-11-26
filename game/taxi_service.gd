@@ -708,6 +708,13 @@ func tick(delta: float,_clock: float) -> void:
 		return
 	var waypoints: Array = passenger.path
 	var index := int(passenger.index)
+	if not stop_requested:
+		var watch_index := index
+		while watch_index<waypoints.size()-1 and bool(waypoints[watch_index].get("bypass",false)): watch_index += 1
+		var restored := TrafficBypass.watchdog(passenger,body,streets,waypoints,watch_index,1.90,4.80,1.8,delta,false)
+		if restored>=0:
+			passenger.index = restored
+			return
 	# Consume intermediate samples without introducing a one-frame stop.
 	while index<waypoints.size():
 		var p: Vector3 = waypoints[index].p
