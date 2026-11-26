@@ -156,7 +156,7 @@ func _ready() -> void:
 		for taxi in taxis.taxis:
 			var body: CharacterBody3D = taxi.body
 			avoid.append(body.global_position)
-		urban_buses.setup(cuba_world.geography,cuba_world.street_geometry,cuba_world.home_spawn,avoid)
+		urban_buses.setup(cuba_world.geography,cuba_world.street_geometry,cuba_world.home_spawn,avoid,cuba_world)
 		business = BusinessMission.new()
 		add_child(business)
 		business.setup(cuba_world,taxis,player,van,play_camera)
