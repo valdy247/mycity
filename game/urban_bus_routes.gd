@@ -30,7 +30,7 @@ func _corridor(edge: Dictionary,name_value: String) -> bool:
 	values.append_array(edge.get("aliases",[]))
 	for v in values:
 		var n := data.normalized(String(v))
-		if name_value=="MONTE" and (n.contains("monte") or n.contains("maximo gomez")): return true
+		if name_value=="MONTE" and (bool(edge.get("monte_corridor",false)) or n.contains("monte") or n.contains("maximo gomez")): return true
 		if name_value=="CERRO" and (n.contains("cerro") or n.contains("principe alfonso")): return true
 	return false
 
