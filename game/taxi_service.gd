@@ -708,6 +708,7 @@ func tick(delta: float,_clock: float) -> void:
 		return
 	var waypoints: Array = passenger.path
 	var index := int(passenger.index)
+	if stop_requested: TrafficBypass.reset_watchdog(passenger)
 	if not stop_requested:
 		var watch_index := index
 		while watch_index<waypoints.size()-1 and bool(waypoints[watch_index].get("bypass",false)): watch_index += 1
