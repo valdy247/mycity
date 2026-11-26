@@ -5,9 +5,10 @@ const ROAD_Y := 0.055
 const ROAD_AXES := [-128, -64, 0, 64, 128]
 const HOME := Vector3(16, ROAD_Y, 16)
 const HOME_OUT := Vector3(16, 0.91, 21.0)
-const HOME_IN := Vector3(16, 0.91, 17.35)
+const HOME_IN := Vector3(16, 1.02, 17.35)
 const VAN_PARK := Vector3(8, 0, 16)
-var grid_builder: Node3D
+const Builder = preload("res://city_builder.gd")
+var grid_builder: Builder
 var mats: Dictionary = {}
 var mesh_cache: Dictionary = {}
 var batches: Dictionary = {}
@@ -24,7 +25,7 @@ var door: Node3D
 var door_tween: Tween
 var door_anchor := Vector3.ZERO
 
-func setup(builder: Node3D) -> void:
+func setup(builder: Builder) -> void:
 	grid_builder = builder
 	solid_body = StaticBody3D.new()
 	solid_body.collision_layer = 1
@@ -39,7 +40,7 @@ func setup(builder: Node3D) -> void:
 	_make_roads()
 	_make_districts()
 	_make_home()
-	_make_park(Vector3(40,0,16))
+	_make_park(Vector3(40,0,32))
 	_make_park(Vector3(-40,0,-40))
 	_make_park(Vector3(104,0,104))
 	_flush_batches()
@@ -103,8 +104,8 @@ func _static_box(at: Vector3, size: Vector3, material: StandardMaterial3D) -> vo
 	_batch(at,size,material)
 	_shape(solid_body,at,size)
 
-func _reserve(x: int, z: int) -> void:
-	grid_builder.reserve_cell(x,z)
+func _reserve(x: int, z: int, kind: String = "lot") -> void:
+	grid_builder.reserve_cell(x,z,kind)
 
 func _make_roads() -> void:
 	var asphalt := _mat("road",Color(0.20,0.23,0.27))
@@ -115,8 +116,8 @@ func _make_roads() -> void:
 	# inside the road tile, so a new 8 m road meets the existing grid.
 	for axis in ROAD_AXES:
 		for k in range(-24,25):
-			_reserve(int(axis)/8,k)
-			_reserve(k,int(axis)/8)
+			_reserve(roundi(float(axis)/8.0),k,"road")
+			_reserve(k,roundi(float(axis)/8.0),"road")
 	for axis in ROAD_AXES:
 		for k in range(-24,25):
 			var q: float = float(k)*8.0
@@ -130,6 +131,20 @@ func _make_roads() -> void:
 				_batch(Vector3(q,ROAD_Y+0.009,a),Vector3(2.5,0.018,0.10),stripe)
 				for side in [-1.0,1.0]:
 					_batch(Vector3(q,ROAD_Y+0.018,a+float(side)*3.65),Vector3(8,0.036,0.65),concrete)
+	# Local access streets connect the residential and commercial lots.
+	for lane_z in [-24,24]:
+		for cell_x in range(-7,8):
+			if cell_x == 0:
+				continue
+			_reserve(cell_x,roundi(float(lane_z)/8.0),"road")
+			var xx: float = float(cell_x)*8.0
+			var zz: float = float(lane_z)
+			_batch(Vector3(xx,ROAD_Y/2,zz),Vector3(8,ROAD_Y,8),asphalt)
+			_batch(Vector3(xx,ROAD_Y+.009,zz),Vector3(2.5,.018,.1),stripe)
+			for side in [-1.0,1.0]:
+				_batch(Vector3(xx,ROAD_Y+.018,zz+float(side)*3.65),Vector3(8,.036,.65),concrete)
+		for main_x in [-64.0,0.0,64.0]:
+			_batch(Vector3(float(main_x),ROAD_Y+.043,float(lane_z)),Vector3(8,.016,6.5),asphalt)
 	# No separate road collision needed: the flat ground is 5.5 cm below
 	# the visual pavement. New streets use the same road elevation.
 	for xx in ROAD_AXES:
@@ -166,10 +181,10 @@ func _starter(kind: String, x: int, z: int, turn: int) -> void:
 func _make_districts() -> void:
 	# Uniform buildings use exactly the same model generator as player builds.
 	# Keep many empty blocks and lots for future construction.
-	for p in [Vector2i(-6,2),Vector2i(-5,2),Vector2i(-4,2),Vector2i(-3,2),Vector2i(-2,2),Vector2i(3,2),Vector2i(4,2),Vector2i(6,2),Vector2i(7,2),Vector2i(-6,3),Vector2i(-5,3),Vector2i(-4,3),Vector2i(3,3),Vector2i(4,3),Vector2i(6,3)]:
+	for p in [Vector2i(-6,2),Vector2i(-5,2),Vector2i(-4,2),Vector2i(-3,2),Vector2i(-2,2),Vector2i(3,2),Vector2i(4,2),Vector2i(6,2),Vector2i(7,2),Vector2i(-6,4),Vector2i(-5,4),Vector2i(-4,4),Vector2i(3,4),Vector2i(4,4)]:
 		_starter("house",p.x,p.y,0 if p.y==2 else 2)
 	for p in [Vector2i(-2,-2),Vector2i(-3,-2),Vector2i(-4,-2),Vector2i(2,-2),Vector2i(3,-2),Vector2i(4,-2),Vector2i(7,-2)]:
-		_starter("shop",p.x,p.y,0)
+		_starter("shop",p.x,p.y,2)
 	for p in [Vector2i(-3,6),Vector2i(3,6),Vector2i(10,-10),Vector2i(-10,10)]:
 		_starter("school",p.x,p.y,0)
 	for p in [Vector2i(-10,-10),Vector2i(-11,-10),Vector2i(-12,-10),Vector2i(10,10),Vector2i(11,10),Vector2i(12,10),Vector2i(10,-4),Vector2i(11,-4)]:
@@ -255,12 +270,25 @@ func _make_park(center: Vector3) -> void:
 			add_child(tree)
 			tree.position = t+Vector3(0,2.1,0)
 
+func _all_seats() -> Array:
+	var result: Array = seats.duplicate()
+	for entry in grid_builder.pieces.values():
+		if String(entry.kind) != "park":
+			continue
+		var root: Node3D = entry.node
+		if not is_instance_valid(root):
+			continue
+		for side in [-1.0,1.0]:
+			var x: float = float(side)*1.8
+			result.append({"at":root.to_global(Vector3(x,1.08,.90)),"exit":root.to_global(Vector3(x,.86,-.1)),"yaw":root.rotation.y+PI})
+	return result
+
 func interaction_text(at: Vector3) -> String:
 	if seated:
 		return "[E] Levantarse"
 	if at.distance_to(door_anchor) < 2.6:
 		return "[E] Salir de mi casa" if inside_home else "[E] Entrar a mi casa"
-	for seat in seats:
+	for seat in _all_seats():
 		if at.distance_to(seat.at) < 2.1:
 			return "[E] Sentarse"
 	return ""
@@ -289,7 +317,7 @@ func interact(player: CharacterBody3D, avatar: Node3D, legs: Array, arms: Array)
 		player.global_position = HOME_IN if inside_home else HOME_OUT
 		player.velocity = Vector3.ZERO
 		return true
-	for seat in seats:
+	for seat in _all_seats():
 		if player.global_position.distance_to(seat.at)<2.1:
 			seated = true
 			seat_exit = seat.exit
