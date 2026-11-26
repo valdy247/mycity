@@ -265,13 +265,49 @@ func _body(truck: bool,index: int) -> CharacterBody3D:
 		sign_label.position = Vector3(-1.16,1.91,-.85)
 		body.add_child(sign_label)
 	else:
-		_part(body,Vector3(0,.66,0),Vector3(width,.67,length),paint)
-		_part(body,Vector3(0,1.12,-.18),Vector3(1.55,.58,1.9),glass)
-		_part(body,Vector3(0,1.45,-.19),Vector3(1.62,.11,1.85),paint.lightened(.25))
-		for side in [-1.0,1.0]:
-			_part(body,Vector3(float(side)*.76,1.12,-.14),Vector3(.065,.56,.12),paint)
-			_part(body,Vector3(float(side)*.65,.79,length*.5+.03),Vector3(.25,.19,.05),Color("#f0e8bd"))
-			_part(body,Vector3(float(side)*.65,.79,-length*.5-.03),Vector3(.22,.17,.05),Color("#af4940"))
+		# Keep the existing physics envelope. Most cars resemble American
+		# 1940s/1950s sedans, with three distinct silhouettes and two-tone paint.
+		var classic := index%5!=4
+		var chrome := Color("#bfc5c5")
+		if classic:
+			var colors := [Color("#487f79"),Color("#9b4e46"),Color("#587a9d"),Color("#bd9a56"),Color("#737c65"),Color("#a28d91")]
+			paint = colors[posmod(index,colors.size())]
+			var roof := paint.lightened(.32) if index%3==0 else Color("#e4dfce")
+			var style := index%3
+			_part(body,Vector3(0,.58,0),Vector3(1.76,.48,4.08),paint)
+			_part(body,Vector3(0,.85,1.24),Vector3(1.48,.26,1.42),paint)
+			_part(body,Vector3(0,.79,-1.38),Vector3(1.48,.26,1.25),paint)
+			_part(body,Vector3(0,1.16,-.15),Vector3(1.46,.49,1.80),glass)
+			_part(body,Vector3(0,1.44,-.19),Vector3(1.52,.10,1.87),roof)
+			_part(body,Vector3(0,.65,2.09),Vector3(1.74,.12,.07),chrome)
+			_part(body,Vector3(0,.79,2.05),Vector3(1.21,.19,.07),black)
+			for stripe in range(5):
+				_part(body,Vector3(0,.72+float(stripe)*.035,2.10),Vector3(1.13,.012,.025),chrome)
+			_part(body,Vector3(0,.62,-2.09),Vector3(1.74,.12,.07),chrome)
+			for side in [-1.0,1.0]:
+				var x := float(side)
+				for z in [-1.37,1.37]:
+					_part(body,Vector3(x*.77,.76,float(z)),Vector3(.27,.28,1.17),paint)
+				for z in [-.99,-.18,.68]:
+					_part(body,Vector3(x*.74,1.16,float(z)),Vector3(.055,.49,.09),roof)
+				_part(body,Vector3(x*.892,.77,0),Vector3(.025,.055,3.85),chrome)
+				_part(body,Vector3(x*.895,.91,-.19),Vector3(.025,.04,.19),chrome)
+				var light := _part(body,Vector3(x*.70,.85,2.075),Vector3(.25,.06,.25),Color("#f0e6c7"),wheel_mesh)
+				light.rotation.x = PI*.5
+				_part(body,Vector3(x*.72,.82,-2.075),Vector3(.16,.17,.045),Color("#a42e2d"))
+				if style==1:
+					var fin := _part(body,Vector3(x*.78,.96,-1.63),Vector3(.13,.24,.76),paint)
+					fin.rotation.x = -.20
+				elif style==2:
+					_part(body,Vector3(x*.77,.89,-1.45),Vector3(.17,.10,1.13),roof)
+		else:
+			_part(body,Vector3(0,.66,0),Vector3(width,.67,length),paint)
+			_part(body,Vector3(0,1.12,-.18),Vector3(1.55,.58,1.9),glass)
+			_part(body,Vector3(0,1.45,-.19),Vector3(1.62,.11,1.85),paint.lightened(.25))
+			for side in [-1.0,1.0]:
+				_part(body,Vector3(float(side)*.76,1.12,-.14),Vector3(.065,.56,.12),paint)
+				_part(body,Vector3(float(side)*.65,.79,length*.5+.03),Vector3(.25,.19,.05),Color("#f0e8bd"))
+				_part(body,Vector3(float(side)*.65,.79,-length*.5-.03),Vector3(.22,.17,.05),Color("#af4940"))
 	var radius := .45 if truck else .33
 	for side in [-1.0,1.0]:
 		for z in ([-2.05,1.95] if truck else [-1.35,1.35]):
@@ -279,6 +315,11 @@ func _body(truck: bool,index: int) -> CharacterBody3D:
 			tire.rotation.z = PI*.5
 			var rim := _part(body,Vector3(float(side)*(width*.5+.025),radius,float(z)),Vector3(radius*1.1,.045,radius*1.1),Color("#9c9d98"),wheel_mesh)
 			rim.rotation.z = PI*.5
+			if not truck and index%5!=4:
+				var whitewall := _part(body,Vector3(float(side)*(width*.5+.013),radius,float(z)),Vector3(radius*1.55,.024,radius*1.55),Color("#e5e0cb"),wheel_mesh)
+				whitewall.rotation.z = PI*.5
+				var hub := _part(body,Vector3(float(side)*(width*.5+.04),radius,float(z)),Vector3(radius*.90,.035,radius*.90),Color("#bfc5c5"),wheel_mesh)
+				hub.rotation.z = PI*.5
 	var collision := CollisionShape3D.new()
 	var shape := BoxShape3D.new()
 	shape.size = Vector3(width,2.7 if truck else 1.5,length)
@@ -287,9 +328,26 @@ func _body(truck: bool,index: int) -> CharacterBody3D:
 	collision.position.y = shape.size.y*.5+.06
 	return body
 
+# Add intermediate points for distributed spawning on long blocks.
+func _civilian_route(raw: Array) -> Array:
+	var result: Array = []
+	for i in range(raw.size()):
+		var p: Vector3 = raw[i].p
+		var q: Vector3 = raw[(i+1)%raw.size()].p
+		result.append(raw[i])
+		var count := ceili(p.distance_to(q)/13.0)
+		for j in range(1,count):
+			var at := p.lerp(q,float(j)/float(count))
+			if Bypass._on_road(world.street_geometry,at,(q-p).normalized(),1.83,4.25):
+				result.append({"p":at})
+	return result
+
 func _make_vehicle(route: Array,truck: bool,index: int) -> void:
 	var start := -1
-	for i in range(route.size()):
+	if route.size()<2: return
+	var preferred := 0 if truck else floori(float(route.size())*float(index%8)/8.0)
+	for step in range(route.size()):
+		var i := (preferred+step)%route.size()
 		var item: Dictionary = route[i]
 		if truck and not item.has("stop"): continue
 		var p: Vector3 = item.p
@@ -303,6 +361,7 @@ func _make_vehicle(route: Array,truck: bool,index: int) -> void:
 		var next: Vector3 = route[(i+1)%route.size()].p
 		var d := (next-p).normalized()
 		if item.has("stop"): d = item.stop.direction
+		if not truck and not world.street_geometry.intersection_clear_for_stop(p,4.25,1.83): continue
 		if not Bypass._on_road(world.street_geometry,p,d,2.3 if truck else 1.83,6.2 if truck else 4.25): continue
 		if d.length_squared()<.1: continue
 		if not _free_box(p,d,Vector3(2.3 if truck else 1.83,2.7 if truck else 1.5,6.2 if truck else 4.25)): continue
@@ -358,7 +417,8 @@ func _initialize() -> void:
 		car_route.append({"p":b+passing_lane})
 	if route.size()<5: return
 	if not sites.is_empty(): _make_vehicle(route,true,0)
-	for i in range(2):
+	car_route = _civilian_route(car_route)
+	for i in range(8):
 		_make_vehicle(car_route,false,i)
 	print("Monte: ",sites.size()," garbage collection points; ",vehicles.size()," municipal/ordinary vehicles.")
 
