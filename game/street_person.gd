@@ -8,6 +8,8 @@ var arms: Array[Node3D] = []
 var phase := 0.0
 var last_position := Vector3.ZERO
 var style_id := 0
+var female := false
+var social_context := "street"
 var carried: Node3D
 
 func _material(color: Color) -> StandardMaterial3D:
@@ -53,6 +55,8 @@ func _part(root: Node3D,kind: String,p: Vector3,dims: Vector3,color: Color) -> M
 
 func setup(style: int,worker: bool = false) -> void:
 	style_id = style
+	female = not worker and posmod(style,3)==1
+	add_to_group("social_people")
 	var skin_colors: Array[Color] = [Color("#9b694b"),Color("#cc9b75"),Color("#70482f"),Color("#e1b797"),Color("#ac7a52")]
 	var shirts: Array[Color] = [Color("#d6cfb6"),Color("#667e99"),Color("#9c6a68"),Color("#72918a"),Color("#e1e0da"),Color("#8d856c")]
 	var skin: Color = skin_colors[posmod(style,skin_colors.size())]
@@ -82,7 +86,11 @@ func setup(style: int,worker: bool = false) -> void:
 		_part(arm,"limb",Vector3(0,-.12,0),Vector3(.14,.26,.15),shirt)
 		_part(arm,"limb",Vector3(0,-.34,0),Vector3(.105,.22,.11),skin)
 		_part(arm,"head",Vector3(0,-.49,0),Vector3(.105,.13,.11),skin)
+	if female:
+		_part(self,"head",Vector3(0,1.61,-.13),Vector3(.30,.31,.20),Color("#302b28"))
+		_part(self,"head",Vector3(0,1.73,-.18),Vector3(.17,.17,.16),Color("#302b28"))
 	if worker:
+		social_context = "worker"
 		_part(self,"box",Vector3(0,1.14,.14),Vector3(.38,.075,.018),Color("#eee0a0"))
 		_part(self,"box",Vector3(0,1.14,-.14),Vector3(.38,.075,.018),Color("#eee0a0"))
 
