@@ -388,6 +388,13 @@ func _new_trip(body: CharacterBody3D,route: Array) -> Dictionary:
 func _drive_trip(trip: Dictionary,delta: float) -> bool:
 	var body: CharacterBody3D = trip.body
 	var original: Array = trip.route
+	var watch_index := int(trip.resume) if not trip.detour.is_empty() else int(trip.index)
+	var restored := Bypass.watchdog(trip,body,streets,original,watch_index,WIDTH,LENGTH,HEIGHT,delta,false)
+	if restored>=0:
+		trip.index = restored
+		trip.detour = []
+		trip.detour_index = 0
+		return false
 	var detour: Array = trip.detour
 	var active := not detour.is_empty()
 	var route: Array = detour if active else original
