@@ -400,11 +400,33 @@ func _drive_trip(trip: Dictionary,delta: float) -> bool:
 		trip.speed = 0.0
 	return false
 
-func _car_trip(body: CharacterBody3D,at: Vector3,radius: float = 38.0) -> Dictionary:
+func _car_trip(body: CharacterBody3D,at: Vector3,radius: float = 38.0,exclude: Dictionary = {}) -> Dictionary:
 	var start: Array = _berths(body.global_position,11.0,body.global_transform.basis.z,false)
 	var goals: Array = _berths(at,radius)
-	for goal in goals.slice(0,24):
+	if radius>=RESCUE_WALK_RANGE:
+		# A single closest projection is insufficient when another car
+		# occupies it. Try additional positions along the same block.
+		var extra: Array = []
+		for goal in goals.slice(0,12):
+			var p: Vector3 = goal.p
+			var d: Vector3 = goal.d
+			for distance in [-16.0,16.0,-8.0,8.0]:
+				var candidate: Dictionary = goal.duplicate()
+				var q := streets.safe_stop_on_edge(goal.a,goal.b,p+d*float(distance),LENGTH,WIDTH)
+				if q.distance_to(at)>radius or not streets.intersection_clear_for_stop(q,LENGTH,WIDTH): continue
+				if not Bypass._on_road(streets,q,d,WIDTH,LENGTH): continue
+				candidate.p = q
+				candidate.dist = q.distance_to(at)
+				extra.append(candidate)
+		goals.append_array(extra)
+		goals.sort_custom(func(a,b): return float(a.dist)<float(b.dist))
+	for goal in goals.slice(0,36):
+		if not exclude.is_empty() and _flat_distance_to_berth(goal,exclude)<4.0: continue
 		if not _clear_pose(body,goal): continue
+		if radius>=RESCUE_WALK_RANGE:
+			var ground := _sidewalk(goal,at)
+			if ground.is_empty(): continue
+			if _rescue_access(ground.p,at).is_empty(): continue
 		for origin in start.slice(0,4):
 			var route := _route(origin,goal,body.global_position)
 			if not route.is_empty(): return {"trip":_new_trip(body,route),"berth":goal}
@@ -894,12 +916,18 @@ func _rescue_access(from: Vector3,at: Vector3) -> Dictionary:
 	return {}
 
 func _hospital_trip(body: CharacterBody3D) -> Dictionary:
+	var destinations: Array = []
 	var dest := _destination("hospital")
-	if not dest.is_empty():
-		var trip := _car_trip(body,dest.p)
+	if not dest.is_empty(): destinations.append(dest.p)
+	if world.incident_services.has("clinic"): destinations.append(world.incident_services.clinic)
+	for fp in world.original_footprints.values():
+		var kind := String(fp.tags.get("amenity",""))
+		if kind not in ["hospital","clinic"]: continue
+		var p: Vector3 = fp.center
+		if not destinations.has(p): destinations.append(p)
+	for p in destinations:
+		var trip := _car_trip(body,p,65.0)
 		if not trip.is_empty(): return trip
-	if world.incident_services.has("clinic"):
-		return _car_trip(body,world.incident_services.clinic)
 	return {}
 
 # Accept the current position only if the whole car is on the road,
@@ -976,6 +1004,9 @@ func _rescue_parked(victim: Dictionary,body: CharacterBody3D) -> bool:
 func _release_helper() -> void:
 	if scene.actors.size()<2: return
 	var helper: Dictionary = scene.actors.pop_back()
+	var person: Person = helper.node
+	person.rotation.x = 0.0
+	for arm in person.arms: arm.rotation.x = 0.0
 	_release(helper.agent)
 
 func _carry_pose(person: Node3D,driver: Person,helper: Person,delta: float) -> void:
@@ -1017,6 +1048,7 @@ func _begin_transport(victim: Dictionary,person: Node3D,body: CharacterBody3D) -
 	scene.actors = []
 	scene.phase = "hospital_retry"
 	scene.time = 3.0
+	scene.medical_wait = 0.0
 	_crowd_clear()
 	_rescue_log(victim,"herido dentro del automóvil; preparando traslado.")
 
@@ -1036,7 +1068,7 @@ func _rescue_tick(delta: float) -> void:
 			# Try a different reachable curb, including the next street.
 			if float(scene.time)>5.0:
 				scene.time = 0.0
-				var alternate := _car_trip(body,scene.center,RESCUE_WALK_RANGE)
+				var alternate := _car_trip(body,scene.center,RESCUE_WALK_RANGE,scene.berth)
 				if not alternate.is_empty() and _flat_distance_to_berth(alternate.berth,scene.berth)>3.0:
 					Bypass._junction_release(scene.trip,body,streets)
 					scene.trip = alternate.trip
@@ -1044,7 +1076,7 @@ func _rescue_tick(delta: float) -> void:
 			return
 		if _rescue_parked(victim,body): return
 		_rescue_log(victim,"buscando otro acceso a pie.")
-		var alternative := _car_trip(body,scene.center,RESCUE_WALK_RANGE)
+		var alternative := _car_trip(body,scene.center,RESCUE_WALK_RANGE,scene.berth)
 		if not alternative.is_empty() and _flat_distance_to_berth(alternative.berth,scene.berth)>3.0:
 			scene.trip = alternative.trip
 			scene.berth = alternative.berth
@@ -1151,11 +1183,32 @@ func _rescue_tick(delta: float) -> void:
 		var transfer := _hospital_trip(body)
 		if transfer.is_empty():
 			_rescue_log(victim,"herido a bordo; buscando una ruta médica alternativa.")
+			scene.medical_wait = float(scene.get("medical_wait",0.0))+2.0
+			if float(scene.medical_wait)>=8.0:
+				# Move to a connected street instead of occupying the pickup
+				# berth indefinitely. Patient remains in the vehicle.
+				var here := body.global_position
+				var heading := body.global_transform.basis.z
+				for goal in _berths(here+heading*45.0,35.0,heading):
+					var point: Vector3 = goal.p
+					if point.distance_to(here)<20.0: continue
+					var alternative := _car_trip(body,point,20.0)
+					if alternative.is_empty(): continue
+					scene.trip = alternative.trip
+					scene.phase = "hospital_reposition"
+					scene.medical_wait = 0.0
+					break
 			return
 		scene.trip = transfer.trip
 		scene.hospital_berth = transfer.berth
 		scene.phase = "hospital"
 		_rescue_log(victim,"rumbo al centro médico.")
+	elif phase=="hospital_reposition":
+		if _drive_trip(scene.trip,delta) or float(scene.trip.get("traffic_stall",0.0))>7.0:
+			Bypass._junction_release(scene.trip,body,streets)
+			body.velocity = Vector3.ZERO
+			scene.phase = "hospital_retry"
+			scene.time = 2.0
 	elif phase=="hospital":
 		if not _drive_trip(scene.trip,delta):
 			if float(scene.trip.get("traffic_stall",0.0))>8.0 and float(scene.time)>10.0:
@@ -1173,7 +1226,8 @@ func _rescue_tick(delta: float) -> void:
 			return
 		person.reparent(_impact_parent(victim.agent),true)
 		person.global_position = ground.p
-		person.rotation.x = 0.0
+		var original_pose: Transform3D = victim.old
+		person.global_basis = original_pose.basis
 		person.show()
 		body.remove_meta("rescue_patient")
 		_say(person,"Gracias por traerme al hospital.")
@@ -1288,12 +1342,12 @@ func tick(delta: float) -> void:
 	scene.time = float(scene.time)+delta
 	scene.age = float(scene.age)+delta
 	var phase := String(scene.phase)
-	if phase not in ["depart","depart_retry","hospital","hospital_retry"] and (phase!="approach" or String(scene.kind)=="rescue"):
+	if phase not in ["depart","depart_retry","hospital","hospital_retry","hospital_reposition"] and (phase!="approach" or String(scene.kind)=="rescue"):
 		_crowd_tick(scene.center,delta)
 	if String(scene.kind)=="police":
 		_police_tick(delta)
 		if not scene.is_empty() and float(scene.age)>155.0: _finish_police(false)
 	else:
 		_rescue_tick(delta)
-		if not scene.is_empty() and float(scene.age)>150.0 and String(scene.phase) not in ["hospital","hospital_retry","load"]:
+		if not scene.is_empty() and float(scene.age)>150.0 and String(scene.phase) not in ["hospital","hospital_retry","hospital_reposition","load"]:
 			_end_rescue(false)
