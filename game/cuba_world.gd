@@ -337,61 +337,124 @@ func _on_monte_alignment(p: Vector3,direction: Vector3) -> bool:
 			continue
 		var a: Vector3 = edge.a
 		var b: Vector3 = edge.b
-		if absf((b-a).normalized().dot(direction))>.98 and Geometry3D.get_closest_point_to_segment(p,a,b).distance_to(p)<.35:
+		if absf((b-a).normalized().dot(direction))>.94 and Geometry3D.get_closest_point_to_segment(p,a,b).distance_to(p)<1.15:
 			return true
 	return false
 
-func _monte_pair(anchor: Vector3) -> Array:
+# Placement is a local game preference, not a change to OSM.
+const HOME_PLACEMENT_FILE := "user://pilar_home_placement_v2.json"
+
+func _alborada_anchor() -> Vector3:
+	var anchor := geography.project(23.12230,-82.36677)
+	for place in geography.poi:
+		var tags: Dictionary = place.tags
+		if String(place.id)=="5233654525" or geography.normalized(String(tags.get("name",""))).contains("alborada"):
+			anchor = place.position
+			break
+	# Reproduce the position of the original shop sign, rather than using
+	# the nearest unrelated parcel or the centre of a long road segment.
+	var best := 22.0
+	var result := anchor
+	for fp in geography.footprints_near(anchor,22.0):
+		var face := _front_edge(fp.poly)
+		if face.is_empty() or geography.street_label(String(face.road.name))!="MONTE":
+			continue
+		var q := Geometry3D.get_closest_point_to_segment(anchor,face.a,face.b)
+		var distance := q.distance_to(anchor)
+		if distance<best:
+			best = distance
+			result = q-face.normal*.25
+	return result
+
+func _saved_home_anchor() -> Dictionary:
+	if not FileAccess.file_exists(HOME_PLACEMENT_FILE):
+		return {}
+	var file := FileAccess.open(HOME_PLACEMENT_FILE,FileAccess.READ)
+	if file==null:
+		return {}
+	var value: Variant = JSON.parse_string(file.get_as_text())
+	if value is Dictionary and value.has("x") and value.has("z"):
+		var p := Vector3(float(value.x),0,float(value.z))
+		if p.is_finite():
+			return {"point":p}
+	return {}
+
+func _monte_pair(anchor: Vector3,manual: bool = false) -> Array:
 	var best: Array = []
 	var best_score := INF
-	for edge in geography.roads_near(anchor,55.0):
+	# Find the nearest Monte frontage first. The selected point determines
+	# the side of the avenue, and the viewer-facing right is +local X.
+	var nearest: Dictionary = {}
+	var nearest_distance := INF
+	for edge in geography.roads_near(anchor,65.0):
 		if not bool(edge.driveable) or geography.street_label(String(edge.name))!="MONTE":
 			continue
-		var a: Vector3 = edge.a
-		var b: Vector3 = edge.b
-		var d := (b-a).normalized()
-		var q := Geometry3D.get_closest_point_to_segment(anchor,a,b)
-		var outward := Vector3(-d.z,0,d.x)
-		if outward.dot(anchor-q)<0.0:
-			outward = -outward
-		var front := -outward
-		var right := Vector3(front.z,0,-front.x)
-		for shift in [0.0,-2.0,2.0,-4.0,4.0,-6.0,6.0,-9.0,9.0,-12.0,12.0]:
-			var curb := q+right*float(shift)
-			var shop_curb := curb+right*9.12
-			# Both premises stay on the same street frontage; no corner crossing.
-			if not _on_monte_alignment(curb,d) or not _on_monte_alignment(shop_curb,d):
+		var q := Geometry3D.get_closest_point_to_segment(anchor,edge.a,edge.b)
+		if q.distance_to(anchor)<nearest_distance:
+			nearest_distance = q.distance_to(anchor)
+			nearest = edge
+	if nearest.is_empty() or nearest_distance>45.0:
+		return []
+	var ra: Vector3 = nearest.a
+	var rb: Vector3 = nearest.b
+	var road_dir := (rb-ra).normalized()
+	var reference := Geometry3D.get_closest_point_to_segment(anchor,ra,rb)
+	var outward := Vector3(-road_dir.z,0,road_dir.x)
+	if outward.dot(anchor-reference)<0.0:
+		outward = -outward
+	var front := -outward
+	var right := Vector3(front.z,0,-front.x)
+	# OSM splits one street into many short segments; don't require the
+	# two buildings to fit inside a single segment.
+	for shift in [0.0,-.5,.5,-1.0,1.0,-2.0,2.0,-3.0,3.0,-4.0,4.0,-5.0,5.0,-6.0,6.0,-8.0,8.0,-10.0,10.0,-12.0,12.0,-15.0,15.0,-18.0,18.0]:
+		if manual and absf(float(shift))>4.0:
+			continue
+		var curb := reference+right*float(shift)
+		var shop_curb := curb+right*9.12
+		if not _on_monte_alignment(curb,road_dir) or not _on_monte_alignment(shop_curb,road_dir):
+			continue
+		for setback in [1.5,1.8,2.1,2.5,3.0,3.5,4.0,4.5,5.0,6.0]:
+			var offset := outward*(float(nearest.width)*.5+float(setback)+4.5)
+			var home := {"center":curb+offset,"front":front,"edge":nearest,"curb":curb,"outward":outward,"d":road_dir,"portal":true,"landmark":"home"}
+			var shop := {"center":shop_curb+offset,"front":front,"edge":nearest,"curb":shop_curb,"outward":outward,"d":road_dir,"portal":true,"landmark":"alborada"}
+			var safe := true
+			for lot in [home,shop]:
+				var poly := _lot_polygon(lot)
+				if not street_geometry.clear(poly):
+					safe = false
+					break
+				for fp in geography.footprints_near(lot.center,12.0):
+					var tags: Dictionary = fp.tags
+					var label_value := geography.normalized(String(tags.get("name","")))
+					var extent: Vector3 = fp.high-fp.low
+					var protected := label_value.contains("cuatro caminos") or label_value.contains("mercado unico") or extent.x*extent.z>1500.0
+					var change: Dictionary = map_edits.get(String(fp.id),{})
+					if (protected or not change.is_empty()) and not Geometry2D.intersect_polygons(poly,fp.poly).is_empty():
+						safe = false
+						break
+				if not safe: break
+			if not safe:
 				continue
-			for setback in [1.65,1.95,2.25]:
-				var offset := outward*(float(edge.width)*.5+float(setback)+4.5)
-				var home := {"center":curb+offset,"front":front,"edge":edge,"curb":curb,"outward":outward,"d":d,"portal":true}
-				var shop := {"center":shop_curb+offset,"front":front,"edge":edge,"curb":shop_curb,"outward":outward,"d":d,"portal":true}
-				if not _lot_clear(home.center,front,edge) or not _lot_clear(shop.center,front,edge):
-					continue
-				var safe := true
-				for lot in [home,shop]:
-					var poly := _lot_polygon(lot)
-					for fp in geography.footprints_near(lot.center,12.0):
-						var extent: Vector3 = fp.high-fp.low
-						var change: Dictionary = map_edits.get(String(fp.id),{})
-						if (extent.x*extent.z>380.0 or not change.is_empty()) and not Geometry2D.intersect_polygons(poly,fp.poly).is_empty():
-							safe = false
-							break
-				if not safe:
-					continue
-				var score := curb.distance_to(q)+q.distance_to(anchor)*.5+float(setback)*.2
-				if score<best_score:
-					best_score = score
-					best = [home,shop]
+			var score := absf(float(shift))*3.0+float(setback)*.6
+			if score<best_score:
+				best_score = score
+				best = [home,shop]
 	return best
+
+func request_home_placement(at: Vector3) -> String:
+	var pair := _monte_pair(Vector3(at.x,0,at.z),true)
+	if pair.size()!=2:
+		return "No caben casa y tienda sin invadir calles. Marca el centro de la fachada en Monte."
+	var file := FileAccess.open(HOME_PLACEMENT_FILE,FileAccess.WRITE)
+	if file==null:
+		return "No se pudo guardar la posición."
+	file.store_string(JSON.stringify({"x":at.x,"z":at.z}))
+	file.close()
+	return ""
 
 func _make_frontages() -> void:
 	var proposals: Array = []
-	var public_anchor: Vector3 = geography.project(23.12230,-82.36677)
-	for place in geography.poi:
-		if String(place.id)=="5233654525":
-			public_anchor = place.position
-			break
+	var public_anchor: Vector3 = _alborada_anchor()
 	for edge in geography.roads:
 		if not bool(edge.driveable) or float(edge.width)<3.5:
 			continue
@@ -430,7 +493,9 @@ func _make_frontages() -> void:
 		old_home_transform = Transform3D(Basis(Vector3.UP,atan2(legacy_front.x,legacy_front.z)),c)
 		old_home_found = true
 		break
-	var pair := _monte_pair(public_anchor)
+	var manual := _saved_home_anchor()
+	var target: Vector3 = manual.get("point",public_anchor)
+	var pair := _monte_pair(target,not manual.is_empty())
 	if pair.size()==2:
 		var residence: Dictionary = pair[0]
 		alborada_lot = pair[1]
@@ -447,7 +512,7 @@ func _make_frontages() -> void:
 				_add_lot(lot)
 				_make_humble_home(lot)
 				break
-		push_warning("Monte: no hay dos parcelas contiguas seguras; se conserva la casa anterior.")
+		push_warning("Monte: no hay dos parcelas contiguas seguras. Usa clic derecho > Ubicar mi casa aquí en Monte.")
 	# Keep special interiors from the prototype in small unrecorded lots.
 	proposals.sort_custom(func(a,b): return a.center.distance_squared_to(public_anchor)<b.center.distance_squared_to(public_anchor))
 	for lot in proposals:
