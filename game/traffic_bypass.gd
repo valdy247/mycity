@@ -197,6 +197,136 @@ static func recover(body: CharacterBody3D,route: Array,index: int,streets: Stree
 
 # Measure actual progress, not merely a sensor reporting an obstacle.
 # A driver can be stuck even with a clear centreline.
+# Watchdog is sampled twice per second. Unlike the short stall timer,
+# reversing a few centimetres or discarding a detour cannot reset it.
+static func _route_point(route: Array,index: int) -> Vector3:
+	var item = route[index]
+	return item if item is Vector3 else item.p
+
+static func _mandatory_waypoint(route: Array,index: int) -> bool:
+	var item = route[index]
+	return item is Dictionary and (item.has("stop") or not String(item.get("node","")).is_empty())
+
+static func _recovery_pose_clear(body: CharacterBody3D,streets: Streets,p: Vector3,d: Vector3,width: float,length: float,height: float) -> bool:
+	if not p.is_finite() or d.length_squared()<.5: return false
+	if not _on_road(streets,p,d,width,length) or not streets.intersection_clear_for_stop(p,length,width): return false
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(width+.24,height,length+.30)
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = shape
+	query.transform = Transform3D(Basis(Vector3.UP,atan2(d.x,d.z)),p+Vector3.UP*(height*.5+.07))
+	query.collision_mask = 1|4|8|16|32
+	query.exclude = [body.get_rid()]
+	if not body.get_world_3d().direct_space_state.intersect_shape(query,1).is_empty(): return false
+	# Pedestrians are often visual-only actors; check them on rare recovery.
+	var side := Vector3(-d.z,0,d.x)
+	for node in body.get_tree().get_nodes_in_group("pedestrian_spacing"):
+		if not node is Node3D or not node.is_visible_in_tree() or body.is_ancestor_of(node): continue
+		var offset: Vector3 = node.global_position-p
+		if absf(offset.y)>1.5: continue
+		if absf(offset.dot(side))<width*.5+.65 and absf(offset.dot(d))<length*.5+.85: return false
+	return true
+
+# Return a valid original-route index or -1. Normal reversing and bypass
+# remain the first response. Reposition only as a last resort on free asphalt.
+static func watchdog(state: Dictionary,body: CharacterBody3D,streets: Streets,route: Array,index: int,width: float,length: float,height: float,delta: float,loop: bool = true) -> int:
+	if route.is_empty() or index<0 or index>=route.size(): return -1
+	state.watch_elapsed = float(state.get("watch_elapsed",0.0))+delta
+	if float(state.watch_elapsed)<.5: return -1
+	var elapsed: float = state.watch_elapsed
+	state.watch_elapsed = 0.0
+	var origin := body.global_position
+	var heading := body.global_basis.z.normalized()
+	var on_road := _on_road(streets,origin,heading,width,length)
+	var anchor: Vector3 = state.get("watch_anchor",origin)
+	if origin.distance_squared_to(anchor)>4.0:
+		state.watch_anchor = origin
+		state.watch_still = 0.0
+	else:
+		state.watch_anchor = anchor
+		state.watch_still = float(state.get("watch_still",0.0))+elapsed
+	state.watch_offroad = 0.0 if on_road else float(state.get("watch_offroad",0.0))+elapsed
+	# Save a small checkpoint only on safe road, outside junctions.
+	if on_road and streets.intersection_clear_for_stop(origin,length,width):
+		state.watch_safe = {"p":origin,"d":heading,"index":index}
+	var offroad := float(state.watch_offroad)>=2.0
+	var stuck := float(state.watch_still)>=30.0
+	if not offroad and not stuck: return -1
+	var now := Time.get_ticks_msec()
+	if now<int(state.get("watch_retry",0)): return -1
+	state.watch_retry = now+4000
+	var options: Array = []
+	# Search forward along the current road but never pass a stop, named
+	# junction or destination. Sample the segment approaching that point.
+	for offset in range(mini(8,route.size())):
+		var raw := index+offset
+		if raw>=route.size() and not loop: break
+		var at := raw%route.size()
+		var previous := at-1
+		if previous<0:
+			if not loop: previous = at
+			else: previous = route.size()-1
+		var target := _route_point(route,at)
+		var start := _route_point(route,previous)
+		var direction := target-start
+		direction.y = 0.0
+		if direction.length_squared()<.1:
+			direction = target-origin
+			direction.y = 0.0
+		if direction.length_squared()<.1: direction = heading
+		direction = direction.normalized()
+		var projection := Geometry3D.get_closest_point_to_segment(origin,Vector3(start.x,origin.y,start.z),Vector3(target.x,origin.y,target.z))
+		for meters in [2.0,5.0,9.0,14.0]:
+			var candidate := projection+direction*float(meters)
+			if (target-candidate).dot(direction)<.4: candidate = Vector3(target.x,origin.y,target.z)-direction*.6
+			if origin.distance_to(candidate)>25.0 or origin.distance_to(candidate)<1.5: continue
+			if (candidate-Vector3(start.x,origin.y,start.z)).dot(direction)<-.2: continue
+			if offset>0 and not streets.intersection_clear_for_stop(projection,length,width): continue
+			options.append({"p":candidate,"d":direction,"index":at})
+		if _mandatory_waypoint(route,at): break
+	# A checkpoint is only useful if it belongs to the same pending leg.
+	var saved: Dictionary = state.get("watch_safe",{})
+	if not saved.is_empty() and int(saved.index)==index and origin.distance_to(saved.p)>1.5 and origin.distance_to(saved.p)<35.0:
+		options.append(saved)
+	# For off-road cases, a point behind the target can be safer than
+	# forcing a short, impossible turn. Keep the same pending waypoint.
+	var target := _route_point(route,index)
+	var direction := target-origin
+	direction.y = 0.0
+	if index>0: direction = _route_point(route,index)-_route_point(route,index-1)
+	direction.y = 0.0
+	if direction.length_squared()<.1: direction = heading
+	direction = direction.normalized()
+	for meters in [3.0,6.0,10.0,16.0]:
+		var candidate := Vector3(target.x,origin.y,target.z)-direction*float(meters)
+		if origin.distance_to(candidate)<=35.0 and origin.distance_to(candidate)>1.5:
+			options.append({"p":candidate,"d":direction,"index":index})
+	for option in options:
+		var p: Vector3 = option.p
+		var d: Vector3 = option.d
+		if not _recovery_pose_clear(body,streets,p,d,width,length,height): continue
+		_junction_release(state,body,streets)
+		body.set_meta("junction_guard",false)
+		body.remove_meta("traffic_yield_until")
+		body.global_transform = Transform3D(Basis(Vector3.UP,atan2(d.x,d.z)),p)
+		body.velocity = Vector3.ZERO
+		state.speed = 0.0
+		state.stalled = 0.0
+		state.traffic_stall = 0.0
+		state.traffic_last = p
+		state.backed_up = 0.0
+		state.retreat_remaining = 0.0
+		state.cooperative_path = []
+		state.cooperative_hold = 0
+		state.cooperative_rejoin = false
+		state.watch_anchor = p
+		state.watch_still = 0.0
+		state.watch_offroad = 0.0
+		state.watch_safe = {"p":p,"d":d,"index":int(option.index)}
+		print("Tráfico: recuperación ",body.name," · ", "fuera de calzada" if offroad else "bloqueo prolongado")
+		return int(option.index)
+	return -1
+
 static func stalled(state: Dictionary,body: CharacterBody3D,delta: float) -> float:
 	var prior: Vector3 = state.get("traffic_last",body.global_position)
 	var elapsed := float(state.get("traffic_stall",0.0))
