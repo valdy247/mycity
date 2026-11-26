@@ -1,5 +1,6 @@
 extends Node3D
 const Routes = preload("res://taxi_routes.gd")
+const TrafficBypass = preload("res://traffic_bypass.gd")
 const TaxiMap = preload("res://taxi_map.gd")
 const MapData = preload("res://pilar_map.gd")
 const Streets = preload("res://street_geometry.gd")
@@ -537,9 +538,22 @@ func tick(delta: float,_clock: float) -> void:
 	var distance := diff.length()
 	var d := diff.normalized()
 	var speed := _route_speed(body,waypoints,index)
+	if bool(waypoints[index].get("bypass",false)): speed = minf(speed,4.0)
 	passenger.signal_wait = maxf(0.0,float(passenger.signal_wait)-delta)
 	if float(passenger.signal_wait)>0.0: speed = 0.0
 	var blocked := _route_blocked(body,waypoints,index)
+	passenger.bypass_cooldown = maxf(0.0,float(passenger.get("bypass_cooldown",0.0))-delta)
+	if blocked and not stop_requested and float(passenger.blocked)>1.3 and float(passenger.bypass_cooldown)<=0.0:
+		passenger.bypass_cooldown = 3.0
+		var bypass := TrafficBypass.find(body,waypoints,index,streets,1.90,4.80,geography.signal_nodes)
+		if not bypass.is_empty():
+			var changed: Array = waypoints.slice(0,index)
+			changed.append_array(bypass.path)
+			changed.append_array(waypoints.slice(int(bypass.resume)))
+			passenger.path = changed
+			passenger.blocked = 0.0
+			ride_status = "Bordeando el atasco · "+String(passenger.label)
+			return
 	if blocked or stop_requested: speed = 0.0
 	passenger.speed = move_toward(float(passenger.speed),speed,delta*(BRAKE if speed<float(passenger.speed) else ACCEL))
 	if float(passenger.speed)<.10 and (stop_requested or blocked or float(passenger.signal_wait)>0.0):
