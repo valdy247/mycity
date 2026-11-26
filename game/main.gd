@@ -915,7 +915,7 @@ func _drive(delta: float, movement: Vector2) -> void:
 		van.velocity = Vector3.ZERO
 		drive_speed = 0.0
 	if incidents!=null:
-		incidents.vehicle_motion(van,prior,impact_speed,1.95,4.9)
+		incidents.vehicle_motion(van,prior,impact_speed,2.18,5.12)
 	if van.get_slide_collision_count() > 0:
 		drive_speed *= 0.35
 	if van.global_position.y < -8.0 or absf(van.global_position.x) > (1250.0 if cuba_world != null else (253.0 if native_city else 79.0)) or absf(van.global_position.z) > (1250.0 if cuba_world != null else (253.0 if native_city else 109.0)):
