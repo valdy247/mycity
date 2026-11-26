@@ -27,6 +27,7 @@ var road_names: Array = []
 var lot_cells: Dictionary = {}
 var map_surfaces: Dictionary = {}
 var map_collision: Dictionary = {}
+var street_collision: Dictionary = {}
 var kept_footprints: Array = []
 var market_drawn := false
 var market_block: PackedVector2Array = PackedVector2Array()
@@ -160,10 +161,14 @@ func _draw_street_polygon(poly: PackedVector2Array,y: float,mat: StandardMateria
 		surface.set_material(mat)
 		map_surfaces[key] = surface
 	var st: SurfaceTool = map_surfaces[key]
+	if not street_collision.has(tile):
+		street_collision[tile] = []
 	for idx in tris:
 		var v := poly[idx]
+		var vertex := Vector3(v.x,y,v.y)
 		st.set_normal(Vector3.UP)
-		st.add_vertex(Vector3(v.x,y,v.y))
+		st.add_vertex(vertex)
+		street_collision[tile].append(vertex)
 
 func _street_clear(p: Vector3,padding: float,ignore: Dictionary = {}) -> bool:
 	for e in geography.roads_near(p,padding+1.0):
@@ -377,6 +382,14 @@ func _flush_footprints() -> void:
 		shape.set_faces(PackedVector3Array(vertices))
 		collider.shape = shape
 		solid_body.add_child(collider)
+	for vertices in street_collision.values():
+		var col := CollisionShape3D.new()
+		var shape := ConcavePolygonShape3D.new()
+		shape.backface_collision = true
+		shape.set_faces(PackedVector3Array(vertices))
+		col.shape = shape
+		road_ground.add_child(col)
+	street_collision.clear()
 	map_surfaces.clear()
 	map_collision.clear()
 
@@ -530,7 +543,7 @@ func _load_map_edits() -> void:
 		if not street_geometry.clear(changed):
 			# OSM widths are estimated. Do not let inferred pavement overlap
 			# a solid model: clip only the game rendering, never the source.
-			var safe := street_geometry.subtract(changed,street_geometry.protected_index)
+			var safe: Array = street_geometry.subtract(changed,street_geometry.protected_index)
 			if safe.is_empty():
 				continue
 			var largest: PackedVector2Array = safe[0]
