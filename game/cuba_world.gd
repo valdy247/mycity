@@ -289,7 +289,9 @@ func _lot_polygon(lot: Dictionary) -> PackedVector2Array:
 	var front: Vector3 = lot.front
 	var side := Vector3(front.z,0,-front.x)
 	var poly := PackedVector2Array()
-	for v in [Vector2(-4.45,-4.50),Vector2(4.45,-4.50),Vector2(4.45,4.50),Vector2(-4.45,4.50)]:
+	var half_width := float(lot.get("lot_width",8.90))*.5
+	var half_depth := float(lot.get("lot_depth",9.0))*.5
+	for v in [Vector2(-half_width,-half_depth),Vector2(half_width,-half_depth),Vector2(half_width,half_depth),Vector2(-half_width,half_depth)]:
 		var p: Vector3 = c+side*float(v.x)+front*float(v.y)
 		poly.append(Vector2(p.x,p.z))
 	return poly
@@ -609,7 +611,72 @@ func _home_from_gps(pin: Vector3) -> Array:
 		home_gps_status += " | revisar borde de acera"
 		push_warning("La huella de la vivienda GPS se cruza con el pavimento estimado; se mantiene el punto solicitado.")
 	print(home_gps_status)
-	return _pair_at_parked_van(home)
+	return _gps_home_and_shop(home)
+
+# Fit the shop to its actual available frontage instead of requiring
+# another full-size 9x9 house. The house centre and rotation stay fixed.
+func _gps_home_and_shop(home: Dictionary) -> Array:
+	var front: Vector3 = home.front
+	var right := Vector3(-front.z,0,front.x)
+	var center: Vector3 = home.center
+	var curb: Vector3 = home.curb
+	for width_value in [8.9,7.5,6.0,4.5,3.0]:
+		var width := float(width_value)
+		for depth_value in [9.0,7.0,5.0,3.5]:
+			var depth := float(depth_value)
+			for setback_value in [0.0,.5,1.0,1.5,2.0,3.0,4.0,5.0,6.0,8.0]:
+				var setback := float(setback_value)
+				var distance := 4.45+width*.5+.12
+				var shop := home.duplicate(true)
+				shop.center = center+right*distance-front*(depth*.5-4.5+setback)
+				shop.curb = curb+right*distance
+				shop.landmark = "alborada"
+				shop.lot_width = width
+				shop.lot_depth = depth
+				if not street_geometry.clear(_lot_polygon(shop)):
+					continue
+				var safe := true
+				for fp in geography.footprints_near(shop.center,12.0):
+					var tags: Dictionary = fp.tags
+					var label_value := geography.normalized(String(tags.get("name","")))
+					var extent: Vector3 = fp.high-fp.low
+					if (label_value.contains("cuatro caminos") or label_value.contains("mercado unico") or extent.x*extent.z>1500.0 or not map_edits.get(String(fp.id),{}).is_empty()) and not Geometry2D.intersect_polygons(_lot_polygon(shop),fp.poly).is_empty():
+						safe = false
+						break
+				if safe:
+					return [home,shop]
+	return [home]
+
+func _make_alborada(lot: Dictionary) -> void:
+	if not lot.has("lot_width"):
+		_facade(lot,7,"LA ALBORADA")
+		return
+	var c: Vector3 = lot.center
+	var front: Vector3 = lot.front
+	var angle := atan2(front.x,front.z)
+	var basis := Basis(Vector3.UP,angle)
+	var w := float(lot.lot_width)
+	var depth := float(lot.lot_depth)
+	var z := depth*.5
+	var wall := _mat("alborada_wall",Color("#91a9a9"))
+	var blue := _mat("alborada_blue",Color("#47677e"))
+	var stone := _mat("old_stone",Color("#b3aa96"))
+	var dark := _mat("dark_recess",Color("#494d47"))
+	var portal_depth := minf(1.7,depth*.28)
+	var facade_z := z-portal_depth
+	_local_cube(c,basis,Vector3(0,1.55,-portal_depth*.5),Vector3(w-.06,3.1,depth-portal_depth-.04),wall,true)
+	_local_cube(c,basis,Vector3(0,.065,z-portal_depth*.5),Vector3(w-.05,.13,portal_depth),stone,true)
+	_local_cube(c,basis,Vector3(0,3.2,0),Vector3(w-.03,.25,depth-.03),stone,true)
+	_local_cube(c,basis,Vector3(0,4.8,0),Vector3(w-.06,2.95,depth-.05),wall,true)
+	_local_cube(c,basis,Vector3(0,6.31,0),Vector3(w-.02,.12,depth-.02),stone,true)
+	for side in [-1.0,1.0]:
+		var x := float(side)*(w*.5-.24)
+		_local_cube(c,basis,Vector3(x,1.55,z-.22),Vector3(.31,3.1,.31),stone,true)
+		_local_cube(c,basis,Vector3(float(side)*w*.24,4.75,z-.02),Vector3(minf(w*.32,1.35),1.55,.05),dark)
+	_local_cube(c,basis,Vector3(0,1.38,facade_z+.035),Vector3(w*.76,2.25,.06),blue)
+	_local_cube(c,basis,Vector3(0,1.55,facade_z+.078),Vector3(w*.62,1.30,.035),dark)
+	_local_cube(c,basis,Vector3(0,2.75,facade_z+.08),Vector3(w*.86,.40,.10),blue)
+	_label("LA ALBORADA",c+basis*Vector3(0,2.75,facade_z+.16),minf(.010,w*.0016),angle,Color("#fff2cb"))
 
 func request_home_placement(at: Vector3) -> String:
 	var pair := _home_from_gps(Vector3(at.x,0,at.z))
@@ -713,7 +780,7 @@ func _make_frontages() -> void:
 		_add_lot(residence)
 		_make_humble_home(residence)
 		_add_lot(alborada_lot)
-		_facade(alborada_lot,7,"LA ALBORADA")
+		_make_alborada(alborada_lot)
 		paired_landmarks = true
 		home_relocated = true
 		if not fixed_gps:
@@ -763,6 +830,8 @@ func _make_frontages() -> void:
 			continue
 		_add_lot(lot)
 		_facade(lot,slots.size(),"")
+	if home_root!=null:
+		_repark_home_van()
 	if home_root==null:
 		push_warning("Pilar-Atarés: "+home_gps_status)
 		if fixed_gps and gps.has("point"):
@@ -1508,6 +1577,52 @@ func _vendor(lot: Dictionary,index: int) -> void:
 	item.add_child(col)
 	item.set_meta("product",name_value)
 	shop_items.append(item)
+
+# Sample the rendered road, not just the centreline from the chosen
+# frontage. A full van footprint must fit the road without touching a lot.
+func _repark_home_van() -> void:
+	var center := home_root.position
+	var front := home_root.transform.basis.z.normalized()
+	var along := home_root.transform.basis.x.normalized()
+	var best := INF
+	var found := false
+	for edge in geography.roads_near(center,65.0):
+		if not bool(edge.driveable): continue
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		var d := (b-a).normalized()
+		if absf(d.dot(along))<.75:
+			continue
+		var q := Geometry3D.get_closest_point_to_segment(center,a,b)
+		if q.distance_to(center)>45.0: continue
+		var side := Vector3(-d.z,0,d.x)
+		if side.dot(center-q)<0.0: side = -side
+		for offset_value in [0.0,2.5,-2.5,5.0,-5.0,8.0,-8.0,12.0,-12.0]:
+			var offset := float(offset_value)
+			var base := Geometry3D.get_closest_point_to_segment(q+d*offset,a,b)
+			for lateral in [maxf(0.0,float(edge.width)*.5-1.35),0.0]:
+				var p := base+side*float(lateral)
+				if (p-center).dot(front)<0.0: continue
+				var footprint := street_geometry.rect(p-d*2.65,p+d*2.65,2.30)
+				var safe := true
+				for v in footprint:
+					if not street_geometry.point_on_road(Vector3(v.x,0,v.y)):
+						safe = false
+						break
+				if not safe or not street_geometry.point_on_road(p): continue
+				for lot in _lots_near(p):
+					if not Geometry2D.intersect_polygons(footprint,_lot_polygon(lot)).is_empty():
+						safe = false
+						break
+				if not safe: continue
+				var score := p.distance_squared_to(center)+(1.0-absf(d.dot(along)))*100.0
+				if score<best:
+					best = score
+					found = true
+					van_spawn = p+Vector3.UP*.06
+					van_angle = atan2(d.x,d.z)
+	if not found:
+		push_warning("No se encontró estacionamiento completo sobre el asfalto cerca de la vivienda.")
 
 func _make_humble_home(lot: Dictionary) -> void:
 	home_building = true
