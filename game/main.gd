@@ -16,6 +16,7 @@ var cuba_world: CubaWorld
 var first_person := false
 var reticle: Label
 var performance_label: Label
+var gps_label: Label
 var low_graphics := true
 var hud_time := 0.0
 var fps_time := 0.0
@@ -306,6 +307,20 @@ func _make_hud() -> void:
 	performance_label.add_theme_constant_override("shadow_offset_x",2)
 	performance_label.add_theme_constant_override("shadow_offset_y",2)
 	performance_label.visible = cuba_world != null
+	gps_label = Label.new()
+	gps_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	canvas.add_child(gps_label)
+	gps_label.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
+	gps_label.offset_left = -330
+	gps_label.offset_right = -12
+	gps_label.offset_top = -58
+	gps_label.offset_bottom = -12
+	gps_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	gps_label.add_theme_font_size_override("font_size",16)
+	gps_label.add_theme_color_override("font_shadow_color",Color.BLACK)
+	gps_label.add_theme_constant_override("shadow_offset_x",2)
+	gps_label.add_theme_constant_override("shadow_offset_y",2)
+	gps_label.visible = cuba_world != null
 	_update_hud()
 
 func _apply_performance_mode() -> void:
@@ -325,6 +340,13 @@ func _process(delta: float) -> void:
 		fps_time = 0.0
 		if performance_label != null and cuba_world != null:
 			performance_label.text = "%d FPS | %s | F6" % [Engine.get_frames_per_second(),"Rendimiento" if low_graphics else "Normal"]
+			if gps_label!=null and player!=null:
+				var at := van.global_position if driving and van!=null else player.global_position
+				var title := "Vehículo" if driving or taxi_riding else "Jugador"
+				if pilar_editor!=null and pilar_editor.active:
+					at = pilar_editor.gps_cursor
+					title = "Cursor"
+				gps_label.text = "%s · WGS84\n%s | F9 copiar" % [title,cuba_world.geography.coordinate_text(at)]
 
 func _apply_camera_mode() -> void:
 	if player == null or arm == null:
@@ -340,6 +362,12 @@ func _apply_camera_mode() -> void:
 		reticle.visible = first_person and not driving and not building_mode
 
 func _unhandled_input(event: InputEvent) -> void:
+	if cuba_world!=null and player!=null and event is InputEventKey and event.pressed and not event.echo and event.keycode==KEY_F9 and not (pilar_editor!=null and pilar_editor.active) and not (taxis!=null and taxis.dialog.visible):
+		var at := van.global_position if driving and van!=null else player.global_position
+		DisplayServer.clipboard_set(cuba_world.geography.coordinate_text(at))
+		exit_message = "GPS copiado al portapapeles."
+		message_time = 2.0
+		return
 	if taxis != null and taxis.dialog.visible:
 		if event is InputEventKey and event.pressed and event.keycode==KEY_ESCAPE:
 			taxis.close_dialog()
@@ -789,7 +817,7 @@ func _update_hud() -> void:
 		status.text += "\n[V] Primera / tercera persona"
 		status.text += " | [B] Construir ciudad"
 		if pilar_editor != null:
-			status.text += "\nClic derecho: editar objeto o terreno"
+			status.text += "\nClic derecho: editar objeto o terreno | B y F8: GPS"
 	if cuba_world != null:
 		status.text += "\n© OpenStreetMap contributors | ODbL | openstreetmap.org/copyright"
 		if not cuba_world.paired_landmarks:
