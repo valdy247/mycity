@@ -558,6 +558,7 @@ func open_phone_home() -> void:
 	_phone_tile(apps,"Mensajes",open_messages,"message",Color("#247a63"),ledger.unread)
 	if life!=null: _phone_tile(apps,"Contactos",life.open_contacts,"contact",Color("#3d6dba"))
 	_phone_tile(apps,"Mi negocio",open_business_summary,"business",Color("#b77a38"))
+	if life!=null: _phone_tile(apps,"Entregas",life.open_supply_market,"bag",Color("#377e73"))
 	if garage_market.is_valid(): _phone_tile(apps,"Marketplace",garage_market,"shop",Color("#6d58ad"))
 	if street_inventory.is_valid(): _phone_tile(apps,"Mis compras",street_inventory,"bag",Color("#a85875"))
 	if backpack_inventory.is_valid(): _phone_tile(apps,"Mochila",backpack_inventory,"pack",Color("#587d64"))
