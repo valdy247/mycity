@@ -55,6 +55,7 @@ func _ready() -> void:
 			var city := packed.instantiate()
 			add_child(city)
 			_install_city_van(city)
+			_fix_terrain_materials(city)
 			_add_world_collision(city)
 			city_loaded = true
 	if not city_loaded:
@@ -65,6 +66,28 @@ func _ready() -> void:
 	builder = CityBuilder.new()
 	add_child(builder)
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+# Blender procedural grass shaders cannot be represented faithfully by GLB.
+# Set lightweight explicit colors only on the terrain's meadow surfaces.
+func _fix_terrain_materials(node: Node) -> void:
+	if node is MeshInstance3D and _normalized_name(String(node.name)).begins_with("terreno"):
+		var mesh_node := node as MeshInstance3D
+		var greens: Array[Color] = [Color("#56863c"), Color("#669747"), Color("#719f4d"), Color("#4d7938")]
+		if mesh_node.mesh != null:
+			for i in range(mesh_node.mesh.get_surface_count()):
+				var original := mesh_node.mesh.surface_get_material(i)
+				var key := String(original.resource_name).to_lower() if original != null else ""
+				var color := greens[i % 4]
+				if key.contains("orilla"):
+					color = Color("#746447")
+				elif key.contains("arena") or key.contains("grava"):
+					color = Color("#a38b62")
+				var mat := StandardMaterial3D.new()
+				mat.albedo_color = color
+				mat.roughness = 0.96
+				mesh_node.set_surface_override_material(i, mat)
+	for child in node.get_children():
+		_fix_terrain_materials(child)
 
 func _add_world_collision(node: Node) -> void:
 	# Only terrain and coarse building/road geometry are physical in this prototype.
@@ -113,7 +136,7 @@ func _make_demo_floor() -> void:
 func _make_player() -> void:
 	player = CharacterBody3D.new()
 	player.name = "Player"
-	player.collision_mask = 1 | GROUND_LAYER | VAN_LAYER
+	player.collision_mask = 1 | GROUND_LAYER | VAN_LAYER | 8
 	player.floor_snap_length = 0.30
 	var col := CollisionShape3D.new()
 	var capsule := CapsuleShape3D.new()
@@ -131,7 +154,7 @@ func _make_player() -> void:
 	arm = SpringArm3D.new()
 	arm.spring_length = 4.5
 	arm.margin = 0.15
-	arm.collision_mask = 1 | GROUND_LAYER
+	arm.collision_mask = 1 | GROUND_LAYER | 8
 	pivot.add_child(arm)
 	var cam := Camera3D.new()
 	cam.fov = 68.0
@@ -266,7 +289,7 @@ func _support_van() -> bool:
 	var heights: Array[float] = []
 	for offset in [Vector3.ZERO, Vector3(-0.98, 0, -1.63), Vector3(0.98, 0, -1.63), Vector3(-0.98, 0, 1.63), Vector3(0.98, 0, 1.63)]:
 		var sample := van.to_global(offset)
-		var ray := PhysicsRayQueryParameters3D.create(sample + Vector3.UP * 8.0, sample - Vector3.UP * 12.0, GROUND_LAYER)
+		var ray := PhysicsRayQueryParameters3D.create(sample + Vector3.UP * 8.0, sample - Vector3.UP * 12.0, GROUND_LAYER | 8)
 		ray.hit_back_faces = true
 		var hit := space.intersect_ray(ray)
 		if not hit.is_empty():
