@@ -488,6 +488,7 @@ func _tick_agents(delta: float) -> void:
 	var minute := int(state.minutes)%1440
 	for agent in agents:
 		var person: Person = agent.node
+		if person.conversation_active(delta): continue
 		var path: PackedVector3Array = agent.path
 		var index := int(agent.index)
 		if not path.is_empty():
