@@ -7,6 +7,9 @@ const EDIT_FILE := "user://pilar_atares_edits_v1.json"
 var map_edits: Dictionary = {}
 var editable_buildings: Dictionary = {}
 var original_footprints: Dictionary = {}
+var home_defaults: Dictionary = {}
+var home_building := false
+var home_cutaway: Array = []
 const INVENTORY_PATH := "user://pilar_atares_inventory.json"
 var geography := MapData.new()
 var home_root: Node3D
@@ -67,9 +70,15 @@ func setup(builder: Builder) -> void:
 
 func _cube(at: Vector3, size: Vector3, material: StandardMaterial3D, angle: float = 0.0, solid: bool = false) -> void:
 	var basis := Basis(Vector3.UP,angle)
-	var key: int = material.get_instance_id()
+	var level := 0
+	if home_building:
+		if at.y-size.y*.5>6.0:
+			level = 2
+		elif at.y-size.y*.5>=2.94:
+			level = 1
+	var key := str(material.get_instance_id())+":"+str(level)
 	if not box_groups.has(key):
-		box_groups[key] = {"material":material,"transforms":[]}
+		box_groups[key] = {"material":material,"transforms":[],"home_level":level}
 	box_groups[key].transforms.append(Transform3D(basis.scaled_local(size),at))
 	if solid:
 		var col := CollisionShape3D.new()
@@ -93,6 +102,8 @@ func _flush_city_boxes() -> void:
 		instance.multimesh = multi
 		instance.material_override = item.material
 		add_child(instance)
+		if int(item.home_level)>0:
+			home_cutaway.append({"node":instance,"level":item.home_level})
 	box_groups.clear()
 
 func _line(a: Vector3,b: Vector3,width: float,height: float,y: float,mat: StandardMaterial3D) -> void:
@@ -544,12 +555,18 @@ func save_map_edits() -> bool:
 	file.close()
 	return true
 
+func _inside_downloaded_map(p: Vector2) -> bool:
+	var expanded: bool = geography.source_path.ends_with("v2.osm")
+	var a: Vector3 = geography.project(23.1130,-82.3770) if expanded else geography.project(23.1162,-82.3720)
+	var b: Vector3 = geography.project(23.1310,-82.3570) if expanded else geography.project(23.1261,-82.3608)
+	return p.x>=minf(a.x,b.x) and p.x<=maxf(a.x,b.x) and p.y>=minf(a.z,b.z) and p.y<=maxf(a.z,b.z)
+
 func build_allowed(poly: PackedVector2Array,ignore_id: String = "") -> String:
 	if not street_geometry.clear(poly):
 		return "Calle, cruce o acera protegida"
 	var rect := street_geometry.bounds(poly)
 	for p in poly:
-		if absf(p.x)>geography.LIMIT or absf(p.y)>geography.LIMIT:
+		if not _inside_downloaded_map(p):
 			return "Fuera del mapa"
 	var center := Vector3(rect.get_center().x,0,rect.get_center().y)
 	var radius := rect.size.length()*.5+2.0
@@ -558,7 +575,13 @@ func build_allowed(poly: PackedVector2Array,ignore_id: String = "") -> String:
 			continue
 		if not Geometry2D.intersect_polygons(poly,fp.poly).is_empty():
 			return "Edificio cartografiado"
-	for lot in _lots_near(center):
+	var low := Vector2i(floori((rect.position.x-7.0)/24.0),floori((rect.position.y-7.0)/24.0))
+	var high := Vector2i(floori((rect.end.x+7.0)/24.0),floori((rect.end.y+7.0)/24.0))
+	var nearby_lots: Array = []
+	for x in range(low.x,high.x+1):
+		for z in range(low.y,high.y+1):
+			nearby_lots.append_array(lot_cells.get(Vector2i(x,z),[]))
+	for lot in nearby_lots:
 		if not Geometry2D.intersect_polygons(poly,_lot_polygon(lot)).is_empty():
 			return "Parcela ocupada"
 	if not market_block.is_empty() and not Geometry2D.intersect_polygons(poly,market_block).is_empty():
@@ -960,6 +983,7 @@ func _vendor(lot: Dictionary,index: int) -> void:
 	shop_items.append(item)
 
 func _make_humble_home(lot: Dictionary) -> void:
+	home_building = true
 	var c: Vector3 = lot.center
 	var front: Vector3 = lot.front
 	var basis := Basis(Vector3.UP,atan2(front.x,front.z))
@@ -979,9 +1003,11 @@ func _make_humble_home(lot: Dictionary) -> void:
 	var dark := _mat("home_dark_cuba",Color("#504d45"))
 	var cloth := _mat("home_cloth",Color("#aaa9a0"))
 	_local_cube(c,basis,Vector3(0,.05,0),Vector3(8.8,.10,9),floor_mat,true)
-	for x in [-4.3,4.3]:
-		_local_cube(c,basis,Vector3(float(x),3.1,-1.45),Vector3(.18,6.2,5.9),wall,true)
-	_local_cube(c,basis,Vector3(0,3.1,-4.4),Vector3(8.6,6.2,.18),wall,true)
+	for level in [0,1]:
+		var y := 1.55+float(level)*3.10
+		for x in [-4.3,4.3]:
+			_local_cube(c,basis,Vector3(float(x),y,-1.45),Vector3(.18,3.10,5.9),wall,true)
+		_local_cube(c,basis,Vector3(0,y,-4.4),Vector3(8.6,3.10,.18),wall,true)
 	for x in [-2.6,2.6]:
 		_local_cube(c,basis,Vector3(float(x),1.55,1.55),Vector3(3.5,3.1,.16),wall,true)
 	_local_cube(c,basis,Vector3(0,2.76,1.55),Vector3(1.7,.68,.16),wall,true)
@@ -1000,11 +1026,10 @@ func _make_humble_home(lot: Dictionary) -> void:
 	# Two upstairs bedrooms, accessible from east corridor.
 	for z in [-2.9,.05]:
 		var zz: float = float(z)
-		_local_cube(c,basis,Vector3(-2.75,3.45,zz),Vector3(1.8,.5,1.65),wood,true)
-		_local_cube(c,basis,Vector3(-2.75,3.79,zz),Vector3(1.76,.18,1.60),cloth)
-		_local_cube(c,basis,Vector3(-3.35,3.93,zz),Vector3(.40,.18,.75),_mat("pillow",Color("#d5cbbb")))
+		_home_default("home_bed_"+str(int(zz*100)),"Cama",Vector3(-2.75,3.2,zz),PI/2.0,"#aaa9a0")
 		_local_cube(c,basis,Vector3(-.65,3.55,zz-.55),Vector3(.60,.70,.58),wood,true)
-	_local_cube(c,basis,Vector3(-1.35,4.72,-1.35),Vector3(5.8,3.04,.14),wall,true)
+	_home_default("home_bed_wall_a","Pared",Vector3(-2.72,3.2,-1.35),0.0,"#b4b29a")
+	_home_default("home_bed_wall_b","Pared",Vector3(.30,3.2,-1.35),0.0,"#b4b29a")
 	# Modest ground-floor living room, kitchen and bathroom corner.
 	_local_cube(c,basis,Vector3(-2.7,.46,.30),Vector3(1.0,.72,1.9),trim,true)
 	_local_cube(c,basis,Vector3(-3.14,.91,.30),Vector3(.18,.68,1.9),trim)
@@ -1014,16 +1039,25 @@ func _make_humble_home(lot: Dictionary) -> void:
 	_local_cube(c,basis,Vector3(-2.7,1.03,-3.85),Vector3(2.5,.08,.75),floor_mat)
 	_local_cube(c,basis,Vector3(-3.0,1.09,-3.85),Vector3(.52,.08,.45),dark)
 	_local_cube(c,basis,Vector3(-.9,.98,-3.9),Vector3(.7,1.8,.75),cloth,true)
-	_local_cube(c,basis,Vector3(.65,1.55,-3.05),Vector3(.13,3.0,2.5),wall,true)
-	_local_cube(c,basis,Vector3(1.55,.40,-3.90),Vector3(.53,.66,.65),cloth,true)
-	_local_cube(c,basis,Vector3(1.55,.80,-3.90),Vector3(.53,.16,.45),cloth)
+	_home_default("home_bath_wall","Pared",Vector3(.65,0,-2.92),PI/2.0,"#b4b29a")
+	_home_default("home_toilet","Inodoro",Vector3(1.55,0,-3.90),PI,"#d8d9d4")
 	for y in [1.0,4.2]:
 		_local_cube(c,basis,Vector3(-2.5,float(y)+.55,1.66),Vector3(1.3,1.1,.05),dark)
 		for x in range(5):
 			_local_cube(c,basis,Vector3(-3.05+float(x)*.27,float(y)+.55,1.71),Vector3(.035,1.1,.04),trim)
+	home_building = false
 	_label("MI CASA",home_root.to_global(Vector3(0,2.64,1.67)),.010,angle,Color("#f1e2c4"))
 	_pickup("llaves_casa","Llaves",home_root.to_global(Vector3(-2.0,1.16,-3.8)),Vector3(.16,.07,.10),_mat("keys",Color("#b3a47b")))
 	_pickup("libreta_casa","Libreta",home_root.to_global(Vector3(-1.5,1.16,-3.8)),Vector3(.22,.05,.31),_mat("notebook",Color("#596c86")))
+
+func _home_default(id: String,kind: String,local: Vector3,rotation: float,paint: String) -> void:
+	var p := home_root.to_global(local)
+	home_defaults[id] = {"kind":kind,"x":p.x,"y":local.y,"z":p.z,"angle":home_root.rotation.y+rotation,"paint":paint}
+
+func set_home_cutaway(enabled: bool,level: float = 0.0) -> void:
+	for item in home_cutaway:
+		var n: Node3D = item.node
+		n.visible = not enabled or (int(item.level)==1 and level>1.0)
 
 func interaction_text(at: Vector3) -> String:
 	for i in range(public_rooms.size()):
