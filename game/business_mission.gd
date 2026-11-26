@@ -6,6 +6,7 @@ const Person = preload("res://street_person.gd")
 const CityLife = preload("res://city_life.gd")
 var life: CityLife
 var garage_market: Callable
+var city_map: Callable
 var carlos_call: Callable
 var carlos_objective: Callable
 var street_inventory: Callable
@@ -592,6 +593,7 @@ func open_phone_home() -> void:
 	if garage_market.is_valid(): _phone_tile(apps,"Marketplace",garage_market,"shop",Color("#6d58ad"))
 	if street_inventory.is_valid(): _phone_tile(apps,"Mis compras",street_inventory,"bag",Color("#a85875"))
 	if backpack_inventory.is_valid(): _phone_tile(apps,"Mochila",backpack_inventory,"pack",Color("#587d64"))
+	_phone_tile(apps,"Mapa",city_map if city_map.is_valid() else open_phone_gps,"pin",Color("#397c96"))
 	_phone_tile(apps,"GPS",open_phone_gps,"pin",Color("#397c96"))
 	var footer := Label.new()
 	footer.text = "P / Esc · Guardar teléfono"
@@ -847,6 +849,7 @@ func _phone_thread(name_value: String) -> void:
 func open_phone_gps() -> void:
 	phone_mode = true
 	_open("GPS","Coordenadas del mapa de la ciudad")
+	if city_map.is_valid(): _button("Abrir mapa de la ciudad",city_map)
 	var at: Vector3 = phone_position.call() if phone_position.is_valid() else player.global_position
 	var current := world.geography.coordinate_text(at)
 	_phone_metric("Ubicación actual",current)
