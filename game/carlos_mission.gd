@@ -228,6 +228,11 @@ func _confirm_home() -> void:
 		if site.is_empty() or not _aim_door_at(site): continue
 		home = site
 		customer = {}
+		if is_instance_valid(carlos):
+			carlos.hide()
+			carlos.queue_free()
+		carlos = null
+		_clear_target()
 		_remember("home",home)
 		state.erase("customer")
 		_save()
