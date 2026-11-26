@@ -17,6 +17,10 @@ var cargo_requested := false
 var urban_buses: UrbanBuses
 var taxis: TaxiService
 var taxi_riding := false
+var bus_riding := false
+var bus_previous_first := false
+var bus_reset_requested := false
+var social_cooldown := 0.0
 var taxi_previous_first := false
 var taxi_reset_requested := false
 var taxi_exit_retry := 0.0
@@ -395,7 +399,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event is InputEventKey and event.pressed and not event.echo and event.keycode in [KEY_ESCAPE,KEY_P]:
 			business.close()
 		return
-	if business!=null and not building_mode and not (taxis!=null and taxis.dialog.visible) and event is InputEventKey and event.pressed and not event.echo:
+	if business!=null and not bus_riding and not building_mode and not (taxis!=null and taxis.dialog.visible) and event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode==KEY_P:
 			business.open_phone()
 			return
@@ -411,6 +415,15 @@ func _unhandled_input(event: InputEvent) -> void:
 	if taxis != null and taxis.dialog.visible:
 		if event is InputEventKey and event.pressed and event.keycode==KEY_ESCAPE:
 			taxis.close_dialog()
+		return
+	if bus_riding:
+		if event is InputEventKey and event.pressed and not event.echo:
+			if event.keycode==KEY_E: urban_buses.player_exit_requested = true
+			elif event.keycode==KEY_R: bus_reset_requested = true
+		if event is InputEventMouseMotion and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED:
+			yaw -= event.relative.x*.003
+			pitch = clampf(pitch-event.relative.y*.003,-.95,.30)
+			pivot.rotation = Vector3(pitch,yaw,0)
 		return
 	if taxi_riding:
 		if event is InputEventKey and event.pressed and not event.echo:
@@ -835,6 +848,13 @@ func _drive(delta: float, movement: Vector2) -> void:
 func _update_hud() -> void:
 	if status == null:
 		return
+	if bus_riding:
+		var bus: Dictionary = urban_buses.player_bus
+		status.text = "GUAGUA | "+String(bus.get("line",""))+"\n"
+		status.text += "Bajada solicitada · próxima parada" if urban_buses.player_exit_requested else "E: solicitar bajar en la siguiente parada"
+		status.text += "\nR: regresar a casa"
+		if not bus.active_stop.is_empty(): status.text += "\nParada: "+String(bus.active_stop.name)
+		return
 	if taxi_riding:
 		status.text = "TAXI | "+taxis.ride_status+"\n"+taxis.speed_description()+" | T: cambiar velocidad\nE: detener y bajar | R: volver a casa si te bloqueas\n© OpenStreetMap contributors | ODbL"
 		return
@@ -846,7 +866,10 @@ func _update_hud() -> void:
 		status.text += "\nW/S: acelerar y retroceder | A/D: girar | Espacio: frenar\nE: salir detenido | R: reiniciar | Esc: liberar mouse"
 	else:
 		status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
-		var action := monte_services.action_text(player.global_position) if monte_services!=null and (business==null or business.ledger.carry.is_empty()) else ""
+		var action := business.aimed_text(player.global_position) if business!=null else ""
+		if action.is_empty() and _aimed_person()!=null: action = "[E] Saludar"
+		if action.is_empty() and urban_buses!=null and not urban_buses.nearby_boarding(player.global_position).is_empty(): action = "[E] Subir a la guagua"
+		if action.is_empty(): action = monte_services.action_text(player.global_position) if monte_services!=null and (business==null or business.ledger.carry.is_empty()) else ""
 		if action.is_empty() and business!=null:
 			action = business.action_text(player.global_position)
 		if action.is_empty() and city_world!=null:
@@ -879,6 +902,95 @@ func _update_hud() -> void:
 		status.text += "\n"+monte_services.notice
 	if message_time > 0.0:
 		status.text += "\n" + exit_message
+
+# The reticle selects a nearby visible NPC; walls occlude greetings.
+func _aimed_person() -> Node3D:
+	if play_camera==null or player==null or cuba_world==null: return null
+	var origin := play_camera.global_position
+	var direction := -play_camera.global_transform.basis.z
+	var best: Node3D
+	var best_depth := INF
+	for node in get_tree().get_nodes_in_group("social_people"):
+		if not node is Node3D or not node.is_visible_in_tree(): continue
+		var person := node as Node3D
+		if player.global_position.distance_to(person.global_position)>3.7: continue
+		var center := person.global_position+Vector3.UP*1.15
+		var depth := (center-origin).dot(direction)
+		if depth<=0.0 or depth>best_depth: continue
+		var nearest := origin+direction*depth
+		if absf(nearest.y-center.y)>.75 or Vector2(nearest.x-center.x,nearest.z-center.z).length()>.32: continue
+		var ray := PhysicsRayQueryParameters3D.create(origin,nearest,1|4|8|16)
+		ray.exclude = [player.get_rid()]
+		if not get_world_3d().direct_space_state.intersect_ray(ray).is_empty(): continue
+		best = person
+		best_depth = depth
+	return best
+
+func _greet_person() -> bool:
+	var person := _aimed_person()
+	if person==null: return false
+	if social_cooldown>0.0: return true
+	var female := bool(person.get_meta("female",false))
+	var context := String(person.get_meta("social_context","street"))
+	if person.get_script()==preload("res://street_person.gd"):
+		female = bool(person.get("female"))
+		context = String(person.get("social_context"))
+	var greetings := ["¿Qué bolá, asere?","¿Cómo está la cosa, mi hermano?","¿Qué hay de nuevo?","¿Todo bien, socio?","¡Dime! ¿Cómo va eso?","¿En qué andas, compay?"]
+	if female:
+		greetings = ["¿Qué tal, mimi, cómo estás?","¿Qué hay de nuevo?","¡Hola, mi amiga! ¿Cómo va eso?","¿Todo bien por aquí?","¡Buenas! ¿Cómo te trata la vida?","¿Qué bolá, vecina?"]
+	var replies := ["Todo bien, tú sabes, tirando.","En la misma, tú sabes.","Asere, tú sabes, en la pelea.","Aquí, luchando como siempre.","Todo tranquilo, gracias a Dios.","Aquí vamos, pa'lante."]
+	if context=="bus_wait":
+		replies = ["Aquí esperando la guagua.","Esperando a ver si llega la guagua.","Voy pa' casa, esperando el transporte.","Aquí en la parada, tú sabes.","A ver si pasa pronto la guagua."]
+	elif context=="shopping":
+		replies = ["Voy a comprar algo de comida.","Voy a ver qué tiene Albertico.","Aquí buscando algo pa' la casa.","Voy a resolver la comida de hoy.","De compras, tú sabes, en la lucha."]
+	elif context=="worker":
+		replies = ["Aquí trabajando, tú sabes.","En la faena, asere.","Resolviendo el trabajo de hoy.","Aquí, cumpliendo con lo mío.","En la lucha, como siempre."]
+	exit_message = "Tú: "+String(greetings.pick_random())+"\nVecino: "+String(replies.pick_random())
+	message_time = 5.0
+	social_cooldown = 1.0
+	_update_hud()
+	return true
+
+func _start_bus_ride(bus: Dictionary) -> bool:
+	if not urban_buses.board_player(bus): return false
+	bus_riding = true
+	bus_previous_first = first_person
+	player.velocity = Vector3.ZERO
+	player_shape.set_deferred("disabled",true)
+	avatar.hide()
+	reticle.hide()
+	var body: CharacterBody3D = bus.body
+	pivot.reparent(body,false)
+	pivot.position = Vector3(.35,2.12,-1.8)
+	yaw = PI
+	pitch = -.12
+	pivot.rotation = Vector3(pitch,yaw,0)
+	arm.add_excluded_object(body.get_rid())
+	arm.spring_length = 0.0
+	_update_hud()
+	return true
+
+func _leave_bus(emergency: bool = false) -> bool:
+	var result: Dictionary = {"position":spawn_position} if emergency else urban_buses.player_exit_position(player,player_shape.shape)
+	if result.is_empty(): return false
+	var body: CharacterBody3D = urban_buses.player_bus.body
+	arm.remove_excluded_object(body.get_rid())
+	pivot.reparent(player,false)
+	player.global_position = result.position
+	player.velocity = Vector3.ZERO
+	player_shape.set_deferred("disabled",false)
+	bus_riding = false
+	bus_reset_requested = false
+	first_person = bus_previous_first
+	yaw = body.rotation.y+PI
+	pitch = -.20
+	pivot.rotation = Vector3(pitch,yaw,0)
+	urban_buses.finish_player_ride()
+	_apply_camera_mode()
+	exit_message = "Bajaste de la guagua."
+	message_time = 3.0
+	_update_hud()
+	return true
 
 func _start_taxi_ride() -> void:
 	taxi_riding = true
@@ -933,6 +1045,25 @@ func _open_pilar_editor(at: Vector3,context: bool) -> void:
 
 func _physics_process(delta: float) -> void:
 	if player == null:
+		return
+	social_cooldown = maxf(0.0,social_cooldown-delta)
+	if bus_riding:
+		if bus_reset_requested:
+			_leave_bus(true)
+			return
+		cuba_world.tick(delta)
+		urban_buses.tick(delta)
+		if monte_services!=null: monte_services.tick(delta)
+		if monte_pedestrians!=null: monte_pedestrians.tick(delta)
+		if taxis!=null: taxis.tick(delta,cuba_world.cuba_clock)
+		if business!=null: business.tick(delta,true,false)
+		var body: CharacterBody3D = urban_buses.player_bus.body
+		player.global_position = body.global_position+Vector3.UP*1.0
+		if urban_buses.player_exit_requested and _leave_bus(): return
+		hud_time += delta
+		if hud_time>=.15:
+			hud_time = 0.0
+			_update_hud()
 		return
 	if business!=null:
 		business.tick(delta,driving or taxi_riding,building_mode)
@@ -1027,6 +1158,13 @@ func _physics_process(delta: float) -> void:
 			elif not _safe_exit():
 				exit_message = "No hay espacio para salir. Mueve la van."
 				message_time = 2.0
+		elif business!=null and business.take_aimed(player.global_position):
+			_update_hud()
+			return
+		elif _greet_person():
+			return
+		elif urban_buses!=null and not urban_buses.nearby_boarding(player.global_position).is_empty() and (business==null or business.ledger.carry.is_empty()) and (monte_services==null or monte_services.player_bag==null):
+			if _start_bus_ride(urban_buses.nearby_boarding(player.global_position)): return
 		elif monte_services!=null and (business==null or business.ledger.carry.is_empty()) and monte_services.interact(player.global_position):
 			player.velocity = Vector3.ZERO
 			return
