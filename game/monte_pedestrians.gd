@@ -348,7 +348,7 @@ func _populate() -> void:
 		person.global_position = p
 		var agent := {"node":person,"path":PackedVector3Array(),"index":0,"destination":{},"pause":0.0,"speed":1.12+float(posmod(serial,7))*.065}
 		if _choose_route(agent):
-				person.add_to_group("bus_yield_walkers")
+			person.add_to_group("bus_yield_walkers")
 			walkers.append(agent)
 			added += 1
 		else:
