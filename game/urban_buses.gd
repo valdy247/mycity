@@ -792,7 +792,30 @@ func tick(delta: float) -> void:
 		elif next_dir.length_squared()>.1 and d.dot(next_dir)<.85:
 			reach = minf(reach,distance+2.0)
 		reach = minf(reach,distance+BUS_SAFE_GAP)
-		var free := minf(_clear_distance(body,d,reach),_walker_clearance(body,d,reach))
+		var walker_free := _walker_clearance(body,d,reach)
+		if walker_free<reach-.05 and float(bus.horn_cooldown)<=0.0:
+			var ahead := body.global_position+d*(walker_free+BUS_LENGTH*.5+.35)
+			var best := INF
+			var safe_wait := Vector3.ZERO
+			for edge in data.roads_near(ahead,12.0):
+				if not bool(edge.driveable): continue
+				var a: Vector3 = edge.a
+				var b: Vector3 = edge.b
+				var axis := (b-a).normalized()
+				if absf(axis.dot(d))<.75: continue
+				var center := Geometry3D.get_closest_point_to_segment(ahead,a,b)
+				var dist := ahead.distance_squared_to(center)
+				if dist>=best: continue
+				var right := Vector3(-d.z,0,d.x)
+				var candidate := center+right*(float(edge.width)*.5+.75)
+				if not _on_sidewalk(candidate): continue
+				best = dist
+				safe_wait = candidate
+			if best<INF:
+				bus.horn_cooldown = 3.5
+				_horn(body)
+				stop_priority.emit({"position":ahead,"direction":d,"wait":safe_wait},body)
+		var free := minf(_clear_distance(body,d,reach),walker_free)
 		var blocked := free<reach-.05
 		var safe_speed := sqrt(2.0*BUS_BRAKE*maxf(0.0,free-BUS_SAFE_GAP))
 		if blocked:
