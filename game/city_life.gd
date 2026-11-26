@@ -678,7 +678,7 @@ func _tick_agents(delta: float) -> void:
 			if index<path.size():
 				var target: Vector3 = path[index]
 				var next := person.global_position.move_toward(target,maxf(.12,1.35*delta))
-				if world.pedestrian_segment_clear(person.global_position,next):
+				if world.pedestrian_segment_clear(person.global_position,next) and world.pedestrian_space_clear(person,next):
 					agent.blocked_for = 0.0
 					if person.walk_to(target,delta,1.35): agent.index = index+1
 				else:
