@@ -71,6 +71,15 @@ var prompt := ""
 var prompt_time := 0.0
 var travel: Array = []
 var cuba_clock := 0.0
+const UTILITY_SPACING := 24.0
+const UTILITY_CELL := 48.0
+var utility_poles: Array = []
+var utility_cells: Dictionary = {}
+var utility_links: Dictionary = {}
+var utility_lamps: Array[OmniLight3D] = []
+var utility_lens: StandardMaterial3D
+var utility_light_clock := 0.0
+var utility_night := false
 var service_names: Array[String] = ["BODEGA","CUPET","HOSPITAL • LA DEPENDIENTE","PNR","ESCUELA PRIMARIA","TALLER MECÁNICO","AGROMERCADO","FARMACIA","CORREOS DE CUBA","PARADA DE GUAGUA","CUERPO DE BOMBEROS"]
 
 func load_map() -> bool:
@@ -104,6 +113,7 @@ func setup(builder: Builder) -> void:
 	_make_osm_streets()
 	_make_frontages()
 	_make_corner_plaques()
+	_make_utility_network()
 	var frontage_ms := Time.get_ticks_msec()
 	_flush_city_boxes()
 	_flush_monte_columns()
@@ -216,8 +226,6 @@ func _make_osm_streets() -> void:
 	var asphalt := _mat("asphalt_cuba",Color("#555653"))
 	var concrete := _mat("old_sidewalk",Color("#a39c89"))
 	var stripe := _mat("faded_line",Color("#b3a67d"))
-	var pole := _mat("old_pole",Color("#777366"))
-	var wires := _mat("wire",Color("#383b38"))
 	for poly in street_geometry.roads:
 		_draw_street_polygon(poly,.030,asphalt,"road")
 	for poly in street_geometry.sidewalks:
@@ -234,18 +242,296 @@ func _make_osm_streets() -> void:
 				var p := a+d*(float(i)*9.0+3.0)
 				if street_geometry.point_on_road(p) and street_geometry.point_on_road(p+d*2.5):
 					_line(p,p+d*2.5,.09,.006,.034,stripe)
-		if not bool(edge.driveable):
+
+# Utility lines are generated from real road topology, not one free end
+# per OSM segment. All cable endpoints are registered physical supports.
+func _utility_edge(edge: Dictionary) -> bool:
+	return bool(edge.driveable) or (float(edge.width)>=2.5 and String(edge.kind) in ["pedestrian","residential","living_street","service","unclassified","primary","secondary","tertiary","road"])
+
+func _utility_cell(p: Vector3) -> Vector2i:
+	return Vector2i(floori(p.x/UTILITY_CELL),floori(p.z/UTILITY_CELL))
+
+func _utility_near(p: Vector3,radius: float) -> Array:
+	var lo := _utility_cell(p-Vector3(radius,0,radius))
+	var hi := _utility_cell(p+Vector3(radius,0,radius))
+	var out: Array = []
+	for x in range(lo.x,hi.x+1):
+		for z in range(lo.y,hi.y+1):
+			out.append_array(utility_cells.get(Vector2i(x,z),[]))
+	return out
+
+func _utility_open(p: Vector3) -> bool:
+	var q := Vector2(p.x,p.z)
+	# Keep poles and overhead lines outside building footprints, including
+	# procedural arcades. The curb-side furniture strip remains walkable.
+	for lot in _lots_near(p):
+		var c: Vector3 = lot.center
+		if c.distance_squared_to(p)>180.0: continue
+		if Geometry2D.is_point_in_polygon(q,_lot_polygon(lot)): return false
+	for fp in geography.footprints_near(p,.25):
+		var lo: Vector3 = fp.low
+		var hi: Vector3 = fp.high
+		if p.x<lo.x or p.x>hi.x or p.z<lo.z or p.z>hi.z: continue
+		if Geometry2D.is_point_in_polygon(q,fp.poly): return false
+	if not market_block.is_empty() and Geometry2D.is_point_in_polygon(q,market_block): return false
+	return true
+
+func _utility_pole_clear(p: Vector3,edge: Dictionary,outward: Vector3) -> bool:
+	var side := Vector3(outward.z,0,-outward.x)
+	for q in [p,p+outward*.12,p-outward*.12,p+side*.12,p-side*.12]:
+		if street_geometry.point_on_road(q) or not _utility_open(q): return false
+	# At junctions never put a post in the swept area of a crossing.
+	return _street_clear(p,.13,edge)
+
+# Full 3D beam, with no distance-based detail cutoff: a wire and its
+# supports stay visible together. All beams share the existing batches.
+func _utility_beam(a: Vector3,b: Vector3,thickness: float,mat: StandardMaterial3D) -> void:
+	var d := b-a
+	if d.length_squared()<.00001: return
+	var at := (a+b)*.5
+	var tile := Vector2i(floori(at.x/96.0),floori(at.z/96.0))
+	var origin := Vector3(float(tile.x)*96.0,0,float(tile.y)*96.0)
+	var key := "utility:"+str(tile)+":"+str(mat.get_instance_id())
+	if not box_groups.has(key):
+		box_groups[key] = {"material":mat,"transforms":[],"home_level":0,"origin":origin,"detail":false}
+	var up := Vector3.UP if absf(d.normalized().dot(Vector3.UP))<.98 else Vector3.FORWARD
+	var basis := Basis.looking_at(-d.normalized(),up).scaled_local(Vector3(thickness,thickness,d.length()+.025))
+	box_groups[key].transforms.append(Transform3D(basis,at-origin))
+
+func _utility_register(p: Vector3,outward: Vector3,metal: StandardMaterial3D,wire: StandardMaterial3D) -> int:
+	for id in _utility_near(p,1.3):
+		var old: Vector3 = utility_poles[int(id)].p
+		if old.distance_to(p)<1.3: return int(id)
+	var id := utility_poles.size()
+	var head := p-outward*.94+Vector3.UP*6.20
+	var contact_a := p+outward*.32+Vector3.UP*6.37
+	var contact_b := p-outward*.32+Vector3.UP*6.37
+	utility_poles.append({"p":p,"a":contact_a,"b":contact_b,"lamp":head})
+	var cell := _utility_cell(p)
+	if not utility_cells.has(cell): utility_cells[cell] = []
+	utility_cells[cell].append(id)
+	# Slim concrete pole; only the post itself has physical collision.
+	_cube(p+Vector3.UP*3.27,Vector3(.18,6.42,.18),metal,0,true)
+	_utility_beam(p+Vector3.UP*6.26-outward*.48,p+Vector3.UP*6.26+outward*.48,.13,metal)
+	for contact in [contact_a,contact_b]:
+		_utility_beam(contact-Vector3.UP*.13,contact,.10,metal)
+	# Bracket and lamp head face the road, not a house.
+	_utility_beam(p+Vector3.UP*5.76,head+Vector3.UP*.10,.10,metal)
+	_cube(head+Vector3.UP*.075,Vector3(.30,.15,.38),metal,atan2(outward.x,outward.z))
+	# The lens is batched separately and emissive only during the night.
+	_utility_beam(head-Vector3.UP*.035-outward*.12,head-Vector3.UP*.035+outward*.12,.19,utility_lens)
+	return id
+
+func _utility_span_clear(a: Vector3,b: Vector3) -> bool:
+	var length := a.distance_to(b)
+	if length>42.0 or length<.5: return false
+	# No cable may cut across a facade or a building corner.
+	var steps := maxi(1,ceili(length/1.5))
+	for i in range(steps+1):
+		if not _utility_open(a.lerp(b,float(i)/float(steps))): return false
+	return true
+
+func _utility_connect(i: int,j: int,wire: StandardMaterial3D) -> bool:
+	if i<0 or j<0 or i==j: return false
+	var key := str(mini(i,j))+":"+str(maxi(i,j))
+	if utility_links.has(key): return true
+	var first: Dictionary = utility_poles[i]
+	var second: Dictionary = utility_poles[j]
+	var a: Vector3 = first.a
+	var b: Vector3 = first.b
+	var c: Vector3 = second.a
+	var d: Vector3 = second.b
+	# Keep the two parallel cables from crossing at orientation changes.
+	if a.distance_squared_to(c)+b.distance_squared_to(d)>a.distance_squared_to(d)+b.distance_squared_to(c):
+		var swap := c
+		c = d
+		d = swap
+	if not _utility_span_clear(a,c) or not _utility_span_clear(b,d): return false
+	for pair in [[a,c],[b,d]]:
+		var start: Vector3 = pair[0]
+		var finish: Vector3 = pair[1]
+		var sag := minf(.40,start.distance_to(finish)*.012)
+		var previous := start
+		for k in range(1,5):
+			var t := float(k)/4.0
+			var p := start.lerp(finish,t)-Vector3.UP*(4.0*t*(1.0-t)*sag)
+			_utility_beam(previous,p,.034,wire)
+			previous = p
+	utility_links[key] = true
+	return true
+
+# Walk through degree-two road nodes so short OSM segments don't produce
+# a separate pole or a dangling wire. Break at crossings and sharp turns.
+func _utility_chain(seed: int,from_id: String,edges: Array,incidents: Dictionary,visited: Dictionary) -> Dictionary:
+	var segments: Array = []
+	var total := 0.0
+	var current := seed
+	var start := from_id
+	var node := from_id
+	while not visited.has(current):
+		visited[current] = true
+		var edge: Dictionary = edges[current]
+		var a: Vector3 = edge.a if String(edge.a_id)==node else edge.b
+		var b: Vector3 = edge.b if String(edge.a_id)==node else edge.a
+		var next_node := String(edge.b_id) if String(edge.a_id)==node else String(edge.a_id)
+		var length := a.distance_to(b)
+		var direction := (b-a).normalized()
+		segments.append({"edge":edge,"a":a,"b":b,"d":direction,"start":total,"length":length})
+		total += length
+		node = next_node
+		var incident: Array = incidents.get(node,[])
+		if incident.size()!=2: break
+		var next_index := int(incident[1]) if int(incident[0])==current else int(incident[0])
+		if visited.has(next_index): break
+		var next_edge: Dictionary = edges[next_index]
+		var other: Vector3 = next_edge.b if String(next_edge.a_id)==node else next_edge.a
+		if direction.dot((other-b).normalized())<.88: break
+		if String(edge.name)!=String(next_edge.name): break
+		current = next_index
+	return {"segments":segments,"length":total,"start":start,"end":node}
+
+func _utility_station(chain: Dictionary,at: float,side: float) -> Dictionary:
+	for seg in chain.segments:
+		if at>float(seg.start)+float(seg.length)+.001: continue
+		var d: Vector3 = seg.d
+		var outward := Vector3(-d.z,0,d.x)*side
+		var edge: Dictionary = seg.edge
+		var a: Vector3 = seg.a
+		var center := a+d*clampf(at-float(seg.start),0.0,float(seg.length))
+		for offset in [.26,.42,.60]:
+			var p := center+outward*(float(edge.width)*.5+float(offset))
+			if _utility_pole_clear(p,edge,outward): return {"p":p,"out":outward}
+		break
+	return {}
+
+func _utility_chain_poles(chain: Dictionary,metal: StandardMaterial3D,wire: StandardMaterial3D) -> Array:
+	var total := float(chain.length)
+	if total<.7: return []
+	var margin := minf(4.0,total*.26)
+	var count := maxi(1,ceili(maxf(0.0,total-margin*2.0)/UTILITY_SPACING)+1)
+	if total<10.0: count = 1
+	var found: Array = []
+	var preferred := 1.0
+	for i in range(count):
+		var station := total*.5 if count==1 else lerpf(margin,total-margin,float(i)/float(count-1))
+		var candidate: Dictionary = {}
+		var chosen_side := preferred
+		for side in [preferred,-preferred]:
+			for shift in [0.0,1.5,-1.5,3.0,-3.0,5.0,-5.0]:
+				var at := clampf(station+float(shift),.35,total-.35)
+				candidate = _utility_station(chain,at,float(side))
+				if not candidate.is_empty():
+					chosen_side = float(side)
+					break
+			if not candidate.is_empty(): break
+		if candidate.is_empty(): continue
+		var p: Vector3 = candidate.p
+		var outward: Vector3 = candidate.out
+		var id := _utility_register(p,outward,metal,wire)
+		if not found.is_empty():
+			if int(found.back())==id: continue
+			_utility_connect(int(found.back()),id,wire)
+		found.append(id)
+		preferred = chosen_side
+	return found
+
+func _make_utility_network() -> void:
+	var metal := _mat("utility_concrete",Color("#77786e"))
+	var wire := _mat("utility_wire",Color("#343b3d"))
+	utility_lens = _mat("utility_lens",Color("#e9dfc4"))
+	utility_lens.emission = Color("#ffda94")
+	utility_lens.emission_energy_multiplier = 1.35
+	utility_lens.emission_enabled = false
+	var edges: Array = []
+	var incidents: Dictionary = {}
+	for edge in geography.roads:
+		if not _utility_edge(edge): continue
+		var index := edges.size()
+		edges.append(edge)
+		for node in [String(edge.a_id),String(edge.b_id)]:
+			if not incidents.has(node): incidents[node] = []
+			incidents[node].append(index)
+	var visited: Dictionary = {}
+	var chains: Array = []
+	# Start at intersections and road ends; then handle closed loops.
+	for node in incidents:
+		if incidents[node].size()==2: continue
+		for index in incidents[node]:
+			if not visited.has(index): chains.append(_utility_chain(int(index),String(node),edges,incidents,visited))
+	for index in range(edges.size()):
+		if not visited.has(index): chains.append(_utility_chain(index,String(edges[index].a_id),edges,incidents,visited))
+	var ends: Dictionary = {}
+	var no_support := 0
+	for chain in chains:
+		var ids := _utility_chain_poles(chain,metal,wire)
+		if ids.is_empty():
+			no_support += 1
 			continue
+		for endpoint in [[String(chain.start),int(ids.front())],[String(chain.end),int(ids.back())]]:
+			var node: String = endpoint[0]
+			if not ends.has(node): ends[node] = []
+			if not ends[node].has(endpoint[1]): ends[node].append(endpoint[1])
+	# At each intersection connect the nearest compatible real supports.
+	# Each branch gets a chance; duplicate spans are suppressed globally.
+	for node in ends:
+		var ids: Array = ends[node]
+		for id in ids:
+			var p: Vector3 = utility_poles[int(id)].p
+			var candidates := ids.duplicate()
+			candidates.sort_custom(func(a,b): return p.distance_squared_to(utility_poles[int(a)].p)<p.distance_squared_to(utility_poles[int(b)].p))
+			for other in candidates:
+				if int(id)==int(other): continue
+				if _utility_connect(int(id),int(other),wire): break
+	# Single supports on short blocks can join another nearby support only
+	# when both actual cables are clear; never render an unsupported end.
+	var degrees: Dictionary = {}
+	for key in utility_links:
+		for id in String(key).split(":"):
+			degrees[int(id)] = true
+	for id in range(utility_poles.size()):
+		if degrees.has(id): continue
+		var p: Vector3 = utility_poles[id].p
+		var candidates := _utility_near(p,30.0)
+		candidates.sort_custom(func(a,b): return p.distance_squared_to(utility_poles[int(a)].p)<p.distance_squared_to(utility_poles[int(b)].p))
+		for other in candidates:
+			if int(other)==id or p.distance_squared_to(utility_poles[int(other)].p)>900.0: continue
+			if _utility_connect(id,int(other),wire): break
+	print("Red eléctrica: ",utility_poles.size()," postes / luminarias, ",utility_links.size()," tramos conectados; ",no_support," cadenas sin emplazamiento seguro.")
+	# A small reusable pool, not thousands of active lights at once.
+	for i in range(8):
+		var lamp := OmniLight3D.new()
+		lamp.light_color = Color("#ffdaa2")
+		lamp.light_energy = 1.15
+		lamp.omni_range = 13.0
+		lamp.omni_attenuation = 1.25
+		lamp.shadow_enabled = false
+		add_child(lamp)
+		lamp.hide()
+		utility_lamps.append(lamp)
 
-		if a.distance_to(b)>20.0:
-			var p := a.lerp(b,.45)+right*(width*.5+.55)
-			if not street_geometry.point_on_road(p) and _street_clear(p,.18,edge):
-				_cube(p+Vector3.UP*2.65,Vector3(.17,5.3,.17),pole,0,true)
-				_cube(p+Vector3.UP*5.12,Vector3(1.0,.12,.13),pole)
-				var end := b+right*(width*.5+.55)
-				for offset in [-.32,.32]:
-					_line(p+Vector3(float(offset),0,0),end+Vector3(float(offset),0,0),.026,.026,5.04,wires)
-
+func update_utility_lighting(minutes: float,delta: float) -> void:
+	utility_light_clock += delta
+	if utility_light_clock<.45: return
+	utility_light_clock = 0.0
+	if utility_lens==null: return
+	var night := minutes>=1140.0 or minutes<360.0
+	if night!=utility_night:
+		utility_night = night
+		utility_lens.emission_enabled = night
+	var camera := get_viewport().get_camera_3d()
+	if not night or camera==null or camera.global_position.y>35.0:
+		for lamp in utility_lamps: lamp.hide()
+		return
+	var at := camera.global_position
+	var nearby := _utility_near(at,45.0)
+	nearby.sort_custom(func(a,b): return at.distance_squared_to(utility_poles[int(a)].p)<at.distance_squared_to(utility_poles[int(b)].p))
+	for i in range(utility_lamps.size()):
+		var lamp := utility_lamps[i]
+		if i>=nearby.size() or at.distance_squared_to(utility_poles[int(nearby[i])].p)>2025.0:
+			lamp.hide()
+			continue
+		lamp.global_position = utility_poles[int(nearby[i])].lamp
+		lamp.show()
 
 func _draw_street_polygon(poly: PackedVector2Array,y: float,mat: StandardMaterial3D,kind: String) -> void:
 	var tris := Geometry2D.triangulate_polygon(poly)
