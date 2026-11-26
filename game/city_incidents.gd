@@ -183,7 +183,8 @@ func _crowd_tick(center: Vector3,delta: float) -> void:
 		crowd_center = center
 		crowd_clock = 1.0
 	crowd_clock += delta
-	if crowd_clock>=.8 and crowd.size()<8:
+	var crowd_limit := 3 if not injured.is_empty() else 8
+	if crowd_clock>=.8 and crowd.size()<crowd_limit:
 		crowd_clock = 0.0
 		var candidates: Array = _walkers(center,42.0)
 		var spots := _witness_spots(center)
@@ -203,7 +204,7 @@ func _crowd_tick(center: Vector3,delta: float) -> void:
 					continue
 			candidates.append({"node":node,"waiting_witness":true})
 		for agent in candidates:
-			if crowd.size()>=8: break
+			if crowd.size()>=crowd_limit: break
 			var p: Person = agent.node
 			if p.has_meta("incident_role"): continue
 			for spot in spots:
@@ -219,7 +220,7 @@ func _crowd_tick(center: Vector3,delta: float) -> void:
 		# Low population at night must not make every incident deserted.
 		# At most two additional nearby residents per update, at valid
 		# graph nodes outside the gathering, then walk to it normally.
-		if crowd.size()<4:
+		if injured.is_empty() and crowd.size()<4:
 			_neighborhood_witness(center,spots)
 	for i in range(crowd.size()-1,-1,-1):
 		var item: Dictionary = crowd[i]
@@ -825,6 +826,20 @@ func _casualty_vehicle_clear(pose: Transform3D) -> bool:
 	query.collision_mask = 1|4|8|16|CASUALTY_LAYER
 	return get_world_3d().direct_space_state.intersect_shape(query,1).is_empty()
 
+# A wall or portal column may touch the protective envelope without
+# obstructing traffic. Only a live vehicle or another casualty prevents
+# inserting the guard. Layer 2 (road ground) was already excluded.
+func _casualty_guard_clear(pose: Transform3D) -> bool:
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = _casualty_shape(pose)
+	query.transform = _casualty_transform(pose)
+	query.collision_mask = 1|4|8|CASUALTY_LAYER
+	for hit in get_world_3d().direct_space_state.intersect_shape(query,32):
+		var collider = hit.collider
+		if collider is CharacterBody3D: return false
+		if collider is CollisionObject3D and (collider.collision_layer & CASUALTY_LAYER)!=0: return false
+	return true
+
 func _remove_casualty_guard(victim: Dictionary) -> void:
 	var guard = victim.get("traffic_guard")
 	if is_instance_valid(guard):
@@ -837,13 +852,15 @@ func _protect_casualty(victim: Dictionary) -> void:
 	var person: Node3D = victim.agent.node
 	if not is_instance_valid(person) or not person.is_visible_in_tree(): return
 	var old: Transform3D = victim.old
-	if not _casualty_vehicle_clear(old):
+	if not _casualty_guard_clear(old):
 		# If the impact left the actor inside a bumper, resolve the initial
 		# fall to nearby free ground before inserting a collision body.
 		if Time.get_ticks_msec()<int(victim.get("guard_retry",0)): return
 		victim.guard_retry = Time.get_ticks_msec()+1500
+		# Never relocate a victim after the rescue crew has committed to a position.
+		if scene.get("victim",{})==victim or victim.has("first_aid"): return
 		old = _casualty_pose(person,old)
-		if not _casualty_vehicle_clear(old):
+		if not _casualty_guard_clear(old):
 			_rescue_log(victim,"espacio del herido ocupado; esperando una posición segura.")
 			return
 		victim.old = old
@@ -864,7 +881,7 @@ func _protect_casualty(victim: Dictionary) -> void:
 func _casualty_pose(person: Node3D,old: Transform3D) -> Transform3D:
 	var axis := -_flat(old.basis.z).normalized()
 	var length := 1.85*old.basis.get_scale().y
-	if _casualty_slot_free(old.origin,axis,length,person) and _casualty_vehicle_clear(old): return old
+	if _casualty_slot_free(old.origin,axis,length,person) and _casualty_guard_clear(old): return old
 	# Try nearby distinct poses, using ground and geometry checks.
 	for radius in [.75,1.2,1.8,2.5,3.2,4.0,5.0,6.5]:
 		for i in range(12):
@@ -938,6 +955,13 @@ func _injury_tick(delta: float) -> void:
 			continue
 		victim.time = float(victim.time)+delta
 		if float(victim.time)<5.0: continue
+		var aid: Dictionary = victim.get("first_aid",{})
+		if aid.is_empty() or not bool(aid.get("arrived",false)):
+			if float(victim.time)>=12.0:
+				victim.severe = true
+				victim.retry = 0.0
+				_rescue_log(victim,"no se recupera; solicitando traslado médico.")
+			continue
 		var p: Node3D = victim.agent.node
 		var old: Transform3D = victim.old
 		if _foot(old.origin).is_empty():
@@ -957,6 +981,7 @@ func _injury_tick(delta: float) -> void:
 				if float(victim.time)>10.0: victim.severe = true
 				continue
 			old.origin = safe.p
+		_first_aid_release(victim)
 		_remove_casualty_guard(victim)
 		p.global_transform = old
 		p.set_meta("impact_immunity",Time.get_ticks_msec()+2500)
@@ -998,6 +1023,10 @@ func _first_aid_start(victim: Dictionary) -> bool:
 	var old: Transform3D = victim.old
 	var center := old.origin
 	var candidates := _walkers(center,38.0)
+	for node in get_tree().get_nodes_in_group("social_people"):
+		if not node is Person or not node.is_visible_in_tree() or node.has_meta("incident_role"): continue
+		if String(node.social_context)!="bus_wait" or node.global_position.distance_to(center)>20.0: continue
+		candidates.append({"node":node,"waiting_witness":true})
 	for witness in crowd:
 		var agent: Dictionary = witness.agent
 		if is_instance_valid(agent.get("node")) and agent.node is Person and agent.node.global_position.distance_to(center)<38.0:
@@ -1007,6 +1036,9 @@ func _first_aid_start(victim: Dictionary) -> bool:
 		var p: Person = agent.node
 		var access := _first_aid_access(p.global_position,center)
 		if access.is_empty(): continue
+		if bool(agent.get("waiting_witness",false)):
+			agent = _impact_agent(p)
+			if agent.is_empty(): continue
 		for i in range(crowd.size()-1,-1,-1):
 			if crowd[i].agent.node==p:
 				crowd.remove_at(i)
@@ -1015,7 +1047,7 @@ func _first_aid_start(victim: Dictionary) -> bool:
 		return true
 	# Bounded fallback: only spawn on checked, non-road ground.
 	var origins: Array = []
-	for radius in [5.0,8.0,12.0,18.0]:
+	for radius in [2.5,3.5,5.0,8.0,12.0,18.0]:
 		for i in range(8):
 			var angle := float(i)*TAU/8.0
 			var point := center+Vector3(cos(angle),0,sin(angle))*float(radius)
@@ -1024,8 +1056,11 @@ func _first_aid_start(victim: Dictionary) -> bool:
 			if ground.is_empty(): continue
 			origins.append(ground.p)
 	origins.sort_custom(func(a,b): return center.distance_squared_to(a)<center.distance_squared_to(b))
-	for origin in origins.slice(0,5):
+	var tested := 0
+	for origin in origins:
 		if not world.pedestrian_space_clear(null,origin,.85,false): continue
+		tested += 1
+		if tested>6: break
 		var access := _first_aid_access(origin,center)
 		if access.is_empty(): continue
 		var person := Person.new()
@@ -1038,9 +1073,8 @@ func _first_aid_start(victim: Dictionary) -> bool:
 	return false
 
 func _first_aid_tick(victim: Dictionary,delta: float) -> void:
-	if not bool(victim.severe): return
-	# Do not send a neighbor underneath a vehicle while the fall is unresolved.
-	if not is_instance_valid(victim.get("traffic_guard")): return
+	# Every fallen person gets assistance. Physical guard insertion is
+	# independent; access candidates still require a clear walking path.
 	if String(scene.get("kind",""))=="rescue" and scene.get("victim",{})==victim and String(scene.phase)!="approach":
 		return
 	var aid: Dictionary = victim.get("first_aid",{})
@@ -1048,7 +1082,8 @@ func _first_aid_tick(victim: Dictionary,delta: float) -> void:
 		victim.aid_retry = maxf(0.0,float(victim.get("aid_retry",0.0))-delta)
 		if float(victim.aid_retry)>0.0: return
 		victim.aid_retry = 3.0
-		_first_aid_start(victim)
+		if not _first_aid_start(victim):
+			_rescue_log(victim,"buscando un vecino con acceso libre.")
 		return
 	if not is_instance_valid(aid.agent.get("node")):
 		_first_aid_release(victim)
@@ -1077,7 +1112,8 @@ func _first_aid_tick(victim: Dictionary,delta: float) -> void:
 		aid.last = p.global_position
 	if float(aid.stuck)>3.0:
 		var access := _first_aid_access(p.global_position,old.origin)
-		if access.is_empty():
+		aid.replans = int(aid.get("replans",0))+1
+		if access.is_empty() or int(aid.replans)>=3:
 			_first_aid_release(victim)
 			victim.aid_retry = 1.0
 		else:
@@ -1177,7 +1213,6 @@ func _local_responder(victim: Dictionary,center: Vector3) -> bool:
 	return false
 
 func _rescue_start(victim: Dictionary) -> void:
-	if not is_instance_valid(victim.get("traffic_guard")): return
 	var person: Node3D = victim.agent.node
 	var center := person.global_position
 	var candidates: Array = []
@@ -1282,6 +1317,16 @@ func _park_here(body: CharacterBody3D,center: Vector3) -> Dictionary:
 		candidate.p = origin
 		if _rescue_foot_access(candidate,center).is_empty(): continue
 		return candidate
+	# On narrow blocks an existing car can stop in its current lane for
+	# a brief rescue, provided it is outside the junction and has a
+	# validated walking connection. Do not require an exact parking offset.
+	if origin.distance_to(center)<=22.0:
+		for berth in _berths(origin,6.0,heading,false).slice(0,4):
+			var point: Vector3 = berth.p
+			if _flat(point-origin).length()>1.1: continue
+			var candidate: Dictionary = berth.duplicate()
+			candidate.p = origin
+			if not _rescue_foot_access(candidate,center).is_empty(): return candidate
 	return {}
 
 func _rescue_parked(victim: Dictionary,body: CharacterBody3D) -> bool:
@@ -1514,7 +1559,9 @@ func _rescue_tick(delta: float) -> void:
 		if scene.actors.size()>1:
 			var helper_actor: Dictionary = scene.actors[1]
 			helper_actor.index = _advance_actor(helper_actor.node,helper_actor.path,int(helper_actor.index),delta,2.5)
-		if int(driver_actor.index)<driver_actor.path.size(): return
+		if int(driver_actor.index)<driver_actor.path.size():
+			if float(scene.time)>28.0: _end_rescue(false)
+			return
 		if scene.actors.size()>1:
 			var helper_actor: Dictionary = scene.actors[1]
 			if int(helper_actor.index)<helper_actor.path.size():
@@ -1722,7 +1769,9 @@ func _end_rescue(delivered: bool) -> void:
 		victim.severe = true
 		_remove_casualty_guard(victim)
 		_protect_casualty(victim)
-		victim.retry = .5
+		victim.retry = 5.0
+		injured.erase(victim)
+		injured.append(victim)
 		var failed: Dictionary = victim.get("failed_cars",{})
 		failed[body.get_instance_id()] = Time.get_ticks_msec()+30000
 		victim.failed_cars = failed
@@ -1780,9 +1829,11 @@ func tick(delta: float) -> void:
 	if scene.is_empty():
 		for victim in injured:
 			if bool(victim.severe) and float(victim.retry)<=0.0:
-				victim.retry = 3.0
+				victim.retry = 4.0
 				_rescue_start(victim)
 				if not scene.is_empty(): break
+				# One expensive vehicle search per frame, not one per casualty.
+				break
 		if scene.is_empty() and not injured.is_empty():
 			var victim: Dictionary = injured[0]
 			var center: Vector3 = victim.old.origin
