@@ -230,7 +230,7 @@ func intersections_near(p: Vector3,reach: float) -> Array:
 	return out
 
 func intersection_clear_for_stop(p: Vector3,length: float,width: float = 2.0) -> bool:
-	var extent := Vector2(length,width).length()*.5+.6
+	var extent := Vector2(length,width).length()*.5+1.35
 	for item in intersections_near(p,28.0):
 		var q: Vector3 = item.p
 		if Vector2(p.x-q.x,p.z-q.z).length()<float(item.radius)+extent: return false
