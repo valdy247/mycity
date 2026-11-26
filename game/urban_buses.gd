@@ -69,7 +69,7 @@ func _make_itinerary(route: Array[String],line: String) -> Array:
 		var length := a.distance_to(b)
 		var width := float(edge.width)
 		var right := Vector3(-d.z,0,d.x)
-		var lane := minf(1.40,maxf(.65,width*.5-BUS_WIDTH*.5-.30))
+		var lane := data.lane_distance(edge,BUS_WIDTH)
 		if length>5.0:
 			result.append({"p":a+d*minf(3.0,length*.22)+right*lane})
 		var is_major := width>=7.2 or planner._corridor(edge,line)
@@ -113,7 +113,7 @@ func _on_sidewalk(p: Vector3) -> bool:
 func _make_stop(mid: Vector3,d: Vector3,width: float,lane: float,line: String,edge: Dictionary,mapped: bool,name_value: String) -> Dictionary:
 	var right := Vector3(-d.z,0,d.x)
 	var sidewalk := mid+right*(width*.5+.70)
-	var p := mid+right*lane
+	var p := mid+right*data.lane_distance(edge,BUS_WIDTH,true)
 	for other in stops:
 		var old: Vector3 = other.position
 		if old.distance_to(p)<27.0: return {}
