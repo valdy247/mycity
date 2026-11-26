@@ -114,7 +114,7 @@ static func _four_lane_pass(body: CharacterBody3D,route: Array,index: int,street
 		var total := float(option.along)
 		# Give long vehicles more room to change lanes without sweeping
 		# their rear into the other lane or a parked vehicle.
-		var transition := maxf(5.0,length*.9)
+		var transition := maxf(7.0,length*1.55)
 		if total<transition*2.0+2.0: continue
 		for leave in [transition,transition+2.0]:
 			var steps := ceili(total/.8)
@@ -331,7 +331,12 @@ static func _yield_path(body: CharacterBody3D,streets: Streets,width: float,leng
 static func cooperate(state: Dictionary,body: CharacterBody3D,streets: Streets,width: float,length: float,height: float,delta: float,stalled_time: float,target: Vector3) -> bool:
 	body.set_meta("traffic_priority",length)
 	# On Monte, lane discipline replaces arbitrary refuge manoeuvres.
-	if not streets.four_lane_at(body.global_position,body.global_transform.basis.z).is_empty(): return false
+	if stalled_time>.6 or not (state.get("cooperative_path",[]) as Array).is_empty() or body.has_meta("traffic_yield_until"):
+		if not streets.four_lane_at(body.global_position,body.global_transform.basis.z).is_empty():
+			state.cooperative_path = []
+			state.cooperative_hold = 0
+			body.remove_meta("traffic_yield_until")
+			return false
 	var now := Time.get_ticks_msec()
 	var points: Array = state.get("cooperative_path",[])
 	if points.is_empty():
@@ -417,3 +422,8 @@ static func rejoin_index(body: CharacterBody3D,route: Array,index: int,streets: 
 			best = at
 			best_distance = distance
 	return best
+
+# Initiate a lane change before the driver has reached a complete stop.
+# The expensive path search is still throttled by each driver's cooldown.
+static func early_lane_pass(body: CharacterBody3D,streets: Streets,blocked: bool,free: float) -> bool:
+	return blocked and free>1.3 and not streets.four_lane_at(body.global_position,body.global_transform.basis.z).is_empty()
