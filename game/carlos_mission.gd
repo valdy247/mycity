@@ -2,6 +2,10 @@ extends Node3D
 # Mission 2. Only two NPCs, one temporary room and four tiny wall textures.
 const Person = preload("res://street_person.gd")
 const ROOM := Vector3(30,110,0)
+# Exact reference copied from the in-game editor by the player.
+const CARLOS_LAT := 23.1219468
+const CARLOS_LON := -82.3684516
+const HOME_LOCATION_VERSION := 2
 const COLS := 8
 const ROWS := 4
 const TOTAL := COLS*ROWS*4
@@ -50,6 +54,14 @@ func setup(controller) -> void:
 	add_child(marker)
 	business._arrow(marker,Vector3.UP*2.6,Color("#ffd85c"))
 	marker.hide()
+	# Rebind older automatic selections before Carlos has been collected.
+	# Never relocate the client or companion in a job already underway.
+	if int(state.get("home_location_version",0))<HOME_LOCATION_VERSION and _stage()<=2:
+		state.erase("home")
+		state.erase("customer")
+		state.home_location_version = HOME_LOCATION_VERSION
+		if _stage()==2: _clear_target()
+		_save()
 
 func _save() -> void:
 	business.ledger.save_game()
@@ -103,51 +115,51 @@ func _remember(key: String,site: Dictionary) -> void:
 	var p: Vector3 = site.door
 	state[key] = {"x":p.x,"z":p.z}
 
+# Use the copied WGS84 point instead of guessing from street names.
+# If the point lies on a mapped building, prefer doors belonging to it.
+# Do not silently select a house farther down the block.
+func _home_from_gps() -> Dictionary:
+	var anchor: Vector3 = world.geography.project(CARLOS_LAT,CARLOS_LON)
+	var q := Vector2(anchor.x,anchor.z)
+	var footprints: Array = []
+	for item in world.geography.footprints_near(anchor,18.0):
+		if Geometry2D.is_point_in_polygon(q,item.poly): footprints.append(item.poly)
+	var choices: Array = []
+	for entry in world.npc_doorways:
+		if String(entry.kind)!="home": continue
+		var door: Vector3 = entry.threshold
+		var distance := Vector2(door.x-anchor.x,door.z-anchor.z).length()
+		if distance>18.0: continue
+		var normal: Vector3 = entry.normal
+		var inner := door-normal*.65
+		var belongs := false
+		for poly in footprints:
+			if Geometry2D.is_point_in_polygon(Vector2(inner.x,inner.z),poly):
+				belongs = true
+				break
+		if not footprints.is_empty() and not belongs: continue
+		if footprints.is_empty() and distance>10.0: continue
+		choices.append({"entry":entry,"distance":distance})
+	choices.sort_custom(func(a,b): return float(a.distance)<float(b.distance))
+	for option in choices:
+		var site := _door_data(option.entry)
+		if not site.is_empty():
+			print("Misión Carlos: entrada asociada al GPS ",CARLOS_LAT,", ",CARLOS_LON," a ",snappedf(float(option.distance),.1)," m del punto.")
+			return site
+	return {}
+
 func _locate() -> bool:
 	if not home.is_empty() and not customer.is_empty(): return true
 	if not game.monte_pedestrians.initialized: return false
 	home = _restore_door("home")
 	customer = _restore_door("customer")
 	if home.is_empty():
-		var monte := _corners("flores","monte")
-		var esteves := _corners("flores","esteves")
-		if monte.is_empty() or esteves.is_empty():
-			_location_notice("No se encontraron las dos esquinas de Flores en el mapa cargado.")
+		home = _home_from_gps()
+		if home.is_empty():
+			_location_notice("GPS de Carlos localizado, pero falta una puerta residencial segura junto al punto. Puedes confirmarla en el teléfono.")
 			return false
-		var corner := Vector3.ZERO
-		var start := Vector3.ZERO
-		var best := INF
-		for a in monte:
-			for b in esteves:
-				var distance: float = a.distance_to(b)
-				if distance<2.0 or distance>=best: continue
-				best = distance
-				start = a
-				corner = b
-		if not is_finite(best): return false
-		var travel := (corner-start).normalized()
-		var right := Vector3(-travel.z,0,travel.x)
-		var choices: Array = []
-		for entry in world.npc_doorways:
-			if String(entry.kind)!="home": continue
-			var p: Vector3 = entry.threshold
-			var normal: Vector3 = entry.normal
-			if p.distance_to(corner)>27.0 or normal.dot(-right)<.55: continue
-			for edge in world.geography.roads_near(p,18.0):
-				if not _named(edge,"flores"): continue
-				var a: Vector3 = edge.a
-				var b: Vector3 = edge.b
-				var road := Geometry3D.get_closest_point_to_segment(p,a,b)
-				if (p-road).dot(right)<1.0 or road.distance_to(p)>float(edge.width)*.5+5.0: continue
-				var site := _door_data(entry)
-				if not site.is_empty(): choices.append({"site":site,"score":p.distance_to(corner)+maxf(0.0,(p-start).dot(travel)-best)*.5})
-				break
-		choices.sort_custom(func(a,b): return float(a.score)<float(b.score))
-		if choices.is_empty():
-			_location_notice("Flores y Estévez localizado, pero falta una puerta residencial segura en el lado indicado.")
-			return false
-		home = choices[0].site
 		_remember("home",home)
+		state.home_location_version = HOME_LOCATION_VERSION
 	if customer.is_empty():
 		var origin: Vector3 = home.p
 		var choices: Array = []
@@ -234,6 +246,7 @@ func _confirm_home() -> void:
 		carlos = null
 		_clear_target()
 		_remember("home",home)
+		state.home_location_version = HOME_LOCATION_VERSION
 		state.erase("customer")
 		_save()
 		business.close()
