@@ -122,7 +122,7 @@ func _make_itinerary(route: Array[String],line: String) -> Array:
 		var length := a.distance_to(b)
 		var width := float(edge.width)
 		var right := Vector3(-d.z,0,d.x)
-		var lane := data.lane_distance(edge,BUS_WIDTH)
+		var lane := data.lane_distance(edge,BUS_WIDTH,int(edge.get("lanes_per_direction",1))==2)
 		if length>5.0:
 			result.append({"p":a+d*minf(3.0,length*.22)+right*lane})
 		var is_major := width>=7.2 or planner._corridor(edge,line)
