@@ -413,9 +413,9 @@ func _make_pedestrians() -> void:
 func tick(delta: float) -> void:
 	clock += delta
 	var phase := _phase()
-	for signal in signals:
-		var lamp: MeshInstance3D = signal.lamp
-		lamp.material_override = _mat("green",Color("#45ed62")) if int(signal.axis)==phase else _mat("red",Color("#ff423c"))
+	for traffic_signal in signals:
+		var lamp: MeshInstance3D = traffic_signal.lamp
+		lamp.material_override = _mat("green",Color("#45ed62")) if int(traffic_signal.axis)==phase else _mat("red",Color("#ff423c"))
 	for entry in cars:
 		var car: CharacterBody3D = entry.node
 		var route: Array = entry.route
