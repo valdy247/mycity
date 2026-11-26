@@ -302,7 +302,7 @@ func _make_bus(line: String,index: int) -> Dictionary:
 	body.name = "Guagua_"+line
 	body.motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
 	body.collision_layer = 1
-	body.collision_mask = 1|4|8
+	body.collision_mask = 1|4|8|32
 	add_child(body)
 	body.add_to_group("autonomous_traffic")
 	var white := Color("#e5e4db")
@@ -726,7 +726,7 @@ func _safety_query(body: CharacterBody3D,at: Vector3,angle: float) -> PhysicsSha
 	var query := PhysicsShapeQueryParameters3D.new()
 	query.shape = safety_shape
 	query.transform = Transform3D(Basis(Vector3.UP,angle),at+Vector3.UP*1.54)
-	query.collision_mask = 1|4|8
+	query.collision_mask = 1|4|8|32
 	query.exclude = [body.get_rid()]
 	query.margin = .025
 	return query
@@ -899,7 +899,7 @@ func tick(delta: float) -> void:
 					bus.blocked_stop_wait = 0.0
 				if stalled>1.0 or (item.has("stop") and distance<.30):
 					bus.blocked_stop_wait = float(bus.get("blocked_stop_wait",0.0))+delta
-				if float(bus.get("blocked_stop_wait",0.0))>=12.0 and item.has("stop") and (pedestrian_blocked or berth_blocked):
+				if float(bus.get("blocked_stop_wait",0.0))>=12.0 and item.has("stop") and (pedestrian_blocked or berth_blocked or approach_blocked):
 					bus.index = (index+1)%original.size()
 					bus.blocked_stop_wait = 0.0
 					bus.traffic_stall = 0.0
