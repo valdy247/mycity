@@ -520,7 +520,7 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 		vehicle.detour = []
 		if not bool(vehicle.truck): vehicle.index = Bypass.rejoin_index(body,original,int(vehicle.index),world.street_geometry,width,half*2.0,height)
 		return
-	if float(vehicle.get("retreat_remaining",0.0))<=0.0 and stalled>.8 and float(vehicle.cooldown)<=0.0:
+	if float(vehicle.get("retreat_remaining",0.0))<=0.0 and (stalled>.8 or (not active and Bypass.early_lane_pass(body,world.street_geometry,blocked,free))) and float(vehicle.cooldown)<=0.0:
 		vehicle.cooldown = 1.6
 		if active:
 			# An interrupted detour is not permanent. Replan from here.
