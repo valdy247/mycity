@@ -751,6 +751,13 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 		_collect(vehicle,delta)
 		return
 	var original: Array = vehicle.route
+	var watch_index := int(vehicle.resume) if not vehicle.detour.is_empty() else int(vehicle.index)
+	var restored := Bypass.watchdog(vehicle,body,world.street_geometry,original,watch_index,2.3 if bool(vehicle.truck) else 1.83,6.2 if bool(vehicle.truck) else 4.25,2.8 if bool(vehicle.truck) else 1.65,delta)
+	if restored>=0:
+		vehicle.index = restored
+		vehicle.detour = []
+		vehicle.detour_index = 0
+		return
 	var detour: Array = vehicle.detour
 	var active := not detour.is_empty()
 	var route: Array = detour if active else original
