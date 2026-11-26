@@ -320,3 +320,37 @@ static func cooperate(state: Dictionary,body: CharacterBody3D,streets: Streets,w
 	state.traffic_stall = 0.0
 	state.stalled = 0.0
 	return true
+
+# Only ordinary circulating vehicles use this short forward rejoin.
+# Service and passenger routes retain their pending destination.
+static func rejoin_index(body: CharacterBody3D,route: Array,index: int,streets: Streets,width: float,length: float,height: float) -> int:
+	var origin := body.global_position
+	var heading := body.global_transform.basis.z.normalized()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(width,height,length)
+	var best := index
+	var best_distance := INF
+	for offset in range(mini(12,route.size())):
+		var at := (index+offset)%route.size()
+		var item: Dictionary = route[at]
+		if item.has("stop") or (offset>0 and not String(item.get("node","")).is_empty()): break
+		var p: Vector3 = item.p
+		p.y = origin.y
+		var diff := p-origin
+		var distance := diff.length()
+		if distance<.5 or distance>16.0 or diff.normalized().dot(heading)<.25: continue
+		if distance>=best_distance: continue
+		var d := diff.normalized()
+		var valid := true
+		var previous := origin
+		var count := ceili(distance/.75)
+		for i in range(1,count+1):
+			var q := origin.lerp(p,float(i)/float(count))
+			if not _on_road(streets,q,d,width,length) or not _segment_clear(body,previous,q,d,shape):
+				valid = false
+				break
+			previous = q
+		if valid:
+			best = at
+			best_distance = distance
+	return best
