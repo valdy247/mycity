@@ -34,6 +34,7 @@ const SPEEDS := [12.0,18.0,22.0]
 const BRAKE := 9.0
 const ACCEL := 6.5
 var stop_requested := false
+var idle_scan := 0.0
 const SPEED_NAMES := ["Normal","Rápido","Exprés"]
 var mats: Dictionary = {}
 var meshes: Dictionary = {}
@@ -110,7 +111,7 @@ func _make_taxi(index: int) -> CharacterBody3D:
 	body.name = "TaxiClasico_"+str(index+1)
 	body.motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
 	body.collision_layer = 1
-	body.collision_mask = 1|4
+	body.collision_mask = 1|4|8
 	add_child(body)
 	var colors: Array[Color] = [Color("#d3a843"),Color("#73a69c"),Color("#a44f49"),Color("#9ab0bd")]
 	var paint: Color = colors[index%colors.size()]
@@ -409,10 +410,13 @@ func prepare_trip() -> bool:
 	selected.note = String(result.note)
 	selected.speed = 0.0
 	selected.blocked = 0.0
+	selected.traffic_stall = 0.0
+	selected.traffic_last = body.global_position
 	selected.signal_wait = 0.0
 	selected.signal_seen = ""
 	selected.next_node = String(result.id)
 	passenger = selected
+	body.add_to_group("autonomous_traffic")
 	selected = {}
 	dialog.hide()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -614,7 +618,27 @@ func _tick_yielding_taxis(delta: float) -> void:
 			taxi.yield_path = []
 			body.velocity = Vector3.ZERO
 
+# An idle taxi also yields to approaching municipal and ordinary traffic,
+# not only when a bus horn sounds at a designated stop.
+func _yield_idle_traffic(delta: float) -> void:
+	idle_scan += delta
+	if idle_scan<1.2: return
+	idle_scan = 0.0
+	for node in get_tree().get_nodes_in_group("autonomous_traffic"):
+		var approaching := node as CharacterBody3D
+		if approaching==null: continue
+		var forward := approaching.global_transform.basis.z.normalized()
+		var side := Vector3(-forward.z,0,forward.x)
+		for taxi in taxis:
+			if taxi==passenger or taxi==selected or not taxi.path.is_empty(): continue
+			var body: CharacterBody3D = taxi.body
+			var offset := body.global_position-approaching.global_position
+			if offset.dot(forward)<3.5 or offset.dot(forward)>12.0 or absf(offset.dot(side))>1.8: continue
+			yield_to_bus({"position":body.global_position,"direction":forward},approaching)
+			break
+
 func tick(delta: float,_clock: float) -> void:
+	_yield_idle_traffic(delta)
 	_tick_yielding_taxis(delta)
 	if passenger.is_empty(): return
 	var body: CharacterBody3D = passenger.body
@@ -650,46 +674,46 @@ func tick(delta: float,_clock: float) -> void:
 	if bool(waypoints[index].get("bypass",false)): speed = minf(speed,4.0)
 	passenger.signal_wait = maxf(0.0,float(passenger.signal_wait)-delta)
 	if float(passenger.signal_wait)>0.0: speed = 0.0
-	var reach := maxf(5.0,float(passenger.speed)*float(passenger.speed)/(2.0*BRAKE)+3.0)
-	var free := TrafficBypass.clear_distance(body,d,minf(reach,distance+1.5),1.90,4.80)
-	var blocked := _route_blocked(body,waypoints,index) or free<minf(reach,distance+1.5)-.05
+	var reach := minf(maxf(5.0,float(passenger.speed)*float(passenger.speed)/(2.0*BRAKE)+3.0),distance+.7)
+	var free := TrafficBypass.clear_distance(body,d,reach,1.90,4.80)
+	var blocked := free<reach-.05
+	var stalled := TrafficBypass.stalled(passenger,body,delta)
 	passenger.bypass_cooldown = maxf(0.0,float(passenger.get("bypass_cooldown",0.0))-delta)
-	if blocked and not stop_requested and float(passenger.blocked)>.4 and float(passenger.bypass_cooldown)<=0.0:
-		passenger.bypass_cooldown = 1.5
-		var bypass := TrafficBypass.find(body,waypoints,index,streets,1.90,4.80,geography.signal_nodes)
-		if not bypass.is_empty():
-			var changed: Array = waypoints.slice(0,index)
-			changed.append_array(bypass.path)
-			changed.append_array(waypoints.slice(int(bypass.resume)))
-			passenger.path = changed
-			passenger.blocked = 0.0
-			ride_status = "Bordeando el atasco · "+String(passenger.label)
+	if stalled>1.0 and not stop_requested and float(passenger.signal_wait)<=0.0 and float(passenger.bypass_cooldown)<=0.0:
+		passenger.bypass_cooldown = 1.8
+		# Discard only pending bypass samples, not the original destination.
+		var base := index
+		while base<waypoints.size() and bool(waypoints[base].get("bypass",false)): base += 1
+		if base<waypoints.size():
+			var bypass := TrafficBypass.recover(body,waypoints,base,streets,1.90,4.80,geography.signal_nodes)
+			if not bypass.is_empty():
+				var changed: Array = waypoints.slice(0,index)
+				changed.append_array(bypass.path)
+				changed.append_array(waypoints.slice(int(bypass.resume)))
+				passenger.path = changed
+				passenger.traffic_stall = 0.0
+				ride_status = "Bordeando el atasco · "+String(passenger.label)
+				return
+			elif base>index:
+				passenger.index = base
+				return
+	if blocked: speed = minf(speed,sqrt(2.0*BRAKE*maxf(0.0,free-.7)))
+	if stop_requested: speed = 0.0
+	if not stop_requested and float(passenger.signal_wait)<=0.0 and stalled>3.5 and float(passenger.speed)<.12 and float(passenger.get("backed_up",0.0))<5.5:
+		if TrafficBypass.reverse_clear(body,streets,1.90,4.80,delta):
+			passenger.backed_up = float(passenger.get("backed_up",0.0))+.8*delta
+			passenger.speed = 0.0
 			return
-	if blocked or stop_requested: speed = 0.0
-	else: passenger["backed_up"] = 0.0
+	if stalled<.1 and not blocked: passenger.backed_up = 0.0
 	passenger.speed = move_toward(float(passenger.speed),speed,delta*(BRAKE if speed<float(passenger.speed) else ACCEL))
-	if float(passenger.speed)<.10 and (stop_requested or blocked or float(passenger.signal_wait)>0.0):
-		passenger.speed = 0.0
-		body.velocity = Vector3.ZERO
-		if blocked and not stop_requested:
-			passenger.blocked = float(passenger.blocked)+delta
-			if float(passenger.blocked)>2.0 and free<1.1 and float(passenger.get("backed_up",0.0))<4.0:
-				if TrafficBypass.reverse_clear(body,streets,1.90,4.80,delta):
-					passenger.backed_up = float(passenger.get("backed_up",0.0))+.8*delta
-			if float(passenger.blocked)>5.0:
-				ride_status = "Buscando paso seguro · "+String(passenger.label)
-		return
-	# Smooth yaw while the body follows the rounded lane exactly.
 	var angle := lerp_angle(body.rotation.y,atan2(d.x,d.z),1.0-exp(-delta*8.0))
-	var advance := minf(minf(float(passenger.speed)*delta,distance),maxf(0.0,free-.7))
-	var moved := TrafficBypass.safe_step(body,d,advance,angle,delta)
-	if not moved: passenger.speed = 0.0
-	if blocked or not moved or advance<=.001 or body.get_slide_collision_count()>0:
-		passenger.blocked = float(passenger.blocked)+delta
-		if float(passenger.blocked)>5.0 and not stop_requested:
-			ride_status = "Buscando paso seguro. E para bajar."
-	else:
-		passenger.blocked = 0.0
+	var advance := minf(float(passenger.speed)*delta,distance)
+	if blocked: advance = minf(advance,maxf(0.0,free-.7))
+	if advance<=.0001:
+		body.velocity = Vector3.ZERO
+		passenger.speed = 0.0
+	elif not TrafficBypass.safe_step(body,d,advance,angle,delta): passenger.speed = 0.0
+	if stalled>5.0 and not stop_requested: ride_status = "Buscando paso seguro · "+String(passenger.label)
 
 func stop_position(player: CharacterBody3D,shape: Shape3D) -> Dictionary:
 	if passenger.is_empty(): return {}
@@ -725,6 +749,7 @@ func stop_position(player: CharacterBody3D,shape: Shape3D) -> Dictionary:
 func finish_trip() -> void:
 	if passenger.is_empty(): return
 	var body: CharacterBody3D = passenger.body
+	body.remove_from_group("autonomous_traffic")
 	body.velocity = Vector3.ZERO
 	passenger.path = []
 	passenger.speed = 0.0
