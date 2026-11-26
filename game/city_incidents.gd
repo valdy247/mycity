@@ -400,9 +400,9 @@ func _drive_trip(trip: Dictionary,delta: float) -> bool:
 		trip.speed = 0.0
 	return false
 
-func _car_trip(body: CharacterBody3D,at: Vector3) -> Dictionary:
+func _car_trip(body: CharacterBody3D,at: Vector3,radius: float = 38.0) -> Dictionary:
 	var start: Array = _berths(body.global_position,11.0,body.global_transform.basis.z,false)
-	var goals: Array = _berths(at,RESCUE_WALK_RANGE)
+	var goals: Array = _berths(at,radius)
 	for goal in goals.slice(0,24):
 		if not _clear_pose(body,goal): continue
 		for origin in start.slice(0,4):
@@ -867,7 +867,7 @@ func _rescue_start(victim: Dictionary) -> void:
 	candidates.sort_custom(func(a,b): return (a.body as Node3D).global_position.distance_squared_to(center)<(b.body as Node3D).global_position.distance_squared_to(center))
 	for car in candidates.slice(0,8):
 		var body: CharacterBody3D = car.body
-		var approach := _car_trip(body,center)
+		var approach := _car_trip(body,center,RESCUE_WALK_RANGE)
 		if approach.is_empty():
 			var parked := _park_here(body,center)
 			if parked.is_empty(): continue
@@ -902,122 +902,282 @@ func _hospital_trip(body: CharacterBody3D) -> Dictionary:
 		return _car_trip(body,world.incident_services.clinic)
 	return {}
 
+# Accept the current position only if the whole car is on the road,
+# clear of the junction and close to the curb, with a walking connection.
+func _flat_distance_to_berth(a: Dictionary,b: Dictionary) -> float:
+	var p: Vector3 = a.p
+	return p.distance_to(b.p)
+
+func _park_here(body: CharacterBody3D,center: Vector3) -> Dictionary:
+	var origin := body.global_position
+	if origin.distance_to(center)>RESCUE_WALK_RANGE: return {}
+	if not streets.intersection_clear_for_stop(origin,LENGTH,WIDTH): return {}
+	var heading := body.global_transform.basis.z.normalized()
+	if not Bypass._on_road(streets,origin,heading,WIDTH,LENGTH): return {}
+	for berth in _berths(origin,6.0,heading):
+		var p: Vector3 = berth.p
+		if _flat(p-origin).length()>1.35: continue
+		var candidate: Dictionary = berth.duplicate()
+		candidate.p = origin
+		var ground := _sidewalk(candidate,center)
+		if ground.is_empty(): continue
+		if _rescue_access(ground.p,center).is_empty(): continue
+		return candidate
+	return {}
+
+func _rescue_parked(victim: Dictionary,body: CharacterBody3D) -> bool:
+	var ground := _sidewalk(scene.berth,scene.center)
+	if ground.is_empty(): return false
+	var spawn: Vector3 = ground.p
+	var casualty: Vector3 = victim.old.origin
+	var access := _rescue_access(spawn,casualty)
+	if access.is_empty(): return false
+	Bypass._junction_release(scene.trip,body,streets)
+	body.set_meta("junction_guard",false)
+	body.set_meta("traffic_servicing",true)
+	body.velocity = Vector3.ZERO
+	var driver := Person.new()
+	add_child(driver)
+	driver.setup(rng.randi_range(1200,1290))
+	driver.remove_from_group("social_people")
+	driver.global_position = spawn
+	var path: PackedVector3Array = access.path
+	scene.actors = [{"node":driver,"path":path,"index":0,"last":spawn,"stuck":0.0}]
+	scene.pickup_point = spawn
+	scene.access_point = access.p
+	scene.phase = "help"
+	scene.time = 0.0
+	var target: Vector3 = access.p
+	var helper: Dictionary = {}
+	# A second person is welcome but never a condition for rescue.
+	for agent in _walkers(target,30.0):
+		var p: Person = agent.node
+		var route := _ped_path(p.global_position,target)
+		if route.is_empty(): continue
+		helper = {"agent":agent,"node":p,"path":route,"index":0}
+		break
+	if helper.is_empty():
+		for i in range(crowd.size()):
+			var agent: Dictionary = crowd[i].agent
+			var p: Person = agent.node
+			var route := _ped_path(p.global_position,target)
+			if route.is_empty(): continue
+			crowd.remove_at(i)
+			helper = {"agent":agent,"node":p,"path":route,"index":0}
+			break
+	if not helper.is_empty():
+		_lock(helper.agent,"auxilio")
+		scene.actors.append(helper)
+		_say(driver,"¡Ven, ayúdame a llevarlo al carro!")
+	else:
+		_say(driver,"Tranquilo, yo te llevo al hospital.")
+	return true
+
+func _release_helper() -> void:
+	if scene.actors.size()<2: return
+	var helper: Dictionary = scene.actors.pop_back()
+	_release(helper.agent)
+
+func _carry_pose(person: Node3D,driver: Person,helper: Person,delta: float) -> void:
+	var forward := driver.global_transform.basis.z.normalized()
+	var right := driver.global_transform.basis.x.normalized()
+	var center := driver.global_position+forward*.28+Vector3.UP*.83
+	var axis := right
+	if helper!=null:
+		var span := helper.global_position-driver.global_position
+		span.y = 0.0
+		if span.length()>.35: axis = span.normalized()
+		center = (driver.global_position+helper.global_position)*.5+Vector3.UP*.84
+	# Lay the casualty horizontally across the carriers' arms. The
+	# mesh's local +Y is headward. Preserve its original visual scale.
+	var original_pose: Transform3D = scene.victim.old
+	var size := original_pose.basis.get_scale()
+	var up := axis.normalized()
+	var normal := Vector3.UP
+	var across := up.cross(normal).normalized()
+	var pose := Basis(across,up,normal).orthonormalized().scaled_local(size)
+	var feet := center-up*.82
+	if world.pedestrian_segment_clear(_flat(person.global_position),_flat(feet)) or person.global_position.distance_to(feet)<1.6:
+		person.global_position = person.global_position.lerp(feet,minf(1.0,delta*12.0))
+		person.global_basis = pose
+	for arm in driver.arms: arm.rotation.x = -1.15
+	if helper!=null:
+		for arm in helper.arms: arm.rotation.x = -1.15
+
+func _begin_transport(victim: Dictionary,person: Node3D,body: CharacterBody3D) -> void:
+	# The patient belongs to the vehicle before any hospital-route lookup.
+	# A routing failure no longer returns the patient to the street.
+	person.reparent(body,true)
+	person.position = Vector3(0,.68,-.48)
+	person.hide()
+	body.set_meta("rescue_patient",true)
+	_release_helper()
+	var driver: Person = scene.actors[0].node
+	driver.queue_free()
+	scene.actors = []
+	scene.phase = "hospital_retry"
+	scene.time = 3.0
+	_crowd_clear()
+	_rescue_log(victim,"herido dentro del automóvil; preparando traslado.")
+
 func _rescue_tick(delta: float) -> void:
 	var victim: Dictionary = scene.victim
 	var person: Node3D = victim.agent.node
 	var body: CharacterBody3D = scene.trip.body
 	var phase := String(scene.phase)
 	if phase=="approach":
-		if not _drive_trip(scene.trip,delta): return
-		var ground := _sidewalk(scene.berth,scene.center)
-		if ground.is_empty():
-			_end_rescue(false)
+		var arrived := _drive_trip(scene.trip,delta)
+		if not arrived:
+			if float(scene.trip.get("traffic_stall",0.0))<3.5: return
+			var parked := _park_here(body,scene.center)
+			if not parked.is_empty():
+				scene.berth = parked
+				if _rescue_parked(victim,body): return
+			# Try a different reachable curb, including the next street.
+			if float(scene.time)>5.0:
+				scene.time = 0.0
+				var alternate := _car_trip(body,scene.center,RESCUE_WALK_RANGE)
+				if not alternate.is_empty() and _flat_distance_to_berth(alternate.berth,scene.berth)>3.0:
+					Bypass._junction_release(scene.trip,body,streets)
+					scene.trip = alternate.trip
+					scene.berth = alternate.berth
 			return
-		var spawn: Vector3 = ground.p
-		var helper: Dictionary = {}
-		var casualty: Vector3 = victim.old.origin
-		var access := _rescue_access(spawn,casualty)
-		if access.is_empty():
-			_rescue_log(victim,"sin acceso peatonal seguro al herido; reintentando.")
+		if _rescue_parked(victim,body): return
+		_rescue_log(victim,"buscando otro acceso a pie.")
+		var alternative := _car_trip(body,scene.center,RESCUE_WALK_RANGE)
+		if not alternative.is_empty() and _flat_distance_to_berth(alternative.berth,scene.berth)>3.0:
+			scene.trip = alternative.trip
+			scene.berth = alternative.berth
+			scene.time = 0.0
+		elif float(scene.time)>15.0:
 			_end_rescue(false)
-			return
-		var victim_point: Vector3 = access.p
-		for agent in _walkers(victim_point,32.0):
-			var p: Person = agent.node
-			var path := _ped_path(p.global_position,victim_point)
-			if path.is_empty(): continue
-			helper = {"agent":agent,"node":p,"path":path,"index":0}
-			break
-		if helper.is_empty():
-			# Free the nearest curious walker for assistance when no other
-			# citizen has a reachable route.
-			for i in range(crowd.size()):
-				var agent: Dictionary = crowd[i].agent
-				var p: Person = agent.node
-				var path := _ped_path(p.global_position,victim_point)
-				if path.is_empty(): continue
-				crowd.remove_at(i)
-				helper = {"agent":agent,"node":p,"path":path,"index":0}
-				break
-		if helper.is_empty():
-			_rescue_log(victim,"el conductor espera un ayudante con acceso seguro.")
-			_end_rescue(false)
-			return
-		var driver := Person.new()
-		add_child(driver)
-		driver.setup(rng.randi_range(1200,1290))
-		driver.remove_from_group("social_people")
-		driver.global_position = spawn
-		var path: PackedVector3Array = access.path
-		if path.is_empty():
-			driver.queue_free()
-			_end_rescue(false)
-			return
-		_lock(helper.agent,"auxilio")
-		scene.actors = [{"node":driver,"path":path,"index":0},helper]
-		scene.pickup_point = spawn
-		scene.access_point = victim_point
-		scene.phase = "help"
-		scene.time = 0.0
-		body.set_meta("traffic_servicing",true)
-		_say(driver,"¡Ayúdame a llevarlo al hospital!")
 	elif phase=="help":
-		var ready := true
-		for actor in scene.actors:
-			actor.index = _advance_actor(actor.node,actor.path,int(actor.index),delta,1.6)
-			if int(actor.index)<actor.path.size(): ready = false
-		if not ready: return
-		var path := _ped_path(scene.access_point,scene.pickup_point)
+		var driver_actor: Dictionary = scene.actors[0]
+		var driver: Person = driver_actor.node
+		driver_actor.index = _advance_actor(driver,driver_actor.path,int(driver_actor.index),delta,2.6)
+		if driver.global_position.distance_to(driver_actor.last)<.015:
+			driver_actor.stuck = float(driver_actor.stuck)+delta
+		else:
+			driver_actor.stuck = 0.0
+			driver_actor.last = driver.global_position
+		if float(driver_actor.stuck)>3.0:
+			var access := _rescue_access(driver.global_position,victim.old.origin)
+			if not access.is_empty():
+				driver_actor.path = access.path
+				driver_actor.index = 0
+				scene.access_point = access.p
+			driver_actor.stuck = 0.0
+		if scene.actors.size()>1:
+			var helper_actor: Dictionary = scene.actors[1]
+			helper_actor.index = _advance_actor(helper_actor.node,helper_actor.path,int(helper_actor.index),delta,2.5)
+		if int(driver_actor.index)<driver_actor.path.size(): return
+		if scene.actors.size()>1:
+			var helper_actor: Dictionary = scene.actors[1]
+			if int(helper_actor.index)<helper_actor.path.size():
+				scene.helper_wait = float(scene.get("helper_wait",0.0))+delta
+				if float(scene.helper_wait)<2.5: return
+				_release_helper()
+		var path := _ped_path(driver.global_position,scene.pickup_point)
 		if path.is_empty():
-			_end_rescue(false)
-			return
+			path = _ped_path(driver.global_position,_flat(scene.pickup_point))
+		if path.is_empty(): return
 		scene.carry_path = path
 		scene.carry_index = 0
-		scene.phase = "carry"
+		scene.phase = "lift"
 		scene.time = 0.0
+		scene.lift_from = person.global_position
+		scene.carry_last = driver.global_position
+		scene.carry_stuck = 0.0
+	elif phase=="lift":
+		var driver: Person = scene.actors[0].node
+		var helper: Person = scene.actors[1].node if scene.actors.size()>1 else null
+		var d := person.global_position-driver.global_position
+		driver.rotation.y = atan2(d.x,d.z)
+		var t := clampf(float(scene.time)/1.15,0.0,1.0)
+		driver.rotation.x = sin(t*PI)*.35
+		for arm in driver.arms: arm.rotation.x = -1.3
+		if helper!=null:
+			helper.rotation.x = sin(t*PI)*.28
+			for arm in helper.arms: arm.rotation.x = -1.3
+		var start: Vector3 = scene.lift_from
+		person.global_position = start.lerp(driver.global_position+Vector3.UP*.68,smoothstep(0.15,1.0,t))
+		if t>=1.0:
+			driver.rotation.x = 0.0
+			if helper!=null: helper.rotation.x = 0.0
+			scene.phase = "carry"
+			scene.time = 0.0
 	elif phase=="carry":
 		var driver: Person = scene.actors[0].node
-		var helper: Person = scene.actors[1].node
+		var helper: Person = scene.actors[1].node if scene.actors.size()>1 else null
 		var path: PackedVector3Array = scene.carry_path
-		scene.carry_index = _advance_actor(driver,path,int(scene.carry_index),delta,.95)
-		var follow := driver.global_position
-		var d := follow-helper.global_position
-		if d.length()>.65 and world.pedestrian_segment_clear(helper.global_position,helper.global_position.move_toward(follow,delta*1.15)):
-			helper.walk_to(follow,delta,1.15)
-		person.global_position = (driver.global_position+helper.global_position)*.5+Vector3.UP*.70
-		for actor in scene.actors:
-			actor.node.arms[0].rotation.x = -1.0
-			actor.node.arms[1].rotation.x = -1.0
-		if int(scene.carry_index)>=path.size() and helper.global_position.distance_to(driver.global_position)<1.1:
-			var transfer := _hospital_trip(body)
-			if transfer.is_empty():
-				_rescue_log(victim,"sin ruta a un centro médico desde esta calle; reintentando.")
-				_end_rescue(false)
-				return
-			person.hide()
-			person.reparent(body,true)
-			person.position = Vector3(0,.68,-.48)
-			_release(scene.actors[1].agent)
-			driver.queue_free()
-			scene.actors = []
-			scene.trip = transfer.trip
-			scene.hospital_berth = transfer.berth
-			_rescue_log(victim,"herido a bordo; rumbo al centro médico.")
-			scene.phase = "hospital"
+		var speed := 1.55 if helper!=null else 1.15
+		scene.carry_index = _advance_actor(driver,path,int(scene.carry_index),delta,speed)
+		if helper!=null:
+			var follow := driver.global_position-driver.global_transform.basis.z*.95
+			if helper.global_position.distance_to(follow)>.30:
+				var step := helper.global_position.move_toward(follow,delta*1.9)
+				if world.pedestrian_segment_clear(helper.global_position,step): helper.walk_to(follow,delta,1.9)
+				elif helper.global_position.distance_to(driver.global_position)>2.0:
+					_release_helper()
+					helper = null
+		_carry_pose(person,driver,helper,delta)
+		if driver.global_position.distance_to(scene.carry_last)<.015:
+			scene.carry_stuck = float(scene.carry_stuck)+delta
+		else:
+			scene.carry_stuck = 0.0
+			scene.carry_last = driver.global_position
+		if float(scene.carry_stuck)>3.0:
+			_release_helper()
+			var route := _ped_path(driver.global_position,scene.pickup_point)
+			if not route.is_empty():
+				scene.carry_path = route
+				scene.carry_index = 0
+			scene.carry_stuck = 0.0
+		if int(scene.carry_index)>=path.size():
+			scene.phase = "load"
 			scene.time = 0.0
-			_crowd_clear()
+			scene.load_from = person.global_position
+	elif phase=="load":
+		var driver: Person = scene.actors[0].node
+		var t := clampf(float(scene.time)/1.25,0.0,1.0)
+		var start: Vector3 = scene.load_from
+		var seat := body.to_global(Vector3(0,.78,-.48))
+		person.global_position = start.lerp(seat,smoothstep(0.0,1.0,t))
+		for arm in driver.arms: arm.rotation.x = -1.15
+		if t>=1.0: _begin_transport(victim,person,body)
+	elif phase=="hospital_retry":
+		if float(scene.time)<2.0: return
+		scene.time = 0.0
+		var transfer := _hospital_trip(body)
+		if transfer.is_empty():
+			_rescue_log(victim,"herido a bordo; buscando una ruta médica alternativa.")
+			return
+		scene.trip = transfer.trip
+		scene.hospital_berth = transfer.berth
+		scene.phase = "hospital"
+		_rescue_log(victim,"rumbo al centro médico.")
 	elif phase=="hospital":
-		if _drive_trip(scene.trip,delta):
-			var ground := _sidewalk(scene.hospital_berth,scene.hospital_berth.p)
-			if ground.is_empty(): return
-			# Arrival at the existing hospital; recovery/treatment itself
-			# remains a future health-system feature.
-			person.reparent(_impact_parent(victim.agent),true)
-			person.global_position = ground.p
-			person.rotation.x = 0.0
-			person.show()
-			_say(person,"Gracias por traerme al hospital.")
-			_end_rescue(true)
+		if not _drive_trip(scene.trip,delta):
+			if float(scene.trip.get("traffic_stall",0.0))>8.0 and float(scene.time)>10.0:
+				scene.time = 0.0
+				var alternative := _hospital_trip(body)
+				if not alternative.is_empty():
+					Bypass._junction_release(scene.trip,body,streets)
+					scene.trip = alternative.trip
+					scene.hospital_berth = alternative.berth
+			return
+		var ground := _sidewalk(scene.hospital_berth,scene.hospital_berth.p)
+		if ground.is_empty():
+			scene.phase = "hospital_retry"
+			scene.time = 0.0
+			return
+		person.reparent(_impact_parent(victim.agent),true)
+		person.global_position = ground.p
+		person.rotation.x = 0.0
+		person.show()
+		body.remove_meta("rescue_patient")
+		_say(person,"Gracias por traerme al hospital.")
+		_end_rescue(true)
 
 func _end_rescue(delivered: bool) -> void:
 	var car: Dictionary = scene.car
@@ -1128,7 +1288,7 @@ func tick(delta: float) -> void:
 	scene.time = float(scene.time)+delta
 	scene.age = float(scene.age)+delta
 	var phase := String(scene.phase)
-	if phase not in ["depart","depart_retry","hospital"] and (phase!="approach" or String(scene.kind)=="rescue"):
+	if phase not in ["depart","depart_retry","hospital","hospital_retry"] and (phase!="approach" or String(scene.kind)=="rescue"):
 		_crowd_tick(scene.center,delta)
 	if String(scene.kind)=="police":
 		_police_tick(delta)
