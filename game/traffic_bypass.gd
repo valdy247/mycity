@@ -96,42 +96,46 @@ static func _four_lane_pass(body: CharacterBody3D,route: Array,index: int,street
 	if absf(change)<.5: return {}
 	var shape := BoxShape3D.new()
 	shape.size = Vector3(width+.06,height,length+.06)
-	# A short gradual shift can be followed by a longer run in the free lane.
-	# Never skip a service stop, a signal or a destination.
+	# Select a clear waypoint beyond the obstacle, not necessarily the next
+	# waypoint. Never skip a stop, signal, destination or turning segment.
 	var options: Array = []
+	var previous_along := 0.0
 	for i in range(index,mini(route.size(),index+65)):
 		var item: Dictionary = route[i]
 		var p: Vector3 = item.p
 		var diff := p-origin
 		var along := diff.dot(forward)
 		var cross := diff.dot(right)
-		if along<-.5 or absf(cross)>half+.5: break
+		if along<-.5 or along<previous_along-.5 or absf(cross)>half+.5: break
+		previous_along = maxf(previous_along,along)
 		var mandatory := item.has("stop") or signals.has(String(item.get("node",""))) or i==route.size()-1
-		if along>=12.0 and along<=55.0:
+		if along>=9.0 and along<=60.0:
 			options.append({"index":i,"along":along,"cross":cross})
-		if mandatory or along>55.0: break
-	for option in options:
-		var total := float(option.along)
-		# Give long vehicles more room to change lanes without sweeping
-		# their rear into the other lane or a parked vehicle.
-		var transition := maxf(7.0,length*1.55)
-		if total<transition*2.0+2.0: continue
-		for leave in [transition,transition+2.0]:
-			var steps := ceili(total/.8)
+		if mandatory or along>60.0: break
+	# Try shorter transitions for cars and longer ones for buses. A full
+	# sweep of the rotated footprint still rejects an unsafe short turn.
+	var base := maxf(4.0,length*.95)
+	var back_length := maxf(4.0,length*1.10)
+	for leave in [base,base+2.0,maxf(7.0,length*1.55)]:
+		for option in options:
+			var total := float(option.along)
+			if total<float(leave)+back_length+length: continue
+			var steps := ceili(total/.85)
 			var previous := origin
 			var points: Array = []
 			var valid := true
 			for j in range(1,steps+1):
 				var along := total*float(j)/float(steps)
 				var out := smoothstep(0.0,float(leave),along)
-				var back := smoothstep(total-transition,total,along)
+				var back := smoothstep(total-back_length,total,along)
 				var cross := lerpf(change*out,float(option.cross),back)
 				var p := origin+forward*along+right*cross
 				var d := (p-previous).normalized()
 				if not streets.in_carriageway(p,d,width,length) or not _on_road(streets,p,d,width,length) or not _segment_clear(body,previous,p,d,shape):
 					valid = false
 					break
-				# The normal waypoint remains the final target.
+				# Do not change lanes through an intersection; the ordinary
+				# junction controller must admit the subsequent crossing.
 				if j<steps: points.append({"p":p,"node":"","bypass":true})
 				previous = p
 			if valid and not points.is_empty():
@@ -437,7 +441,7 @@ static func rejoin_index(body: CharacterBody3D,route: Array,index: int,streets: 
 # Initiate a lane change before the driver has reached a complete stop.
 # The expensive path search is still throttled by each driver's cooldown.
 static func early_lane_pass(body: CharacterBody3D,streets: Streets,blocked: bool,free: float) -> bool:
-	return blocked and free>1.3 and not streets.four_lane_at(body.global_position,body.global_transform.basis.z).is_empty()
+	return blocked and not streets.four_lane_at(body.global_position,body.global_transform.basis.z).is_empty()
 
 # Intersection admission: reserve one crossing at a time, before the
 # vehicle's nose enters the junction. Verify that its tail can exit too.
