@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """My City Studio: local Git synchronization and explicit scene operations."""
-bl_info = {'name':'My City Studio','author':'My City','version':(0,5,0),'blender':(4,2,0),'location':'View3D > Sidebar > My City','description':'Synchronize a local My City repository and apply reviewed scripts','category':'3D View'}
+bl_info = {'name':'My City Studio','author':'My City','version':(0,6,0),'blender':(4,2,0),'location':'View3D > Sidebar > My City','description':'Synchronize a local My City repository and apply reviewed scripts','category':'3D View'}
 import bpy
 from pathlib import Path
 import os, shutil, subprocess, threading, queue, runpy
@@ -1129,7 +1129,67 @@ class VMV_PT_library(bpy.types.Panel):
             layout.label(text='Guarda una copia antes de construir.')
         layout.label(text='Ctrl+Z revierte la ultima construccion.')
 
-classes=(VMV_OT_sync,VMV_OT_build,VMV_OT_apply,VMV_PT_panel,VMV_OT_perf_refresh,VMV_OT_perf_mode,VMV_PT_performance,VMV_OT_lod_toggle,VMV_OT_district_show,VMV_OT_system_measure,VMV_PT_worldperf,VMV_OT_plan_add,VMV_OT_plan_copy,VMV_OT_plan_export,VMV_PT_planner,VMV_OT_asset_preview,VMV_OT_asset_snap,VMV_OT_asset_place,VMV_OT_asset_cancel,VMV_OT_asset_select,VMV_PT_library)
+
+# V0.6 - export a local game snapshot. No changes to city geometry.
+class VMV_OT_game_export(bpy.types.Operator):
+    bl_idname='vmv_city.game_export'
+    bl_label='Exportar al videojuego'
+    bl_description='Exporta la ciudad actual a game/city.glb, sin subirla a GitHub'
+    @classmethod
+    def poll(cls,context):
+        return perf_view(context) and context.mode=='OBJECT' and not _busy
+    def invoke(self,context,event):
+        return context.window_manager.invoke_confirm(self,event)
+    def execute(self,context):
+        global _status
+        temp=None
+        try:
+            folder=root(context)/'game'
+            if not (folder/'project.godot').is_file():
+                raise ValueError('Sincroniza GitHub primero: falta el proyecto Godot.')
+            if not bpy.data.filepath:
+                raise ValueError('Guarda primero tu ciudad .blend.')
+            if _preview(context):
+                raise ValueError('Confirma o cancela el modelo en previsualizacion antes de exportar.')
+            # Restore automatic viewport-only hiding before the exporter evaluates the scene.
+            _restore_lod()
+            _restore_sectors()
+            context.view_layer.update()
+            temp=folder/'city_export_tmp.glb'
+            result=bpy.ops.export_scene.gltf(
+                filepath=str(temp),export_format='GLB',
+                use_selection=False,use_visible=False,use_renderable=True,
+                use_active_scene=True,export_yup=True,export_apply=True,
+                export_cameras=False,export_lights=False,export_animations=False,
+                export_extras=False,export_gpu_instances=False)
+            if 'FINISHED' not in result or not temp.is_file() or temp.stat().st_size<20:
+                raise ValueError('La exportacion GLB no termino correctamente.')
+            os.replace(temp,folder/'city.glb')
+            _status='Videojuego: city.glb actualizado. Abre Godot y pulsa F5.'
+            self.report({'INFO'},'Ciudad exportada a game/city.glb. Abre Godot y pulsa F5.')
+            return {'FINISHED'}
+        except Exception as exc:
+            if temp is not None:
+                try:temp.unlink(missing_ok=True)
+                except OSError:pass
+            self.report({'ERROR'},str(exc))
+            return {'CANCELLED'}
+
+class VMV_PT_game(bpy.types.Panel):
+    bl_label='Videojuego | Valdy Jr TV'
+    bl_idname='VMV_PT_game'
+    bl_space_type='VIEW_3D'
+    bl_region_type='UI'
+    bl_category='My City'
+    bl_parent_id='VMV_PT_city'
+    def draw(self,context):
+        layout=self.layout
+        layout.operator('vmv_city.game_export',icon='EXPORT')
+        layout.label(text='Godot: game/project.godot')
+        layout.label(text='Exporta de nuevo al cambiar la ciudad.')
+        layout.label(text='Solo geometria y materiales compatibles.')
+
+classes=(VMV_OT_sync,VMV_OT_build,VMV_OT_apply,VMV_PT_panel,VMV_OT_perf_refresh,VMV_OT_perf_mode,VMV_PT_performance,VMV_OT_lod_toggle,VMV_OT_district_show,VMV_OT_system_measure,VMV_PT_worldperf,VMV_OT_plan_add,VMV_OT_plan_copy,VMV_OT_plan_export,VMV_PT_planner,VMV_OT_asset_preview,VMV_OT_asset_snap,VMV_OT_asset_place,VMV_OT_asset_cancel,VMV_OT_asset_select,VMV_PT_library,VMV_OT_game_export,VMV_PT_game)
 def register():
     for cls in classes: bpy.utils.register_class(cls)
     bpy.types.Scene.vmv_repo=bpy.props.StringProperty(name='Repositorio local',subtype='DIR_PATH')
