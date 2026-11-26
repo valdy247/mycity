@@ -167,6 +167,8 @@ func _advance_actor(person: Person,path: PackedVector3Array,index: int,dt: float
 	var target := path[index]
 	var step := person.global_position.move_toward(target,speed*dt)
 	if not world.pedestrian_segment_clear(person.global_position,step): return index
+	if String(person.get_meta("incident_role","")) in ["curioso","primeros_auxilios","auxilio"] and String(scene.get("phase","")) not in ["position_carry","lift","carry","load"]:
+		if not world.pedestrian_space_clear(person,step,.60): return index
 	if person.walk_to(target,dt,speed): return index+1
 	return index
 
@@ -192,7 +194,7 @@ func _crowd_tick(center: Vector3,delta: float) -> void:
 			if node.global_position.distance_to(center)>30.0: continue
 			if String(node.social_context)!="bus_wait": continue
 			var at: Vector3 = node.global_position
-			if at.distance_to(center)<=8.0 and at.distance_to(center)>=1.8 and not streets.point_on_road(at) and _witness_slot_free(at) and crowd.size()<4:
+			if at.distance_to(center)<=8.0 and at.distance_to(center)>=1.8 and not streets.point_on_road(at) and _witness_slot_free(at,node) and crowd.size()<4:
 				var witness := _impact_agent(node)
 				if not witness.is_empty():
 					_lock(witness,"curioso")
@@ -245,11 +247,12 @@ func _watch_nearby(center: Vector3) -> void:
 		if crowd.size()>=3: break
 		var p: Person = agent.node
 		var at := p.global_position
-		if streets.point_on_road(at) or at.distance_to(center)<1.8 or not _witness_slot_free(at): continue
+		if streets.point_on_road(at) or at.distance_to(center)<1.8 or not _witness_slot_free(at,p): continue
 		_lock(agent,"curioso")
 		crowd.append({"agent":agent,"target":at,"path":PackedVector3Array(),"index":0,"time":0.0,"last":at,"stuck":0.0})
 
-func _witness_slot_free(spot: Vector3) -> bool:
+func _witness_slot_free(spot: Vector3,actor: Node3D = null) -> bool:
+	if not world.pedestrian_space_clear(actor,spot,.85,false): return false
 	for other in crowd:
 		if spot.distance_to(other.target)<1.05: return false
 	return true
@@ -291,7 +294,7 @@ func _neighborhood_witness(center: Vector3,spots: Array) -> void:
 		var p: Vector3 = router.graph.get_point_position(int(id))
 		if p.distance_to(center)<15.0 or streets.point_on_road(p): continue
 		if camera!=null and camera.is_position_in_frustum(p+Vector3.UP) and p.distance_to(camera.global_position)<26.0: continue
-		if _foot(p).is_empty(): continue
+		if _foot(p).is_empty() or not world.pedestrian_space_clear(null,p,1.0,false): continue
 		var free := true
 		for agent in router.walkers:
 			if p.distance_to(agent.node.global_position)<1.8: free = false
@@ -788,6 +791,39 @@ func _finish_police(arrived: bool) -> void:
 # Non-graphic collisions are based on the player's actual displacement,
 # never on aiming or proximity alone. A wall between car and person
 # prevents a hit; stationary vehicles cannot repeatedly strike someone.
+# Reserve a distinct ground footprint for each fallen person. A prone
+# model occupies a full body length, not just its original standing point.
+func _casualty_slot_free(at: Vector3,axis: Vector3,length: float) -> bool:
+	var start := _flat(at)
+	var finish := start+axis*length
+	for victim in injured:
+		var other: Node3D = victim.agent.node
+		if not is_instance_valid(other) or not other.is_visible_in_tree(): continue
+		var other_start := _flat(other.global_position)
+		var other_end := other_start+_flat(other.global_transform.basis.y)*1.85
+		var nearest := Geometry3D.get_closest_points_between_segments(start,finish,other_start,other_end)
+		if nearest[0].distance_squared_to(nearest[1])<.64: return false
+	return true
+
+func _casualty_pose(person: Node3D,old: Transform3D) -> Transform3D:
+	var axis := -_flat(old.basis.z).normalized()
+	var length := 1.85*old.basis.get_scale().y
+	if _casualty_slot_free(old.origin,axis,length): return old
+	# Try nearby distinct poses, using ground and geometry checks.
+	for radius in [.75,1.2,1.8,2.5,3.2,4.0]:
+		for i in range(12):
+			var angle := float(i)*TAU/12.0
+			var point := old.origin+Vector3(cos(angle),0,sin(angle))*float(radius)
+			var ground := _foot(point)
+			if ground.is_empty(): continue
+			var at: Vector3 = ground.p
+			if not _casualty_slot_free(at,axis,length): continue
+			if not world.pedestrian_segment_clear(at,at+axis*length): continue
+			if not world.pedestrian_space_clear(person,at,.55,false) or not world.pedestrian_space_clear(person,at+axis*length,.55,false): continue
+			old.origin = at
+			return old
+	return old
+
 func vehicle_motion(body: CharacterBody3D,before: Transform3D,speed: float,width: float,length: float) -> void:
 	if absf(speed)<.45 or injured.size()>=8: return
 	var after := body.global_transform
@@ -817,7 +853,8 @@ func vehicle_motion(body: CharacterBody3D,before: Transform3D,speed: float,width
 		if agent.is_empty(): continue
 		_lock(agent,"herido")
 		var severe := absf(speed)>=5.5
-		var old := person.global_transform
+		var old := _casualty_pose(person,person.global_transform)
+		person.global_transform = old
 		if person is Person: (person as Person).animate(.2,false)
 		person.rotation.x = -PI*.5
 		person.global_position.y = old.origin.y+.13
@@ -921,6 +958,7 @@ func _first_aid_start(victim: Dictionary) -> bool:
 			origins.append(ground.p)
 	origins.sort_custom(func(a,b): return center.distance_squared_to(a)<center.distance_squared_to(b))
 	for origin in origins.slice(0,5):
+		if not world.pedestrian_space_clear(null,origin,.85,false): continue
 		var access := _first_aid_access(origin,center)
 		if access.is_empty(): continue
 		var person := Person.new()
@@ -1196,29 +1234,40 @@ func _rescue_parked(victim: Dictionary,body: CharacterBody3D) -> bool:
 	scene.phase = "help"
 	scene.time = 0.0
 	var target: Vector3 = access.p
+	var helper_target := Vector3.INF
+	var axis := _flat(target-casualty).normalized()
+	for angle in [PI*.5,-PI*.5,PI,PI*.25,-PI*.25]:
+		var candidate := casualty+axis.rotated(Vector3.UP,float(angle))*1.6
+		var ground := _foot(candidate)
+		if ground.is_empty(): continue
+		var point: Vector3 = ground.p
+		if point.distance_to(target)<1.05: continue
+		if not world.pedestrian_space_clear(null,point,.65,false): continue
+		helper_target = point
+		break
 	var helper: Dictionary = {}
 	# Reuse the neighbor who is already helping.
 	var aid: Dictionary = victim.get("first_aid",{})
-	if not aid.is_empty() and is_instance_valid(aid.agent.get("node")):
+	if helper_target.is_finite() and not aid.is_empty() and is_instance_valid(aid.agent.get("node")):
 		var neighbor: Person = aid.agent.node
-		var route := _ped_path(neighbor.global_position,target)
+		var route := _ped_path(neighbor.global_position,helper_target)
 		if not route.is_empty():
 			helper = {"agent":aid.agent,"node":neighbor,"path":route,"index":0}
 			victim.erase("first_aid")
 	_first_aid_release(victim)
 	# A second person is welcome but never a condition for rescue.
 	for agent in _walkers(target,30.0):
-		if not helper.is_empty(): break
+		if not helper.is_empty() or not helper_target.is_finite(): break
 		var p: Person = agent.node
-		var route := _ped_path(p.global_position,target)
+		var route := _ped_path(p.global_position,helper_target)
 		if route.is_empty(): continue
 		helper = {"agent":agent,"node":p,"path":route,"index":0}
 		break
-	if helper.is_empty():
+	if helper.is_empty() and helper_target.is_finite():
 		for i in range(crowd.size()):
 			var agent: Dictionary = crowd[i].agent
 			var p: Person = agent.node
-			var route := _ped_path(p.global_position,target)
+			var route := _ped_path(p.global_position,helper_target)
 			if route.is_empty(): continue
 			crowd.remove_at(i)
 			helper = {"agent":agent,"node":p,"path":route,"index":0}
