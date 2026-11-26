@@ -9,6 +9,8 @@ var garage_market: Callable
 var city_map: Callable
 var carlos_call: Callable
 var carlos_objective: Callable
+var yordi_call: Callable
+var yordi_objective: Callable
 var street_inventory: Callable
 var backpack_inventory: Callable
 var phone_position: Callable
@@ -589,6 +591,8 @@ func open_phone_home() -> void:
 	_phone_tile(apps,"Mi negocio",open_business_summary,"business",Color("#b77a38"))
 	if carlos_call.is_valid() and int(ledger.life_data.get("carlos_paint",{}).get("stage",0))>0:
 		_phone_tile(apps,"Carlos",carlos_call,"contact",Color("#457e91"))
+	if yordi_call.is_valid() and int(ledger.life_data.get("yordi_ps5",{}).get("stage",0))>0:
+		_phone_tile(apps,"Yordi",yordi_call,"contact",Color("#527699"))
 	if life!=null: _phone_tile(apps,"Entregas",life.open_supply_market,"bag",Color("#377e73"))
 	if garage_market.is_valid(): _phone_tile(apps,"Marketplace",garage_market,"shop",Color("#6d58ad"))
 	if street_inventory.is_valid(): _phone_tile(apps,"Mis compras",street_inventory,"bag",Color("#a85875"))
@@ -843,6 +847,7 @@ func _phone_thread(name_value: String) -> void:
 				_button("Ver contacto",life._contact_page.bind(String(id)))
 				break
 	if name_value=="Carlos" and carlos_call.is_valid(): _button("Llamar a Carlos",carlos_call)
+	if name_value=="Yordi" and yordi_call.is_valid(): _button("Llamar a Yordi",yordi_call)
 	_button("Volver a mensajes",open_messages)
 	phone_scroll.set_deferred("scroll_vertical",100000)
 
@@ -934,6 +939,9 @@ func _update_hud() -> void:
 	if carlos_objective.is_valid():
 		var job: String = carlos_objective.call()
 		if not job.is_empty(): hud.text += "\n"+job
+	if yordi_objective.is_valid():
+		var yordi_job: String = yordi_objective.call()
+		if not yordi_job.is_empty(): hud.text += "\n"+yordi_job
 	if toast_time>0: hud.text += "\n"+toast
 
 # Sales and stock remain independent of the visual customer. If no
