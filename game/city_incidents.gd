@@ -1101,15 +1101,21 @@ func _rescue_foot_access(berth: Dictionary,at: Vector3) -> Dictionary:
 	var p: Vector3 = berth.p
 	var side: Vector3 = berth.right
 	var d: Vector3 = berth.d
-	for shift in [0.0,1.8,-1.8,3.5,-3.5,5.5,-5.5]:
-		for dist in [1.65,2.45,3.4,4.6,6.0]:
-			var candidate := p+side*float(dist)+d*float(shift)
-			if streets.point_on_road(candidate): continue
-			var ground := _foot(candidate)
-			if ground.is_empty(): continue
-			var access := _rescue_access(ground.p,at)
+	# Probe the driver's curb first, but do not reject the opposite curb.
+	for direction in [1.0,-1.0]:
+		var origins: Array = []
+		for shift in [0.0,1.8,-1.8,3.5,-3.5,5.5,-5.5]:
+			for dist in [1.65,2.45,3.4,4.6,6.0]:
+				var candidate := p+side*float(dist)*float(direction)+d*float(shift)
+				if streets.point_on_road(candidate): continue
+				var ground := _foot(candidate)
+				if ground.is_empty(): continue
+				origins.append(ground.p)
+		origins.sort_custom(func(x,y): return p.distance_squared_to(x)<p.distance_squared_to(y))
+		for origin in origins.slice(0,4):
+			var access := _rescue_access(origin,at)
 			if not access.is_empty():
-				access["spawn"] = ground.p
+				access["spawn"] = origin
 				return access
 	return {}
 
@@ -1119,10 +1125,16 @@ func _rescue_access(from: Vector3,at: Vector3) -> Dictionary:
 		for i in range(8):
 			var angle := float(i)*TAU/8.0
 			candidates.append(at+Vector3(cos(angle),0,sin(angle))*float(radius))
+	var valid: Array = []
 	for candidate in candidates:
 		var ground := _foot(candidate)
 		if ground.is_empty(): continue
 		var p: Vector3 = ground.p
+		if world.pedestrian_segment_clear(from,p):
+			return {"p":p,"path":PackedVector3Array([p])}
+		valid.append(p)
+	# Try a limited set of graph routes after the direct options.
+	for p in valid.slice(0,5):
 		var path := _ped_path(from,p)
 		if not path.is_empty(): return {"p":p,"path":path}
 	return {}
