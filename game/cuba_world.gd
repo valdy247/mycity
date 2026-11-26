@@ -743,7 +743,7 @@ func _make_frontages() -> void:
 			for i in range(count):
 				var p := a+d*((length-float(count-1)*9.0)*.5+float(i)*9.0)
 				var center := p+outward*(float(edge.width)*.5+1.65+4.5)
-				proposals.append({"center":center,"front":-outward,"edge":edge,"curb":p,"outward":outward,"d":d,"portal":_is_monte_edge(edge)})
+				proposals.append({"center":center,"front":-outward,"edge":edge,"curb":p,"outward":outward,"d":d,"portal":bool(edge.portal)})
 	# Use a public landmark as a general neighborhood reference. The game
 	# residence is fictional; do not encode a private dwelling's address.
 	var home_candidates: Array = proposals.duplicate()
