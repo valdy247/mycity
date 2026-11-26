@@ -206,7 +206,7 @@ func _make_stall(id: String,p: Vector3,d: Vector3,outward: Vector3,index: int) -
 		item.position = pos
 		_model(item,key)
 		item.visible = int(stock[key])>0
-		items.append({"key":key,"node":item})
+		items.append({"key":key,"node":item,"display_position":pos})
 	var minute := int(business.life.state.minutes)%1440
 	var open_now := minute>=420+index%3*45 and minute<1230+index%3*45
 	root.visible = open_now
