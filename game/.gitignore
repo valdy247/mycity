@@ -4,3 +4,7 @@ city.glb.import
 city_export_tmp.glb
 *.tmp.glb
 exports/
+
+pilar_atares.osm
+pilar_atares.osm.tmp
+*.gd.uid
