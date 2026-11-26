@@ -58,7 +58,7 @@ func _ready() -> void:
 	add_child(sun)
 	var args := OS.get_cmdline_user_args()
 	native_city = not args.has("--legacy-city")
-	if native_city and not args.has("--classic-city") and FileAccess.file_exists("res://pilar_atares.osm"):
+	if native_city and not args.has("--classic-city") and (FileAccess.file_exists("res://pilar_atares_v2.osm") or FileAccess.file_exists("res://pilar_atares.osm")):
 		var candidate := CubaWorld.new()
 		if candidate.load_map():
 			cuba_world = candidate
@@ -236,7 +236,7 @@ func _make_player() -> void:
 	pivot.add_child(arm)
 	var cam := Camera3D.new()
 	cam.fov = 68.0
-	cam.far = 800.0
+	cam.far = 1400.0 if cuba_world != null else 800.0
 	arm.add_child(cam)
 	add_child(player)
 	player.position = spawn_position
@@ -670,7 +670,7 @@ func _drive(delta: float, movement: Vector2) -> void:
 		drive_speed = 0.0
 	if van.get_slide_collision_count() > 0:
 		drive_speed *= 0.35
-	if van.global_position.y < -8.0 or absf(van.global_position.x) > (610.0 if cuba_world != null else (253.0 if native_city else 79.0)) or absf(van.global_position.z) > (610.0 if cuba_world != null else (253.0 if native_city else 109.0)):
+	if van.global_position.y < -8.0 or absf(van.global_position.x) > (1250.0 if cuba_world != null else (253.0 if native_city else 79.0)) or absf(van.global_position.z) > (1250.0 if cuba_world != null else (253.0 if native_city else 109.0)):
 		van.global_transform = van_home
 		van.velocity = Vector3.ZERO
 		drive_speed = 0.0
@@ -767,7 +767,7 @@ func _physics_process(delta: float) -> void:
 			player.velocity.y = 5.5
 		player.move_and_slide()
 		_animate_avatar(delta, Vector2(player.velocity.x, player.velocity.z).length())
-		if player.global_position.y < -15 or absf(player.global_position.x) > (615.0 if cuba_world != null else (258.0 if native_city else 90.0)) or absf(player.global_position.z) > (615.0 if cuba_world != null else (258.0 if native_city else 120.0)):
+		if player.global_position.y < -15 or absf(player.global_position.x) > (1255.0 if cuba_world != null else (258.0 if native_city else 90.0)) or absf(player.global_position.z) > (1255.0 if cuba_world != null else (258.0 if native_city else 120.0)):
 			_reset_player()
 		# Parked vehicle stays grounded; no dynamic vertical collision recovery.
 		if van != null:
