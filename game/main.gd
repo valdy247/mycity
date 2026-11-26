@@ -952,6 +952,7 @@ func _update_hud() -> void:
 		if action.is_empty() and street_market!=null: action = street_market.action_text()
 		if action.is_empty() and business!=null: action = business.aimed_text(player.global_position)
 		if action.is_empty() and business!=null and business.life!=null: action = business.life.action_text(player.global_position)
+		if action.is_empty() and backpack!=null and not backpack.empty_hands(): action = "[I] Objeto en mano · guardar / usar / soltar"
 		if action.is_empty() and _aimed_person()!=null: action = "[E] Saludar"
 		if action.is_empty() and urban_buses!=null and not urban_buses.nearby_boarding(player.global_position).is_empty(): action = "[E] Subir a la guagua"
 		if action.is_empty(): action = monte_services.action_text(player.global_position) if monte_services!=null and (business==null or business.ledger.carry.is_empty()) else ""
@@ -1007,6 +1008,7 @@ func _update_compact_hud() -> void:
 		if action.is_empty() and street_market!=null: action = street_market.action_text()
 		if action.is_empty() and business!=null: action = business.aimed_text(player.global_position)
 		if action.is_empty() and business!=null and business.life!=null: action = business.life.action_text(player.global_position)
+		if action.is_empty() and backpack!=null and not backpack.empty_hands(): action = "[I] Objeto en mano · guardar / usar / soltar"
 		if action.is_empty() and _aimed_person()!=null: action = "[E] Saludar"
 		if action.is_empty() and urban_buses!=null and not urban_buses.nearby_boarding(player.global_position).is_empty(): action = "[E] Subir a la guagua"
 		if action.is_empty() and monte_services!=null and (business==null or business.ledger.carry.is_empty()):
@@ -1331,7 +1333,9 @@ func _physics_process(delta: float) -> void:
 		_reset_player()
 	if cargo_requested:
 		cargo_requested = false
-		if business!=null and not driving and not taxi_riding and not building_mode and (monte_services==null or monte_services.player_bag==null):
+		if backpack!=null and not backpack.empty_hands():
+			business._notify("Guarda o deja el objeto que llevas en la mano con I.")
+		elif business!=null and not driving and not taxi_riding and not building_mode and (monte_services==null or monte_services.player_bag==null):
 			business.cargo_action(player.global_position)
 			_update_hud()
 	if interact_requested:
