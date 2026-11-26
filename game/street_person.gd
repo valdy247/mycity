@@ -65,6 +65,7 @@ func setup(style: int,worker: bool = false,ambient: bool = false) -> void:
 	style_id = style
 	female = not worker and posmod(style,3)==1
 	add_to_group("social_people")
+	add_to_group("pedestrian_spacing")
 	# Deterministic wardrobe: no random allocations or extra per-frame logic.
 	var variant := floori(float(style)/3.0)
 	var skin_colors: Array[Color] = [Color("#9b694b"),Color("#cc9b75"),Color("#70482f"),Color("#e1b797"),Color("#ac7a52")]
