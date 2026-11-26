@@ -782,7 +782,7 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 		elif not active: vehicle.turn_signal = 0
 	var limit := 6.5 if bool(vehicle.truck) else (6.0 if String(vehicle.get("traffic_kind","avenue"))=="neighborhood" else 10.5)
 	var driving_style := int(body.get_meta("driver_style",1))
-	if not bool(vehicle.truck): limit *= [.88,1.0,1.07][driving_style]
+	if not bool(vehicle.truck): limit *= float([.88,1.0,1.07][clampi(driving_style,0,2)])
 	var speed := minf(limit,maxf(.8,sqrt(2.0*4.0*distance)))
 	var next: Vector3 = route[(index+1)%route.size()].p
 	var next_dir := (next-target).normalized()
@@ -892,18 +892,18 @@ func _update_indicators(delta: float) -> void:
 	for vehicle in vehicles:
 		var body: CharacterBody3D = vehicle.body
 		if not body.has_meta("turn_lamps"): continue
-		var signal := int(vehicle.get("turn_signal",0))
+		var turn_direction := int(vehicle.get("turn_signal",0))
 		# Only audible nearby, physically blocked cars may honk, at most once every 12 seconds.
 		if not bool(vehicle.get("incident_hold",false)) and not bool(body.get_meta("junction_guard",false)) and camera!=null and body.global_position.distance_squared_to(camera.global_position)<1600.0:
 			var threshold := 4.0+float(body.get_meta("driver_style",1))*2.0
 			if float(vehicle.get("stalled",0.0))>threshold and Time.get_ticks_msec()>=int(vehicle.get("next_horn",0)):
 				vehicle.next_horn = Time.get_ticks_msec()+12000
 				_traffic_horn(body)
-		if vehicle.detour.is_empty(): signal = 0
+		if vehicle.detour.is_empty(): turn_direction = 0
 		var pairs: Array = body.get_meta("turn_lamps")
 		for i in range(2):
 			for lamp in pairs[i]:
-				lamp.visible = indicator_phase and signal==(1 if i==0 else -1)
+				lamp.visible = indicator_phase and turn_direction==(1 if i==0 else -1)
 
 func tick(delta: float) -> void:
 	_update_indicators(delta)
