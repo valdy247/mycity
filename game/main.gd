@@ -5,6 +5,10 @@ const CityBuilder = preload("res://city_builder.gd")
 const CityWorld = preload("res://city_world.gd")
 const CubaWorld = preload("res://cuba_world.gd")
 const PilarEditor = preload("res://pilar_editor.gd")
+const TaxiService = preload("res://taxi_service.gd")
+var taxis: TaxiService
+var taxi_riding := false
+var taxi_previous_first := false
 var pilar_editor: PilarEditor
 var context_requested := false
 var cuba_world: CubaWorld
@@ -112,6 +116,9 @@ func _ready() -> void:
 		pilar_editor = PilarEditor.new()
 		add_child(pilar_editor)
 		pilar_editor.setup(cuba_world)
+		taxis = TaxiService.new()
+		add_child(taxis)
+		taxis.setup(cuba_world.geography,cuba_world.street_geometry,cuba_world.home_spawn,van.global_position)
 		first_person = true
 		_apply_camera_mode()
 		_apply_performance_mode()
@@ -331,6 +338,18 @@ func _apply_camera_mode() -> void:
 		reticle.visible = first_person and not driving and not building_mode
 
 func _unhandled_input(event: InputEvent) -> void:
+	if taxis != null and taxis.dialog.visible:
+		if event is InputEventKey and event.pressed and event.keycode==KEY_ESCAPE:
+			taxis.close_dialog()
+		return
+	if taxi_riding:
+		if event is InputEventKey and event.pressed and not event.echo and event.keycode==KEY_E:
+			interact_requested = true
+		if event is InputEventMouseMotion and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED:
+			yaw -= event.relative.x*.003
+			pitch = clampf(pitch-event.relative.y*.003,-.95,.30)
+			pivot.rotation = Vector3(pitch,yaw,0)
+		return
 	if cuba_world != null and event is InputEventKey and event.pressed and not event.echo and event.keycode==KEY_F6:
 		low_graphics = not low_graphics
 		_apply_performance_mode()
@@ -730,6 +749,9 @@ func _drive(delta: float, movement: Vector2) -> void:
 func _update_hud() -> void:
 	if status == null:
 		return
+	if taxi_riding:
+		status.text = "TAXI | "+taxis.ride_status+"\nE: bajar cuando esté detenido\n© OpenStreetMap contributors | ODbL"
+		return
 	var title := "PILAR-ATARÉS | La Habana" if cuba_world != null else ("VALDY JR TV | Ciudad 2.0" if native_city else "VALDY JR TV | Ciudad original")
 	if not city_loaded:
 		title = "MODO DE PRUEBA | Exporta city.glb desde Blender"
@@ -744,6 +766,8 @@ func _update_hud() -> void:
 			status.text += "\n" + action
 		elif cuba_world != null and not aimed.is_empty():
 			status.text += "\n"+aimed
+		elif taxis != null and not taxis.nearby(player.global_position).is_empty():
+			status.text += "\n[E] Tomar taxi"
 		elif _near_van():
 			status.text += "\n[E] Subir a la van"
 		elif van == null:
@@ -760,6 +784,46 @@ func _update_hud() -> void:
 	if message_time > 0.0:
 		status.text += "\n" + exit_message
 
+func _start_taxi_ride() -> void:
+	taxi_riding = true
+	taxi_previous_first = first_person
+	player.velocity = Vector3.ZERO
+	player_shape.set_deferred("disabled",true)
+	avatar.hide()
+	reticle.hide()
+	var taxi: CharacterBody3D = taxis.passenger.body
+	pivot.reparent(taxi,false)
+	pivot.position = Vector3(0,1.60,0)
+	yaw = PI
+	pitch = -.26
+	pivot.rotation = Vector3(pitch,yaw,0)
+	arm.add_excluded_object(taxi.get_rid())
+	arm.spring_length = 5.5
+	_update_hud()
+
+func _leave_taxi() -> bool:
+	var result := taxis.stop_position(player,player_shape.shape)
+	if result.is_empty():
+		return false
+	var taxi: CharacterBody3D = taxis.passenger.body
+	arm.remove_excluded_object(taxi.get_rid())
+	pivot.reparent(player,false)
+	pivot.position = Vector3(0,.65,0)
+	player.global_position = result.position
+	player.velocity = Vector3.ZERO
+	player_shape.set_deferred("disabled",false)
+	taxi_riding = false
+	first_person = taxi_previous_first
+	yaw = taxi.rotation.y+PI
+	pitch = -.20
+	pivot.rotation = Vector3(pitch,yaw,0)
+	taxis.finish_trip()
+	_apply_camera_mode()
+	exit_message = "Viaje en taxi terminado."
+	message_time = 3.0
+	_update_hud()
+	return true
+
 func _open_pilar_editor(at: Vector3,context: bool) -> void:
 	building_mode = true
 	player.velocity = Vector3.ZERO
@@ -769,6 +833,32 @@ func _open_pilar_editor(at: Vector3,context: bool) -> void:
 
 func _physics_process(delta: float) -> void:
 	if player == null:
+		return
+	if taxis != null and taxis.dialog.visible:
+		player.velocity = Vector3.ZERO
+		if taxis.prepare_trip():
+			_start_taxi_ride()
+		return
+	if taxi_riding:
+		cuba_world.tick(delta)
+		taxis.tick(delta,cuba_world.cuba_clock)
+		var taxi: CharacterBody3D = taxis.passenger.body
+		player.global_position = taxi.global_position+Vector3.UP*.8
+		var requested := interact_requested
+		interact_requested = false
+		if taxis.arrived or (requested and float(taxis.passenger.speed)<.8):
+			if _leave_taxi():
+				return
+			if taxis.arrived:
+				taxis.ride_status = "Llegaste, pero no hay espacio seguro para bajar. Pulsa E para reintentar."
+			elif requested:
+				taxis.ride_status = "No hay espacio seguro para bajar aquí."
+		elif requested:
+			taxis.ride_status = "Espera a que el taxi se detenga."
+		hud_time += delta
+		if hud_time>=.15:
+			hud_time=0.0
+			_update_hud()
 		return
 	if context_requested:
 		context_requested = false
@@ -817,6 +907,9 @@ func _physics_process(delta: float) -> void:
 		elif city_world != null and city_world.interact(player,avatar,limb_legs,limb_arms):
 			player_shape.set_deferred("disabled",city_world.seated)
 			_apply_camera_mode()
+		elif taxis != null and taxis.open_dialog(player.global_position):
+			player.velocity = Vector3.ZERO
+			return
 		elif _near_van():
 			_enter_van()
 	if city_world != null and city_world.seated:
