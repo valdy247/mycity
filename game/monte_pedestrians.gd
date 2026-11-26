@@ -376,6 +376,7 @@ func yield_to_bus(stop: Dictionary,bus: CharacterBody3D) -> void:
 			if ground.is_empty(): continue
 			var target: Vector3 = ground.p
 			if world.pedestrian_segment_clear(at,target):
+				person.remove_meta("conversation_until")
 				agent.yield_target = target
 				break
 
@@ -409,6 +410,7 @@ func tick(delta: float) -> void:
 			else:
 				agent.erase("yield_target")
 			continue
+		if person.conversation_active(dt): continue
 		if float(agent.pause)>0.0:
 			agent.pause = maxf(0.0,float(agent.pause)-dt)
 			person.animate(dt,false)
