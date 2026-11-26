@@ -76,6 +76,7 @@ func load_map() -> bool:
 	return geography.load_map()
 
 func setup(builder: Builder) -> void:
+	var start_ms := Time.get_ticks_msec()
 	pedestrian_body.radius = .27
 	pedestrian_body.height = 1.55
 	grid_builder = builder
@@ -97,13 +98,16 @@ func setup(builder: Builder) -> void:
 			texture_anchor = place.position
 			break
 	street_geometry.build(geography)
+	var street_ms := Time.get_ticks_msec()
 	_load_map_edits()
 	_make_osm_streets()
 	_make_frontages()
 	_make_corner_plaques()
+	var frontage_ms := Time.get_ticks_msec()
 	_flush_city_boxes()
 	_flush_monte_columns()
 	_flush_footprints()
+	print("MyCity carga (ms): calles=",street_ms-start_ms,", edificios=",frontage_ms-street_ms,", mallas=",Time.get_ticks_msec()-frontage_ms)
 	print("Pilar-Atarés: ",slots.size()," generated facade lots, ",service_count," game services, ",residents.size()," citizens; ",mapped_buildings," OSM building footprints; ",plaque_count," corner plaques.")
 	# Real-world source attribution is visible in HUD via main.gd.
 
@@ -294,6 +298,7 @@ func _lots_near(p: Vector3) -> Array:
 	return result
 
 func _add_lot(lot: Dictionary) -> void:
+	lot["_cached_polygon"] = _lot_polygon(lot)
 	slots.append(lot)
 	var p: Vector3 = lot.center
 	var k := Vector2i(floori(p.x/24.0),floori(p.z/24.0))
@@ -302,6 +307,7 @@ func _add_lot(lot: Dictionary) -> void:
 	lot_cells[k].append(lot)
 
 func _lot_polygon(lot: Dictionary) -> PackedVector2Array:
+	if lot.has("_cached_polygon"): return lot._cached_polygon
 	var c: Vector3 = lot.center
 	var front: Vector3 = lot.front
 	var side := Vector3(front.z,0,-front.x)
@@ -566,10 +572,13 @@ func _private_home_pin() -> Dictionary:
 func _is_monte_edge(edge: Dictionary) -> bool:
 	if not bool(edge.driveable): return false
 	if bool(edge.get("monte_corridor",false)): return true
+	if edge.has("_cached_monte"): return bool(edge._cached_monte)
 	for name_value in [String(edge.name)]+edge.get("aliases",[]):
 		var n := geography.normalized(String(name_value))
 		if geography.street_label(String(name_value))=="MONTE" or n.contains("monte") or n.contains("maximo gomez"):
+			edge["_cached_monte"] = true
 			return true
+	edge["_cached_monte"] = false
 	return false
 
 func _home_from_gps(pin: Vector3) -> Array:
@@ -1049,9 +1058,11 @@ func _reserve_garage_sites(proposals: Array) -> void:
 		{"id":"parts_yoyi","name":"REPUESTOS YOYI","distance":205.0,"paint":Color("#c1b48b")}
 	]
 	var market := geography.project(23.1234716,-82.3659728)
+	for lot in proposals:
+		lot["_home_distance"] = home_spawn.distance_to(lot.center)
 	for spec in specs:
 		var candidates := proposals.duplicate()
-		candidates.sort_custom(func(a,b): return absf(home_spawn.distance_to(a.center)-float(spec.distance))<absf(home_spawn.distance_to(b.center)-float(spec.distance)))
+		candidates.sort_custom(func(a,b): return absf(float(a._home_distance)-float(spec.distance))<absf(float(b._home_distance)-float(spec.distance)))
 		for lot in candidates:
 			var c: Vector3 = lot.center
 			var front: Vector3 = lot.front
@@ -1092,9 +1103,11 @@ func _reserve_commerce(proposals: Array) -> void:
 		{"id":"mayorista_union","name":"MIPYME LA UNIÓN","kind":"wholesale","contact":"Lidia","owner":"Lidia","distance":225.0,"color":Color("#c9b49a")}
 	]
 	var market := geography.project(23.1234716,-82.3659728)
+	for lot in proposals:
+		lot["_home_distance"] = home_spawn.distance_to(lot.center)
 	for spec in specs:
 		var candidates := proposals.duplicate()
-		candidates.sort_custom(func(a,b): return absf(home_spawn.distance_to(a.center)-float(spec.distance))+(0.0 if _is_monte_edge(a.edge) else 180.0)<absf(home_spawn.distance_to(b.center)-float(spec.distance))+(0.0 if _is_monte_edge(b.edge) else 180.0))
+		candidates.sort_custom(func(a,b): return absf(float(a._home_distance)-float(spec.distance))+(0.0 if _is_monte_edge(a.edge) else 180.0)<absf(float(b._home_distance)-float(spec.distance))+(0.0 if _is_monte_edge(b.edge) else 180.0))
 		for lot in candidates:
 			var c: Vector3 = lot.center
 			var front: Vector3 = lot.front
@@ -1153,6 +1166,7 @@ func _extrude(poly: PackedVector2Array,bottom: float,top: float,mat: StandardMat
 		# An underside is required for walkable arcades.
 		if bottom>0.1:
 			_face(Vector3(c.x,bottom,c.y),Vector3(b.x,bottom,b.y),Vector3(a.x,bottom,a.y),Vector3.DOWN,mat,tile)
+	var clockwise := Geometry2D.is_polygon_clockwise(poly)
 	for i in range(poly.size()):
 		var a := poly[i]
 		var b := poly[(i+1)%poly.size()]
@@ -1161,7 +1175,7 @@ func _extrude(poly: PackedVector2Array,bottom: float,top: float,mat: StandardMat
 		var at := Vector3(a.x,top,a.y)
 		var bt := Vector3(b.x,top,b.y)
 		var normal := Vector3(b.y-a.y,0,a.x-b.x).normalized()
-		if Geometry2D.is_polygon_clockwise(poly):
+		if clockwise:
 			normal = -normal
 		_face(av,at,bt,normal,mat,tile)
 		_face(av,bt,bv,normal,mat,tile)
@@ -1227,9 +1241,7 @@ func _front_edge(poly: PackedVector2Array,monte_only: bool = false) -> Dictionar
 		if a.distance_to(b)<2.8:
 			continue
 		var m := (a+b)*.5
-		var road := _nearest_street(m)
-		if monte_only:
-			road = _nearest_monte_street(m,(b-a).normalized())
+		var road := _nearest_monte_street(m,(b-a).normalized()) if monte_only else _nearest_street(m)
 		if road.is_empty():
 			continue
 		var ra: Vector3 = road.a
