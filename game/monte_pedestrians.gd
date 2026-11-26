@@ -1,22 +1,24 @@
 extends Node3D
 const World = preload("res://cuba_world.gd")
 const Person = preload("res://street_person.gd")
+const UrbanBuses = preload("res://urban_buses.gd")
 const MAX_WALKERS := 38
 const CELL := 4.0
 var world: World
-var buses: Node3D
+var buses: UrbanBuses
 var graph := AStar3D.new()
 var cells: Dictionary = {}
 var destinations: Array = []
 var walkers: Array = []
 var next_id := 1
 var initialized := false
+var build_wait := .20
 var elapsed := 0.0
 var population_clock := 0.0
 var serial := 200
 var shape := CapsuleShape3D.new()
 
-func setup(city: World,bus_service: Node3D) -> void:
+func setup(city: World,bus_service: UrbanBuses) -> void:
 	world = city
 	buses = bus_service
 	shape.radius = .27
@@ -161,6 +163,10 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 			if stop.queue.size()>=4: continue
 		nearby.append(dest)
 	nearby.shuffle()
+	# A quarter of residents actively seek a bus stop rather than leaving
+	# all transport demand to random selection among hundreds of doors.
+	if not force_non_bus and posmod(person.style_id,4)==0:
+		nearby.sort_custom(func(a,b): return int(String(a.kind)=="bus")>int(String(b.kind)=="bus"))
 	for i in range(mini(nearby.size(),20)):
 		var dest: Dictionary = nearby[i]
 		var path := graph.get_point_path(start,int(dest.id))
@@ -230,6 +236,8 @@ func _populate() -> void:
 
 func tick(delta: float) -> void:
 	if not initialized:
+		build_wait -= delta
+		if build_wait>0.0: return
 		initialized = true
 		_build()
 		_populate()
