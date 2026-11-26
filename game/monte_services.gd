@@ -66,10 +66,10 @@ func _free_box(p: Vector3,d: Vector3,size_value: Vector3) -> bool:
 	query.collision_mask = 1|4|8|16
 	return get_world_3d().direct_space_state.intersect_shape(query,1).is_empty()
 
-func _new_site(p: Vector3,d: Vector3,width: float) -> Dictionary:
+func _new_site(p: Vector3,d: Vector3,width: float,edge: Dictionary) -> Dictionary:
 	var right := Vector3(-d.z,0,d.x)
 	var curb := p+right*(width*.5+.43)
-	var parking := p-d*6.5+right*world.geography.lane_distance({"width":width},2.3,true)
+	var parking := p-d*6.5+right*world.geography.lane_distance(edge,2.3,true)
 	if world.street_geometry.point_on_road(curb): return {}
 	if not _free_box(curb,d,Vector3(.80,1.05,2.40)): return {}
 	if not Bypass._on_road(world.street_geometry,parking,d,2.3,6.2): return {}
@@ -319,6 +319,7 @@ func _initialize() -> void:
 	var ids := planner.plan("MONTE",anchor)
 	if ids.size()<5: return
 	var route: Array = []
+	var car_route: Array = []
 	for i in range(ids.size()-1):
 		var edge: Dictionary = planner.edges.get(ids[i]+":"+ids[i+1],{})
 		if edge.is_empty(): continue
@@ -327,21 +328,22 @@ func _initialize() -> void:
 		var d := (b-a).normalized()
 		var right := Vector3(-d.z,0,d.x)
 		var width := float(edge.width)
-		var lane := right*world.geography.lane_distance(edge,2.3)
+		var lane := right*world.geography.lane_distance(edge,2.3,int(edge.get("lanes_per_direction",1))==2)
+		var passing_lane := right*world.geography.lane_distance(edge,1.83)
 		var length := a.distance_to(b)
-		if length>8.0: route.append({"p":a+d*3.0+lane})
+		if length>8.0:
+			route.append({"p":a+d*3.0+lane})
+			car_route.append({"p":a+d*3.0+passing_lane})
 		if sites.size()<5 and world._is_monte_edge(edge) and width>=6.5 and length>25.0:
-			var near_corner := a+d*minf(length-13.0,9.5)
-			var site := _new_site(near_corner,d,width)
+			var near_corner := a+d*clampf(length*.60,15.5,length-5.0)
+			var site := _new_site(near_corner,d,width,edge)
 			if not site.is_empty():
 				var park: Vector3 = site.parking
 				route.append({"p":park,"stop":site})
 		route.append({"p":b+lane})
+		car_route.append({"p":b+passing_lane})
 	if route.size()<5: return
 	if not sites.is_empty(): _make_vehicle(route,true,0)
-	var car_route: Array = []
-	for item in route:
-		if not item.has("stop"): car_route.append({"p":item.p})
 	for i in range(2):
 		_make_vehicle(car_route,false,i)
 	print("Monte: ",sites.size()," garbage collection points; ",vehicles.size()," municipal/ordinary vehicles.")
@@ -532,7 +534,7 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 			vehicle.resume = int(choice.resume)
 			vehicle.stalled = 0.0
 			return
-		if stalled>2.5:
+		if stalled>2.5 and world.street_geometry.four_lane_at(body.global_position,body.global_transform.basis.z).is_empty():
 			var recovery := _local_recovery(body,target,width,half*2.0,height)
 			if not recovery.is_empty():
 				vehicle.detour = recovery
