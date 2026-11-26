@@ -417,7 +417,14 @@ func _mark_monte_corridor() -> void:
 func _configure_calzada_lanes() -> void:
 	road_cells.clear()
 	for edge in roads:
-		if bool(edge.driveable) and (bool(edge.get("monte_corridor",false)) or _named_edge(edge,"monte")):
+		var named_monte := _named_edge(edge,"monte")
+		var named_cerro := _named_edge(edge,"cerro")
+		var arcade := bool(edge.get("monte_corridor",false)) or named_monte or named_cerro or bool(edge.portal)
+		for value in [String(edge.name)]+edge.get("aliases",[]):
+			if normalized(String(value)).contains("calzada "): arcade = true
+		edge["arcade_corridor"] = bool(edge.driveable) and arcade
+		if bool(edge.arcade_corridor): edge.portal = true
+		if bool(edge.driveable) and (bool(edge.get("monte_corridor",false)) or named_monte or named_cerro):
 			edge["source_width"] = float(edge.width)
 			edge["width"] = maxf(12.8,float(edge.width))
 			edge["lanes_per_direction"] = 2
