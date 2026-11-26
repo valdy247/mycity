@@ -14,6 +14,7 @@ const BLUE := Color("#4c92c9")
 const YELLOW := Color("#e9bf43")
 const DOOR_SURFACE := 4
 var buckets: Array[Node3D] = []
+var correct_tiles := 0
 var worker_charge := 0
 var worker_color := ""
 var worker_phase := "choose"
@@ -77,6 +78,7 @@ func setup(controller) -> void:
 		state.color = "blue"
 		state.charge = 0
 		_save()
+	correct_tiles = _correct_count()
 	# Re-enter the client house to resume a partially painted job.
 	marker = Node3D.new()
 	add_child(marker)
@@ -304,7 +306,7 @@ func objective() -> String:
 		1: return "Carlos te llama · P: teléfono"
 		2: return "Busca a Carlos en Flores y Estévez."
 		3: return "Ve con Carlos a casa del cliente."
-		4: return "Paredes azules · puerta amarilla · %d%% correcto" % roundi(100.0*float(_correct_count())/float(TOTAL))
+		4: return "Paredes azules · puerta amarilla · %d%% correcto" % roundi(100.0*float(correct_tiles)/float(TOTAL))
 		5:
 			if String(game.garage.state.part)=="bicicleta:wheel_a": return "Misión cumplida · instala la goma en tu garaje."
 			return ""
@@ -347,6 +349,7 @@ func _aim_door_at(site: Dictionary) -> bool:
 
 func action_text() -> String:
 	if inside:
+		if _stage()==5: return "[E] Salir de la casa" if _exit_aim() else "Lleva la goma al garaje."
 		if _stage()==4 and _finished() and _aim_node(client,Vector3.UP,Vector3(.45,.95,.35)): return "[E] Cobrar al cliente"
 		if not bool(state.brush) and _aim_node(brush_item,Vector3.ZERO,Vector3(.28,.16,.28)): return "[E] Recoger brocha"
 		if bool(state.brush) and _stage()==4:
@@ -575,7 +578,7 @@ func _correct_count() -> int:
 	return count
 
 func _finished() -> bool:
-	return _correct_count()==TOTAL
+	return correct_tiles==TOTAL
 
 func _add_surface(wall: int,p: Vector3,dimensions: Vector2,angle: float) -> void:
 	var quad := QuadMesh.new()
@@ -604,7 +607,10 @@ func _add_surface(wall: int,p: Vector3,dimensions: Vector2,angle: float) -> void
 func _paint_cell(wall: int,x: int,y: int,color: String) -> bool:
 	if _covered(wall,x,y) or not color in ["blue","yellow"]: return false
 	var key := _cell_key(wall,x,y)
-	if String(state.painted.get(key,""))==color: return false
+	var previous := String(state.painted.get(key,""))
+	if previous==color: return false
+	if previous==_required(wall): correct_tiles -= 1
+	if color==_required(wall): correct_tiles += 1
 	state.painted[key] = color
 	paint_dirty = true
 	images[wall].set_pixel(x,y,_paint_color(color))
@@ -677,9 +683,11 @@ func _worker_tick(delta: float) -> void:
 		work_clock += delta
 		carlos.rotation.y = 0.0
 		carlos.arms[1].rotation.x = -.35+sin(work_clock*5.0)*.22
-		carlos.rotation.x = .35*sin(minf(1.0,work_clock)*PI)
+		carlos.rotation.x = .65*sin(minf(1.0,work_clock)*PI)
+		worker_brush.rotation.x = PI*.5-.75*sin(minf(1.0,work_clock)*PI)
 		if work_clock>=1.0:
 			carlos.rotation.x = 0.0
+			worker_brush.rotation.x = PI*.5
 			worker_charge = 12
 			worker_color = String(worker_job.color)
 			if is_instance_valid(worker_tip): worker_tip.material_override = business._mat(_paint_color(worker_color))
@@ -782,6 +790,17 @@ func _follow(delta: float) -> void:
 			carlos.show()
 			was_vehicle = false
 			break
+		if was_vehicle:
+			for distance in [2.5,4.0,6.0,8.0]:
+				for angle in range(8):
+					var direction := Vector3(cos(float(angle)*TAU/8.0),0,sin(float(angle)*TAU/8.0))
+					var ground := _ground(target+direction*float(distance))
+					if ground.is_empty() or not world.pedestrian_space_clear(carlos,ground.p,.7,false): continue
+					carlos.global_position = ground.p
+					carlos.show()
+					was_vehicle = false
+					break
+				if not was_vehicle: break
 		if was_vehicle: return
 	if carlos.global_position.distance_to(customer.p)<1.3 and target.distance_to(customer.p)<6.0:
 		carlos.animate(delta,false)
@@ -799,8 +818,11 @@ func _follow(delta: float) -> void:
 		else:
 			follow_path = game.monte_pedestrians.route_between(carlos.global_position,target)
 			if follow_path.is_empty(): follow_path = game.monte_pedestrians.route_between(carlos.global_position,customer.p)
+			if follow_path.is_empty() and world.pedestrian_segment_clear(carlos.global_position,customer.p): follow_path = PackedVector3Array([customer.p])
 		follow_index = 0
-	if follow_index>=follow_path.size(): return
+	if follow_index>=follow_path.size():
+		carlos.animate(delta,false)
+		return
 	var next := follow_path[follow_index]
 	var step := carlos.global_position.move_toward(next,delta*3.6)
 	if world.pedestrian_segment_clear(carlos.global_position,step) and world.pedestrian_space_clear(carlos,step):
