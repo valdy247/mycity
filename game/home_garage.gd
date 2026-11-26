@@ -20,6 +20,7 @@ var paint_tip: MeshInstance3D
 var paint_clock := 0.0
 var paint_save_clock := 0.0
 var home_paint_dirty := false
+var paint_previous_first := true
 const FURNITURE := {
 	"sofa":{"name":"Sofá","p":[-4.6,0,1.6],"size":Vector3(1.9,.75,.85),"color":Color("#a3866d")},
 	"mesa":{"name":"Mesa","p":[-3.5,0,-.7],"size":Vector3(1.20,.75,.8),"color":Color("#82644d")},
@@ -68,6 +69,11 @@ func setup(controller) -> void:
 	for key in {"paint_stock":{},"paint_order":{},"paint_carry":"","paint_active":"","paint_charge":0,"paint_cells":{},"wheel_tutorial":false}:
 		if not state.has(key):
 			state[key] = {"paint_stock":{},"paint_order":{},"paint_carry":"","paint_active":"","paint_charge":0,"paint_cells":{},"wheel_tutorial":false}[key]
+	# A reload begins outdoors: return unused brush paint to the saved can.
+	var active_color := String(state.paint_active)
+	if PAINT_COLORS.has(active_color): state.paint_stock[active_color] = int(state.paint_stock.get(active_color,0))+maxi(0,int(state.paint_charge))
+	state.paint_active = ""
+	state.paint_charge = 0
 	for id in FURNITURE:
 		if not state.furniture.has(id): state.furniture[id] = {"p":FURNITURE[id].p.duplicate(),"removed":false}
 	# Existing GPS residence belongs to the player; no purchase or exterior sign.
@@ -1075,7 +1081,7 @@ func tick(delta: float) -> void:
 			_init_traffic()
 	else: _traffic_tick(delta)
 	marker.position.y = 2.35+sin(Time.get_ticks_msec()*.003)*.12
-	marker.visible = _wheel_pending()
+	marker.visible = inside and _wheel_pending()
 	_tick_home_paint(delta)
 	_tick_paint_order(delta)
 	if waypoint!=null:
@@ -1116,7 +1122,7 @@ func _install_reward_wheel() -> void:
 	business._button("Entendido",business.close)
 
 func _aimed_project(at: Vector3) -> bool:
-	if at.distance_to(ROOM+BENCH)>3.5 or not preview.visible: return false
+	if at.distance_to(ROOM+BENCH)>3.5 or not preview.visible or not _unlocked(String(state.project)): return false
 	var cam: Camera3D = game.play_camera
 	var origin := cam.global_position
 	var end := origin-cam.global_basis.z*4.5
@@ -1248,6 +1254,9 @@ func _start_home_paint(color: String) -> void:
 	state.paint_stock[color] = int(state.paint_stock[color])-amount
 	state.paint_active = color
 	state.paint_charge = amount
+	paint_previous_first = game.first_person
+	game.first_person = true
+	game._apply_camera_mode()
 	if not is_instance_valid(paint_brush):
 		paint_brush = Node3D.new()
 		game.play_camera.add_child(paint_brush)
@@ -1266,6 +1275,8 @@ func _stop_home_paint() -> void:
 		state.paint_stock[color] = int(state.paint_stock.get(color,0))+int(state.paint_charge)
 		state.paint_active = ""
 		state.paint_charge = 0
+		game.first_person = paint_previous_first
+		game._apply_camera_mode()
 		_refresh_paint_station()
 		_save()
 	if is_instance_valid(paint_brush): paint_brush.hide()
