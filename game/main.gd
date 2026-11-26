@@ -92,7 +92,9 @@ func _ready() -> void:
 	native_city = not args.has("--legacy-city")
 	if native_city and not args.has("--classic-city") and (FileAccess.file_exists("res://pilar_atares_v2.osm") or FileAccess.file_exists("res://pilar_atares.osm")):
 		var candidate := CubaWorld.new()
+		var map_started := Time.get_ticks_msec()
 		if candidate.load_map():
+			print("MyCity carga (ms): mapa OSM=",Time.get_ticks_msec()-map_started)
 			cuba_world = candidate
 		else:
 			candidate.free()
@@ -402,7 +404,7 @@ func _process(delta: float) -> void:
 	fps_time += delta
 	if fps_time>=.5:
 		fps_time = 0.0
-		if performance_label != null and cuba_world != null:
+		if performance_label != null and cuba_world != null and performance_label.visible:
 			performance_label.text = "%d FPS | %s | F6" % [Engine.get_frames_per_second(),"Rendimiento" if low_graphics else "Normal"]
 			if gps_label!=null and player!=null:
 				var at := van.global_position if driving and van!=null else player.global_position
