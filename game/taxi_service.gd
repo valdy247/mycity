@@ -545,6 +545,10 @@ func tick(delta: float,_clock: float) -> void:
 	if float(passenger.speed)<.10 and (stop_requested or blocked or float(passenger.signal_wait)>0.0):
 		passenger.speed = 0.0
 		body.velocity = Vector3.ZERO
+		if blocked and not stop_requested:
+			passenger.blocked = float(passenger.blocked)+delta
+			if float(passenger.blocked)>5.0:
+				ride_status = "Taxi bloqueado. Pulsa E para bajar."
 		return
 	# Smooth yaw while the body follows the rounded lane exactly.
 	body.rotation.y = lerp_angle(body.rotation.y,atan2(d.x,d.z),1.0-exp(-delta*8.0))
