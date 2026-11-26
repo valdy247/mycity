@@ -8,3 +8,7 @@ exports/
 pilar_atares.osm
 pilar_atares.osm.tmp
 *.gd.uid
+
+pilar_atares_v2.osm
+pilar_atares_v2.osm.tmp
+pilar_atares_v2.osm.part
