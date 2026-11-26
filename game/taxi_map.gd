@@ -79,28 +79,30 @@ func _world(p: Vector2) -> Vector2:
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
-		if event.pressed and event.button_index in [MOUSE_BUTTON_WHEEL_UP,MOUSE_BUTTON_WHEEL_DOWN]:
-			var before := _world(event.position)
-			zoom = clampf(zoom*(1.25 if event.button_index==MOUSE_BUTTON_WHEEL_UP else .8),.13,5.0)
-			center = before-(event.position-size*.5)/zoom
+		var mouse: InputEventMouseButton = event as InputEventMouseButton
+		if mouse.pressed and mouse.button_index in [MOUSE_BUTTON_WHEEL_UP,MOUSE_BUTTON_WHEEL_DOWN]:
+			var before := _world(mouse.position)
+			zoom = clampf(zoom*(1.25 if mouse.button_index==MOUSE_BUTTON_WHEEL_UP else .8),.13,5.0)
+			center = before-(mouse.position-size*.5)/zoom
 			_limit_center()
 			queue_redraw()
 			accept_event()
 			return
-		if event.button_index==MOUSE_BUTTON_LEFT:
-			if event.pressed:
+		if mouse.button_index==MOUSE_BUTTON_LEFT:
+			if mouse.pressed:
 				pressed = true
 				dragged = false
-				press_at = event.position
+				press_at = mouse.position
 				press_center = center
 			elif pressed:
 				pressed = false
 				if not dragged:
-					var p := _world(event.position)
+					var p := _world(mouse.position)
 					point_selected.emit(Vector3(p.x,0,p.y))
 			accept_event()
 	elif event is InputEventMouseMotion and pressed:
-		var displacement := event.position-press_at
+		var motion: InputEventMouseMotion = event as InputEventMouseMotion
+		var displacement: Vector2 = motion.position-press_at
 		if displacement.length()>5.0: dragged = true
 		if dragged:
 			center = press_center-displacement/zoom
