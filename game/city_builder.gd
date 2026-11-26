@@ -185,7 +185,7 @@ func _cell() -> Vector2i:
 	if intersection == null:
 		return Vector2i(999, 999)
 	# Prefer actual terrain hit to the mathematical ground plane.
-	var ray := PhysicsRayQueryParameters3D.create(origin, origin + dir * 300.0, 2)
+	var ray := PhysicsRayQueryParameters3D.create(origin, origin + dir * 300.0, 2 | 8)
 	ray.hit_back_faces = true
 	var hit := get_world_3d().direct_space_state.intersect_ray(ray)
 	var p: Vector3 = hit.position if not hit.is_empty() else intersection
@@ -211,7 +211,7 @@ func _assessment(cell: Vector2i) -> Dictionary:
 	var high: float = heights.max()
 	var low: float = heights.min()
 	var y := high + 0.035
-	var out := {"ok": false, "y": y, "bottom": low - 0.08, "reason": ""}
+	var out := {"ok": false, "y": y, "bottom": low - 0.08, "reason": "", "road_heights": []}
 	# Reserve original boulevard, houses, lake and park (Blender Y maps to -Z).
 	if absf(x) < 7.0 or (x > 0 and x < 15 and absf(z) < 22) or (x < -22 and x > -60 and z < -61 and z > -103):
 		out.reason = "Zona original protegida"
@@ -220,26 +220,43 @@ func _assessment(cell: Vector2i) -> Dictionary:
 		out.reason = "Limite de 300 piezas"
 		return out
 	var road := selected == "road" or selected == "cross"
-	if high - low > (0.65 if road else 2.0):
+	if not road and high - low > 2.0:
 		out.reason = "Terreno demasiado inclinado"
 		return out
 	var query := PhysicsShapeQueryParameters3D.new()
 	var shape := BoxShape3D.new()
 	shape.size = Vector3(7.7, 5.2, 7.7)
 	query.shape = shape
-	query.transform = Transform3D(Basis.IDENTITY, Vector3(x, y + 2.55, z))
+	query.transform = Transform3D(Basis.IDENTITY, Vector3(x, y + 2.8, z))
 	query.collision_mask = 1 | 4
 	if not get_world_3d().direct_space_state.intersect_shape(query, 1).is_empty():
 		out.reason = "Hay un objeto en ese lugar"
 		return out
 	if road:
-		for offset in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
-			var other_key := _key(cell.x + offset.x, cell.y + offset.y)
-			if pieces.has(other_key):
-				var other: Dictionary = pieces[other_key]
-				if String(other.kind) in ["road", "cross"] and absf(float(other.y) - y) > 0.28:
-					out.reason = "Desnivel con la calle vecina"
+		# Shared 2 m sample coordinates mean adjacent new tiles meet at
+		# exactly the same elevation, regardless of placement order.
+		var samples: Array = []
+		for j in range(5):
+			for i in range(5):
+				var xx := x - 4.0 + i * 2.0
+				var zz := z - 4.0 + j * 2.0
+				var surface := _hit_ground(xx, zz)
+				if surface.is_empty():
+					out.reason = "No hay suelo bajo la calle"
 					return out
+				var h := float(surface.position.y) + 0.065
+				if absf(xx) == 4.0:
+					h = 0.15 if xx > 0 else 0.11
+				samples.append(h)
+		for j in range(5):
+			for i in range(5):
+				var h := float(samples[j*5+i])
+				if (i > 0 and absf(h - float(samples[j*5+i-1])) > 1.7) or (j > 0 and absf(h - float(samples[(j-1)*5+i])) > 1.7):
+					out.reason = "Pendiente extrema: elige una zona mas suave"
+					return out
+		out.y = float(samples[12])
+		out.bottom = float(samples.min()) - 0.08
+		out.road_heights = samples
 	out.ok = true
 	out.reason = "Listo para construir"
 	return out
@@ -269,7 +286,7 @@ func tick(delta: float) -> void:
 				if pieces.has(key):
 					_delete(key)
 			elif result.ok:
-				_add_piece(selected, cell.x, cell.y, float(result.y), float(result.bottom), rotation_step)
+				_add_piece(selected, cell.x, cell.y, float(result.y), float(result.bottom), rotation_step, result.get("road_heights", []))
 				_save_city()
 		requested = ""
 	message_timer = maxf(0.0, message_timer - delta)
@@ -361,14 +378,92 @@ func _solid(root: Node3D, p: Vector3, size: Vector3, layer: int) -> void:
 	col.shape = shape
 	body.add_child(col)
 
-func _add_piece(kind: String, x: int, z: int, y: float, bottom: float, turn: int) -> void:
+func _road_height(samples: Array, x: float, z: float) -> float:
+	var gx := clampf((x + 4.0) / 2.0, 0.0, 4.0)
+	var gz := clampf((z + 4.0) / 2.0, 0.0, 4.0)
+	var i := mini(int(floor(gx)), 3)
+	var j := mini(int(floor(gz)), 3)
+	var u := gx - i
+	var v := gz - j
+	var a := float(samples[j*5+i])
+	var b := float(samples[j*5+i+1])
+	var c := float(samples[(j+1)*5+i])
+	var d := float(samples[(j+1)*5+i+1])
+	if u+v <= 1.0:
+		return a + u*(b-a) + v*(c-a)
+	return d + (1.0-u)*(c-d) + (1.0-v)*(b-d)
+
+func _quad(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3) -> void:
+	for p in [a,b,c,b,d,c]:
+		st.add_vertex(p)
+
+func _road_mesh(parent: Node3D, samples: Array, base_y: float, grid_x: int, turn: int, kind: String) -> void:
+	# Geometry in world-aligned axes; the rotation controls markings.
+	var road := Node3D.new()
+	parent.add_child(road)
+	road.rotation.y = -parent.rotation.y
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for j in range(4):
+		for i in range(4):
+			var x := -4.0 + i*2.0
+			var z := -4.0 + j*2.0
+			_quad(st, Vector3(x,float(samples[j*5+i])-base_y,z), Vector3(x+2,float(samples[j*5+i+1])-base_y,z), Vector3(x,float(samples[(j+1)*5+i])-base_y,z+2), Vector3(x+2,float(samples[(j+1)*5+i+1])-base_y,z+2))
+	# Short ramps bridge the small gap to the original boulevard.
+	if abs(grid_x) == 1:
+		var inner := -4.0 if grid_x > 0 else 4.0
+		var outer := -5.0 if grid_x > 0 else 5.0
+		for j in range(4):
+			var z := -4.0 + j*2.0
+			var h1 := _road_height(samples,inner,z)-base_y
+			var h2 := _road_height(samples,inner,z+2)-base_y
+			if grid_x > 0:
+				_quad(st, Vector3(outer,0.035-base_y,z),Vector3(inner,h1,z),Vector3(outer,0.035-base_y,z+2),Vector3(inner,h2,z+2))
+			else:
+				_quad(st, Vector3(inner,h1,z),Vector3(outer,0.035-base_y,z),Vector3(inner,h2,z+2),Vector3(outer,0.035-base_y,z+2))
+	st.generate_normals()
+	var instance := MeshInstance3D.new()
+	instance.mesh = st.commit()
+	instance.material_override = _color("asphalt", Color(0.20,0.23,0.27))
+	road.add_child(instance)
+	instance.create_trimesh_collision()
+	for child in instance.get_children():
+		if child is StaticBody3D:
+			(child as StaticBody3D).collision_layer = 8
+			(child as StaticBody3D).collision_mask = 0
+	var markings := SurfaceTool.new()
+	markings.begin(Mesh.PRIMITIVE_TRIANGLES)
+	if kind == "road":
+		for pos in [-3.0,0.0,3.0]:
+			var corners: Array[Vector3] = []
+			for p in [Vector2(-0.06,pos-0.65),Vector2(0.06,pos-0.65),Vector2(-0.06,pos+0.65),Vector2(0.06,pos+0.65)]:
+				var q := Vector3(p.x,0,p.y).rotated(Vector3.UP, turn*PI/2.0)
+				q.y = _road_height(samples,q.x,q.z)-base_y+0.025
+				corners.append(q)
+			_quad(markings,corners[0],corners[1],corners[2],corners[3])
+	else:
+		for side in [-1.0,1.0]:
+			for k in range(4):
+				var x := -1.5 + k
+				var z := side * 3.0
+				_quad(markings,Vector3(x-.22,_road_height(samples,x-.22,z-.38)-base_y+.025,z-.38),Vector3(x+.22,_road_height(samples,x+.22,z-.38)-base_y+.025,z-.38),Vector3(x-.22,_road_height(samples,x-.22,z+.38)-base_y+.025,z+.38),Vector3(x+.22,_road_height(samples,x+.22,z+.38)-base_y+.025,z+.38))
+	markings.generate_normals()
+	var paint := MeshInstance3D.new()
+	paint.mesh = markings.commit()
+	paint.material_override = _color("line",Color(0.96,0.78,0.15))
+	road.add_child(paint)
+
+func _add_piece(kind: String, x: int, z: int, y: float, bottom: float, turn: int, road_heights: Array = []) -> void:
 	var root := Node3D.new()
 	root.name = "Built_" + kind + "_" + str(pieces.size())
 	add_child(root)
 	root.position = Vector3(x * GRID, y, z * GRID)
 	root.rotation.y = turn * PI / 2.0
-	_make_model(root, kind, true, y-bottom)
-	pieces[_key(x,z)] = {"kind": kind, "x": x, "z": z, "y": y, "bottom": bottom, "turn": turn, "node": root}
+	if kind in ["road","cross"] and road_heights.size() == 25:
+		_road_mesh(root, road_heights, y, x, turn, kind)
+	else:
+		_make_model(root, kind, true, y-bottom)
+	pieces[_key(x,z)] = {"kind": kind, "x": x, "z": z, "y": y, "bottom": bottom, "turn": turn, "road_heights": road_heights, "node": root}
 
 func _delete(key: String) -> void:
 	var root: Node3D = pieces[key]["node"]
@@ -416,4 +511,14 @@ func _load_city() -> void:
 		var turn := int(raw.get("turn", 0))
 		if abs(x) > 9 or abs(z) > 13 or not is_finite(y) or not is_finite(bottom) or absf(y) > 20 or y-bottom < 0 or y-bottom > 3.0 or turn < 0 or turn > 3 or pieces.has(_key(x,z)):
 			continue
-		_add_piece(kind, x, z, y, bottom, turn)
+		var samples: Array = []
+		if raw.get("road_heights") is Array:
+			var candidate: Array = raw.road_heights
+			if candidate.size() == 25:
+				var sane := true
+				for h in candidate:
+					if not (h is float or h is int) or not is_finite(float(h)) or absf(float(h)) > 20.0:
+						sane = false
+				if sane:
+					samples = candidate
+		_add_piece(kind, x, z, y, bottom, turn, samples)
