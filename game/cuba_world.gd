@@ -3580,7 +3580,7 @@ func add_school_bus(original: Node3D) -> void:
 	bus.name = "SchoolBus_Original"
 	bus.motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
 	bus.collision_layer = 1
-	bus.collision_mask = 1|4|8
+	bus.collision_mask = 1|4|8|32
 	add_child(bus)
 	original.reparent(bus,true)
 	original.position = Vector3.ZERO
