@@ -584,6 +584,30 @@ func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool
 			_cube(worn+n*.01,Vector3(.47,.28,.012),patch,angle)
 	_cube((a+b)*.5+n*.08+Vector3.UP*(h-.16),Vector3(length,.24,.19),stone,angle)
 
+# Beveled Cuban enamel plate: eight corners, dark outline, white center.
+func _plaque_layer(p: Vector3,normal: Vector3,width: float,height: float,material: StandardMaterial3D) -> void:
+	var tangent := Vector3(normal.z,0,-normal.x)
+	var cut := minf(height*.19,width*.09)
+	var vertices := [
+		Vector2(-width*.5+cut,-height*.5),Vector2(width*.5-cut,-height*.5),
+		Vector2(width*.5,-height*.5+cut),Vector2(width*.5,height*.5-cut),
+		Vector2(width*.5-cut,height*.5),Vector2(-width*.5+cut,height*.5),
+		Vector2(-width*.5,height*.5-cut),Vector2(-width*.5,-height*.5+cut)
+	]
+	var tile := Vector2i(floori(p.x/96.0),floori(p.z/96.0))
+	var key := "plaque:"+str(tile)+":"+str(material.get_instance_id())
+	if not map_surfaces.has(key):
+		var surface := SurfaceTool.new()
+		surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+		material.cull_mode = BaseMaterial3D.CULL_DISABLED
+		surface.set_material(material)
+		map_surfaces[key] = surface
+	var st: SurfaceTool = map_surfaces[key]
+	for i in range(1,vertices.size()-1):
+		for v in [vertices[0],vertices[i],vertices[i+1]]:
+			st.set_normal(normal)
+			st.add_vertex(p+tangent*float(v.x)+Vector3.UP*float(v.y))
+
 func _make_corner_plaques() -> void:
 	var white := _mat("street_plaque_white",Color("#e8e9e5"))
 	var black := _mat("street_plaque_border",Color("#151f2b"))
@@ -639,7 +663,11 @@ func _make_corner_plaques() -> void:
 							pos = q+n*.13
 							var face := _front_edge(poly)
 							if not face.is_empty() and bool(face.road.portal) and n.dot(face.normal)>.8:
-								pos -= n*2.25
+								var tags: Dictionary = fp.tags
+								var idx: int = abs(String(fp.id).hash())%7
+								var inset := _clip_inward(poly,face,2.25)
+								if _building_height(tags,idx)>3.8 and inset.size()>=3 and not Geometry2D.triangulate_polygon(inset).is_empty():
+									pos -= n*2.25
 							normal = n
 							mounted = true
 				var key := label+":"+str(Vector2i(roundi(pos.x/2.0),roundi(pos.z/2.0)))
@@ -651,8 +679,8 @@ func _make_corner_plaques() -> void:
 				if not mounted:
 					_cube(pos+Vector3.UP*1.18,Vector3(.09,2.36,.09),concrete,angle)
 				var y := 2.48
-				_cube(pos+Vector3.UP*y,Vector3(width,.31,.064),black,angle)
-				_cube(pos+Vector3.UP*y+normal*.041,Vector3(width-.085,.235,.035),white,angle)
+				_plaque_layer(pos+Vector3.UP*y+normal*.030,normal,width,.31,black)
+				_plaque_layer(pos+Vector3.UP*y+normal*.046,normal,width-.085,.235,white)
 				_label(label,pos+Vector3.UP*y+normal*.065,minf(.0038,(width-.13)/(float(label.length())*29.0)),angle,Color("#151d28"))
 				plaque_count += 1
 
