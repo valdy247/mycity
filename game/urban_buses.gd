@@ -20,6 +20,9 @@ var materials: Dictionary = {}
 var meshes: Dictionary = {}
 var serial := 0
 var pedestrian_update := 0.0
+var player_bus: Dictionary = {}
+var player_board_stop: Dictionary = {}
+var player_exit_requested := false
 
 func setup(map_data: MapData,street_geometry: StreetGeometry,anchor: Vector3,avoid: Array) -> void:
 	data = map_data
@@ -405,6 +408,7 @@ func _add_waiter(stop: Dictionary) -> void:
 	serial += 1
 	var person := _person(serial)
 	person.position = _queue_position(stop,queue.size())
+	person.set("social_context","bus_wait")
 	var right: Vector3 = stop.right
 	person.rotation.y = atan2(-right.x,-right.z)
 	queue.append({"node":person,"style":serial})
@@ -420,6 +424,7 @@ func join_stop(stop: Dictionary,person: Node3D) -> bool:
 	var walker := person as StreetPerson
 	walker.reparent(self,true)
 	walker.show()
+	walker.social_context = "bus_wait"
 	queue.append({"node":walker,"style":walker.style_id})
 	return true
 
@@ -457,6 +462,7 @@ func _transfer_tick(bus: Dictionary,delta: float) -> void:
 				if alight_handler.is_valid():
 					accepted = bool(alight_handler.call(person))
 				if not accepted:
+					person.set("social_context","street")
 					var departing: Array = stop.departing
 					departing.append({"node":person,"time":12.0,"target":exit_point+stop_direction*8.0})
 			bus.transfer = {}
@@ -470,9 +476,11 @@ func _transfer_tick(bus: Dictionary,delta: float) -> void:
 			bus.transfer = {"node":person,"target":exit_point,"board":false}
 			return
 	var queue: Array = stop.queue
-	if not queue.is_empty() and onboard.size()<MAX_PASSENGERS and int(bus.served)<3:
+	if not queue.is_empty() and onboard.size()<(MAX_PASSENGERS-1 if bus==player_bus else MAX_PASSENGERS) and int(bus.served)<3:
 		var waiting: Dictionary = queue.pop_front()
 		bus.transfer = {"node":waiting.node,"target":door_point,"board":true,"style":waiting.style,"remaining":2+posmod(int(waiting.style),3)}
+		return
+	if bus==player_bus and player_exit_requested and stop!=player_board_stop:
 		return
 	bus.dwell = float(bus.dwell)-delta
 	if float(bus.dwell)>0.0: return
@@ -487,6 +495,54 @@ func _transfer_tick(bus: Dictionary,delta: float) -> void:
 
 # Use the entire bus envelope, not a centre ray that misses a van
 # at one corner or starts beyond the obstacle when already close.
+# Player boarding is only offered at an open, stationary bus door.
+func nearby_boarding(at: Vector3) -> Dictionary:
+	for bus in buses:
+		if bus.active_stop.is_empty() or bus.onboard.size()>=MAX_PASSENGERS: continue
+		var body: CharacterBody3D = bus.body
+		var entrance := body.to_global(Vector3(-1.65,0,3.52))
+		var stop: Dictionary = bus.active_stop
+		var wait: Vector3 = stop.wait
+		if Vector2(at.x-entrance.x,at.z-entrance.z).length()<3.0 and Vector2(at.x-wait.x,at.z-wait.z).length()<5.0:
+			return bus
+	return {}
+
+func board_player(bus: Dictionary) -> bool:
+	if bus.is_empty() or not player_bus.is_empty() or bus.active_stop.is_empty() or bus.onboard.size()>=MAX_PASSENGERS: return false
+	player_bus = bus
+	player_board_stop = bus.active_stop
+	player_exit_requested = false
+	bus.dwell = maxf(float(bus.dwell),2.0)
+	return true
+
+func player_exit_position(actor: CharacterBody3D,shape: Shape3D) -> Dictionary:
+	if player_bus.is_empty() or player_bus.active_stop.is_empty() or player_bus.active_stop==player_board_stop: return {}
+	var stop: Dictionary = player_bus.active_stop
+	var body: CharacterBody3D = player_bus.body
+	var wait: Vector3 = stop.wait
+	var direction: Vector3 = stop.direction
+	var space := get_world_3d().direct_space_state
+	for offset in [3.4,2.3,1.2,0.0,-1.2,-2.3]:
+		var p := wait+direction*float(offset)
+		if not _on_sidewalk(p): continue
+		var ray := PhysicsRayQueryParameters3D.create(p+Vector3.UP*.6,p-Vector3.UP*.5,1|2)
+		ray.exclude = [actor.get_rid(),body.get_rid()]
+		var hit := space.intersect_ray(ray)
+		if hit.is_empty() or hit.normal.y<.65: continue
+		var at: Vector3 = hit.position+Vector3.UP*.86
+		var query := PhysicsShapeQueryParameters3D.new()
+		query.shape = shape
+		query.transform = Transform3D(Basis.IDENTITY,at)
+		query.collision_mask = 1|4|8|16
+		query.exclude = [actor.get_rid()]
+		if space.intersect_shape(query,1).is_empty(): return {"position":at}
+	return {}
+
+func finish_player_ride() -> void:
+	player_bus = {}
+	player_board_stop = {}
+	player_exit_requested = false
+
 func _safety_query(body: CharacterBody3D,at: Vector3,angle: float) -> PhysicsShapeQueryParameters3D:
 	var query := PhysicsShapeQueryParameters3D.new()
 	query.shape = safety_shape
