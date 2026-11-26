@@ -634,6 +634,8 @@ func _back_up(bus: Dictionary,body: CharacterBody3D,delta: float) -> bool:
 func tick(delta: float) -> void:
 	for bus in buses:
 		var body: CharacterBody3D = bus.body
+		body.set_meta("traffic_priority",BUS_LENGTH)
+		body.set_meta("traffic_servicing",not bus.active_stop.is_empty())
 		if not bus.active_stop.is_empty():
 			bus.traffic_stall = 0.0
 			bus.traffic_last = body.global_position
@@ -650,6 +652,12 @@ func tick(delta: float) -> void:
 		var diff := target-body.position
 		var distance := diff.length()
 		var stalled := TrafficBypass.stalled(bus,body,delta)
+		if TrafficBypass.cooperate(bus,body,streets,BUS_WIDTH,BUS_LENGTH,2.96,delta,stalled,target): continue
+		if bool(bus.get("cooperative_rejoin",false)):
+			bus.cooperative_rejoin = false
+			if detouring: bus.index = int(bus.resume_index)
+			bus.detour = []
+			continue
 		bus.horn_cooldown = maxf(0.0,float(bus.get("horn_cooldown",0.0))-delta)
 		var priority_stop: Dictionary = {}
 		if not detouring:
