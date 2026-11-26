@@ -16,6 +16,8 @@ var traffic_jobs: Array = []
 var traffic_clock := 0.0
 var traffic_phase := 0
 var traffic_serial := 0
+var indicator_clock := 0.0
+var indicator_phase := false
 var main_links: Dictionary = {}
 var neighborhood_links: Dictionary = {}
 var neighborhood_candidates: Array = []
@@ -329,6 +331,18 @@ func _body(truck: bool,index: int) -> CharacterBody3D:
 				whitewall.rotation.z = PI*.5
 				var hub := _part(body,Vector3(float(side)*(width*.5+.04),radius,float(z)),Vector3(radius*.90,.035,radius*.90),Color("#bfc5c5"),wheel_mesh)
 				hub.rotation.z = PI*.5
+	if not truck:
+		var indicators: Array = []
+		for side in [-1.0,1.0]:
+			var pair: Array = []
+			for end in [-1.0,1.0]:
+				var lamp := _part(body,Vector3(float(side)*.82,.72,float(end)*2.13),Vector3(.12,.085,.025),Color("#ffae36"))
+				lamp.visibility_range_end = 65.0
+				lamp.hide()
+				pair.append(lamp)
+			indicators.append(pair)
+		body.set_meta("turn_lamps",indicators)
+		body.set_meta("driver_style",posmod(index,3))
 	var collision := CollisionShape3D.new()
 	var shape := BoxShape3D.new()
 	shape.size = Vector3(width,2.7 if truck else 1.5,length)
@@ -760,7 +774,14 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 			vehicle.index = (index+1)%route.size()
 		return
 	var direction := diff.normalized()
+	if not bool(vehicle.truck):
+		var side := Vector3(-body.global_basis.z.z,0,body.global_basis.z.x)
+		var lateral := direction.dot(side)
+		if active and absf(lateral)>.10: vehicle.turn_signal = 1 if lateral>0.0 else -1
+		elif not active: vehicle.turn_signal = 0
 	var limit := 6.5 if bool(vehicle.truck) else (6.0 if String(vehicle.get("traffic_kind","avenue"))=="neighborhood" else 10.5)
+	var driving_style := int(body.get_meta("driver_style",1))
+	if not bool(vehicle.truck): limit *= [.88,1.0,1.07][driving_style]
 	var speed := minf(limit,maxf(.8,sqrt(2.0*4.0*distance)))
 	var next: Vector3 = route[(index+1)%route.size()].p
 	var next_dir := (next-target).normalized()
@@ -837,7 +858,23 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 		vehicle.stalled = maxf(0.0,stalled-delta*2.0)
 		if not blocked: vehicle.backed_up = 0.0
 
+func _update_indicators(delta: float) -> void:
+	indicator_clock += delta
+	if indicator_clock<.4: return
+	indicator_clock = 0.0
+	indicator_phase = not indicator_phase
+	for vehicle in vehicles:
+		var body: CharacterBody3D = vehicle.body
+		if not body.has_meta("turn_lamps"): continue
+		var signal := int(vehicle.get("turn_signal",0))
+		if vehicle.detour.is_empty(): signal = 0
+		var pairs: Array = body.get_meta("turn_lamps")
+		for i in range(2):
+			for lamp in pairs[i]:
+				lamp.visible = indicator_phase and signal==(-1 if i==0 else 1)
+
 func tick(delta: float) -> void:
+	_update_indicators(delta)
 	notice_time = maxf(0.0,notice_time-delta)
 	if not initialized:
 		initialized = true
