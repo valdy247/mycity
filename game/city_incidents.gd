@@ -1093,34 +1093,89 @@ func _release_helper() -> void:
 	var helper: Dictionary = scene.actors.pop_back()
 	var person: Person = helper.node
 	person.rotation.x = 0.0
-	for arm in person.arms: arm.rotation.x = 0.0
+	for arm in person.arms: arm.rotation = Vector3.ZERO
 	_release(helper.agent)
 
-func _carry_pose(person: Node3D,driver: Person,helper: Person,delta: float) -> void:
-	var forward := driver.global_transform.basis.z.normalized()
-	var right := driver.global_transform.basis.x.normalized()
-	var center := driver.global_position+forward*.28+Vector3.UP*.83
-	var axis := right
-	if helper!=null:
-		var span := helper.global_position-driver.global_position
-		span.y = 0.0
-		if span.length()>.35: axis = span.normalized()
-		center = (driver.global_position+helper.global_position)*.5+Vector3.UP*.84
-	# Lay the casualty horizontally across the carriers' arms. The
-	# mesh's local +Y is headward. Preserve its original visual scale.
+# The patient is beside the carriers, not on the line connecting their
+# torsos. Both carriers face the patient and walk sideways together.
+# Aim the original articulated arms at the underside of the body.
+func _rescue_grip(carrier: Person,axis: Vector3,center: Vector3) -> void:
+	var facing := center-carrier.global_position
+	facing.y = 0.0
+	if facing.length_squared()>.01: carrier.rotation.y = atan2(facing.x,facing.z)
+	for arm in carrier.arms:
+		var shoulder := arm.global_position
+		var offset := clampf((shoulder-center).dot(axis),-.76,.76)
+		var hand := center+axis*offset
+		var inward := (carrier.global_position-center)
+		inward.y = 0.0
+		if inward.length_squared()>.01: hand += inward.normalized()*.10
+		hand.y -= .10
+		var direction := carrier.global_basis.inverse()*(hand-shoulder)
+		if direction.length_squared()>.0001:
+			arm.quaternion = Quaternion(Vector3.DOWN,direction.normalized())
+
+func _carry_heading(driver: Person,path: PackedVector3Array,index: int) -> Vector3:
+	for i in range(index,path.size()):
+		var d := _flat(path[i]-driver.global_position)
+		if d.length()>.35: return d.normalized()
+	var prior: Vector3 = scene.get("carry_direction",driver.global_transform.basis.z)
+	return _flat(prior).normalized() if _flat(prior).length_squared()>.01 else Vector3.FORWARD
+
+func _carry_side_clear(driver: Person,helper: Person,side: Vector3) -> bool:
+	var a := driver.global_position
+	var b := helper.global_position
+	var shift := side*.46
+	return world.pedestrian_segment_clear(a,a+shift) and world.pedestrian_segment_clear(b,b+shift) and world.pedestrian_segment_clear(a+shift,b+shift)
+
+func _carry_pose(person: Node3D,driver: Person,helper: Person,delta: float,blend: float = 1.0) -> void:
+	var heading: Vector3 = scene.get("carry_direction",Vector3.FORWARD)
+	var side := Vector3(-heading.z,0,heading.x)
+	var axis := side
 	var original_pose: Transform3D = scene.victim.old
 	var size := original_pose.basis.get_scale()
-	var up := axis.normalized()
-	var normal := Vector3.UP
-	var across := up.cross(normal).normalized()
-	var pose := Basis(across,up,normal).orthonormalized().scaled_local(size)
-	var feet := center-up*.82
-	if world.pedestrian_segment_clear(_flat(person.global_position),_flat(feet)) or person.global_position.distance_to(feet)<1.6:
-		person.global_position = person.global_position.lerp(feet,minf(1.0,delta*12.0))
-		person.global_basis = pose
-	for arm in driver.arms: arm.rotation.x = -1.15
+	var body_scale := driver.global_basis.get_scale().y
+	var center := driver.global_position+heading*.46+Vector3.UP*(body_scale*1.13)
 	if helper!=null:
-		for arm in helper.arms: arm.rotation.x = -1.15
+		var span := _flat(driver.global_position-helper.global_position)
+		if span.length()>.65:
+			axis = span.normalized()
+			side = Vector3(-axis.z,0,axis.x)*float(scene.get("carry_side",1.0))
+			if not _carry_side_clear(driver,helper,side):
+				if _carry_side_clear(driver,helper,-side):
+					scene.carry_side = -float(scene.get("carry_side",1.0))
+					side = -side
+				else:
+					_release_helper()
+					helper = null
+			if helper!=null:
+				var support_height := minf(body_scale,helper.global_basis.get_scale().y)*1.13
+				center = (driver.global_position+helper.global_position)*.5+side*.46+Vector3.UP*support_height
+		else:
+			_release_helper()
+			helper = null
+	if helper==null:
+		# One person holds the casualty across both arms, in front of the
+		# chest, rather than through their hips or legs.
+		axis = Vector3(-heading.z,0,heading.x)
+		center = driver.global_position+heading*.46+Vector3.UP*(body_scale*1.13)
+	var normal := Vector3.UP
+	var across := axis.cross(normal).normalized()
+	var pose := Basis(across,axis,normal).orthonormalized().scaled_local(size)
+	# Local Y runs from feet to head; the torso midpoint is at ~.90 m.
+	var feet := center-axis*(.90*size.y)
+	var target := Transform3D(pose,feet)
+	if blend<1.0:
+		var lift: Transform3D = scene.lift_pose
+		person.global_transform = lift.interpolate_with(target,blend)
+	else:
+		person.global_transform = target
+	_rescue_grip(driver,axis,center)
+	if helper!=null: _rescue_grip(helper,axis,center)
+	if person is Person:
+		var casualty := person as Person
+		for limb in casualty.limbs: limb.rotation = Vector3.ZERO
+		for arm in casualty.arms: arm.rotation = Vector3.ZERO
 
 func _begin_transport(victim: Dictionary,person: Node3D,body: CharacterBody3D) -> void:
 	# The patient belongs to the vehicle before any hospital-route lookup.
@@ -1207,43 +1262,64 @@ func _rescue_tick(delta: float) -> void:
 		if path.is_empty(): return
 		scene.carry_path = path
 		scene.carry_index = 0
-		scene.phase = "lift"
+		scene.phase = "position_carry"
 		scene.time = 0.0
-		scene.lift_from = person.global_position
+		scene.carry_direction = _carry_heading(driver,path,0)
+		scene.carry_side = 1.0
+		scene.lift_pose = person.global_transform
 		scene.carry_last = driver.global_position
 		scene.carry_stuck = 0.0
+	elif phase=="position_carry":
+		var driver: Person = scene.actors[0].node
+		var heading: Vector3 = scene.carry_direction
+		if scene.actors.size()>1:
+			var helper: Person = scene.actors[1].node
+			var original_pose: Transform3D = victim.old
+			var target := driver.global_position-heading*(1.05*original_pose.basis.get_scale().y)
+			if helper.global_position.distance_to(target)>.15:
+				var step := helper.global_position.move_toward(target,delta*2.0)
+				if world.pedestrian_segment_clear(helper.global_position,step):
+					helper.walk_to(target,delta,2.0)
+				if float(scene.time)<2.5: return
+				_release_helper()
+		scene.phase = "lift"
+		scene.time = 0.0
 	elif phase=="lift":
 		var driver: Person = scene.actors[0].node
 		var helper: Person = scene.actors[1].node if scene.actors.size()>1 else null
-		var d := person.global_position-driver.global_position
-		driver.rotation.y = atan2(d.x,d.z)
-		var t := clampf(float(scene.time)/1.15,0.0,1.0)
-		driver.rotation.x = sin(t*PI)*.35
-		for arm in driver.arms: arm.rotation.x = -1.3
-		if helper!=null:
-			helper.rotation.x = sin(t*PI)*.28
-			for arm in helper.arms: arm.rotation.x = -1.3
-		var start: Vector3 = scene.lift_from
-		person.global_position = start.lerp(driver.global_position+Vector3.UP*.68,smoothstep(0.15,1.0,t))
+		var t := clampf(float(scene.time)/1.2,0.0,1.0)
+		_carry_pose(person,driver,helper,delta,smoothstep(0.0,1.0,t))
+		# Lean toward the casualty at the beginning, then straighten.
+		driver.rotation.x = sin(t*PI)*.22
+		if is_instance_valid(helper) and scene.actors.size()>1: helper.rotation.x = sin(t*PI)*.22
 		if t>=1.0:
 			driver.rotation.x = 0.0
-			if helper!=null: helper.rotation.x = 0.0
+			if is_instance_valid(helper): helper.rotation.x = 0.0
 			scene.phase = "carry"
 			scene.time = 0.0
 	elif phase=="carry":
 		var driver: Person = scene.actors[0].node
 		var helper: Person = scene.actors[1].node if scene.actors.size()>1 else null
 		var path: PackedVector3Array = scene.carry_path
-		var speed := 1.55 if helper!=null else 1.15
+		var speed := 1.25 if helper!=null else 1.15
+		var prior := driver.global_position
 		scene.carry_index = _advance_actor(driver,path,int(scene.carry_index),delta,speed)
+		var direction := _flat(driver.global_position-prior)
+		if direction.length_squared()>.000001:
+			var previous: Vector3 = scene.carry_direction
+			var next := previous.lerp(direction.normalized(),minf(1.0,delta*8.0))
+			if next.length_squared()>.001: scene.carry_direction = next.normalized()
+		var heading: Vector3 = scene.carry_direction
 		if helper!=null:
-			var follow := driver.global_position-driver.global_transform.basis.z*.95
-			if helper.global_position.distance_to(follow)>.30:
-				var step := helper.global_position.move_toward(follow,delta*1.9)
-				if world.pedestrian_segment_clear(helper.global_position,step): helper.walk_to(follow,delta,1.9)
-				elif helper.global_position.distance_to(driver.global_position)>2.0:
-					_release_helper()
-					helper = null
+			var original_pose: Transform3D = victim.old
+			var follow := driver.global_position-heading*(1.05*original_pose.basis.get_scale().y)
+			if helper.global_position.distance_to(follow)>.09:
+				var step := helper.global_position.move_toward(follow,delta*1.85)
+				if world.pedestrian_segment_clear(helper.global_position,step): helper.walk_to(follow,delta,1.85)
+			var gap := helper.global_position.distance_to(driver.global_position)
+			if gap>1.65 or gap<.62:
+				_release_helper()
+				helper = null
 		_carry_pose(person,driver,helper,delta)
 		if driver.global_position.distance_to(scene.carry_last)<.015:
 			scene.carry_stuck = float(scene.carry_stuck)+delta
@@ -1267,7 +1343,11 @@ func _rescue_tick(delta: float) -> void:
 		var start: Vector3 = scene.load_from
 		var seat := body.to_global(Vector3(0,.78,-.48))
 		person.global_position = start.lerp(seat,smoothstep(0.0,1.0,t))
-		for arm in driver.arms: arm.rotation.x = -1.15
+		var axis := person.global_basis.y.normalized()
+		_rescue_grip(driver,axis,person.global_position+axis*.90)
+		if scene.actors.size()>1:
+			var helper: Person = scene.actors[1].node
+			_rescue_grip(helper,axis,person.global_position+axis*.90)
 		if t>=1.0: _begin_transport(victim,person,body)
 	elif phase=="hospital_retry":
 		if float(scene.time)<2.0: return
@@ -1330,7 +1410,11 @@ func _end_rescue(delivered: bool) -> void:
 	var victim: Dictionary = scene.victim
 	var person: Node3D = victim.agent.node
 	for actor in scene.actors:
-		if actor.has("agent"): _release(actor.agent)
+		if actor.has("agent"):
+			var helper: Person = actor.node
+			helper.rotation.x = 0.0
+			for arm in helper.arms: arm.rotation = Vector3.ZERO
+			_release(actor.agent)
 		elif is_instance_valid(actor.node): actor.node.queue_free()
 	var body: CharacterBody3D = car.body
 	Bypass._junction_release(scene.trip,body,streets)
