@@ -95,7 +95,7 @@ func _clear_patch(p: Vector3,d: Vector3,outward: Vector3) -> bool:
 	shape.size = Vector3(2.12,1.8,2.30)
 	var query := PhysicsShapeQueryParameters3D.new()
 	query.shape = shape
-	query.transform = Transform3D(Basis(Vector3.UP,atan2(d.x,d.z)),p+outward*.24+Vector3.UP*1.12)
+	query.transform = Transform3D(Basis(Vector3.UP,atan2(outward.x,outward.z)),p+outward*.24+Vector3.UP*1.12)
 	# Symmetric corner sampling above also protects the footprints.
 	query.collision_mask = 1|4|8|16
 	if not get_world_3d().direct_space_state.intersect_shape(query,1).is_empty(): return false
@@ -124,6 +124,8 @@ func _generate() -> void:
 	var examined := 0
 	for corner in candidates:
 		if stalls.size()>=10: break
+		examined += 1
+		if examined%3==0: await get_tree().physics_frame
 		var center: Vector3 = corner.p
 		var separate := true
 		for stall in stalls:
@@ -150,8 +152,6 @@ func _generate() -> void:
 					if made: break
 				if made: break
 			if made: break
-		examined += 1
-		if examined%3==0: await get_tree().physics_frame
 	print("Mercado callejero: ",stalls.size()," puestos en espacios libres.")
 
 func _make_stall(id: String,p: Vector3,d: Vector3,outward: Vector3,index: int) -> void:
@@ -199,9 +199,7 @@ func _make_stall(id: String,p: Vector3,d: Vector3,outward: Vector3,index: int) -
 	var items: Array = []
 	for i in range(keys.size()):
 		var key := String(keys[i])
-		var pos := Vector3((float(i%3)-1.0)*.65,surface+.10,(float(i/3)-.5)*.62)
-		# Integer row index is required; keep all products in their own cells.
-		pos.z = (float(floori(float(i)/3.0))-.5)*.62
+		var pos := Vector3((float(i%3)-1.0)*.65,surface+.10,(float(floori(float(i)/3.0))-.5)*.62)
 		var item := Node3D.new()
 		root.add_child(item)
 		item.position = pos
@@ -291,6 +289,7 @@ func interact() -> bool:
 	view.look_at(root.to_global(Vector3(0,float(stall.surface),0)),-root.global_transform.basis.z)
 	view.current = true
 	game.reticle.hide()
+	game.status.hide()
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	overlay.show()
 	highlight.show()
@@ -350,7 +349,6 @@ func handle(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:
 		_mouse_select(event.position)
 	elif event is InputEventMouseButton and event.pressed and event.button_index==MOUSE_BUTTON_LEFT:
-		var old := selected
 		_mouse_select(event.position)
 		# Only buy when clicking directly on the selected item's cell.
 		var item: Node3D = active.items[selected].node
@@ -370,6 +368,7 @@ func close() -> void:
 	overlay.hide()
 	highlight.hide()
 	game.play_camera.current = true
+	game.status.show()
 	game._apply_camera_mode()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
