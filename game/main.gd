@@ -2,10 +2,13 @@ extends Node3D
 # First playable local prototype. Static world, third-person movement.
 const CITY_PATH = "res://city.glb"
 const CityBuilder = preload("res://city_builder.gd")
+const CityWorld = preload("res://city_world.gd")
+var city_world: CityWorld
+var native_city := true
+var spawn_position := Vector3(-2.4,1.0,5.5)
 var builder: CityBuilder
 var play_camera: Camera3D
 var building_mode := false
-const SPAWN = Vector3(-2.4, 1.0, 5.5)
 var player: CharacterBody3D
 var pivot: Node3D
 var arm: SpringArm3D
@@ -49,7 +52,22 @@ func _ready() -> void:
 	sun.light_energy = 1.1
 	sun.shadow_enabled = false
 	add_child(sun)
-	if ResourceLoader.exists(CITY_PATH):
+	native_city = not OS.get_cmdline_user_args().has("--legacy-city")
+	builder = CityBuilder.new()
+	builder.native_city = native_city
+	if native_city:
+		builder.save_path = "user://mycity_v2_buildings.json"
+	add_child(builder)
+	if native_city:
+		city_world = CityWorld.new()
+		add_child(city_world)
+		city_world.setup(builder)
+		spawn_position = CityWorld.HOME_OUT
+		_make_demo_van()
+		van.global_position = CityWorld.VAN_PARK + Vector3.UP * .055
+		van_home = van.global_transform
+		city_loaded = true
+	elif ResourceLoader.exists(CITY_PATH):
 		var packed := load(CITY_PATH) as PackedScene
 		if packed != null:
 			var city := packed.instantiate()
@@ -66,8 +84,6 @@ func _ready() -> void:
 		_make_demo_van()
 	_make_player()
 	_make_hud()
-	builder = CityBuilder.new()
-	add_child(builder)
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 # Recognize terrain even when GLB import renames its mesh node or wraps it
@@ -200,10 +216,10 @@ func _make_player() -> void:
 	pivot.add_child(arm)
 	var cam := Camera3D.new()
 	cam.fov = 68.0
-	cam.far = 350.0
+	cam.far = 800.0
 	arm.add_child(cam)
 	add_child(player)
-	player.position = SPAWN
+	player.position = spawn_position
 	arm.add_excluded_object(player.get_rid())
 	if van != null:
 		arm.add_excluded_object(van.get_rid())
@@ -230,13 +246,13 @@ func _unhandled_input(event: InputEvent) -> void:
 	if building_mode:
 		return
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_B:
-		if not driving and builder != null:
+		if not driving and builder != null and (city_world == null or (not city_world.seated and not city_world.inside_home)):
 			building_mode = true
 			player.velocity = Vector3.ZERO
 			status.hide()
 			builder.open(player.global_position)
-		elif driving:
-			exit_message = "Baja de la van antes de construir."
+		else:
+			exit_message = "Sal de la casa, banco o van antes de construir."
 			message_time = 2.0
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -527,11 +543,14 @@ func _finish_exit(destination: Vector3) -> void:
 	arm.spring_length = 4.5
 
 func _reset_player() -> void:
+	if city_world != null:
+		city_world.reset_interaction(avatar,limb_legs)
+		player_shape.set_deferred("disabled",false)
 	if driving and van != null:
 		van.global_transform = van_home
 		van.velocity = Vector3.ZERO
-		_finish_exit(SPAWN)
-	player.global_position = SPAWN
+		_finish_exit(spawn_position)
+	player.global_position = spawn_position
 	player.velocity = Vector3.ZERO
 
 func _read_controls() -> Vector2:
@@ -568,7 +587,7 @@ func _drive(delta: float, movement: Vector2) -> void:
 		drive_speed = 0.0
 	if van.get_slide_collision_count() > 0:
 		drive_speed *= 0.35
-	if van.global_position.y < -8.0 or absf(van.global_position.x) > 79.0 or absf(van.global_position.z) > 109.0:
+	if van.global_position.y < -8.0 or absf(van.global_position.x) > (253.0 if native_city else 79.0) or absf(van.global_position.z) > (253.0 if native_city else 109.0):
 		van.global_transform = van_home
 		van.velocity = Vector3.ZERO
 		drive_speed = 0.0
@@ -576,7 +595,7 @@ func _drive(delta: float, movement: Vector2) -> void:
 func _update_hud() -> void:
 	if status == null:
 		return
-	var title := "VALDY JR TV | Explora tu ciudad"
+	var title := "VALDY JR TV | Ciudad 2.0" if native_city else "VALDY JR TV | Ciudad original"
 	if not city_loaded:
 		title = "MODO DE PRUEBA | Exporta city.glb desde Blender"
 	if driving:
@@ -584,7 +603,10 @@ func _update_hud() -> void:
 		status.text += "\nW/S: acelerar y retroceder | A/D: girar | Espacio: frenar\nE: salir detenido | R: reiniciar | Esc: liberar mouse"
 	else:
 		status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
-		if _near_van():
+		var action := city_world.interaction_text(player.global_position) if city_world != null else ""
+		if action != "":
+			status.text += "\n" + action
+		elif _near_van():
 			status.text += "\n[E] Subir a la van"
 		elif van == null:
 			status.text += "\nVan no encontrada en la exportacion."
@@ -606,6 +628,8 @@ func _physics_process(delta: float) -> void:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		interact_requested = false
 		reset_requested = false
+	if city_world != null:
+		city_world.tick(delta)
 	if van != null and not van_ground_initialized:
 		if _support_van():
 			van_home = van.global_transform
@@ -622,8 +646,14 @@ func _physics_process(delta: float) -> void:
 			elif not _safe_exit():
 				exit_message = "No hay espacio para salir. Mueve la van."
 				message_time = 2.0
+		elif city_world != null and city_world.interact(player,avatar,limb_legs,limb_arms):
+			player_shape.set_deferred("disabled",city_world.seated)
 		elif _near_van():
 			_enter_van()
+	if city_world != null and city_world.seated:
+		message_time = maxf(0.0,message_time-delta)
+		_update_hud()
+		return
 	var movement := _read_controls()
 	if driving:
 		_drive(delta, movement)
@@ -640,7 +670,7 @@ func _physics_process(delta: float) -> void:
 			player.velocity.y = 5.5
 		player.move_and_slide()
 		_animate_avatar(delta, Vector2(player.velocity.x, player.velocity.z).length())
-		if player.global_position.y < -15 or absf(player.global_position.x) > 90 or absf(player.global_position.z) > 120:
+		if player.global_position.y < -15 or absf(player.global_position.x) > (258.0 if native_city else 90.0) or absf(player.global_position.z) > (258.0 if native_city else 120.0):
 			_reset_player()
 		# Parked vehicle stays grounded; no dynamic vertical collision recovery.
 		if van != null:
