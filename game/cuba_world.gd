@@ -242,6 +242,21 @@ func _make_osm_streets() -> void:
 				var p := a+d*(float(i)*9.0+3.0)
 				if street_geometry.point_on_road(p) and street_geometry.point_on_road(p+d*2.5):
 					_line(p,p+d*2.5,.09,.006,.034,stripe)
+		if int(edge.get("lanes_per_direction",1))==2:
+			var white := _mat("lane_white",Color("#d0cfc0"))
+			var yellow := _mat("lane_center",Color("#c0aa66"))
+			var length := a.distance_to(b)
+			var margin := minf(3.5,length*.2)
+			if length>margin*2.0+.3:
+				for offset in [-.13,.13]:
+					_line(a+d*margin+right*float(offset),b-d*margin+right*float(offset),.09,.006,.041,yellow)
+				var cursor := margin
+				while cursor+1.0<length-margin:
+					var finish := minf(cursor+3.0,length-margin)
+					for side in [-1.0,1.0]:
+						var shift := right*float(side)*width*.25
+						_line(a+d*cursor+shift,a+d*finish+shift,.095,.006,.041,white)
+					cursor += 8.0
 
 # Utility lines are generated from real road topology, not one free end
 # per OSM segment. All cable endpoints are registered physical supports.
