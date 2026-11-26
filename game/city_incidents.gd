@@ -64,6 +64,8 @@ func _release(agent: Dictionary) -> void:
 	if source=="walker":
 		p.add_to_group("bus_yield_walkers")
 		agent.incident_replan = true
+	elif source=="rescue_volunteer":
+		p.queue_free()
 	elif source=="business":
 		var owner: Dictionary = agent.owner
 		owner.path = PackedVector3Array()
@@ -827,6 +829,7 @@ func _injury_tick(delta: float) -> void:
 	for i in range(injured.size()-1,-1,-1):
 		var victim: Dictionary = injured[i]
 		if not is_instance_valid(victim.agent.node):
+			_first_aid_release(victim)
 			injured.remove_at(i)
 			continue
 		if bool(victim.severe):
@@ -857,6 +860,123 @@ func _injury_tick(delta: float) -> void:
 		p.set_meta("impact_immunity",Time.get_ticks_msec()+2500)
 		_release(victim.agent)
 		injured.remove_at(i)
+
+# First aid is independent of the single vehicle/police scene.
+func _first_aid_release(victim: Dictionary) -> void:
+	var aid: Dictionary = victim.get("first_aid",{})
+	victim.erase("first_aid")
+	if not aid.is_empty(): _release(aid.agent)
+
+func _first_aid_access(from: Vector3,center: Vector3) -> Dictionary:
+	var targets: Array = []
+	for radius in [1.05,1.65,2.3]:
+		for i in range(8):
+			var angle := float(i)*TAU/8.0
+			var ground := _foot(center+Vector3(cos(angle),0,sin(angle))*float(radius))
+			if not ground.is_empty(): targets.append(ground.p)
+	targets.sort_custom(func(a,b): return from.distance_squared_to(a)<from.distance_squared_to(b))
+	for target in targets:
+		if world.pedestrian_segment_clear(from,target):
+			return {"p":target,"path":PackedVector3Array([target])}
+	for target in targets.slice(0,4):
+		var path := _ped_path(from,target)
+		if not path.is_empty(): return {"p":target,"path":path}
+	return {}
+
+func _first_aid_assign(victim: Dictionary,agent: Dictionary,access: Dictionary) -> void:
+	var p: Person = agent.node
+	_lock(agent,"primeros_auxilios")
+	p.show()
+	victim.first_aid = {"agent":agent,"path":access.path,"index":0,"last":p.global_position,"stuck":0.0,"arrived":false,"dt":0.0}
+	print("Rescate: vecino va a atender al herido mientras llega el transporte.")
+
+func _first_aid_start(victim: Dictionary) -> bool:
+	var old: Transform3D = victim.old
+	var center := old.origin
+	var candidates := _walkers(center,38.0)
+	for witness in crowd:
+		var agent: Dictionary = witness.agent
+		if is_instance_valid(agent.get("node")) and agent.node is Person and agent.node.global_position.distance_to(center)<38.0:
+			candidates.append(agent)
+	candidates.sort_custom(func(a,b): return (a.node as Node3D).global_position.distance_squared_to(center)<(b.node as Node3D).global_position.distance_squared_to(center))
+	for agent in candidates.slice(0,5):
+		var p: Person = agent.node
+		var access := _first_aid_access(p.global_position,center)
+		if access.is_empty(): continue
+		for i in range(crowd.size()-1,-1,-1):
+			if crowd[i].agent.node==p:
+				crowd.remove_at(i)
+				break
+		_first_aid_assign(victim,agent,access)
+		return true
+	# Bounded fallback: only spawn on checked, non-road ground.
+	var origins: Array = []
+	for radius in [5.0,8.0,12.0,18.0]:
+		for i in range(8):
+			var angle := float(i)*TAU/8.0
+			var point := center+Vector3(cos(angle),0,sin(angle))*float(radius)
+			if streets.point_on_road(point): continue
+			var ground := _foot(point)
+			if ground.is_empty(): continue
+			origins.append(ground.p)
+	origins.sort_custom(func(a,b): return center.distance_squared_to(a)<center.distance_squared_to(b))
+	for origin in origins.slice(0,5):
+		var access := _first_aid_access(origin,center)
+		if access.is_empty(): continue
+		var person := Person.new()
+		add_child(person)
+		person.setup(rng.randi_range(1300,1399))
+		person.remove_from_group("social_people")
+		person.global_position = origin
+		_first_aid_assign(victim,{"node":person,"incident_source":"rescue_volunteer"},access)
+		return true
+	return false
+
+func _first_aid_tick(victim: Dictionary,delta: float) -> void:
+	if not bool(victim.severe): return
+	if String(scene.get("kind",""))=="rescue" and scene.get("victim",{})==victim and String(scene.phase)!="approach":
+		return
+	var aid: Dictionary = victim.get("first_aid",{})
+	if aid.is_empty():
+		victim.aid_retry = maxf(0.0,float(victim.get("aid_retry",0.0))-delta)
+		if float(victim.aid_retry)>0.0: return
+		victim.aid_retry = 3.0
+		_first_aid_start(victim)
+		return
+	if not is_instance_valid(aid.agent.get("node")):
+		_first_aid_release(victim)
+		return
+	aid.dt = float(aid.dt)+delta
+	if float(aid.dt)<.075: return
+	var dt: float = aid.dt
+	aid.dt = 0.0
+	var p: Person = aid.agent.node
+	var old: Transform3D = victim.old
+	if bool(aid.arrived):
+		var facing := old.origin-p.global_position
+		p.rotation.y = atan2(facing.x,facing.z)
+		p.animate(dt,false)
+		return
+	aid.index = _advance_actor(p,aid.path,int(aid.index),dt,2.3)
+	if int(aid.index)>=aid.path.size():
+		aid.arrived = true
+		_say(p,"¡Tranquilo! Estoy aquí contigo. Vamos a buscar ayuda.")
+		print("Rescate: primeros auxilios presentes junto al herido.")
+		return
+	if p.global_position.distance_to(aid.last)<.015:
+		aid.stuck = float(aid.stuck)+dt
+	else:
+		aid.stuck = 0.0
+		aid.last = p.global_position
+	if float(aid.stuck)>3.0:
+		var access := _first_aid_access(p.global_position,old.origin)
+		if access.is_empty():
+			_first_aid_release(victim)
+			victim.aid_retry = 1.0
+		else:
+			aid.path = access.path
+			aid.index = 0
+			aid.stuck = 0.0
 
 func _rescue_log(victim: Dictionary,message: String) -> void:
 	if String(victim.get("rescue_status",""))==message: return
@@ -895,15 +1015,15 @@ func _reserve_responder(victim: Dictionary,center: Vector3) -> bool:
 		tested[key] = true
 		var a: Vector3 = edge.a
 		var b: Vector3 = edge.b
-		for fraction in [.25,.5,.75]:
+		for fraction in [.25,.75]:
 			var sample := a.lerp(b,float(fraction))
 			if sample.distance_to(center)<22.0 or sample.distance_to(center)>100.0: continue
-			for start in _berths(sample,9.0,Vector3.ZERO,false):
+			for start in _berths(sample,9.0,Vector3.ZERO,false).slice(0,3):
 				var p: Vector3 = start.p
 				var d: Vector3 = start.d
 				if not streets.intersection_clear_for_stop(p,LENGTH,WIDTH): continue
 				if not municipal._free_box(p,d,Vector3(WIDTH,HEIGHT,LENGTH)): continue
-				for goal in goals.slice(0,8):
+				for goal in goals.slice(0,4):
 					if not municipal._free_box(goal.p,goal.d,Vector3(WIDTH,HEIGHT,LENGTH)): continue
 					var route := _route(start,goal,p)
 					if route.is_empty(): continue
@@ -914,7 +1034,7 @@ func _reserve_responder(victim: Dictionary,center: Vector3) -> bool:
 					municipal.vehicles.append(car)
 					_assign_rescue(victim,car,{"trip":_new_trip(body,route),"berth":goal})
 					return true
-		if tested.size()>=32: break
+		if tested.size()>=8: break
 	return false
 
 func _local_responder(victim: Dictionary,center: Vector3) -> bool:
@@ -926,7 +1046,7 @@ func _local_responder(victim: Dictionary,center: Vector3) -> bool:
 	var ranked: Array = []
 	for goal in goals:
 		var p: Vector3 = goal.p
-		if p.distance_to(center)<6.0: continue
+		if p.distance_to(center)<4.0: continue
 		if not municipal._free_box(p,goal.d,Vector3(WIDTH,HEIGHT,LENGTH)): continue
 		var visible := camera!=null and camera.is_position_in_frustum(p+Vector3.UP)
 		ranked.append({"goal":goal,"score":p.distance_to(center)+(35.0 if visible else 0.0)})
@@ -969,9 +1089,10 @@ func _rescue_start(victim: Dictionary) -> void:
 		if approach.is_empty(): continue
 		_assign_rescue(victim,car,approach)
 		return
-	if float(victim.time)>=8.0 and _local_responder(victim,center): return
-	if _reserve_responder(victim,center): return
 	if _local_responder(victim,center): return
+	if float(victim.time)>=8.0 and float(victim.time)>=float(victim.get("next_extra_probe",0.0)):
+		victim.next_extra_probe = float(victim.time)+8.0
+		if _reserve_responder(victim,center): return
 	_rescue_log(victim,"esperando automóvil con acceso seguro; reintentando.")
 
 # Find a reachable approach beside the casualty instead of insisting on
@@ -1064,8 +1185,18 @@ func _rescue_parked(victim: Dictionary,body: CharacterBody3D) -> bool:
 	scene.time = 0.0
 	var target: Vector3 = access.p
 	var helper: Dictionary = {}
+	# Reuse the neighbor who is already helping.
+	var aid: Dictionary = victim.get("first_aid",{})
+	if not aid.is_empty() and is_instance_valid(aid.agent.get("node")):
+		var neighbor: Person = aid.agent.node
+		var route := _ped_path(neighbor.global_position,target)
+		if not route.is_empty():
+			helper = {"agent":aid.agent,"node":neighbor,"path":route,"index":0}
+			victim.erase("first_aid")
+	_first_aid_release(victim)
 	# A second person is welcome but never a condition for rescue.
 	for agent in _walkers(target,30.0):
+		if not helper.is_empty(): break
 		var p: Person = agent.node
 		var route := _ped_path(p.global_position,target)
 		if route.is_empty(): continue
@@ -1257,10 +1388,14 @@ func _rescue_tick(delta: float) -> void:
 				scene.helper_wait = float(scene.get("helper_wait",0.0))+delta
 				if float(scene.helper_wait)<2.5: return
 				_release_helper()
+		if float(scene.time)<float(scene.get("carry_probe_at",0.0)): return
+		scene.carry_probe_at = float(scene.time)+1.0
 		var path := _ped_path(driver.global_position,scene.pickup_point)
 		if path.is_empty():
 			path = _ped_path(driver.global_position,_flat(scene.pickup_point))
-		if path.is_empty(): return
+		if path.is_empty():
+			if float(scene.time)>30.0: _end_rescue(false)
+			return
 		scene.carry_path = path
 		scene.carry_index = 0
 		scene.phase = "position_carry"
@@ -1497,6 +1632,8 @@ func tick(delta: float) -> void:
 	for victim in injured:
 		victim.retry = maxf(0.0,float(victim.retry)-delta)
 	if not router.initialized: return
+	for victim in injured:
+		_first_aid_tick(victim,delta)
 	# Medical rescue has priority over a patrol that has not begun loading.
 	if String(scene.get("kind",""))=="police" and String(scene.get("phase","")) in ["approach","walk","ask"]:
 		for victim in injured:
@@ -1506,7 +1643,7 @@ func tick(delta: float) -> void:
 	if scene.is_empty():
 		for victim in injured:
 			if bool(victim.severe) and float(victim.retry)<=0.0:
-				victim.retry = 1.5
+				victim.retry = 3.0
 				_rescue_start(victim)
 				if not scene.is_empty(): break
 		if scene.is_empty() and not injured.is_empty():
