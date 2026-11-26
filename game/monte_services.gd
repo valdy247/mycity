@@ -11,6 +11,10 @@ var bus_berths: Array = []
 var sites: Array = []
 var vehicles: Array = []
 var civilian_route: Array = []
+var collection_route: Array = []
+var truck_retry := 0.0
+const MAX_GARBAGE_SITES := 9
+const GARBAGE_SITE_SPACING := 50.0
 const MAX_CIVILIAN_CARS := 24
 var traffic_jobs: Array = []
 var traffic_clock := 0.0
@@ -77,25 +81,56 @@ func _free_box(p: Vector3,d: Vector3,size_value: Vector3) -> bool:
 	var query := PhysicsShapeQueryParameters3D.new()
 	query.shape = shape
 	query.transform = Transform3D(Basis(Vector3.UP,atan2(d.x,d.z)),p+Vector3.UP*(size_value.y*.5+.09))
-	query.collision_mask = 1|4|8|16
+	query.collision_mask = 1|4|8|16|32
 	return get_world_3d().direct_space_state.intersect_shape(query,1).is_empty()
+
+# Verify the entire bin footprint, not just the centre. The protected
+# index includes sidewalks and road polygons, so explicitly exclude roads.
+func _bin_sidewalk_clear(curb: Vector3,d: Vector3) -> bool:
+	var side := Vector3(-d.z,0,d.x)
+	for x in [-.37,.37]:
+		for z in [-1.16,1.16]:
+			var at := curb+side*float(x)+d*float(z)
+			if world.street_geometry.point_on_road(at): return false
+			var q := Vector2(at.x,at.z)
+			var probe := PackedVector2Array([q-Vector2(.02,.02),q+Vector2(.02,-.02),q+Vector2(.02,.02),q+Vector2(-.02,.02)])
+			var found := false
+			for poly in world.street_geometry.near(world.street_geometry.protected_index,probe):
+				if Geometry2D.is_point_in_polygon(q,poly):
+					found = true
+					break
+			if not found: return false
+	return _free_box(curb,d,Vector3(.80,1.05,2.40))
 
 func _new_site(p: Vector3,d: Vector3,width: float,edge: Dictionary) -> Dictionary:
 	var right := Vector3(-d.z,0,d.x)
 	var desired := p-d*6.5+right*world.geography.lane_distance(edge,2.3,true)
 	var parking: Vector3 = world.street_geometry.safe_stop_on_edge(edge.a,edge.b,desired,6.2,2.3)
-	var curb := p+(parking-desired)+right*(width*.5+.43)
-	if world.street_geometry.point_on_road(curb): return {}
-	if not _free_box(curb,d,Vector3(.80,1.05,2.40)): return {}
 	if not Bypass._on_road(world.street_geometry,parking,d,2.3,6.2): return {}
 	if not world.street_geometry.intersection_clear_for_stop(parking,6.2,2.3): return {}
-	if curb.distance_to(anchor)<24.0: return {}
-	for stop in bus_berths:
-		var berth: Vector3 = stop.position
-		if berth.distance_to(parking)<17.0 or berth.distance_to(curb)<12.0: return {}
-	for previous in sites:
-		var old: Vector3 = previous.curb
-		if old.distance_to(curb)<65.0: return {}
+	var start: Vector3 = edge.a if d.dot(edge.b-edge.a)>0.0 else edge.b
+	var finish: Vector3 = edge.b if d.dot(edge.b-edge.a)>0.0 else edge.a
+	if (parking-start).dot(d)<3.5 or (finish-parking).dot(d)<9.0: return {}
+	var curb := Vector3.INF
+	for inset in [.43,.58,.73,.90]:
+		var candidate := p+(parking-desired)+right*(width*.5+float(inset))
+		if candidate.distance_to(anchor)<12.0: continue
+		var clear := true
+		for stop in bus_berths:
+			var berth: Vector3 = stop.position
+			if berth.distance_to(parking)<17.0 or berth.distance_to(candidate)<12.0:
+				clear = false
+				break
+		if not clear: continue
+		for previous in sites:
+			var old: Vector3 = previous.curb
+			if old.distance_to(candidate)<GARBAGE_SITE_SPACING:
+				clear = false
+				break
+		if not clear or not _bin_sidewalk_clear(candidate,d): continue
+		curb = candidate
+		break
+	if not curb.is_finite(): return {}
 	var root := StaticBody3D.new()
 	root.collision_layer = 1
 	root.collision_mask = 0
@@ -536,10 +571,11 @@ func _make_vehicle(route: Array,truck: bool,index: int,slots: int = 8,slot: int 
 		var clear := true
 		for v in avoid:
 			var other: Vector3 = v
-			if other.distance_to(p)<21.0:
+			if other.distance_to(p)<(6.5 if truck else 21.0):
 				clear = false
 				break
 		if not clear: continue
+		if truck and is_instance_valid(player) and player.global_position.distance_to(p)<10.0: continue
 		if not truck:
 			for other in live:
 				if p.distance_to(other)<(24.0 if kind=="neighborhood" else 15.0):
@@ -604,16 +640,21 @@ func _initialize() -> void:
 		if length>8.0:
 			route.append({"p":a+d*3.0+lane})
 			car_route.append({"p":a+d*3.0+passing_lane})
-		if sites.size()<5 and world._is_monte_edge(edge) and width>=6.5 and length>25.0:
-			var near_corner := a+d*clampf(length*.70,17.0,length-5.0)
-			var site := _new_site(near_corner,d,width,edge)
-			if not site.is_empty():
+		# Serve the connected circuit, including its adjoining streets.
+		# Try several positions per block before rejecting that block.
+		if sites.size()<MAX_GARBAGE_SITES and width>=6.0 and length>23.0:
+			for fraction in [.70,.55,.85,.42]:
+				var at := a+d*clampf(length*float(fraction),14.0,length-2.5)
+				var site := _new_site(at,d,width,edge)
+				if site.is_empty(): continue
 				var park: Vector3 = site.parking
 				route.append({"p":park,"stop":site})
+				break
 		route.append({"p":b+lane})
 		car_route.append({"p":b+passing_lane})
 	if route.size()<5: return
-	if not sites.is_empty(): _make_vehicle(route,true,0)
+	collection_route = route
+	if not sites.is_empty(): _make_vehicle(collection_route,true,0)
 	car_route = _civilian_route(car_route)
 	civilian_route = car_route
 	# Keep the existing rescue circuit. Spread the initial eight cars,
@@ -625,7 +666,8 @@ func _initialize() -> void:
 	traffic_serial = 8
 	var outer := _traffic_route(ids,true)
 	_queue_traffic(outer,4,"avenue",true)
-	print("Monte: ",sites.size()," garbage collection points; ",vehicles.size()," initial municipal/ordinary vehicles.")
+	print("Comunales: ",sites.size()," puntos de basura; ",vehicles.size()," vehículos iniciales.")
+	if sites.is_empty(): print("Comunales: no se encontró un punto de recogida seguro en el circuito.")
 
 func _begin_collection(vehicle: Dictionary,site: Dictionary) -> void:
 	vehicle.site = site
@@ -921,6 +963,16 @@ func tick(delta: float) -> void:
 		_initialize()
 	elif not civilian_route.is_empty():
 		_traffic_tick(delta)
+	# If all berths were occupied at startup, retry without duplicating trucks.
+	truck_retry += delta
+	if truck_retry>=15.0 and not collection_route.is_empty() and not sites.is_empty():
+		truck_retry = 0.0
+		var has_truck := false
+		for vehicle in vehicles:
+			if bool(vehicle.truck) and is_instance_valid(vehicle.body):
+				has_truck = true
+				break
+		if not has_truck: _make_vehicle(collection_route,true,0)
 	for vehicle in vehicles:
 		if bool(vehicle.get("incident_hold",false)): continue
 		_drive(vehicle,delta)
