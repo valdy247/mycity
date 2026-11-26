@@ -250,7 +250,7 @@ func _exit() -> void:
 		var q := PhysicsShapeQueryParameters3D.new()
 		q.shape = game.player_shape.shape
 		q.transform = Transform3D(Basis.IDENTITY,point)
-		q.collision_mask = 1|4|8
+		q.collision_mask = 1|4|8|32
 		q.exclude = [game.player.get_rid()]
 		if space.intersect_shape(q,1).is_empty():
 			destination = point
@@ -580,7 +580,7 @@ func _spawn(kind: String) -> CharacterBody3D:
 			var q := PhysicsShapeQueryParameters3D.new()
 			q.shape = shape
 			q.transform = Transform3D(Basis(Vector3.UP,atan2(d.x,d.z)),p+Vector3.UP*(float(spec.height)*.5+.08))
-			q.collision_mask = 1|4|8
+			q.collision_mask = 1|4|8|32
 			if not get_world_3d().direct_space_state.intersect_shape(q,1).is_empty(): continue
 			var body := Kit.body(self,kind)
 			body.global_position = p+Vector3.UP*.055
@@ -605,6 +605,72 @@ func _launch(kind: String) -> void:
 	_refresh_preview()
 	_mount(kind)
 
+# Solve a static two-link pose once, reusing existing meshes.
+func _rider_bend(start: Vector3,finish: Vector3,upper: float,lower: float,preferred: Vector3) -> Vector3:
+	var axis := finish-start
+	var distance := maxf(.001,axis.length())
+	axis = axis/distance
+	var reach := minf(distance,upper+lower-.001)
+	var along := clampf((upper*upper-lower*lower+reach*reach)/(2.0*reach),0.0,upper)
+	var offset := sqrt(maxf(0.0,upper*upper-along*along))
+	var bend := preferred-axis*preferred.dot(axis)
+	if bend.length_squared()<.001: bend = Vector3.RIGHT-axis*axis.x
+	return start+axis*along+bend.normalized()*offset
+
+func _rider_segment(person: Node3D,part: MeshInstance3D,start: Vector3,finish: Vector3) -> void:
+	var dims := part.scale
+	part.reparent(person,false)
+	var axis := finish-start
+	if axis.length_squared()<.00001: return
+	part.position = (start+finish)*.5
+	part.rotation = Basis(Quaternion(Vector3.UP,axis.normalized())).get_euler()
+	part.scale = Vector3(dims.x,axis.length()+.025,dims.z)
+
+func _rider_endpoint(person: Node3D,part: MeshInstance3D,at: Vector3) -> void:
+	var dims := part.scale
+	part.reparent(person,false)
+	part.position = at
+	part.rotation = Vector3.ZERO
+	part.scale = dims
+
+func _pose_moto(person: Person,body: CharacterBody3D) -> void:
+	person.position = Vector3(0,.286,-.32)
+	var torso := Node3D.new()
+	person.add_child(torso)
+	torso.position = Vector3(0,.88,0)
+	for node in person.get_children():
+		if node==torso: continue
+		if node is MeshInstance3D and node.position.y>.90:
+			node.reparent(torso,true)
+		elif node in person.arms:
+			node.reparent(torso,true)
+	torso.rotation.x = .46
+	for i in range(2):
+		var side := -1.0 if i==0 else 1.0
+		var arm: Node3D = person.arms[i]
+		var shoulder := person.to_local(arm.global_position)
+		var hand := person.to_local(body.to_global(Vector3(side*.30,1.16,.23)))
+		var elbow := _rider_bend(shoulder,hand,.25,.24,Vector3(side*.25,-1,0))
+		var arm_parts := arm.get_children()
+		_rider_segment(person,arm_parts[0] as MeshInstance3D,shoulder,elbow)
+		_rider_segment(person,arm_parts[1] as MeshInstance3D,elbow,hand)
+		_rider_endpoint(person,arm_parts[2] as MeshInstance3D,hand)
+		var leg: Node3D = person.limbs[i]
+		var knee: Node3D = person.knees[i]
+		var hip := person.to_local(leg.global_position)
+		var foot := person.to_local(body.to_global(Vector3(side*.27,.49,.08)))
+		var joint := _rider_bend(hip,foot,.42,.38,Vector3(side*.55,0,1))
+		var thigh_parts: Array[MeshInstance3D] = []
+		for node in leg.get_children():
+			if node is MeshInstance3D: thigh_parts.append(node)
+		for j in range(thigh_parts.size()):
+			var first := hip.lerp(joint,float(j)/float(thigh_parts.size()))
+			var last := hip.lerp(joint,float(j+1)/float(thigh_parts.size()))
+			_rider_segment(person,thigh_parts[j],first,last)
+		var lower_parts := knee.get_children()
+		_rider_segment(person,lower_parts[0] as MeshInstance3D,joint,foot)
+		_rider_endpoint(person,lower_parts[1] as MeshInstance3D,foot)
+
 func _make_rider(body: CharacterBody3D,kind: String,style: int) -> Node3D:
 	var person := Person.new()
 	body.add_child(person)
@@ -612,8 +678,13 @@ func _make_rider(body: CharacterBody3D,kind: String,style: int) -> Node3D:
 	person.position = Vector3(0,.37,-.20)
 	person.scale = Vector3(.80,.80,.80)
 	person.remove_from_group("social_people")
-	for leg in person.limbs: leg.rotation.x = -1.00
-	for arm in person.arms: arm.rotation.x = -1.25
+	person.remove_from_group("pedestrian_spacing")
+	if kind=="moto":
+		_pose_moto(person,body)
+	else:
+		for leg in person.limbs: leg.rotation.x = -1.00
+		for knee in person.knees: knee.rotation.x = 1.25
+		for arm in person.arms: arm.rotation.x = -1.25
 	return person
 
 func _mount(kind: String) -> void:
@@ -748,7 +819,7 @@ func _init_traffic() -> void:
 			shape.size = Vector3(float(spec.width)+.4,2.2,float(spec.length)+.4)
 			q.shape = shape
 			q.transform = Transform3D(Basis(Vector3.UP,atan2(d.x,d.z)),p+Vector3.UP*1.15)
-			q.collision_mask = 1|4|8
+			q.collision_mask = 1|4|8|32
 			if not get_world_3d().direct_space_state.intersect_shape(q,1).is_empty(): continue
 			var body := Kit.body(self,kind)
 			body.global_position = p+Vector3.UP*.055
