@@ -834,6 +834,13 @@ func _traffic_tick(delta: float) -> void:
 		var body: CharacterBody3D = entry.body
 		var spec: Dictionary = Kit.KITS[entry.kind]
 		var route: Array = entry.route
+		var watch_index := int(entry.resume) if not entry.detour.is_empty() else int(entry.index)
+		var restored := Bypass.watchdog(entry,body,world.street_geometry,route,watch_index,float(spec.width),float(spec.length),maxf(1.8,float(spec.height)),delta)
+		if restored>=0:
+			entry.index = restored
+			entry.detour = []
+			entry.detour_index = 0
+			continue
 		var detour: Array = entry.detour
 		var active := not detour.is_empty()
 		var index := int(entry.detour_index) if active else int(entry.index)
