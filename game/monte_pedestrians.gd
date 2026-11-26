@@ -273,6 +273,7 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 		agent.path = path
 		agent.index = 0
 		agent.destination = dest
+		person.social_context = "shopping" if String(dest.kind)=="shop" else "street"
 		agent.pause = 0.0
 		return true
 	var neighbors := graph.get_point_connections(start)
@@ -281,6 +282,7 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 	agent.path = graph.get_point_path(start,end)
 	agent.index = 0
 	agent.destination = {"id":end,"kind":"walk"}
+	person.social_context = "street"
 	agent.pause = 0.0
 	return true
 
