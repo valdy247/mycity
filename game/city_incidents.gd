@@ -931,7 +931,7 @@ func _injury_tick(delta: float) -> void:
 			_remove_casualty_guard(victim)
 			injured.remove_at(i)
 			continue
-		var being_carried := String(scene.get("kind",""))=="rescue" and scene.get("victim",{})==victim and String(scene.get("phase","")) in ["lift","carry","load","hospital","hospital_retry","hospital_reposition"]
+		var being_carried: bool = String(scene.get("kind",""))=="rescue" and scene.get("victim",{})==victim and String(scene.get("phase","")) in ["lift","carry","load","hospital","hospital_retry","hospital_reposition"]
 		if not being_carried: _protect_casualty(victim)
 		if bool(victim.severe):
 			victim.time = float(victim.time)+delta
