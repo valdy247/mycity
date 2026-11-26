@@ -712,11 +712,22 @@ func _init_traffic() -> void:
 			break
 	if route.size()<5: return
 	traffic_ready = true
+	var spawn_slot := 0
 	for kind in ["bicicleta","triciclo","moto"]:
 		var spec: Dictionary = Kit.KITS[kind]
-		for i in range(1,route.size()-1):
+		var preferred := floori(float(route.size()-2)*float(spawn_slot)/3.0)
+		spawn_slot += 1
+		for offset in range(route.size()-2):
+			var i := 1+(preferred+offset)%(route.size()-2)
 			var p: Vector3 = route[i].p
 			if p.distance_to(game.player.global_position)<25: continue
+			var separated := true
+			for existing in traffic:
+				var other: CharacterBody3D = existing.body
+				if other.global_position.distance_to(p)<15.0:
+					separated = false
+					break
+			if not separated: continue
 			var next: Vector3 = route[i+1].p
 			var d := (next-p).normalized()
 			if d.length_squared()<.5 or not Bypass._on_road(world.street_geometry,p,d,float(spec.width),float(spec.length)): continue
