@@ -257,6 +257,7 @@ func load_map() -> bool:
 				graph[a_id].append(b_id)
 			if not one in ["yes","1","true"]:
 				graph[b_id].append(a_id)
+	_mark_monte_corridor()
 	print("Pilar-Atarés OSM: ",roads.size()," road segments; ",names.size()," street names; ",building_count," building ways in source.")
 	return roads.size()>=20
 
@@ -332,3 +333,102 @@ func bus_loop(avoid_a: String, avoid_b: String) -> Array[Vector3]:
 		var right := Vector3(-in_dir.z-out_dir.z,0,in_dir.x+out_dir.x).normalized()
 		result.append(p+right*1.4)
 	return result
+
+func _named_edge(edge: Dictionary,term: String) -> bool:
+	var values: Array = [String(edge.name)]
+	values.append_array(edge.get("aliases",[]))
+	for value in values:
+		var n := normalized(String(value))
+		if term=="monte" and (n.contains("monte") or n.contains("maximo gomez")): return true
+		if term=="cerro" and (n=="cerro" or n.contains("calzada del cerro") or n.contains("calzada de cerro") or n.contains("calzada de el cerro") or n.contains("principe alfonso")): return true
+		if term=="infanta" and (n.contains("infanta") or n.contains("menocal")): return true
+	return false
+
+func _mark_monte_corridor() -> void:
+	var monte_nodes: Dictionary = {}
+	var infanta_nodes: Dictionary = {}
+	var cerro_edges: Array = []
+	var network := AStar3D.new()
+	var ids: Dictionary = {}
+	var reverse: Dictionary = {}
+	for edge in roads:
+		if not bool(edge.driveable): continue
+		var a := String(edge.a_id)
+		var b := String(edge.b_id)
+		if _named_edge(edge,"monte"):
+			edge.monte_corridor = true
+			monte_nodes[a] = true
+			monte_nodes[b] = true
+		if _named_edge(edge,"infanta"):
+			infanta_nodes[a] = true
+			infanta_nodes[b] = true
+		if not _named_edge(edge,"cerro"): continue
+		cerro_edges.append(edge)
+		for id in [a,b]:
+			if not ids.has(id):
+				var serial := ids.size()+1
+				ids[id] = serial
+				reverse[serial] = id
+				network.add_point(serial,points[id])
+		network.connect_points(int(ids[a]),int(ids[b]),true)
+	var starts: Array = []
+	var ends: Array = []
+	for id in ids:
+		if monte_nodes.has(id): starts.append(id)
+		if infanta_nodes.has(id): ends.append(id)
+	# Some extracts split an intersection into several adjacent OSM nodes.
+	# Accept only a nearby actual named street, not an arbitrary district.
+	if starts.is_empty() or ends.is_empty():
+		for id in ids:
+			var p: Vector3 = points[id]
+			for edge in roads_near(p,12.0):
+				var a: Vector3 = edge.a
+				var b: Vector3 = edge.b
+				if Geometry3D.get_closest_point_to_segment(p,a,b).distance_to(p)>8.0: continue
+				if starts.is_empty() and _named_edge(edge,"monte"): starts.append(id)
+				if ends.is_empty() and _named_edge(edge,"infanta"): ends.append(id)
+	var best := INF
+	var chosen := PackedInt64Array()
+	for start in starts:
+		for finish in ends:
+			var path := network.get_id_path(int(ids[start]),int(ids[finish]))
+			if path.size()<2: continue
+			var length := 0.0
+			for i in range(path.size()-1):
+				length += network.get_point_position(path[i]).distance_to(network.get_point_position(path[i+1]))
+			if length<best:
+				best = length
+				chosen = path
+	var links: Dictionary = {}
+	for i in range(chosen.size()-1):
+		var a := String(reverse[chosen[i]])
+		var b := String(reverse[chosen[i+1]])
+		links[a+":"+b] = true
+		links[b+":"+a] = true
+	for edge in cerro_edges:
+		if links.has(String(edge.a_id)+":"+String(edge.b_id)):
+			edge.monte_corridor = true
+			edge.portal = true
+	print("Monte-Infanta: ",chosen.size()," connected Cerro nodes included in arcade corridor.")
+
+# Right-hand lane centres, based on each segment's actual width.
+func lane_distance(edge: Dictionary,vehicle_width: float,curbside: bool = false) -> float:
+	var width := float(edge.get("width",6.4))
+	var maximum := maxf(0.0,width*.5-vehicle_width*.5-.20)
+	return maximum if curbside else minf(width*.25,maximum)
+
+func lane_offset(a: Vector3,b: Vector3,vehicle_width: float,curbside: bool = false) -> Vector3:
+	var d := (b-a).normalized()
+	var middle := (a+b)*.5
+	var best := INF
+	var road: Dictionary = {}
+	for edge in roads_near(middle,12.0):
+		if not bool(edge.driveable): continue
+		var p: Vector3 = edge.a
+		var q: Vector3 = edge.b
+		if absf((q-p).normalized().dot(d))<.8: continue
+		var score := Geometry3D.get_closest_point_to_segment(middle,p,q).distance_to(middle)
+		if score<best:
+			best = score
+			road = edge
+	return Vector3(-d.z,0,d.x)*lane_distance(road,vehicle_width,curbside)
