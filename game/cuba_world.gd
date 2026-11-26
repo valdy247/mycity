@@ -3614,6 +3614,13 @@ func tick(delta: float) -> void:
 		var car: CharacterBody3D = entry.node
 		var route: Array = entry.route
 		var next: int = int(entry.next)
+		var watch_index := int(entry.get("resume",next)) if not entry.get("detour",[]).is_empty() else next
+		var restored := TrafficBypass.watchdog(entry,car,street_geometry,route,watch_index,2.35,7.65,2.8,delta)
+		if restored>=0:
+			entry.next = restored
+			entry.detour = []
+			entry.detour_index = 0
+			continue
 		var detour: Array = entry.get("detour",[])
 		var active := not detour.is_empty()
 		var detour_index := int(entry.get("detour_index",0))
