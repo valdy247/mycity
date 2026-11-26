@@ -556,15 +556,33 @@ func _home_from_gps(pin: Vector3) -> Array:
 	# The explicitly supplied GPS point is the house centre, not a search
 	# origin. Never snap, translate, swap or substitute this location.
 	var center := Vector3(pin.x,0,pin.z)
+	# The approved overhead screenshot shows the avenue running roughly
+	# NNE/SSW (34 degrees clockwise from north). A tiny nearby OSM segment
+	# previously selected the wrong tangent, turning the entire house.
+	# Prefer the actual nearby road matching that visible axis.
+	var heading := deg_to_rad(34.0)
+	var reference := Vector3(sin(heading),0,-cos(heading))
 	var nearest: Dictionary = {}
 	var best := INF
-	for edge in geography.roads_near(center,65.0):
-		if not _is_monte_edge(edge): continue
-		var q := Geometry3D.get_closest_point_to_segment(center,edge.a,edge.b)
+	for edge in geography.roads_near(center,40.0):
+		if not bool(edge.driveable): continue
+		var road_a: Vector3 = edge.a
+		var road_b: Vector3 = edge.b
+		var tangent := (road_b-road_a).normalized()
+		var alignment := absf(tangent.dot(reference))
+		if alignment<cos(deg_to_rad(15.0)):
+			continue
+		var q := Geometry3D.get_closest_point_to_segment(center,road_a,road_b)
 		var distance := q.distance_to(center)
-		if distance<best:
-			best = distance
+		if distance>25.0:
+			continue
+		var score := distance+(1.0-alignment)*35.0
+		if _is_monte_edge(edge):
+			score -= 1.0
+		if score<best:
+			best = score
 			nearest = edge
+	var matched_axis := not nearest.is_empty()
 	if nearest.is_empty():
 		nearest = _nearest_street(center)
 	if nearest.is_empty():
@@ -572,14 +590,19 @@ func _home_from_gps(pin: Vector3) -> Array:
 		return []
 	var a: Vector3 = nearest.a
 	var b: Vector3 = nearest.b
-	var direction := (b-a).normalized()
-	var curb := a+direction*(center-a).dot(direction)
+	var direction := reference
+	if matched_axis:
+		var tangent := (b-a).normalized()
+		direction = tangent if tangent.dot(reference)>0.0 else -tangent
+	# Use the actual selected road centreline for parking and determine
+	# the facade side from the fixed house point. Do not alter the point.
+	var curb := Geometry3D.get_closest_point_to_segment(center,a,b)
 	var outward := Vector3(-direction.z,0,direction.x)
 	if outward.dot(center-curb)<0.0:
 		outward = -outward
 	var front := -outward
 	var home := {"center":center,"front":front,"edge":nearest,"curb":curb,"outward":outward,"d":direction,"portal":true,"landmark":"home"}
-	home_gps_status = "Casa GPS: "+geography.coordinate_text(center)+" | sin desplazamiento"
+	home_gps_status = "Casa GPS: "+geography.coordinate_text(center)+" | alineada con Monte"
 	if not street_geometry.clear(_lot_polygon(home)):
 		# The road polygons are inferred from OSM widths, while the pin is
 		# the user's explicit correction. Do not relocate either one.
