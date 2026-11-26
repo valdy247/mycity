@@ -1,0 +1,254 @@
+extends CanvasLayer
+# A single reusable 2D map. No extra camera, viewport or background route search.
+const MapView = preload("res://taxi_map.gd")
+var game
+var root: PanelContainer
+var map: MapView
+var places: OptionButton
+var mode: OptionButton
+var info: Label
+var query: LineEdit
+var destinations: Array = []
+var active := false
+var origin := Vector3.ZERO
+var selected := Vector3.ZERO
+var selected_label := ""
+var has_destination := false
+var previous_mouse := Input.MOUSE_MODE_CAPTURED
+
+func setup(controller) -> void:
+	game = controller
+	layer = 90
+	root = PanelContainer.new()
+	add_child(root)
+	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color("#141d26")
+	style.content_margin_left = 20
+	style.content_margin_right = 20
+	style.content_margin_top = 14
+	style.content_margin_bottom = 14
+	root.add_theme_stylebox_override("panel",style)
+	var layout := VBoxContainer.new()
+	layout.add_theme_constant_override("separation",10)
+	root.add_child(layout)
+	var header := HBoxContainer.new()
+	layout.add_child(header)
+	var title := Label.new()
+	title.text = "MYCITY  /  MAPA"
+	title.add_theme_font_size_override("font_size",24)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(title)
+	_button(header,"Centrar en mí",_center_player)
+	_button(header,"Cerrar [M / Esc]",close)
+	var toolbar := HBoxContainer.new()
+	layout.add_child(toolbar)
+	places = OptionButton.new()
+	places.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	toolbar.add_child(places)
+	places.item_selected.connect(_choose_place)
+	mode = OptionButton.new()
+	mode.add_item("A pie")
+	mode.add_item("Vehículo")
+	toolbar.add_child(mode)
+	mode.item_selected.connect(_change_mode)
+	_button(toolbar,"Quitar destino",_clear)
+	var search := HBoxContainer.new()
+	layout.add_child(search)
+	query = LineEdit.new()
+	query.placeholder_text = "Calle, esquina o coordenadas GPS"
+	query.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	search.add_child(query)
+	query.text_submitted.connect(func(_value: String): _search())
+	_button(search,"Buscar",_search)
+	map = MapView.new()
+	layout.add_child(map)
+	map.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	map.setup(game.cuba_world.geography)
+	map.point_selected.connect(_choose_point)
+	info = Label.new()
+	info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	layout.add_child(info)
+	var hint := Label.new()
+	hint.text = "Clic: marcar destino  ·  Arrastrar: mover mapa  ·  Rueda: zoom  ·  Azul: ruta calculada"
+	hint.add_theme_color_override("font_color",Color("#aab9c9"))
+	layout.add_child(hint)
+	root.hide()
+
+func _button(parent: Control,label_value: String,callback: Callable) -> void:
+	var button := Button.new()
+	button.text = label_value
+	button.pressed.connect(callback)
+	parent.add_child(button)
+
+func _player_point() -> Vector3:
+	if game.garage.inside and not game.cuba_world.garage_home_site.is_empty():
+		return game.cuba_world.garage_home_site.door
+	if game.carlos_mission!=null and game.carlos_mission.inside:
+		return game.carlos_mission.customer.p
+	if game.driving: return game.van.global_position
+	return game.player.global_position
+
+func _add_place(label_value: String,point: Vector3) -> void:
+	if not point.is_finite(): return
+	destinations.append({"label":label_value,"p":point})
+	places.add_item(label_value)
+
+func _refresh_places() -> void:
+	places.clear()
+	destinations.clear()
+	places.add_item("Destinos útiles y misiones")
+	var world = game.cuba_world
+	var mission = game.carlos_mission
+	if mission!=null:
+		var stage: int = mission._stage()
+		if stage==2:
+			var p: Vector3 = mission.home.get("p",world.geography.project(mission.CARLOS_LAT,mission.CARLOS_LON))
+			_add_place("MISIÓN · Casa de Carlos",p)
+		elif stage in [3,4] and not mission.customer.is_empty():
+			_add_place("MISIÓN · Casa del cliente",mission.customer.p)
+		elif stage==5 and not world.garage_home_site.is_empty():
+			_add_place("MISIÓN · Llevar goma al garaje",world.garage_home_site.door)
+	if game.garage.waypoint_active: _add_place("Destino actual · "+game.garage.waypoint_label,game.garage.waypoint_point)
+	if not world.garage_home_site.is_empty(): _add_place("Mi casa / garaje",world.garage_home_site.door)
+	if is_instance_valid(game.business.albertico): _add_place("Albertico",game.business.albertico.global_position)
+	if not world.food_factory.is_empty(): _add_place("MIPYME · Fábrica",world.food_factory.counter)
+	for site in world.commerce_sites:
+		_add_place(String(site.name),site.entrance)
+	for site in world.parts_sites:
+		_add_place(String(site.name),site.road)
+	map.business_markers.clear()
+	for place in destinations:
+		var p: Vector3 = place.p
+		map.business_markers.append({"p":Vector2(p.x,p.z),"label":place.label})
+	places.select(0)
+
+func open() -> void:
+	if active: return
+	active = true
+	previous_mouse = Input.mouse_mode
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	origin = _player_point()
+	mode.select(1 if game.driving or game.taxi_riding or game.bus_riding or game.garage.riding else 0)
+	map.reset(origin)
+	_refresh_places()
+	root.show()
+	has_destination = game.garage.waypoint_active
+	if has_destination:
+		selected = game.garage.waypoint_point
+		selected_label = game.garage.waypoint_label
+		_draw_route(true)
+	else: info.text = "Selecciona una misión, un lugar o cualquier calle."
+
+func close() -> void:
+	if not active: return
+	active = false
+	root.hide()
+	Input.mouse_mode = previous_mouse
+
+func _center_player() -> void:
+	map.center = Vector2(origin.x,origin.z)
+	map.queue_redraw()
+
+func _choose_place(index: int) -> void:
+	if index<=0 or index>destinations.size(): return
+	var place: Dictionary = destinations[index-1]
+	_set_destination(place.p,String(place.label))
+
+func _choose_point(point: Vector3) -> void:
+	places.select(0)
+	_set_destination(point,"Destino marcado")
+
+func _set_destination(point: Vector3,label_value: String) -> void:
+	selected = point
+	selected_label = label_value
+	has_destination = true
+	game.garage._set_waypoint(selected,selected_label)
+	game.garage._save()
+	_draw_route(true)
+
+func _clear() -> void:
+	has_destination = false
+	selected_label = ""
+	game.garage.waypoint_active = false
+	game.garage.state.gps = {}
+	game.taxis.set_garage_destination(Vector3.ZERO,"")
+	game.garage._save()
+	map.clear_route()
+	places.select(0)
+	info.text = "Destino eliminado."
+
+func _change_mode(_index: int) -> void:
+	if has_destination: _draw_route(false)
+
+func _start_node() -> String:
+	var router = game.taxis.router
+	if router.astar.get_point_count()==0: return ""
+	var id: int = router.astar.get_closest_point(origin)
+	return String(router.osm_ids.get(id,""))
+
+func _search() -> void:
+	var value := query.text.strip_edges()
+	if value.is_empty(): return
+	var geography = game.cuba_world.geography
+	var gps: Dictionary = geography.parse_coordinates(value)
+	if gps.has("point"):
+		_set_destination(gps.point,"GPS · "+value)
+		return
+	var result: Dictionary = game.taxis.router.resolve(value,_start_node())
+	if result.has("error"):
+		info.text = String(result.error)
+		return
+	var point: Vector3 = geography.points[result.id]
+	_set_destination(point,String(result.label))
+
+func _draw_route(fit: bool) -> void:
+	var path: Array = []
+	var route_end := selected
+	var note := ""
+	var from := Vector3(origin.x,0,origin.z)
+	if mode.selected==0:
+		var walk: PackedVector3Array = game.monte_pedestrians.route_between(from,selected)
+		if not walk.is_empty():
+			for p in walk: path.append(p)
+		elif from.distance_to(selected)<35.0 and game.cuba_world.pedestrian_segment_clear(from,selected):
+			path.append(from)
+			path.append(selected)
+		else: note = "No hay una ruta peatonal comprobada para este punto. Prueba una acera o el modo vehículo."
+	else:
+		var result: Dictionary = game.taxis.router.resolve_point(selected,_start_node())
+		if result.has("error"):
+			note = String(result.error)
+		else:
+			for id in result.path: path.append(game.cuba_world.geography.points[id])
+			var last: Vector3 = path.back() if not path.is_empty() else from
+			route_end = result.get("point",last)
+			path.append(route_end)
+			note = "Ruta por calles de sentido permitido; termina en la calle accesible más cercana."
+	# A destination marker is not a route. Never draw a straight blue line
+	# across buildings when the routing graph could not find a connection.
+	map.origin = Vector2(origin.x,origin.z)
+	map.clear_route()
+	map.marker = Vector2(selected.x,selected.z)
+	map.has_marker = true
+	var distance := 0.0
+	if not path.is_empty():
+		var previous: Vector3 = path[0]
+		for p in path:
+			var point: Vector3 = p
+			map.route.append(Vector2(point.x,point.z))
+			distance += previous.distance_to(point)
+			previous = point
+		info.text = "%s · %.0f m por ruta  %s" % [selected_label,distance,note]
+	else:
+		info.text = selected_label+" · "+note
+	if fit:
+		var low := Vector2(minf(origin.x,selected.x),minf(origin.z,selected.z))
+		var high := Vector2(maxf(origin.x,selected.x),maxf(origin.z,selected.z))
+		for p in map.route:
+			low = low.min(p)
+			high = high.max(p)
+		map.center = (low+high)*.5
+		var span := high-low
+		map.zoom = clampf(minf(maxf(300.0,map.size.x-120.0)/maxf(70.0,span.x),maxf(220.0,map.size.y-120.0)/maxf(70.0,span.y)),.13,2.5)
+	map.queue_redraw()
