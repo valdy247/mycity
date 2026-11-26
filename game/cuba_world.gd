@@ -24,6 +24,7 @@ var old_home_transform: Transform3D = Transform3D.IDENTITY
 var old_home_found := false
 var paired_landmarks := false
 var home_relocated := false
+var home_gps_status := ""
 var home_spawn := Vector3.ZERO
 var van_spawn := Vector3.ZERO
 var van_angle := 0.0
@@ -523,30 +524,49 @@ const HOME_GPS_FILE := "user://pilar_home_gps.json"
 
 func _private_home_pin() -> Dictionary:
 	if not FileAccess.file_exists(HOME_GPS_FILE):
+		home_gps_status = "GPS casa: sin punto guardado (B > F8)."
 		return {}
 	var file := FileAccess.open(HOME_GPS_FILE,FileAccess.READ)
-	if file==null: return {}
-	var data: Variant = JSON.parse_string(file.get_as_text())
+	if file==null:
+		home_gps_status = "GPS casa: no se pudo leer el archivo local."
+		return {"error":home_gps_status}
+	var raw := file.get_as_text().strip_edges().trim_prefix("\ufeff")
 	file.close()
+	var data: Variant = JSON.parse_string(raw)
 	if not data is Dictionary or not data.has("lat") or not data.has("lon"):
-		return {}
-	return geography.parse_coordinates("%s, %s" % [str(data.lat),str(data.lon)])
+		home_gps_status = "GPS casa: archivo inválido."
+		return {"error":home_gps_status}
+	var result := geography.parse_coordinates("%.9f, %.9f" % [float(data.lat),float(data.lon)])
+	if result.has("error"):
+		home_gps_status = String(result.error)
+	else:
+		home_gps_status = "GPS casa: punto local leído."
+	print(home_gps_status)
+	return result
+
+func _is_monte_edge(edge: Dictionary) -> bool:
+	if not bool(edge.driveable): return false
+	for name_value in [String(edge.name)]+edge.get("aliases",[]):
+		var n := geography.normalized(String(name_value))
+		if geography.street_label(String(name_value))=="MONTE" or n.contains("monte") or n.contains("maximo gomez"):
+			return true
+	return false
 
 func _home_from_gps(pin: Vector3) -> Array:
-	# Preserve the longitudinal position of the user-confirmed pin.
-	# Only a minimal inward setback is allowed to clear road/sidewalk.
-	var nearest: Dictionary = {}
-	var best := INF
-	for edge in geography.roads_near(pin,45.0):
-		if not bool(edge.driveable) or geography.street_label(String(edge.name))!="MONTE":
-			continue
+	# The pin is authoritative. Never choose a different block or use the
+	# previous house/van location. Only adjust normal to the same frontage.
+	var candidates: Array = []
+	for edge in geography.roads_near(pin,35.0):
+		if not _is_monte_edge(edge): continue
 		var q := Geometry3D.get_closest_point_to_segment(pin,edge.a,edge.b)
 		var distance := q.distance_to(pin)
-		if distance<best:
-			best = distance
-			nearest = edge
-	if nearest.is_empty():
+		if distance<=35.0:
+			candidates.append({"edge":edge,"distance":distance})
+	candidates.sort_custom(func(a,b): return float(a.distance)<float(b.distance))
+	if candidates.is_empty():
+		home_gps_status = "GPS casa: no se encuentra Monte junto al punto."
 		return []
+	var nearest: Dictionary = candidates[0].edge
 	var a: Vector3 = nearest.a
 	var b: Vector3 = nearest.b
 	var direction := (b-a).normalized()
@@ -555,7 +575,7 @@ func _home_from_gps(pin: Vector3) -> Array:
 	if outward.dot(pin-curb)<0.0:
 		outward = -outward
 	var front := -outward
-	for step in range(81):
+	for step in range(151):
 		var center := pin+outward*(float(step)*.10)
 		var home := {"center":center,"front":front,"edge":nearest,"curb":curb,"outward":outward,"d":direction,"portal":true,"landmark":"home"}
 		var poly := _lot_polygon(home)
@@ -570,20 +590,21 @@ func _home_from_gps(pin: Vector3) -> Array:
 				safe = false
 				break
 		if safe:
-			print("GPS vivienda: posicion confirmada; ajuste perpendicular de ",float(step)*.10," metros.")
+			home_gps_status = "GPS casa: aplicado | ajuste hacia el interior %.1f m" % (float(step)*.10)
+			print(home_gps_status)
 			return _pair_at_parked_van(home)
+	home_gps_status = "GPS casa: el modelo no cabe en la fachada indicada."
 	return []
 
 func request_home_placement(at: Vector3) -> String:
-	var pair := _monte_pair(Vector3(at.x,0,at.z),true)
-	if not pair.is_empty():
-		pair = _pair_at_parked_van(pair[0])
-	if pair.size()!=2:
-		return "No caben casa y tienda sin invadir calles. Marca el centro de la fachada en Monte."
-	var file := FileAccess.open(HOME_PLACEMENT_FILE,FileAccess.WRITE)
+	var pair := _home_from_gps(Vector3(at.x,0,at.z))
+	if pair.is_empty():
+		return home_gps_status
+	var gps := geography.unproject(at)
+	var file := FileAccess.open(HOME_GPS_FILE,FileAccess.WRITE)
 	if file==null:
-		return "No se pudo guardar la posición."
-	file.store_string(JSON.stringify({"x":at.x,"z":at.z}))
+		return "No se pudo guardar el punto GPS."
+	file.store_string(JSON.stringify({"lat":gps.lat,"lon":gps.lon}))
 	file.close()
 	return ""
 
@@ -639,9 +660,10 @@ func _make_frontages() -> void:
 	var target: Vector3 = manual.get("point",public_anchor)
 	var gps := _private_home_pin()
 	var pair: Array = []
-	var fixed_gps := gps.has("point")
+	var fixed_gps := FileAccess.file_exists(HOME_GPS_FILE)
 	if fixed_gps:
-		pair = _home_from_gps(gps.point)
+		if gps.has("point"):
+			pair = _home_from_gps(gps.point)
 		if pair.is_empty():
 			push_warning("GPS vivienda: la posición indicada no admite la geometría de la casa sin invadir la calle.")
 	else:
@@ -674,7 +696,7 @@ func _make_frontages() -> void:
 		_make_humble_home(residence)
 		home_relocated = true
 		push_warning("Casa ubicada en la antigua fachada. La Alborada necesita una parcela segura a su derecha.")
-	elif old_home_found:
+	elif old_home_found and not fixed_gps:
 		for lot in home_candidates:
 			var center: Vector3 = lot.center
 			if center.distance_to(old_home_transform.origin)<.01:
@@ -707,7 +729,15 @@ func _make_frontages() -> void:
 		_add_lot(lot)
 		_facade(lot,slots.size(),"")
 	if home_root==null:
-		push_warning("Pilar-Atarés: no safe home lot found.")
+		push_warning("Pilar-Atarés: "+home_gps_status)
+		if fixed_gps and gps.has("point"):
+			var requested: Vector3 = gps.point
+			var closest := _nearest_street(requested)
+			if not closest.is_empty():
+				var q := Geometry3D.get_closest_point_to_segment(requested,closest.a,closest.b)
+				home_spawn = q+Vector3.UP*.96
+				van_spawn = q+Vector3(0,.06,5)
+				return
 		var edge: Dictionary = geography.roads[0]
 		home_spawn = edge.a+Vector3.UP*.9
 		van_spawn = home_spawn+Vector3(0,0,5)
