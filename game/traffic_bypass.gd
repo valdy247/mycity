@@ -16,7 +16,7 @@ static func _clear(body: CharacterBody3D,p: Vector3,d: Vector3,shape: BoxShape3D
 	var query := PhysicsShapeQueryParameters3D.new()
 	query.shape = shape
 	query.transform = Transform3D(Basis(Vector3.UP,atan2(d.x,d.z)),p+Vector3.UP*(shape.size.y*.5+.07))
-	query.collision_mask = 1|4|8
+	query.collision_mask = 1|4|8|32
 	query.exclude = [body.get_rid()]
 	return body.get_world_3d().direct_space_state.intersect_shape(query,1).is_empty()
 
@@ -73,7 +73,7 @@ static func _segment_clear(body: CharacterBody3D,a: Vector3,b: Vector3,d: Vector
 	var q := PhysicsShapeQueryParameters3D.new()
 	q.shape = shape
 	q.transform = Transform3D(Basis(Vector3.UP,atan2(d.x,d.z)),a+Vector3.UP*(shape.size.y*.5+.07))
-	q.collision_mask = 1|4|8
+	q.collision_mask = 1|4|8|32
 	q.exclude = [body.get_rid()]
 	var space := body.get_world_3d().direct_space_state
 	if not space.intersect_shape(q,1).is_empty(): return false
@@ -215,7 +215,7 @@ static func clear_distance(body: CharacterBody3D,d: Vector3,reach: float,width: 
 	var query := PhysicsShapeQueryParameters3D.new()
 	query.shape = shape
 	query.transform = Transform3D(body.global_transform.basis.orthonormalized(),body.global_position+Vector3.UP*(height*.5+.10))
-	query.collision_mask = 1|4|8
+	query.collision_mask = 1|4|8|32
 	query.exclude = [body.get_rid()]
 	var space := body.get_world_3d().direct_space_state
 	if not space.intersect_shape(query,1).is_empty():
@@ -485,7 +485,7 @@ static func _junction_occupied(body: CharacterBody3D,junction: Dictionary) -> bo
 	var q := PhysicsShapeQueryParameters3D.new()
 	q.shape = shape
 	q.transform = Transform3D(Basis.IDENTITY,p+Vector3.UP*1.9)
-	q.collision_mask = 1|4|8
+	q.collision_mask = 1|4|8|32
 	q.exclude = [body.get_rid()]
 	for hit in body.get_world_3d().direct_space_state.intersect_shape(q,64):
 		if hit.collider is CharacterBody3D: return true
@@ -496,7 +496,7 @@ static func _junction_exit_clear(body: CharacterBody3D,samples: Array,first: int
 	shape.size = Vector3(width+.10,height,length+.30)
 	var q := PhysicsShapeQueryParameters3D.new()
 	q.shape = shape
-	q.collision_mask = 1|4|8
+	q.collision_mask = 1|4|8|32
 	q.exclude = [body.get_rid()]
 	var space := body.get_world_3d().direct_space_state
 	for i in range(maxi(1,first),last+1):
