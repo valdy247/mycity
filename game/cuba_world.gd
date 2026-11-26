@@ -2667,7 +2667,7 @@ func tick(delta: float) -> void:
 					entry.next = int(entry.resume)
 			else:
 				entry.next = (next+1)%route.size()
-				entry.stop = .7
+				entry.stop = 0.0
 			continue
 		entry.stop = maxf(0.0,float(entry.stop)-delta)
 		var d := diff.normalized()
@@ -2677,6 +2677,8 @@ func tick(delta: float) -> void:
 		var free := TrafficBypass.clear_distance(car,d,reach,2.35,7.65,2.8)
 		var blocked := free<reach-.05
 		var stalled := TrafficBypass.stalled(entry,car,delta)
+		var junction_limit := TrafficBypass.junction_gate(entry,car,street_geometry,detour if active else route,detour_index if active else next,not active,2.35,7.65,2.8,delta,route if active else [],int(entry.get("resume",0)))
+		speed = TrafficBypass.junction_speed(speed,junction_limit,6.0)
 		if TrafficBypass.cooperate(entry,car,street_geometry,2.35,7.65,2.8,delta,stalled,target): continue
 		if bool(entry.get("cooperative_rejoin",false)):
 			entry.cooperative_rejoin = false
@@ -2685,7 +2687,7 @@ func tick(delta: float) -> void:
 			continue
 		entry.cooldown = maxf(0.0,float(entry.get("cooldown",0.0))-delta)
 		if blocked: speed = minf(speed,sqrt(12.0*maxf(0.0,free-.7)))
-		if float(entry.get("retreat_remaining",0.0))<=0.0 and (stalled>1.0 or (not active and TrafficBypass.early_lane_pass(car,street_geometry,blocked,free))) and float(entry.stop)<=0.0 and float(entry.cooldown)<=0.0:
+		if not bool(car.get_meta("junction_guard",false)) and float(entry.get("retreat_remaining",0.0))<=0.0 and (stalled>1.0 or (not active and TrafficBypass.early_lane_pass(car,street_geometry,blocked,free))) and float(entry.stop)<=0.0 and float(entry.cooldown)<=0.0:
 			entry.cooldown = 1.8
 			if active:
 				entry.detour = []
@@ -2707,7 +2709,7 @@ func tick(delta: float) -> void:
 		if stalled<.1: entry.backed_up = 0.0
 		entry.speed = move_toward(float(entry.speed),speed,delta*5.0)
 		var angle := lerp_angle(car.rotation.y,atan2(d.x,d.z),minf(delta*4.0,1.0))
-		var advance := minf(float(entry.speed)*delta,distance)
+		var advance := TrafficBypass.junction_advance(minf(float(entry.speed)*delta,distance),junction_limit)
 		if blocked: advance = minf(advance,maxf(0.0,free-.7))
 		if advance<.0001:
 			car.velocity = Vector3.ZERO
