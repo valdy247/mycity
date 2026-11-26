@@ -1,5 +1,6 @@
 extends RefCounted
 # Authoritative local-metre street surfaces. Never mutate OSM centerlines.
+const MapData = preload("res://pilar_map.gd")
 const CELL := 40.0
 const WALK_WIDTH := 1.40
 var roads: Array = []
@@ -26,10 +27,9 @@ func _register(index: Dictionary,poly: PackedVector2Array) -> void:
 	var box := bounds(poly)
 	var low := Vector2i(floori(box.position.x/CELL),floori(box.position.y/CELL))
 	var high := Vector2i(floori(box.end.x/CELL),floori(box.end.y/CELL))
-	var item := {"poly":poly,"bounds":box,"id":index.size()+roads.size()*100000+sidewalks.size()}
+	var item := {"poly":poly,"bounds":box,"id":_serial}
 	# Shared dictionary identity not needed: duplicates are harmless, but a
 	# stable serial avoids clipping the same polygon twice.
-	item.id = _serial
 	_serial += 1
 	for x in range(low.x,high.x+1):
 		for z in range(low.y,high.y+1):
@@ -67,7 +67,7 @@ func _walk(poly: PackedVector2Array) -> void:
 	sidewalks.append(poly)
 	_register(protected_index,poly)
 
-func build(data: RefCounted) -> void:
+func build(data: MapData) -> void:
 	for edge in data.roads:
 		_road(rect(edge.a,edge.b,float(edge.width),.04))
 	# Fill bends and intersections before cutting sidewalks.
