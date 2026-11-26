@@ -15,6 +15,7 @@ var taxis: TaxiService
 var taxi_riding := false
 var taxi_previous_first := false
 var taxi_reset_requested := false
+var taxi_exit_retry := 0.0
 var pilar_editor: PilarEditor
 var context_requested := false
 var cuba_world: CubaWorld
@@ -820,7 +821,7 @@ func _update_hud() -> void:
 	if status == null:
 		return
 	if taxi_riding:
-		status.text = "TAXI | "+taxis.ride_status+"\n"+taxis.speed_description()+" | T: cambiar velocidad\nE: bajar detenido | R: volver a casa si te bloqueas\n© OpenStreetMap contributors | ODbL"
+		status.text = "TAXI | "+taxis.ride_status+"\n"+taxis.speed_description()+" | T: cambiar velocidad\nE: detener y bajar | R: volver a casa si te bloqueas\n© OpenStreetMap contributors | ODbL"
 		return
 	var title := "PILAR-ATARÉS | La Habana" if cuba_world != null else ("VALDY JR TV | Ciudad 2.0" if native_city else "VALDY JR TV | Ciudad original")
 	if not city_loaded:
@@ -862,6 +863,8 @@ func _update_hud() -> void:
 
 func _start_taxi_ride() -> void:
 	taxi_riding = true
+	taxi_exit_retry = 0.0
+	interact_requested = false
 	taxi_previous_first = first_person
 	player.velocity = Vector3.ZERO
 	player_shape.set_deferred("disabled",true)
@@ -930,20 +933,19 @@ func _physics_process(delta: float) -> void:
 		cuba_world.tick(delta)
 		if urban_buses!=null:
 			urban_buses.tick(delta)
+		if interact_requested:
+			taxis.request_stop()
+		interact_requested = false
 		taxis.tick(delta,cuba_world.cuba_clock)
 		var taxi: CharacterBody3D = taxis.passenger.body
 		player.global_position = taxi.global_position+Vector3.UP*.8
-		var requested := interact_requested
-		interact_requested = false
-		if taxis.arrived or (requested and float(taxis.passenger.speed)<.8):
-			if _leave_taxi():
-				return
-			if taxis.arrived:
-				taxis.ride_status = "Llegaste, pero no hay espacio seguro para bajar. Pulsa E para reintentar."
-			elif requested:
-				taxis.ride_status = "No hay espacio seguro para bajar aquí."
-		elif requested:
-			taxis.ride_status = "Espera a que el taxi se detenga."
+		if taxis.ready_to_exit():
+			taxi_exit_retry -= delta
+			if taxi_exit_retry<=0.0:
+				taxi_exit_retry = .35
+				if _leave_taxi():
+					return
+				taxis.ride_status = "Taxi detenido. Buscando un lugar libre para bajar. R: regresar a casa."
 		hud_time += delta
 		if hud_time>=.15:
 			hud_time=0.0
