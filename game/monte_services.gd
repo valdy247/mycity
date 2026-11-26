@@ -10,12 +10,21 @@ var avoid: Array = []
 var sites: Array = []
 var vehicles: Array = []
 var initialized := false
+var player: CharacterBody3D
+var camera: Camera3D
+var player_bag: Node3D
+var player_site: Dictionary = {}
+var helped := 0
+var notice := ""
+var notice_time := 0.0
 var mats: Dictionary = {}
 var mesh := BoxMesh.new()
 var bag_mesh := SphereMesh.new()
 var wheel_mesh := CylinderMesh.new()
 
-func setup(city: World,home: Vector3,occupied: Array) -> void:
+func setup(city: World,home: Vector3,occupied: Array,actor: CharacterBody3D,view: Camera3D) -> void:
+	player = actor
+	camera = view
 	world = city
 	anchor = home
 	avoid = occupied.duplicate()
@@ -60,7 +69,7 @@ func _free_box(p: Vector3,d: Vector3,size_value: Vector3) -> bool:
 func _new_site(p: Vector3,d: Vector3,width: float) -> Dictionary:
 	var right := Vector3(-d.z,0,d.x)
 	var curb := p+right*(width*.5+.43)
-	var parking := p+right*minf(1.55,width*.5-1.45)
+	var parking := p+d*7.0+right*maxf(0.0,width*.5-1.35)
 	if world.street_geometry.point_on_road(curb): return {}
 	if not _free_box(curb,d,Vector3(.80,1.05,2.40)): return {}
 	if not Bypass._on_road(world.street_geometry,parking,d,2.3,6.2): return {}
@@ -84,7 +93,7 @@ func _new_site(p: Vector3,d: Vector3,width: float) -> Dictionary:
 		collider.shape = shape
 		root.add_child(collider)
 		collider.position = Vector3(0,.44,float(z))
-	var site := {"root":root,"curb":curb+Vector3.UP*.07,"parking":parking,"direction":d,"bags":[],"refill":0.0}
+	var site := {"root":root,"curb":curb+Vector3.UP*.07,"parking":parking,"direction":d,"bags":[],"refill":0.0,"large":sites.size()%2==1 and width>=6.5,"width":width,"collected":0}
 	sites.append(site)
 	_fill(site)
 	return site
@@ -92,13 +101,111 @@ func _new_site(p: Vector3,d: Vector3,width: float) -> Dictionary:
 func _fill(site: Dictionary) -> void:
 	var root: Node3D = site.root
 	var bags: Array = site.bags
-	for i in range(7):
-		var p := Vector3(-.05+float(i%2)*.15,.20+floorf(float(i)/3.0)*.12,-1.35+float(i%3)*.36)
-		if i>=3: p = Vector3(0,.98+float((i-3)%2)*.10,-.65+float(i-3)*.38)
-		var bag := _part(root,p,Vector3(.38,.34,.40),[Color("#353935"),Color("#ccc5ac"),Color("#8a806b")][i%3],bag_mesh)
+	var large := bool(site.large)
+	var count := 26 if large else 13
+	for i in range(count):
+		var p := Vector3.ZERO
+		if i<6:
+			p = Vector3(.02,.99+float(i%2)*.16,-.93+floorf(float(i)/2.0)*.57)
+		elif i<13:
+			p = Vector3(-.34-float(i%2)*.28,.23,-1.48+float(i-6)*.45)
+		else:
+			# Extra bags form a mound over the curb and in the outer lane.
+			p = Vector3(-.77-float((i-13)%3)*.38,.24+float((i-13)%2)*.20,-1.68+floorf(float(i-13)/3.0)*.70)
+		var bag := StaticBody3D.new()
+		bag.collision_layer = 1
+		bag.collision_mask = 0
+		root.add_child(bag)
+		bag.position = p
 		bag.rotation.y = float(i)*.86
+		var colors: Array[Color] = [Color("#353935"),Color("#ccc5ac"),Color("#8a806b"),Color("#d5d0c7"),Color("#5e6c4d")]
+		_part(bag,Vector3.ZERO,Vector3(.52,.47,.49),colors[i%colors.size()],bag_mesh)
+		if i>=6:
+			var collision := CollisionShape3D.new()
+			var shape := SphereShape3D.new()
+			shape.radius = .25
+			collision.shape = shape
+			bag.add_child(collision)
 		bags.append(bag)
 	site.refill = 0.0
+	site.collected = 0
+
+func _remove_bag(bag: Node3D) -> void:
+	if bag is StaticBody3D:
+		(bag as StaticBody3D).collision_layer = 0
+	bag.queue_free()
+
+func _active_truck() -> Dictionary:
+	for vehicle in vehicles:
+		if bool(vehicle.truck) and not vehicle.site.is_empty():
+			return vehicle
+	return {}
+
+func action_text(at: Vector3) -> String:
+	if player_bag!=null:
+		var vehicle := _active_truck()
+		if not vehicle.is_empty() and vehicle.site==player_site:
+			var body: CharacterBody3D = vehicle.body
+			if at.distance_to(body.to_global(Vector3(-1.40,.9,-2.8)))<2.5:
+				return "[E] Echar bolsa en el camión"
+		return "Lleva la bolsa a la parte trasera del camión"
+	var vehicle := _active_truck()
+	if vehicle.is_empty(): return ""
+	var site: Dictionary = vehicle.site
+	for bag in site.bags:
+		if is_instance_valid(bag) and at.distance_to(bag.global_position)<2.3:
+			return "[E] Ayudar a recoger basura"
+	return ""
+
+func interact(at: Vector3) -> bool:
+	var action := action_text(at)
+	if not action.begins_with("[E]"): return false
+	if player_bag!=null:
+		player_bag.queue_free()
+		player_bag = null
+		player_site = {}
+		helped += 1
+		notice = "Bolsa recogida · Has ayudado con %d bolsas" % helped
+		notice_time = 4.0
+		return true
+	var vehicle := _active_truck()
+	if vehicle.is_empty(): return false
+	var site: Dictionary = vehicle.site
+	var bags: Array = site.bags
+	var closest := -1
+	var best := 2.3
+	for i in range(bags.size()):
+		var bag: Node3D = bags[i]
+		var dist := at.distance_to(bag.global_position)
+		if dist<best:
+			best = dist
+			closest = i
+	if closest<0: return false
+	var bag: Node3D = bags.pop_at(closest)
+	_remove_bag(bag)
+	player_site = site
+	player_bag = Node3D.new()
+	camera.add_child(player_bag)
+	player_bag.position = Vector3(.30,-.37,-.85)
+	_part(player_bag,Vector3.ZERO,Vector3(.44,.44,.40),Color("#353935"),bag_mesh)
+	return true
+
+func return_player_bag() -> void:
+	if player_bag==null: return
+	if not player_site.is_empty():
+		var root: Node3D = player_site.root
+		var bag := StaticBody3D.new()
+		bag.collision_layer = 1
+		bag.collision_mask = 0
+		root.add_child(bag)
+		bag.position = Vector3(-.55,.23,-1.1)
+		_part(bag,Vector3.ZERO,Vector3(.5,.45,.5),Color("#353935"),bag_mesh)
+		var bags: Array = player_site.bags
+		bags.append(bag)
+	player_bag.queue_free()
+	player_bag = null
+	player_site = {}
+
 
 func _body(truck: bool,index: int) -> CharacterBody3D:
 	var body := CharacterBody3D.new()
@@ -206,19 +313,21 @@ func _initialize() -> void:
 		var d := (b-a).normalized()
 		var right := Vector3(-d.z,0,d.x)
 		var width := float(edge.width)
-		var lane := right*minf(1.55,width*.5-1.45)
+		var lane := right*world.geography.lane_distance(edge,2.3)
 		var length := a.distance_to(b)
 		if length>8.0: route.append({"p":a+d*3.0+lane})
-		if sites.size()<5 and world._is_monte_edge(edge) and width>=6.5 and length>17.0:
-			var near_corner := a+d*minf(length*.5,9.5)
+		if sites.size()<5 and world._is_monte_edge(edge) and width>=6.5 and length>25.0:
+			var near_corner := a+d*minf(length-13.0,9.5)
 			var site := _new_site(near_corner,d,width)
-			if not site.is_empty(): route.append({"p":site.parking,"stop":site})
+			if not site.is_empty():
+				var park: Vector3 = site.parking
+				route.append({"p":park,"stop":site})
 		route.append({"p":b+lane})
 	if route.size()<5: return
 	if not sites.is_empty(): _make_vehicle(route,true,0)
 	var car_route: Array = []
 	for item in route:
-		car_route.append({"p":item.p})
+		if not item.has("stop"): car_route.append({"p":item.p})
 	for i in range(2):
 		_make_vehicle(car_route,false,i)
 	print("Monte: ",sites.size()," garbage collection points; ",vehicles.size()," municipal/ordinary vehicles.")
@@ -250,7 +359,7 @@ func _collect(vehicle: Dictionary,delta: float) -> void:
 		var worker: Dictionary = crew[i]
 		var person: Person = worker.node
 		var right := Vector3(-direction.z,0,direction.x)
-		var pickup := curb-right*.55+direction*(-.95+float(i)*1.90)
+		var pickup := curb-right*.65+direction*(-.95+float(i)*1.90)
 		var hopper := body.to_global(Vector3(-1.38,0,-2.7-float(i)*.23))
 		var cab := body.to_global(Vector3(-1.38,0,1.9-float(i)*.75))
 		match String(worker.state):
@@ -260,7 +369,7 @@ func _collect(vehicle: Dictionary,delta: float) -> void:
 					worker.state = "return"
 				elif person.walk_to(pickup,delta,1.65):
 					var bag: Node3D = bags.pop_back()
-					bag.queue_free()
+					_remove_bag(bag)
 					person.set_bag(true)
 					worker.state = "to_hopper"
 			"to_hopper":
@@ -273,7 +382,7 @@ func _collect(vehicle: Dictionary,delta: float) -> void:
 				if person.walk_to(cab,delta,1.7):
 					person.hide()
 					worker.state = "idle"
-	if done:
+	if done and player_site!=site:
 		site.refill = 170.0
 		vehicle.site = {}
 		var route: Array = vehicle.route
@@ -341,6 +450,7 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 	body.move_and_slide()
 
 func tick(delta: float) -> void:
+	notice_time = maxf(0.0,notice_time-delta)
 	if not initialized:
 		initialized = true
 		_initialize()
