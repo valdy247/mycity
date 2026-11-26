@@ -2,6 +2,7 @@ extends Node3D
 const Ledger = preload("res://business_ledger.gd")
 const World = preload("res://cuba_world.gd")
 const Taxi = preload("res://taxi_service.gd")
+const Person = preload("res://street_person.gd")
 var ledger := Ledger.new()
 var world: World
 var taxis: Taxi
@@ -14,9 +15,13 @@ var stand: Node3D
 var factory_arrow: Node3D
 var crate_view: Node3D
 var crate_rack: Node3D
-var buyer: Node3D
-var buyer_origin := Vector3.ZERO
+var buyer: Person
 var buyer_time := 0.0
+var buyer_path := PackedVector3Array()
+var buyer_index := 0
+var buyer_returning := false
+var buyer_normal := Vector3.ZERO
+var buyer_blocked := 0.0
 var phone_ring: AudioStreamPlayer
 var stock_display: Node3D
 var cargo_views: Dictionary = {}
@@ -144,9 +149,9 @@ func _make_scene() -> void:
 	_label(stand,"VENTA DE ALIMENTOS",Vector3(0,1.33,0))
 	stock_display = Node3D.new()
 	stand.add_child(stock_display)
-	buyer_origin = home.to_global(Vector3(2.5,.105,3.15))
-	buyer = _person(self,Color("#a19bca"))
-	buyer.position = buyer_origin
+	buyer = Person.new()
+	add_child(buyer)
+	buyer.setup(210)
 	buyer.hide()
 	var counter: Vector3 = world.food_factory.counter
 	var clerk := _person(self,Color("#8196b0"))
@@ -485,6 +490,58 @@ func _update_hud() -> void:
 	hud.text = "%d CUP%s\n%s\n%s | G: cargar / descargar" % [ledger.cash,carrying,_objective(),phone]
 	if toast_time>0: hud.text += "\n"+toast
 
+# Sales and stock remain independent of the visual customer. If no
+# verified doorway can reach the stall, do not fake a walk through a wall.
+func _start_buyer() -> void:
+	if buyer==null or not buyer_path.is_empty() or stand==null or world.pedestrian_router==null: return
+	var trip: Dictionary = world.pedestrian_router.call("customer_trip",stand.global_position,world.business_frontage.global_transform.basis)
+	if trip.is_empty(): return
+	var path: PackedVector3Array = trip.path
+	if path.size()<2 or not world.pedestrian_segment_clear(path[0],path[0]): return
+	var door: Dictionary = trip.door
+	buyer_normal = door.normal
+	buyer_path = path
+	buyer_index = 1
+	buyer_time = 0.0
+	buyer_returning = false
+	buyer_blocked = 0.0
+	buyer.global_position = buyer_path[0]
+	buyer.rotation.y = atan2(buyer_normal.x,buyer_normal.z)
+	buyer.show()
+
+func _tick_buyer(delta: float) -> void:
+	if buyer==null or buyer_path.is_empty(): return
+	if not buyer_returning and buyer_index>=buyer_path.size():
+		buyer.animate(delta,false)
+		buyer_time += delta
+		if buyer_time>=2.0:
+			buyer_returning = true
+			buyer_index = buyer_path.size()-2
+		return
+	if buyer_returning and buyer_index<0:
+		# The entire return route has been completed. Disappear only at
+		# the same registered doorway, never at an arbitrary wall or timer.
+		if buyer.global_position.distance_to(buyer_path[0])<.14:
+			buyer.rotation.y = atan2(-buyer_normal.x,-buyer_normal.z)
+			buyer.hide()
+			buyer_path = PackedVector3Array()
+		return
+	var target: Vector3 = buyer_path[buyer_index]
+	var next := buyer.global_position.move_toward(target,maxf(.12,1.5*delta))
+	if not world.pedestrian_segment_clear(buyer.global_position,next):
+		buyer.animate(delta,false)
+		buyer_blocked += delta
+		# A blocked customer can abort the approach and return to the
+		# previous waypoint; if the way home is blocked, wait visibly.
+		if not buyer_returning and buyer_blocked>2.0:
+			buyer_returning = true
+			buyer_index = maxi(0,buyer_index-1)
+			buyer_blocked = 0.0
+		return
+	buyer_blocked = 0.0
+	if buyer.walk_to(target,delta,1.5):
+		buyer_index += -1 if buyer_returning else 1
+
 func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	phase += delta
 	toast_time = maxf(0.0,toast_time-delta)
@@ -504,19 +561,9 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 				if ledger.unread>before:
 					_notify("Albertico te llama · P para leer su mensaje")
 					phone_ring.play()
-				if buyer!=null:
-					buyer_time = 8.0
-					buyer.position = buyer_origin
-					buyer.show()
+				_start_buyer()
 				_sync_visuals()
-	if buyer!=null and buyer_time>0.0:
-		buyer_time -= delta
-		var target := stand.position+world.business_frontage.transform.basis.x*.9
-		if buyer_time<3.0: target = buyer_origin
-		buyer.position = buyer.position.move_toward(target,delta*1.5)
-		var direction := target-buyer.position
-		if direction.length()>.1: buyer.rotation.y = atan2(direction.x,direction.z)
-		if buyer_time<=0.0: buyer.hide()
+	if not editor: _tick_buyer(delta)
 	refresh += delta
 	if refresh>=.18:
 		refresh = 0.0
