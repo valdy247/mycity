@@ -165,9 +165,10 @@ func _on_sidewalk(p: Vector3) -> bool:
 
 func _make_stop(mid: Vector3,d: Vector3,width: float,lane: float,line: String,edge: Dictionary,mapped: bool,name_value: String) -> Dictionary:
 	var right := Vector3(-d.z,0,d.x)
-	var sidewalk := mid+right*(width*.5+.70)
-	var p := mid+right*data.lane_distance(edge,BUS_WIDTH,true)
+	var desired := mid+right*data.lane_distance(edge,BUS_WIDTH,true)
+	var p := streets.safe_stop_on_edge(edge.a,edge.b,desired,BUS_LENGTH,BUS_WIDTH)
 	if not streets.intersection_clear_for_stop(p,BUS_LENGTH,BUS_WIDTH): return {}
+	var sidewalk := mid+(p-desired)+right*(width*.5+.70)
 	for other in stops:
 		var old: Vector3 = other.position
 		if old.distance_to(p)<27.0: return {}
