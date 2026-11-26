@@ -2348,6 +2348,12 @@ func tick(delta: float) -> void:
 		var free := TrafficBypass.clear_distance(car,d,reach,2.35,7.65,2.8)
 		var blocked := free<reach-.05
 		var stalled := TrafficBypass.stalled(entry,car,delta)
+		if TrafficBypass.cooperate(entry,car,street_geometry,2.35,7.65,2.8,delta,stalled,target): continue
+		if bool(entry.get("cooperative_rejoin",false)):
+			entry.cooperative_rejoin = false
+			if active: entry.next = int(entry.resume)
+			entry.detour = []
+			continue
 		entry.cooldown = maxf(0.0,float(entry.get("cooldown",0.0))-delta)
 		if blocked: speed = minf(speed,sqrt(12.0*maxf(0.0,free-.7)))
 		if float(entry.get("retreat_remaining",0.0))<=0.0 and stalled>1.0 and float(entry.stop)<=0.0 and float(entry.cooldown)<=0.0:
