@@ -68,8 +68,9 @@ func _free_box(p: Vector3,d: Vector3,size_value: Vector3) -> bool:
 
 func _new_site(p: Vector3,d: Vector3,width: float,edge: Dictionary) -> Dictionary:
 	var right := Vector3(-d.z,0,d.x)
-	var curb := p+right*(width*.5+.43)
-	var parking := p-d*6.5+right*world.geography.lane_distance(edge,2.3,true)
+	var desired := p-d*6.5+right*world.geography.lane_distance(edge,2.3,true)
+	var parking: Vector3 = world.street_geometry.safe_stop_on_edge(edge.a,edge.b,desired,6.2,2.3)
+	var curb := p+(parking-desired)+right*(width*.5+.43)
 	if world.street_geometry.point_on_road(curb): return {}
 	if not _free_box(curb,d,Vector3(.80,1.05,2.40)): return {}
 	if not Bypass._on_road(world.street_geometry,parking,d,2.3,6.2): return {}
