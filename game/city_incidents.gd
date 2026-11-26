@@ -48,7 +48,7 @@ func _flat(p: Vector3) -> Vector3:
 	return Vector3(p.x,0,p.z)
 
 func _lock(agent: Dictionary,role: String) -> void:
-	var p: Person = agent.node
+	var p: Node3D = agent.node
 	p.set_meta("incident_role",role)
 	p.remove_meta("conversation_until")
 	agent.erase("yield_target")
@@ -56,10 +56,69 @@ func _lock(agent: Dictionary,role: String) -> void:
 
 func _release(agent: Dictionary) -> void:
 	if agent.is_empty() or not is_instance_valid(agent.get("node")): return
-	var p: Person = agent.node
+	var p: Node3D = agent.node
 	p.remove_meta("incident_role")
-	p.add_to_group("bus_yield_walkers")
-	agent.incident_replan = true
+	var source := String(agent.get("incident_source","walker"))
+	if source=="walker":
+		p.add_to_group("bus_yield_walkers")
+		agent.incident_replan = true
+	elif source=="business":
+		var life = game.business.life
+		var owner: Dictionary = agent.owner
+		owner.path = PackedVector3Array()
+		owner.index = 0
+		owner.task = "return_pending"
+		owner.timer = 0.0
+	elif source=="resident":
+		agent.owner.origin = p.global_position
+	elif source=="vendor":
+		var stall: Dictionary = agent.owner
+		stall.incident_busy = false
+		if bool(agent.get("delivered",false)):
+			stall.detained = true
+			stall.open = false
+			stall.root.hide()
+			p.position = Vector3(0,0,1.08)
+		elif not bool(stall.detained if stall.has("detained") else false):
+			p.show()
+
+# Accident detection uses every visible social actor, not just walkers.
+# Bus passengers become ordinary walking agents once removed from the
+# queue; other systems keep their own actor and suspend their routines.
+func _impact_agent(person: Node3D) -> Dictionary:
+	for agent in router.walkers:
+		if agent.node==person: return agent
+	if person is Person and game.urban_buses.detach_incident_person(person):
+		person.reparent(router,true)
+		var agent := {"node":person,"path":PackedVector3Array(),"index":0,"destination":{},"pause":0.0,"speed":1.35}
+		router.walkers.append(agent)
+		return agent
+	for owner in game.business.life.agents:
+		if owner.node==person:
+			return {"node":person,"incident_source":"business","owner":owner,"parent":person.get_parent()}
+	for stall in market.stalls:
+		if stall.person==person and not bool(stall.get("incident_busy",false)):
+			stall.incident_busy = true
+			return {"node":person,"incident_source":"vendor","owner":stall,"parent":person.get_parent()}
+	for resident in world.residents:
+		if resident.node==person:
+			return {"node":person,"incident_source":"resident","owner":resident,"parent":person.get_parent()}
+	return {}
+
+func _impact_parent(agent: Dictionary) -> Node:
+	return agent.get("parent",router)
+
+func _impact_contact(before: Transform3D,after: Transform3D,p: Vector3,width: float,length: float) -> Dictionary:
+	var travel := _flat(after.origin-before.origin).length()
+	var turn := absf(angle_difference(before.basis.get_euler().y,after.basis.get_euler().y))
+	var count := clampi(ceili((travel+turn*length*.5)/.12),1,16)
+	for i in range(count+1):
+		var pose := before.interpolate_with(after,float(i)/float(count))
+		var local := pose.affine_inverse()*p
+		if absf(local.x)>width*.5+.25 or absf(local.z)>length*.5+.25: continue
+		var surface := Vector3(clampf(local.x,-width*.5,width*.5),.65,clampf(local.z,-length*.5,length*.5))
+		return {"surface":pose*surface}
+	return {}
 
 func _walkers(at: Vector3,radius: float) -> Array:
 	var out: Array = []
@@ -98,7 +157,7 @@ func _crowd_tick(center: Vector3,delta: float) -> void:
 		crowd_clock = 0.0
 		var candidates: Array = _walkers(center,22.0)
 		# Leave the nearest available citizen free to help the driver.
-		if String(scene.get("kind",""))=="rescue" and String(scene.get("phase",""))=="approach" and not candidates.is_empty(): candidates.pop_front()
+		if (scene.is_empty() or (String(scene.get("kind",""))=="rescue" and String(scene.get("phase",""))=="approach")) and not candidates.is_empty(): candidates.pop_front()
 		for agent in candidates:
 			if crowd.size()>=8: break
 			var p: Person = agent.node
@@ -593,31 +652,41 @@ func _finish_police(arrived: bool) -> void:
 # never on aiming or proximity alone. A wall between car and person
 # prevents a hit; stationary vehicles cannot repeatedly strike someone.
 func vehicle_motion(body: CharacterBody3D,before: Transform3D,speed: float,width: float,length: float) -> void:
-	if absf(speed)<1.8 or injured.size()>=4: return
-	var end := body.global_position
+	if absf(speed)<.45 or injured.size()>=8: return
+	var after := body.global_transform
+	var end := after.origin
 	var start := before.origin
-	if _flat(end-start).length()<.015 or end.distance_to(start)>3.0: return
+	if _flat(end-start).length()<.002 or end.distance_to(start)>3.0: return
 	var center := (start+end)*.5
-	var axis := body.global_transform.basis.z.normalized()
-	var side := Vector3(-axis.z,0,axis.x)
-	for agent in _walkers(center,length+2.0):
-		var person: Person = agent.node
+	var reach := Vector2(width,length).length()*.5+1.0
+	for node in get_tree().get_nodes_in_group("social_people"):
+		if not node is Node3D: continue
+		var person := node as Node3D
+		if not person.is_visible_in_tree() or person.has_meta("incident_role"): continue
 		var p := person.global_position
-		if absf(p.y-end.y)>.75 or Time.get_ticks_msec()<int(person.get_meta("impact_immunity",0)): continue
-		var near := Geometry3D.get_closest_point_to_segment(_flat(p),_flat(start),_flat(end))
-		var offset := _flat(p)-near
-		if absf(offset.dot(side))>width*.5+.20 or absf(offset.dot(axis))>length*.5+.17: continue
-		var ray := PhysicsRayQueryParameters3D.create(center+Vector3.UP*.65,p+Vector3.UP*.65,1|4|16)
-		ray.exclude = [body.get_rid(),game.player.get_rid()]
-		if not get_world_3d().direct_space_state.intersect_ray(ray).is_empty(): continue
+		if p.distance_squared_to(center)>reach*reach or absf(p.y-end.y)>.8: continue
+		if Time.get_ticks_msec()<int(person.get_meta("impact_immunity",0)): continue
+		var contact := _impact_contact(before,after,p,width,length)
+		if contact.is_empty(): continue
+		# Test only the short gap between the actual vehicle envelope and
+		# the person, not a long ray through the van and nearby signposts.
+		var edge: Vector3 = contact.surface
+		var target := p+Vector3.UP*.65
+		if edge.distance_to(target)>.30:
+			var ray := PhysicsRayQueryParameters3D.create(edge,target,1|4|16)
+			ray.exclude = [body.get_rid(),game.player.get_rid()]
+			if not get_world_3d().direct_space_state.intersect_ray(ray).is_empty(): continue
+		var agent := _impact_agent(person)
+		if agent.is_empty(): continue
 		_lock(agent,"herido")
 		var severe := absf(speed)>=7.5
 		var old := person.global_transform
-		person.animate(.2,false)
+		if person is Person: (person as Person).animate(.2,false)
 		person.rotation.x = -PI*.5
 		person.global_position.y = old.origin.y+.13
 		injured.append({"agent":agent,"severe":severe,"old":old,"time":0.0,"retry":0.0})
-		break
+		print("Accidente: ",person.name," velocidad=",roundi(absf(speed)*3.6)," km/h grave=",severe)
+		if injured.size()>=8: break
 
 func _injury_tick(delta: float) -> void:
 	for i in range(injured.size()-1,-1,-1):
@@ -628,9 +697,19 @@ func _injury_tick(delta: float) -> void:
 		if bool(victim.severe): continue
 		victim.time = float(victim.time)+delta
 		if float(victim.time)<5.0: continue
-		var p: Person = victim.agent.node
+		var p: Node3D = victim.agent.node
 		var old: Transform3D = victim.old
-		if _foot(old.origin).is_empty(): continue
+		if _foot(old.origin).is_empty():
+			var safe: Dictionary = {}
+			for distance in [.7,1.2,1.8,2.5]:
+				for n in range(8):
+					var angle := float(n)*TAU/8.0
+					var candidate := old.origin+Vector3(cos(angle),0,sin(angle))*float(distance)
+					safe = _foot(candidate)
+					if not safe.is_empty(): break
+				if not safe.is_empty(): break
+			if safe.is_empty(): continue
+			old.origin = safe.p
 		p.global_transform = old
 		p.set_meta("impact_immunity",Time.get_ticks_msec()+2500)
 		_release(victim.agent)
@@ -639,7 +718,7 @@ func _injury_tick(delta: float) -> void:
 func _rescue_start(victim: Dictionary) -> void:
 	var dest := _destination("hospital")
 	if dest.is_empty(): return
-	var person: Person = victim.agent.node
+	var person: Node3D = victim.agent.node
 	var center := person.global_position
 	var candidates: Array = []
 	for car in municipal.vehicles:
@@ -670,7 +749,7 @@ func _rescue_start(victim: Dictionary) -> void:
 
 func _rescue_tick(delta: float) -> void:
 	var victim: Dictionary = scene.victim
-	var person: Person = victim.agent.node
+	var person: Node3D = victim.agent.node
 	var body: CharacterBody3D = scene.trip.body
 	var phase := String(scene.phase)
 	if phase=="approach":
@@ -752,7 +831,7 @@ func _rescue_tick(delta: float) -> void:
 			if ground.is_empty(): return
 			# Arrival at the existing hospital; recovery/treatment itself
 			# remains a future health-system feature.
-			person.reparent(router,true)
+			person.reparent(_impact_parent(victim.agent),true)
 			person.global_position = ground.p
 			person.rotation.x = 0.0
 			person.show()
@@ -762,7 +841,7 @@ func _rescue_tick(delta: float) -> void:
 func _end_rescue(delivered: bool) -> void:
 	var car: Dictionary = scene.car
 	var victim: Dictionary = scene.victim
-	var person: Person = victim.agent.node
+	var person: Node3D = victim.agent.node
 	for actor in scene.actors:
 		if actor.has("agent"): _release(actor.agent)
 		elif is_instance_valid(actor.node): actor.node.queue_free()
@@ -775,11 +854,13 @@ func _end_rescue(delivered: bool) -> void:
 	_rejoin_car(car)
 	if delivered:
 		person.set_meta("impact_immunity",Time.get_ticks_msec()+5000)
+		victim.agent.delivered = true
 		_release(victim.agent)
 		injured.erase(victim)
 	else:
 		var base: Vector3 = person.global_position
-		if person.get_parent()!=router: person.reparent(router,true)
+		var parent := _impact_parent(victim.agent)
+		if person.get_parent()!=parent: person.reparent(parent,true)
 		if not person.visible:
 			var nearest := _berths(body.global_position,18.0,body.global_transform.basis.z)
 			for berth in nearest:
@@ -845,7 +926,13 @@ func tick(delta: float) -> void:
 				victim.retry = 6.0
 				_rescue_start(victim)
 				if not scene.is_empty(): break
+		if scene.is_empty() and not injured.is_empty():
+			var victim: Dictionary = injured[0]
+			var center: Vector3 = victim.old.origin
+			_crowd_tick(center,delta)
+			return
 		if scene.is_empty():
+			if not crowd.is_empty(): _crowd_clear()
 			police_wait -= delta
 			if police_wait<=0.0:
 				police_wait = 12.0
