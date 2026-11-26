@@ -2,13 +2,18 @@ extends RefCounted
 # Small original tileable albedo textures. No downloads or external assets.
 var textures: Dictionary = {}
 var materials: Dictionary = {}
+var noise_images: Dictionary = {}
 
 func _noise(seed_value: int,frequency: float) -> Image:
+	var key := str(seed_value)+":"+str(frequency)
+	if noise_images.has(key): return noise_images[key] as Image
 	var n := FastNoiseLite.new()
 	n.seed = seed_value
 	n.frequency = frequency
 	n.fractal_octaves = 3
-	return n.get_seamless_image(256,256,false,false,.14)
+	var img := n.get_seamless_image(256,256,false,false,.14)
+	noise_images[key] = img
+	return img
 
 func _texture(kind: String) -> ImageTexture:
 	if textures.has(kind):
@@ -27,14 +32,22 @@ func _texture(kind: String) -> ImageTexture:
 			if kind=="plaster":
 				# Irregular peeling paint and damp patches; neutral tint preserves wall colour.
 				var peeled: float = smoothstep(.60,.72,c+s*.20)
-				var grime: float = smoothstep(.54,.79,s)*.14
+				var grime: float = smoothstep(.54,.79,s)*.22
+				var exposed: float = smoothstep(.76,.86,c+s*.20)
 				pixel = Color(.96,.95,.92).lerp(Color(.61,.57,.50),peeled)
+				pixel = pixel.lerp(Color(.57,.43,.34),exposed*.7)
 				pixel *= .93+.13*f-grime
 			elif kind=="asphalt":
 				var seam: float = 1.0-smoothstep(.006,.022,absf(c-.53))
 				var crack: float = seam*smoothstep(.50,.68,s)
-				tone = .73+.21*f+.12*s-crack*.30
+				var patched: float = smoothstep(.67,.79,c)*smoothstep(.42,.58,s)
+				tone = .73+.21*f+.12*s-crack*.30-patched*.17
 				pixel = Color(tone,tone,tone)
+			elif kind=="stone":
+				var crack: float = (1.0-smoothstep(.008,.028,absf(c-.51)))*smoothstep(.45,.68,s)
+				var stain: float = smoothstep(.60,.78,s)
+				tone = .88+.12*f-crack*.24-stain*.16
+				pixel = Color(tone,tone*.99,tone*.96)
 			elif kind=="tile":
 				var xx: int = posmod(x,64)
 				var yy: int = posmod(y,64)
