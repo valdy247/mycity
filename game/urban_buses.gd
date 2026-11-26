@@ -110,6 +110,22 @@ func _pedestrian_blocks(stop: Dictionary,body: CharacterBody3D) -> bool:
 			return true
 	return false
 
+# Some pedestrians are visual agents rather than collision bodies. The
+# bus must still yield to them along its immediate swept corridor.
+func _walker_clearance(body: CharacterBody3D,d: Vector3,reach: float) -> float:
+	var side := Vector3(-d.z,0,d.x)
+	var free := reach
+	for node in get_tree().get_nodes_in_group("bus_yield_walkers"):
+		var person := node as Node3D
+		if person==null or not person.is_visible_in_tree(): continue
+		var offset := person.global_position-body.global_position
+		if absf(offset.y)>1.0: continue
+		var along := offset.dot(d)
+		if along<0.0 or along>reach+BUS_LENGTH*.5+.35: continue
+		if absf(offset.dot(side))>BUS_WIDTH*.5+.32: continue
+		free = minf(free,maxf(0.0,along-BUS_LENGTH*.5-.35))
+	return free
+
 func _make_itinerary(route: Array[String],line: String) -> Array:
 	var result: Array = []
 	var since_stop := 160.0
@@ -502,6 +518,25 @@ func _transfer_tick(bus: Dictionary,delta: float) -> void:
 	if not transfer.is_empty():
 		var person: Node3D = transfer.node
 		var target: Vector3 = transfer.target
+		transfer.elapsed = float(transfer.get("elapsed",0.0))+delta
+		if not is_instance_valid(person):
+			bus.transfer = {}
+			return
+		# A greeting or an unreachable passenger cannot hold the whole route.
+		if float(transfer.elapsed)>12.0:
+			person.remove_meta("conversation_until")
+			if bool(transfer.board):
+				person.set("social_context","bus_wait")
+				stop.queue.append({"node":person,"style":int(transfer.style)})
+				bus.served = 3
+			else:
+				var accepted := false
+				if alight_handler.is_valid(): accepted = bool(alight_handler.call(person))
+				if not accepted:
+					person.set("social_context","street")
+					stop.departing.append({"node":person,"time":12.0,"target":exit_point+stop_direction*8.0})
+			bus.transfer = {}
+			return
 		if _walk(person,target,delta):
 			if bool(transfer.board):
 				onboard.append({"style":int(transfer.style),"remaining":int(transfer.remaining)})
@@ -607,7 +642,12 @@ func _clear_distance(body: CharacterBody3D,d: Vector3,reach: float) -> float:
 	var space := get_world_3d().direct_space_state
 	var query := _safety_query(body,body.global_position,body.global_rotation.y)
 	if not space.intersect_shape(query,1).is_empty():
-		return 0.0
+		# The enlarged sensor may touch curb furniture even when the real
+		# bus fits. In that case sweep the actual collision body instead.
+		var hit := KinematicCollision3D.new()
+		if body.test_move(body.global_transform,d*reach,hit,.001):
+			return clampf(hit.get_travel().dot(d),0.0,reach)
+		return reach
 	query.motion = d*reach
 	var fractions := space.cast_motion(query)
 	if fractions.size()<2: return 0.0
@@ -615,7 +655,9 @@ func _clear_distance(body: CharacterBody3D,d: Vector3,reach: float) -> float:
 
 func _safe_turn(body: CharacterBody3D,angle: float) -> bool:
 	var query := _safety_query(body,body.global_position,angle)
-	return get_world_3d().direct_space_state.intersect_shape(query,1).is_empty()
+	if get_world_3d().direct_space_state.intersect_shape(query,1).is_empty(): return true
+	var transform := Transform3D(Basis(Vector3.UP,angle),body.global_position)
+	return not body.test_move(transform,Vector3.ZERO,null,.001,true)
 
 func _back_up(bus: Dictionary,body: CharacterBody3D,delta: float) -> bool:
 	# A bus already stopped too close to an obstacle can create room
@@ -654,6 +696,14 @@ func tick(delta: float) -> void:
 		var diff := target-body.position
 		var distance := diff.length()
 		var stalled := TrafficBypass.stalled(bus,body,delta)
+		if stalled>10.0 and Time.get_ticks_msec()>=int(bus.get("stall_report_after",0)):
+			bus.stall_report_after = Time.get_ticks_msec()+15000
+			var probe := _safety_query(body,body.global_position,body.global_rotation.y)
+			var blockers := get_world_3d().direct_space_state.intersect_shape(probe,6)
+			var names: Array[String] = []
+			for hit in blockers:
+				if is_instance_valid(hit.collider): names.append(String(hit.collider.name))
+			print("Guagua detenida ",bus.line," posición=",body.global_position," destino=",target," obstáculos=",names)
 		var junction_limit := TrafficBypass.junction_gate(bus,body,streets,route,index,not detouring,BUS_WIDTH,BUS_LENGTH,2.96,delta,original if detouring else [],int(bus.get("resume_index",0)))
 		if TrafficBypass.cooperate(bus,body,streets,BUS_WIDTH,BUS_LENGTH,2.96,delta,stalled,target): continue
 		if bool(bus.get("cooperative_rejoin",false)):
@@ -683,17 +733,38 @@ func tick(delta: float) -> void:
 			var stop_dir: Vector3 = priority_stop.direction
 			var berth := _safety_query(body,stop_at,atan2(stop_dir.x,stop_dir.z))
 			var berth_blocked := not get_world_3d().direct_space_state.intersect_shape(berth,1).is_empty()
+			if berth_blocked:
+				var pose := Transform3D(Basis(Vector3.UP,atan2(stop_dir.x,stop_dir.z)),stop_at)
+				berth_blocked = body.test_move(pose,Vector3.ZERO,null,.001,true)
 			var approach_blocked := distance>.3 and _clear_distance(body,diff.normalized(),distance)<distance-.08
 			if pedestrian_blocked or berth_blocked or approach_blocked:
 				if float(bus.horn_cooldown)<=0.0:
 					bus.horn_cooldown = 3.5
 					_horn(body)
 					stop_priority.emit(priority_stop,body)
-				# Never open doors or drive over a walker in the reserved berth.
-				if pedestrian_blocked or (item.has("stop") and distance<.30):
+				# Bound the wait for a genuinely unusable berth. Keep its
+				# passengers and retry the same stop on the next circuit.
+				var stop_root: Node3D = priority_stop.root
+				var stop_id := stop_root.get_instance_id()
+				if int(bus.get("blocked_stop_id",0))!=stop_id:
+					bus.blocked_stop_id = stop_id
+					bus.blocked_stop_wait = 0.0
+				if stalled>1.0 or (item.has("stop") and distance<.30):
+					bus.blocked_stop_wait = float(bus.get("blocked_stop_wait",0.0))+delta
+				if float(bus.get("blocked_stop_wait",0.0))>=12.0 and item.has("stop") and (pedestrian_blocked or berth_blocked):
+					bus.index = (index+1)%original.size()
+					bus.blocked_stop_wait = 0.0
+					bus.traffic_stall = 0.0
+					print("Guagua ",bus.line,": parada temporalmente obstruida; vuelve en el siguiente circuito.")
+					continue
+				# Stop only for walkers in the actual path or when opening
+				# doors at an occupied berth, not a distant obstruction.
+				if item.has("stop") and distance<.30 and (pedestrian_blocked or berth_blocked):
 					body.velocity = Vector3.ZERO
 					bus.speed = 0.0
 					continue
+			else:
+				bus.blocked_stop_wait = 0.0
 		if distance<.30:
 			bus.traffic_stall = 0.0
 			body.velocity = Vector3.ZERO
@@ -721,7 +792,7 @@ func tick(delta: float) -> void:
 		elif next_dir.length_squared()>.1 and d.dot(next_dir)<.85:
 			reach = minf(reach,distance+2.0)
 		reach = minf(reach,distance+BUS_SAFE_GAP)
-		var free := _clear_distance(body,d,reach)
+		var free := minf(_clear_distance(body,d,reach),_walker_clearance(body,d,reach))
 		var blocked := free<reach-.05
 		var safe_speed := sqrt(2.0*BUS_BRAKE*maxf(0.0,free-BUS_SAFE_GAP))
 		if blocked:
