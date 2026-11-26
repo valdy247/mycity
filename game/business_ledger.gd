@@ -8,6 +8,7 @@ const PRODUCTS := {
 const COMMISSION_PERCENT := 15
 const VEHICLE_CAPACITY := 8
 const SAVE_PATH := "user://pilar_business_v1.json"
+var persistence_enabled := true
 var cash := 10000
 var stage := 0
 var pending: Dictionary = {}
@@ -24,6 +25,7 @@ var low_alert: Dictionary = {}
 var sales_clock := 0.0
 
 func load_game() -> void:
+	if not persistence_enabled: return
 	if not FileAccess.file_exists(SAVE_PATH): return
 	var f := FileAccess.open(SAVE_PATH,FileAccess.READ)
 	if f==null: return
@@ -69,6 +71,7 @@ func _counts(value: Variant) -> Dictionary:
 	return result
 
 func save_game() -> void:
+	if not persistence_enabled: return
 	var data := {"cash":cash,"stage":stage,"pending":pending,"carry":carry,"cargo":cargo,"stock":stock,"sold":sold,"revenue":revenue,"wages":wages,"expenses":expenses,"messages":messages,"unread":unread,"low_alert":low_alert}
 	var f := FileAccess.open(SAVE_PATH,FileAccess.WRITE)
 	if f!=null:
