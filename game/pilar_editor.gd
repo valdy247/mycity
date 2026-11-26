@@ -70,6 +70,7 @@ func _transparent(color: Color) -> StandardMaterial3D:
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	m.no_depth_test = false
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
 	return m
 
 func _make_ui() -> void:
@@ -100,7 +101,7 @@ func _make_ui() -> void:
 	column.add_child(grid)
 	_button(grid,"Precisión (G)",_cycle_grid)
 	_button(grid,"Nivel (F)",_cycle_floor)
-	_button(grid,"Girar (Q/E)",_rotate.bind(1))
+	_button(grid,"Techo (H)",_toggle_roof)
 	hint = Label.new()
 	hint.custom_minimum_size = Vector2(288,0)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -131,7 +132,9 @@ func open(at: Vector3,context: bool = false) -> void:
 	camera_size = 28.0 if context else 45.0
 	view_mode = 0
 	mode = ""
-	elevation = 0.0
+	elevation = 3.2 if at.y>3.3 and world.inside_home else 0.0
+	roof_hidden = world.inside_home
+	_update_cutaway()
 	_update_camera()
 	camera.current = true
 	panel.show()
@@ -141,6 +144,8 @@ func open(at: Vector3,context: bool = false) -> void:
 
 func close() -> void:
 	active = false
+	roof_hidden = false
+	_update_cutaway()
 	preview.hide()
 	panel.hide()
 	menu.hide()
@@ -157,7 +162,21 @@ func _cycle_grid() -> void:
 
 func _cycle_floor() -> void:
 	elevation = 3.2 if elevation==0.0 else 0.0
+	roof_hidden = true
+	_update_cutaway()
 	message = "Nivel de colocación: %.2f m" % elevation
+
+func _toggle_roof() -> void:
+	roof_hidden = not roof_hidden
+	_update_cutaway()
+
+func _update_cutaway() -> void:
+	world.set_home_cutaway(roof_hidden,elevation)
+	for id in objects:
+		var root: Node3D = objects[id]
+		var record: Dictionary = records[id]
+		var interior: bool = String(record.kind) in ["Cama","Inodoro","Pared","Mesa"]
+		root.visible = not roof_hidden or not interior or absf(float(record.get("y",0.0))-elevation)<1.0
 
 func _rotate(dir: int) -> void:
 	angle += float(dir)*PI/12.0
@@ -238,7 +257,7 @@ func _allowed(poly: PackedVector2Array,p: Vector3) -> String:
 		if mode=="move" and moving!=null:
 			for body in moving.get_children():
 				if body is CollisionObject3D:
-					query.exclude.append(body.get_rid())
+					query.exclude = query.exclude + [body.get_rid()]
 		if not get_world_3d().direct_space_state.intersect_shape(query,1).is_empty():
 			return "Mueble o pared existente"
 	else:
@@ -294,7 +313,7 @@ func tick(delta: float) -> void:
 	else:
 		preview.hide()
 	var view_names: Array[String] = ["Aérea","Perspectiva","Calle"]
-	hint.text = "%s | %.2f m | Nivel %.1f m\n%s\nWASD: mover vista · rueda: zoom\nClic derecho: opciones · clic izq.: aplicar\nV: vista · G: precisión · M: medir · B: salir" % [view_names[view_mode],snaps[step_index],elevation,mode if not mode.is_empty() else "Seleccionar"]
+	hint.text = "%s | %.2f m | Nivel %.1f m\n%s\nWASD: mover vista · rueda: zoom\nClic derecho: opciones · clic izq.: aplicar\nV: vista · G: precisión · M: medir\nH: techo · F: piso · Q/E: girar · B: salir" % [view_names[view_mode],snaps[step_index],elevation,mode if not mode.is_empty() else "Seleccionar"]
 	if not reason.is_empty():
 		hint.text += "\nNO PERMITIDO: "+reason
 	elif mode in ["place","move","mapped_move"]:
@@ -317,6 +336,7 @@ func handle(event: InputEvent) -> void:
 			KEY_V: _cycle_view()
 			KEY_G: _cycle_grid()
 			KEY_F: _cycle_floor()
+			KEY_H: _toggle_roof()
 			KEY_M: _measure_mode()
 			KEY_Q: _rotate(-1)
 			KEY_E: _rotate(1)
@@ -352,6 +372,9 @@ func _find_at(p: Vector3) -> void:
 			return
 	for lot in world._lots_near(p):
 		if Geometry2D.is_point_in_polygon(q,world._lot_polygon(lot)):
+			if roof_hidden and world.home_root!=null and world.home_root.global_position.distance_to(Vector3(p.x,0,p.z))<6.0:
+				selected_type = "interior"
+				return
 			selected_type = "lot"
 			selected_id = "lot_"+str(roundi(lot.center.x*10.0))+"_"+str(roundi(lot.center.z*10.0))
 			return
@@ -367,10 +390,12 @@ func _context(p: Vector3,screen: Vector2i) -> void:
 	_find_at(p)
 	menu.clear()
 	menu.add_separator("Mapa real • "+selected_type)
-	if selected_type=="ground":
+	if selected_type in ["ground","interior"]:
 		var i := 0
 		for k in sizes:
-			menu.add_item("Colocar "+String(k),100+i)
+			var furniture: bool = String(k) in ["Cama","Inodoro","Pared","Mesa"]
+			if furniture==(selected_type=="interior"):
+				menu.add_item("Colocar "+String(k),100+i)
 			i += 1
 	elif selected_type=="street":
 		menu.add_item("Calle / acera protegida",90)
@@ -430,7 +455,9 @@ func _menu_action(id: int) -> void:
 			message = "Sitúa la vista previa y confirma con clic izquierdo."
 		4:
 			if selected_type=="object":
-				objects[selected_id].queue_free()
+				var removed: Node3D = objects[selected_id]
+				remove_child(removed)
+				removed.queue_free()
 				objects.erase(selected_id)
 				records.erase(selected_id)
 				_save_objects()
@@ -597,6 +624,9 @@ func _save_objects() -> void:
 
 func _load_objects() -> void:
 	if not FileAccess.file_exists(SAVE):
+		for id in world.home_defaults:
+			_replace_object(String(id),world.home_defaults[id].duplicate(true))
+		_save_objects()
 		return
 	var f := FileAccess.open(SAVE,FileAccess.READ)
 	if f==null:
@@ -615,6 +645,7 @@ func _load_objects() -> void:
 		if String(r.kind) not in ["Cama","Inodoro","Pared","Mesa"] and not world.build_allowed(poly).is_empty():
 			continue
 		_replace_object(String(id),r)
+	_update_cutaway()
 
 func _attach_reference(path: String) -> void:
 	var image := Image.new()
