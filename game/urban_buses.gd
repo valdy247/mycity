@@ -724,7 +724,7 @@ func tick(delta: float) -> void:
 		if blocked:
 			speed = minf(speed,safe_speed)
 		bus.bypass_cooldown = maxf(0.0,float(bus.get("bypass_cooldown",0.0))-delta)
-		if float(bus.get("retreat_remaining",0.0))<=0.0 and stalled>1.0 and float(bus.bypass_cooldown)<=0.0:
+		if float(bus.get("retreat_remaining",0.0))<=0.0 and (stalled>1.0 or (not detouring and not approaching_stop and TrafficBypass.early_lane_pass(body,streets,blocked,free))) and float(bus.bypass_cooldown)<=0.0:
 			bus.bypass_cooldown = 1.8
 			if detouring:
 				bus.detour = []
