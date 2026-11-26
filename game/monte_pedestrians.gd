@@ -28,11 +28,11 @@ var resident_clock := 480.0
 var home_destinations: Array = []
 var commerce_destinations: Array = []
 var life
-var profile_clock := 0.0
 const MAX_PROFILES := 180
 
 func setup(city: World,bus_service: UrbanBuses,city_life = null) -> void:
 	life = city_life
+	if life!=null: resident_clock = float(life.state.minutes)
 	world = city
 	world.pedestrian_router = self
 	buses = bus_service
@@ -367,7 +367,7 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 		# In the evening favor the resident's own doorway if reachable.
 		if (hour>=19.0 or hour<6.0) and not home.is_empty():
 			var home_path := graph.get_point_path(start,int(home.id))
-			if home_path.size()>=2:
+			if not home_path.is_empty():
 				agent.path = home_path
 				agent.index = 0
 				agent.destination = home
@@ -516,14 +516,8 @@ func yield_to_bus(stop: Dictionary,bus: CharacterBody3D) -> void:
 				break
 
 func tick(delta: float) -> void:
-	# Keep a monotonic schedule for elapsed work and purchase cooldowns.
+	# Keep monotonic elapsed time, initialized from the saved city clock.
 	resident_clock += delta
-	if life!=null:
-		var clock: float = float(life.state.minutes)
-		var current := fmod(resident_clock,1440.0)
-		var day_offset := resident_clock-current
-		if current-clock>720.0: day_offset += 1440.0
-		resident_clock = day_offset+clock
 	if not initialized:
 		if building_graph: return
 		build_wait -= delta
