@@ -505,6 +505,7 @@ func _populate() -> void:
 		if graph.get_point_weight_scale(int(id))>=ROAD_COST: continue
 		var p := graph.get_point_position(int(id))
 		if p.distance_to(at)<7.0: continue
+		if not world.pedestrian_space_clear(null,p,1.0,false): continue
 		var safe := true
 		for agent in walkers:
 			var other: Person = agent.node
@@ -594,7 +595,7 @@ func tick(delta: float) -> void:
 		if agent.has("yield_target"):
 			var safe: Vector3 = agent.yield_target
 			var step := person.global_position.move_toward(safe,1.8*actor_dt)
-			if world.pedestrian_segment_clear(person.global_position,step):
+			if world.pedestrian_segment_clear(person.global_position,step) and world.pedestrian_space_clear(person,step):
 				if person.walk_to(safe,actor_dt,1.8):
 					agent.erase("yield_target")
 					agent.pause = 6.0
@@ -607,7 +608,7 @@ func tick(delta: float) -> void:
 			person.animate(actor_dt,false)
 			if float(agent.pause)<=0.0:
 				if bool(agent.get("indoors",false)):
-					if not world.pedestrian_segment_clear(person.global_position,person.global_position):
+					if not world.pedestrian_segment_clear(person.global_position,person.global_position) or not world.pedestrian_space_clear(person,person.global_position,.75,false):
 						agent.pause = .5
 						continue
 					agent.indoors = false
@@ -667,6 +668,29 @@ func tick(delta: float) -> void:
 			agent.preview_index = index
 			agent.preview_wait = .25
 			route_clear = person.global_position.distance_to(p)<=.12 or _clear(person.global_position,p)
+		if not world.pedestrian_space_clear(person,step):
+			# Try a small checked sidestep, without walking through others
+			# or leaving a portal for the roadway.
+			var heading := (p-person.global_position).normalized()
+			var side := Vector3(-heading.z,0,heading.x)
+			var moved := false
+			for direction in [-1.0,1.0]:
+				var candidate := step+side*float(direction)*minf(.18,float(agent.speed)*actor_dt)
+				if world.street_geometry.point_on_road(candidate) and not world.street_geometry.point_on_road(person.global_position): continue
+				if not world.pedestrian_space_clear(person,candidate) or not world.pedestrian_segment_clear(person.global_position,candidate): continue
+				person.walk_to(candidate,actor_dt,float(agent.speed))
+				moved = true
+				break
+			if moved:
+				agent.people_wait = 0.0
+			else:
+				person.animate(actor_dt,false)
+				agent.people_wait = float(agent.get("people_wait",0.0))+actor_dt
+				if float(agent.people_wait)>2.0:
+					agent.people_wait = 0.0
+					_choose_route(agent,true)
+			continue
+		agent.people_wait = 0.0
 		if not world.pedestrian_segment_clear(person.global_position,step) or not route_clear:
 			person.animate(actor_dt,false)
 			agent["blocked_time"] = float(agent.get("blocked_time",0.0))+actor_dt
