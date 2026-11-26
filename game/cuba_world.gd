@@ -170,7 +170,7 @@ func _lot_polygon(lot: Dictionary) -> PackedVector2Array:
 	var side := Vector3(front.z,0,-front.x)
 	var poly := PackedVector2Array()
 	for v in [Vector2(-4.45,-4.50),Vector2(4.45,-4.50),Vector2(4.45,4.50),Vector2(-4.45,4.50)]:
-		var p := c+side*v.x+front*v.y
+		var p: Vector3 = c+side*float(v.x)+front*float(v.y)
 		poly.append(Vector2(p.x,p.z))
 	return poly
 
@@ -261,6 +261,316 @@ func _make_frontages() -> void:
 		var edge: Dictionary = geography.roads[0]
 		home_spawn = edge.a+Vector3.UP*.9
 		van_spawn = home_spawn+Vector3(0,0,5)
+
+# Extrude the original OSM polygon, not a rectangular approximation.
+# Combine the visible meshes and collision by spatial tile for the iGPU.
+func _face(a: Vector3,b: Vector3,c: Vector3,normal: Vector3,mat: StandardMaterial3D,tile: Vector2i) -> void:
+	var key := str(tile)+":"+str(mat.get_instance_id())
+	if not map_surfaces.has(key):
+		var surface := SurfaceTool.new()
+		surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+		surface.set_material(mat)
+		map_surfaces[key] = surface
+	var st: SurfaceTool = map_surfaces[key]
+	for vertex in [a,b,c]:
+		st.set_normal(normal)
+		st.add_vertex(vertex)
+	if not map_collision.has(tile):
+		map_collision[tile] = []
+	map_collision[tile].append_array([a,b,c])
+
+func _extrude(poly: PackedVector2Array,bottom: float,top: float,mat: StandardMaterial3D,tile: Vector2i) -> bool:
+	var triangles := Geometry2D.triangulate_polygon(poly)
+	if triangles.is_empty():
+		return false
+	for i in range(0,triangles.size(),3):
+		var a := poly[triangles[i]]
+		var b := poly[triangles[i+1]]
+		var c := poly[triangles[i+2]]
+		_face(Vector3(a.x,top,a.y),Vector3(b.x,top,b.y),Vector3(c.x,top,c.y),Vector3.UP,mat,tile)
+		# An underside is required for walkable arcades.
+		if bottom>0.1:
+			_face(Vector3(c.x,bottom,c.y),Vector3(b.x,bottom,b.y),Vector3(a.x,bottom,a.y),Vector3.DOWN,mat,tile)
+	for i in range(poly.size()):
+		var a := poly[i]
+		var b := poly[(i+1)%poly.size()]
+		var av := Vector3(a.x,bottom,a.y)
+		var bv := Vector3(b.x,bottom,b.y)
+		var at := Vector3(a.x,top,a.y)
+		var bt := Vector3(b.x,top,b.y)
+		var normal := Vector3(b.y-a.y,0,a.x-b.x).normalized()
+		if Geometry2D.is_polygon_clockwise(poly):
+			normal = -normal
+		_face(av,at,bt,normal,mat,tile)
+		_face(av,bt,bv,normal,mat,tile)
+	return true
+
+func _flush_footprints() -> void:
+	for st in map_surfaces.values():
+		var surface: SurfaceTool = st
+		var instance := MeshInstance3D.new()
+		instance.mesh = surface.commit()
+		add_child(instance)
+	for vertices in map_collision.values():
+		var collider := CollisionShape3D.new()
+		var shape := ConcavePolygonShape3D.new()
+		shape.backface_collision = true
+		shape.set_faces(PackedVector3Array(vertices))
+		collider.shape = shape
+		solid_body.add_child(collider)
+	map_surfaces.clear()
+	map_collision.clear()
+
+func _nearest_street(p: Vector3) -> Dictionary:
+	var result: Dictionary = {}
+	var best: float = INF
+	for road in geography.roads_near(p,25.0):
+		if not bool(road.driveable):
+			continue
+		var a: Vector3 = road.a
+		var b: Vector3 = road.b
+		var q := Geometry3D.get_closest_point_to_segment(p,a,b)
+		var d := q.distance_squared_to(p)
+		if d<best:
+			best = d
+			result = road
+	return result
+
+func _front_edge(poly: PackedVector2Array) -> Dictionary:
+	var best: float = INF
+	var result: Dictionary = {}
+	for i in range(poly.size()):
+		var a := Vector3(poly[i].x,0,poly[i].y)
+		var j := (i+1)%poly.size()
+		var b := Vector3(poly[j].x,0,poly[j].y)
+		if a.distance_to(b)<2.8:
+			continue
+		var m := (a+b)*.5
+		var road := _nearest_street(m)
+		if road.is_empty():
+			continue
+		var ra: Vector3 = road.a
+		var rb: Vector3 = road.b
+		var nearest := Geometry3D.get_closest_point_to_segment(m,ra,rb)
+		var dist := nearest.distance_to(m)
+		if dist>23.0 or absf((b-a).normalized().dot((rb-ra).normalized()))<.65:
+			continue
+		var tangent := (b-a).normalized()
+		var normal := Vector3(-tangent.z,0,tangent.x)
+		if normal.dot(nearest-m)<0.0:
+			normal = -normal
+		if dist<best:
+			best = dist
+			result = {"a":a,"b":b,"mid":m,"normal":normal,"road":road}
+	return result
+
+func _clip_inward(poly: PackedVector2Array,front: Dictionary,depth: float) -> PackedVector2Array:
+	var output := PackedVector2Array()
+	var m: Vector3 = front.mid
+	var n: Vector3 = front.normal
+	for i in range(poly.size()):
+		var a := poly[i]
+		var b := poly[(i+1)%poly.size()]
+		var da := Vector3(a.x-m.x,0,a.y-m.z).dot(n)+depth
+		var db := Vector3(b.x-m.x,0,b.y-m.z).dot(n)+depth
+		if da<=0.0:
+			output.append(a)
+		if (da<=0.0)!=(db<=0.0):
+			output.append(a.lerp(b,da/(da-db)))
+	return output
+
+func _building_height(tags: Dictionary,index: int) -> float:
+	var raw := String(tags.get("height","")).strip_edges().trim_suffix("m").strip_edges()
+	if raw.is_valid_float():
+		return clampf(float(raw),2.8,80.0)
+	var levels := String(tags.get("building:levels",""))
+	if levels.is_valid_float():
+		return clampf(float(levels)*3.25,3.0,80.0)
+	return float(1+index%3)*3.25
+
+func _make_mapped_buildings(public_anchor: Vector3) -> void:
+	var palette: Array[Color] = [Color("#a5b2a5"),Color("#c3b49b"),Color("#a2b8ba"),Color("#b19a88"),Color("#c3bc9d"),Color("#a4a29a"),Color("#b8ad99")]
+	var market_pos: Vector3 = geography.project(23.1234716,-82.3659728)
+	var market_poly_id := ""
+	var alborada_poly_id := ""
+	var best: float = INF
+	for fp in geography.footprints_near(market_pos,80.0):
+		var tags: Dictionary = fp.tags
+		var n: String = geography.normalized(String(tags.get("name","")))
+		var extent: Vector3 = fp.high-fp.low
+		var poly: PackedVector2Array = fp.poly
+		var inside := Geometry2D.is_point_in_polygon(Vector2(market_pos.x,market_pos.z),poly)
+		if n.contains("cuatro caminos") or n.contains("mercado unico"):
+			market_poly_id = String(fp.id)
+			break
+		if inside and extent.x*extent.z>1500.0:
+			market_poly_id = String(fp.id)
+			break
+	for fp in geography.footprints_near(public_anchor,20.0):
+		var front := _front_edge(fp.poly)
+		if front.is_empty():
+			continue
+		var q: Vector3 = Geometry3D.get_closest_point_to_segment(public_anchor,front.a,front.b)
+		var dist := q.distance_to(public_anchor)
+		if dist<best and dist<22.0:
+			best = dist
+			alborada_poly_id = String(fp.id)
+	for fp in geography.footprints:
+		if _overlaps_game_lot(fp):
+			continue
+		var poly: PackedVector2Array = fp.poly
+		var center: Vector3 = fp.center
+		var tile := Vector2i(floori(center.x/96.0),floori(center.z/96.0))
+		var tags: Dictionary = fp.tags
+		var idx: int = abs(String(fp.id).hash())%7
+		var market: bool = String(fp.id)==market_poly_id
+		var h: float = _building_height(tags,idx)
+		if market and not tags.has("height") and not tags.has("building:levels"):
+			h = 10.0
+		var wall := _mat("mapped_wall"+str(idx) if not market else "market_wall",palette[idx] if not market else Color("#ded4bc"))
+		wall.cull_mode = BaseMaterial3D.CULL_DISABLED
+		var front := _front_edge(poly)
+		var portal := false
+		if not front.is_empty() and bool(front.road.portal) and h>3.8:
+			var clipped := _clip_inward(poly,front,2.25)
+			# Fall back to the mapped solid if the inset is too small/invalid.
+			if clipped.size()>=3 and not Geometry2D.triangulate_polygon(clipped).is_empty():
+				portal = _extrude(clipped,0.0,3.4,wall,tile)
+		var ok := _extrude(poly,3.4 if portal else 0.0,h,wall,tile)
+		if not ok:
+			continue
+		mapped_buildings += 1
+		kept_footprints.append(fp)
+		if not front.is_empty():
+			_detail_front(front,h,idx,portal,market)
+			var name_value := String(tags.get("name",""))
+			if market:
+				name_value = "PLAZA DE CUATRO CAMINOS"
+				market_drawn = true
+			elif String(fp.id)==alborada_poly_id:
+				name_value = "LA ALBORADA"
+			if not name_value.is_empty() and (market or String(fp.id)==alborada_poly_id or tags.has("amenity") or tags.has("shop")):
+				var m: Vector3 = front.mid
+				var n: Vector3 = front.normal
+				var z: float = -2.18 if portal else .08
+				_label(name_value.to_upper(),m+n*z+Vector3.UP*2.85,.010,atan2(n.x,n.z),Color("#f5ead0"))
+	# Missing source polygon: never invent a market footprint or obstruct roads.
+	if not market_drawn:
+		print("Cuatro Caminos: no verified market footprint in this OSM extract.")
+	if alborada_poly_id.is_empty():
+		print("La Alborada: no matching mapped building footprint.")
+
+func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool) -> void:
+	var a: Vector3 = front.a
+	var b: Vector3 = front.b
+	var n: Vector3 = front.normal
+	var t := (b-a).normalized()
+	var length := a.distance_to(b)
+	var angle := atan2(n.x,n.z)
+	var stone := _mat("facade_trim",Color("#bcb3a0"))
+	var door_mat := _mat("facade_door",Color("#627873"))
+	var dark := _mat("facade_shadow",Color("#4a514c"))
+	var iron := _mat("facade_iron",Color("#393d3a"))
+	var patch := _mat("facade_wear",Color("#938a77"))
+	var count := clampi(roundi(length/(4.2 if market else 2.9)),1,48)
+	var step := length/float(count)
+	var offset: float = -2.18 if portal else .045
+	for i in range(count):
+		var p := a+t*(float(i)+.5)*step
+		var q := p+n*offset
+		_cube(q+Vector3.UP*1.38,Vector3(minf(step*.58,1.5),2.50,.065),door_mat,angle)
+		_cube(q+Vector3.UP*2.71,Vector3(minf(step*.74,1.85),.17,.12),stone,angle)
+		if portal:
+			var col := a+t*(float(i)+.12)*step+n*.04
+			_cube(col+Vector3.UP*1.65,Vector3(.34,3.30,.34),stone,angle,true)
+			_cube(col+Vector3.UP*.17,Vector3(.52,.32,.52),stone,angle)
+			_cube(col+Vector3.UP*3.20,Vector3(.52,.22,.52),stone,angle)
+		for level in range(1,mini(8,floori(h/3.25))):
+			var y := float(level)*3.25+1.55
+			var w := minf(step*.54,1.35)
+			_cube(p+n*.05+Vector3.UP*y,Vector3(w,1.88,.08),dark,angle)
+			_cube(p+n*.10+Vector3.UP*y,Vector3(.065,1.86,.10),door_mat,angle)
+			_cube(p+n*.11+Vector3.UP*(y+.99),Vector3(w+.25,.13,.19),stone,angle)
+			_cube(p+n*.11+Vector3.UP*(y-.99),Vector3(w+.25,.13,.19),stone,angle)
+			if market or idx%3!=0:
+				_cube(p+n*.28+Vector3.UP*(y-.98),Vector3(w+.50,.15,.57),stone,angle)
+				_cube(p+n*.56+Vector3.UP*(y-.45),Vector3(w+.46,.045,.07),iron,angle)
+				for k in range(5):
+					var pos := p+t*(float(k)/4.0-.5)*(w+.4)+n*.56
+					_cube(pos+Vector3.UP*(y-.70),Vector3(.04,.50,.04),iron,angle)
+		if not market:
+			var worn := q+t*.60+Vector3.UP*(.55+float((i+idx)%3)*.42)
+			_cube(worn+n*.01,Vector3(.47,.28,.012),patch,angle)
+	_cube((a+b)*.5+n*.08+Vector3.UP*(h-.16),Vector3(length,.24,.19),stone,angle)
+
+func _make_corner_plaques() -> void:
+	var white := _mat("street_plaque_white",Color("#e8e9e5"))
+	var black := _mat("street_plaque_border",Color("#151f2b"))
+	var concrete := _mat("street_plaque_post",Color("#797c72"))
+	for node_id in geography.junctions:
+		var incident: Array = geography.junctions[node_id]
+		var unique: Dictionary = {}
+		for road in incident:
+			if bool(road.driveable) and String(road.name)!="Calle sin nombre":
+				unique[geography.street_label(String(road.name))] = true
+		if unique.size()<2:
+			continue
+		var corner: Vector3 = geography.points[node_id]
+		var done: Dictionary = {}
+		for road in incident:
+			if not bool(road.driveable) or String(road.name)=="Calle sin nombre":
+				continue
+			var label: String = geography.street_label(String(road.name))
+			var other: Vector3 = road.b if road.a_id==node_id else road.a
+			var d := (other-corner).normalized()
+			var right := Vector3(-d.z,0,d.x)
+			var run := minf(9.0,corner.distance_to(other)*.55)
+			for sign_side in [-1.0,1.0]:
+				var outward := right*float(sign_side)
+				var p := corner+d*run+outward*(float(road.width)*.5+1.0)
+				if not _street_clear(p,.10):
+					continue
+				var nearest: float = INF
+				var pos := p
+				var normal := -outward
+				var mounted := false
+				# Snap to the real mapped wall where one is available.
+				for fp in geography.footprints_near(p,10.0):
+					if _overlaps_game_lot(fp):
+						continue
+					var poly: PackedVector2Array = fp.poly
+					for i in range(poly.size()):
+						var j := (i+1)%poly.size()
+						var a := Vector3(poly[i].x,0,poly[i].y)
+						var b := Vector3(poly[j].x,0,poly[j].y)
+						if a.distance_to(b)<.8:
+							continue
+						var q := Geometry3D.get_closest_point_to_segment(p,a,b)
+						var distance := q.distance_to(p)
+						if distance<nearest and distance<6.0:
+							var tangent := (b-a).normalized()
+							var n := Vector3(-tangent.z,0,tangent.x)
+							if n.dot(p-q)<0.0:
+								n = -n
+							if n.dot(-outward)<.45:
+								continue
+							nearest = distance
+							pos = q+n*.13
+							normal = n
+							mounted = true
+				var key := label+":"+str(Vector2i(roundi(pos.x/2.0),roundi(pos.z/2.0)))
+				if done.has(key):
+					continue
+				done[key] = true
+				var angle := atan2(normal.x,normal.z)
+				var width := clampf(float(label.length())*.105+.27,.68,2.15)
+				if not mounted:
+					_cube(pos+Vector3.UP*1.18,Vector3(.09,2.36,.09),concrete,angle)
+				var y := 2.48
+				_cube(pos+Vector3.UP*y,Vector3(width,.31,.064),black,angle)
+				_cube(pos+Vector3.UP*y+normal*.041,Vector3(width-.085,.235,.035),white,angle)
+				_label(label,pos+Vector3.UP*y+normal*.065,minf(.0038,(width-.13)/(float(label.length())*29.0)),angle,Color("#151d28"))
+				plaque_count += 1
 
 func _local_cube(c: Vector3,basis: Basis,p: Vector3,size: Vector3,material: StandardMaterial3D,solid: bool = false) -> void:
 	_cube(c+basis*p,size,material,atan2(basis.z.x,basis.z.z),solid)
