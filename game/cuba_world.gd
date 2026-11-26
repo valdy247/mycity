@@ -29,6 +29,9 @@ var lot_cells: Dictionary = {}
 var map_surfaces: Dictionary = {}
 var map_collision: Dictionary = {}
 var street_collision: Dictionary = {}
+var physics_chunks: Dictionary = {}
+var detail_batches := 0
+var npc_update_time := 0.0
 var kept_footprints: Array = []
 var market_drawn := false
 var market_block: PackedVector2Array = PackedVector2Array()
@@ -70,6 +73,20 @@ func setup(builder: Builder) -> void:
 	print("Pilar-Atarés: ",slots.size()," generated facade lots, ",service_count," game services, ",residents.size()," citizens; ",mapped_buildings," OSM building footprints; ",plaque_count," corner plaques.")
 	# Real-world source attribution is visible in HUD via main.gd.
 
+# One static body per spatial tile instead of thousands of shapes on a
+# single city-wide body. Broad-phase queries can reject distant tiles.
+func _chunk_body(tile: Vector2i, layer_id: int) -> StaticBody3D:
+	var key := str(tile)+":"+str(layer_id)
+	if physics_chunks.has(key):
+		return physics_chunks[key] as StaticBody3D
+	var body := StaticBody3D.new()
+	body.collision_layer = layer_id
+	body.collision_mask = 0
+	add_child(body)
+	body.position = Vector3(float(tile.x)*96.0,0,float(tile.y)*96.0)
+	physics_chunks[key] = body
+	return body
+
 func _cube(at: Vector3, size: Vector3, material: StandardMaterial3D, angle: float = 0.0, solid: bool = false) -> void:
 	var basis := Basis(Vector3.UP,angle)
 	var level := 0
@@ -78,17 +95,23 @@ func _cube(at: Vector3, size: Vector3, material: StandardMaterial3D, angle: floa
 			level = 2
 		elif at.y-size.y*.5>=2.94:
 			level = 1
-	var key := str(material.get_instance_id())+":"+str(level)
+	var tile := Vector2i(floori(at.x/96.0),floori(at.z/96.0))
+	var origin := Vector3(float(tile.x)*96.0,0,float(tile.y)*96.0)
+	# Thin trim, window bars, wires and weathering are close-range detail.
+	# Structural geometry and all collisions remain present.
+	var detail := not solid and not home_building and minf(size.x,minf(size.y,size.z))<=.15
+	var key := str(tile)+":"+str(material.get_instance_id())+":"+str(level)+":"+str(detail)
 	if not box_groups.has(key):
-		box_groups[key] = {"material":material,"transforms":[],"home_level":level}
-	box_groups[key].transforms.append(Transform3D(basis.scaled_local(size),at))
+		box_groups[key] = {"material":material,"transforms":[],"home_level":level,"origin":origin,"detail":detail}
+	box_groups[key].transforms.append(Transform3D(basis.scaled_local(size),at-origin))
 	if solid:
 		var col := CollisionShape3D.new()
 		var shape := BoxShape3D.new()
 		shape.size = size
 		col.shape = shape
-		solid_body.add_child(col)
-		col.transform = Transform3D(basis,at)
+		var body := _chunk_body(tile,1)
+		body.add_child(col)
+		col.transform = Transform3D(basis,at-body.position)
 
 func _flush_city_boxes() -> void:
 	var cube := BoxMesh.new()
@@ -103,7 +126,13 @@ func _flush_city_boxes() -> void:
 		var instance := MultiMeshInstance3D.new()
 		instance.multimesh = multi
 		instance.material_override = item.material
+		instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(instance)
+		instance.position = item.origin
+		if bool(item.detail):
+			instance.visibility_range_end = 190.0
+			instance.visibility_range_end_margin = 12.0
+			detail_batches += 1
 		if int(item.home_level)>0:
 			home_cutaway.append({"node":instance,"level":item.home_level})
 	box_groups.clear()
@@ -374,25 +403,36 @@ func _extrude(poly: PackedVector2Array,bottom: float,top: float,mat: StandardMat
 	return true
 
 func _flush_footprints() -> void:
-	for st in map_surfaces.values():
-		var surface: SurfaceTool = st
+	for key in map_surfaces:
+		var surface: SurfaceTool = map_surfaces[key]
 		var instance := MeshInstance3D.new()
 		instance.mesh = surface.commit()
+		instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(instance)
-	for vertices in map_collision.values():
+	for tile in map_collision:
+		var vertices: Array = map_collision[tile]
+		var body := _chunk_body(tile,1)
+		var local_faces := PackedVector3Array()
+		for vertex in vertices:
+			local_faces.append(Vector3(vertex)-body.position)
 		var collider := CollisionShape3D.new()
 		var shape := ConcavePolygonShape3D.new()
 		shape.backface_collision = true
-		shape.set_faces(PackedVector3Array(vertices))
+		shape.set_faces(local_faces)
 		collider.shape = shape
-		solid_body.add_child(collider)
-	for vertices in street_collision.values():
+		body.add_child(collider)
+	for tile in street_collision:
+		var vertices: Array = street_collision[tile]
+		var body := _chunk_body(tile,2)
+		var local_faces := PackedVector3Array()
+		for vertex in vertices:
+			local_faces.append(Vector3(vertex)-body.position)
 		var col := CollisionShape3D.new()
 		var shape := ConcavePolygonShape3D.new()
 		shape.backface_collision = true
-		shape.set_faces(PackedVector3Array(vertices))
+		shape.set_faces(local_faces)
 		col.shape = shape
-		road_ground.add_child(col)
+		body.add_child(col)
 	street_collision.clear()
 	map_surfaces.clear()
 	map_collision.clear()
@@ -862,6 +902,8 @@ func _label(words: String,at: Vector3,pixel: float,angle: float,color: Color) ->
 	label.pixel_size = pixel
 	label.outline_size = 3
 	label.modulate = color
+	label.visibility_range_end = 85.0
+	label.visibility_range_end_margin = 5.0
 	add_child(label)
 	label.position = at
 	label.rotation.y = angle
@@ -1257,8 +1299,16 @@ func tick(delta: float) -> void:
 		car.rotation.y = lerp_angle(car.rotation.y,atan2(d.x,d.z),minf(delta*4.0,1.0))
 		car.velocity = d*minf(float(entry.speed),distance/maxf(delta,.001))
 		car.move_and_slide()
+	npc_update_time += delta
+	if npc_update_time < .10:
+		return
+	npc_update_time = 0.0
+	var cam := get_viewport().get_camera_3d()
 	for resident in residents:
-		if bool(resident.sitting):
+		var person: Node3D = resident.node
+		var near := cam == null or person.global_position.distance_squared_to(cam.global_position)<14400.0
+		person.visible = near
+		if not near or bool(resident.sitting):
 			continue
 		var npc: Node3D = resident.node
 		var base: Vector3 = resident.origin
