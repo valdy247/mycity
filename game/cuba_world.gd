@@ -342,29 +342,38 @@ func _on_monte_alignment(p: Vector3,direction: Vector3) -> bool:
 	return false
 
 # Placement is a local game preference, not a change to OSM.
-const HOME_PLACEMENT_FILE := "user://pilar_home_placement_v2.json"
+const HOME_PLACEMENT_FILE := "user://pilar_home_placement_v3.json"
+
+# Original shop selection: reproduce the exact algorithm used before
+# the home/shop relocation. The sign was drawn at front.mid, NOT at
+# the closest point on the edge and NOT at the former home parcel.
+var original_shop_front: Dictionary = {}
+var original_shop_id := ""
 
 func _alborada_anchor() -> Vector3:
 	var anchor := geography.project(23.12230,-82.36677)
 	for place in geography.poi:
-		var tags: Dictionary = place.tags
-		if String(place.id)=="5233654525" or geography.normalized(String(tags.get("name",""))).contains("alborada"):
+		if String(place.id)=="5233654525":
 			anchor = place.position
 			break
-	# Reproduce the position of the original shop sign, rather than using
-	# the nearest unrelated parcel or the centre of a long road segment.
 	var best := 22.0
-	var result := anchor
-	for fp in geography.footprints_near(anchor,22.0):
+	original_shop_front = {}
+	original_shop_id = ""
+	for fp in geography.footprints_near(anchor,20.0):
 		var face := _front_edge(fp.poly)
-		if face.is_empty() or geography.street_label(String(face.road.name))!="MONTE":
+		if face.is_empty():
 			continue
 		var q := Geometry3D.get_closest_point_to_segment(anchor,face.a,face.b)
 		var distance := q.distance_to(anchor)
 		if distance<best:
 			best = distance
-			result = q-face.normal*.25
-	return result
+			original_shop_front = face
+			original_shop_id = String(fp.id)
+	if not original_shop_front.is_empty():
+		var midpoint: Vector3 = original_shop_front.mid
+		var normal: Vector3 = original_shop_front.normal
+		return midpoint-normal*.25
+	return anchor
 
 func _saved_home_anchor() -> Dictionary:
 	if not FileAccess.file_exists(HOME_PLACEMENT_FILE):
@@ -386,7 +395,13 @@ func _monte_pair(anchor: Vector3,manual: bool = false) -> Array:
 	# the side of the avenue, and the viewer-facing right is +local X.
 	var nearest: Dictionary = {}
 	var nearest_distance := INF
+	if not manual and not original_shop_front.is_empty():
+		nearest = original_shop_front.road
+		var original_q := Geometry3D.get_closest_point_to_segment(anchor,nearest.a,nearest.b)
+		nearest_distance = original_q.distance_to(anchor)
 	for edge in geography.roads_near(anchor,65.0):
+		if not manual and not original_shop_front.is_empty():
+			break
 		if not bool(edge.driveable) or geography.street_label(String(edge.name))!="MONTE":
 			continue
 		var q := Geometry3D.get_closest_point_to_segment(anchor,edge.a,edge.b)
@@ -399,10 +414,19 @@ func _monte_pair(anchor: Vector3,manual: bool = false) -> Array:
 	var rb: Vector3 = nearest.b
 	var road_dir := (rb-ra).normalized()
 	var reference := Geometry3D.get_closest_point_to_segment(anchor,ra,rb)
+	# A mapped segment may end before the shop midpoint. Project onto the
+	# frontage line, then check the full protected street geometry.
+	if not manual and not original_shop_front.is_empty():
+		reference = ra+road_dir*(anchor-ra).dot(road_dir)
 	var outward := Vector3(-road_dir.z,0,road_dir.x)
 	if outward.dot(anchor-reference)<0.0:
 		outward = -outward
 	var front := -outward
+	if not manual and not original_shop_front.is_empty():
+		var normal: Vector3 = original_shop_front.normal
+		if normal.dot(front)<0.0:
+			outward = -outward
+			front = -outward
 	var right := Vector3(front.z,0,-front.x)
 	# OSM splits one street into many short segments; don't require the
 	# two buildings to fit inside a single segment.
@@ -411,7 +435,9 @@ func _monte_pair(anchor: Vector3,manual: bool = false) -> Array:
 			continue
 		var curb := reference+right*float(shift)
 		var shop_curb := curb+right*9.12
-		if not _on_monte_alignment(curb,road_dir) or not _on_monte_alignment(shop_curb,road_dir):
+		if manual and (not _on_monte_alignment(curb,road_dir) or not _on_monte_alignment(shop_curb,road_dir)):
+			continue
+		if not manual and original_shop_front.is_empty() and (not _on_monte_alignment(curb,road_dir) or not _on_monte_alignment(shop_curb,road_dir)):
 			continue
 		for setback in [1.5,1.8,2.1,2.5,3.0,3.5,4.0,4.5,5.0,6.0]:
 			var offset := outward*(float(nearest.width)*.5+float(setback)+4.5)
@@ -435,7 +461,12 @@ func _monte_pair(anchor: Vector3,manual: bool = false) -> Array:
 				if not safe: break
 			if not safe:
 				continue
-			var score := absf(float(shift))*3.0+float(setback)*.6
+			var score := absf(float(shift))*100.0+float(setback)*.6
+			if not manual and not original_shop_front.is_empty():
+				var original_mid: Vector3 = original_shop_front.mid
+				var center: Vector3 = home.center
+				var facade_mid := center+front*4.5
+				score += facade_mid.distance_to(original_mid)*2.0
 			if score<best_score:
 				best_score = score
 				best = [home,shop]
@@ -455,6 +486,13 @@ func request_home_placement(at: Vector3) -> String:
 func _make_frontages() -> void:
 	var proposals: Array = []
 	var public_anchor: Vector3 = _alborada_anchor()
+	# The public POI still drives the historic home fallback and shop lookup.
+	# It is not the relocation target when the original facade exists.
+	var legacy_anchor := geography.project(23.12230,-82.36677)
+	for place in geography.poi:
+		if String(place.id)=="5233654525":
+			legacy_anchor = place.position
+			break
 	for edge in geography.roads:
 		if not bool(edge.driveable) or float(edge.width)<3.5:
 			continue
@@ -475,16 +513,16 @@ func _make_frontages() -> void:
 	# Use a public landmark as a general neighborhood reference. The game
 	# residence is fictional; do not encode a private dwelling's address.
 	var home_candidates: Array = proposals.duplicate()
-	home_candidates.sort_custom(func(a,b): return _home_score(a,public_anchor)<_home_score(b,public_anchor))
+	home_candidates.sort_custom(func(a,b): return _home_score(a,legacy_anchor)<_home_score(b,legacy_anchor))
 	for lot in home_candidates:
 		var c: Vector3 = lot.center
-		if not bool(lot.portal) or c.distance_to(public_anchor)<10.0 or not _lot_clear(c,lot.front,lot.edge):
+		if not bool(lot.portal) or c.distance_to(legacy_anchor)<10.0 or not _lot_clear(c,lot.front,lot.edge):
 			continue
 		# Do not replace the market or a large mapped complex with a house.
 		var huge := false
 		for fp in geography.footprints_near(c,10.0):
 			var extent: Vector3 = fp.high-fp.low
-			var contains_shop := Geometry2D.is_point_in_polygon(Vector2(public_anchor.x,public_anchor.z),fp.poly)
+			var contains_shop := Geometry2D.is_point_in_polygon(Vector2(legacy_anchor.x,legacy_anchor.z),fp.poly)
 			if (extent.x*extent.z>380.0 or contains_shop) and not Geometry2D.intersect_polygons(_lot_polygon(lot),fp.poly).is_empty():
 				huge = true
 				break
@@ -504,7 +542,7 @@ func _make_frontages() -> void:
 		_add_lot(alborada_lot)
 		_facade(alborada_lot,7,"LA ALBORADA")
 		paired_landmarks = true
-		print("Monte: casa y La Alborada contiguas, tienda a la derecha vista desde la calle.")
+		print("Monte: vivienda en la antigua fachada de La Alborada; tienda a la derecha. Fuente OSM: ",original_shop_id)
 	elif old_home_found:
 		for lot in home_candidates:
 			var center: Vector3 = lot.center
@@ -526,7 +564,7 @@ func _make_frontages() -> void:
 		_facade(lot,slots.size(),service_names[service_count])
 		service_count += 1
 	# Geographic footprints are authoritative; procedural infill is secondary.
-	_make_mapped_buildings(public_anchor)
+	_make_mapped_buildings(legacy_anchor)
 	proposals.sort_custom(func(a,b): return a.center.length_squared()<b.center.length_squared())
 	for lot in proposals:
 		if slots.size()>=1400:
