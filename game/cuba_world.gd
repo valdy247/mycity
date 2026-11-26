@@ -1415,7 +1415,7 @@ func _link_original_house() -> void:
 	var nearest := _nearest_street(door)
 	if not nearest.is_empty(): edge = nearest
 	road = Geometry3D.get_closest_point_to_segment(door,edge.a,edge.b)
-	garage_home_site = {"id":"original_home","name":"Mi casa","center":door-front*2.0,"door":door,"basis":basis,"road":road,"edge":edge}
+	garage_home_site = {"id":"original_home","name":"Mi casa","center":door-front*2.0,"door":door,"basis":basis,"road":road,"edge":edge,"door_width":float(chosen.get("width",1.15))}
 	home_gps_status = "Mi casa: acceso interior en la fachada GPS."
 	print(home_gps_status)
 
@@ -2875,7 +2875,7 @@ func pedestrian_segment_clear(a: Vector3,b: Vector3) -> bool:
 
 func _register_npc_door(threshold: Vector3,normal: Vector3,kind: String,width: float) -> void:
 	if width<.72: return
-	npc_doorways.append({"threshold":threshold,"normal":normal.normalized(),"kind":kind})
+	npc_doorways.append({"threshold":threshold,"normal":normal.normalized(),"kind":kind,"width":width})
 
 func _monte_color(index: int) -> Color:
 	var palette: Array[Color] = [Color("#8fbdac"),Color("#dbada7"),Color("#70b7c8"),Color("#d8c096"),Color("#a5c9cb"),Color("#c4a18b"),Color("#e2d1b4")]
