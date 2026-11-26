@@ -36,6 +36,10 @@ var run_clock := 0.0
 var last_player := Vector3.ZERO
 var chase_sample := 0.0
 var chase_grace := 0.0
+var slow_clock := 0.0
+var arrival_wait := 0.0
+var trip_elapsed := 0.0
+var rendezvous_clock := 0.0
 var key_line := false
 var restore_pending := false
 var location_reported := false
@@ -186,7 +190,7 @@ func _walk(actor: Person,target: Vector3,delta: float,speed: float,stop_range: f
 		actor.animate(delta,false)
 		return true
 	var id := actor.get_instance_id()
-	var memory: Dictionary = walkers.get(id,{"time":0.0,"path":PackedVector3Array(),"index":0,"target":Vector3.INF})
+	var memory: Dictionary = walkers.get(id,{"time":float(id%7)*.045,"path":PackedVector3Array(),"index":0,"target":Vector3.INF})
 	memory.time = float(memory.time)-delta
 	if float(memory.time)<=0.0:
 		memory.time = 1.1
@@ -299,6 +303,8 @@ func _start_trip(body: CharacterBody3D,goal: Vector3,label_value: String,role: S
 		return false
 	trip_body = body
 	trip_role = role
+	trip_elapsed = 0.0
+	arrival_wait = 0.0
 	if player_onboard:
 		game._start_taxi_ride()
 		if body==bike:
@@ -470,6 +476,8 @@ func _visit_scene() -> void:
 
 func _accept_job() -> void:
 	_end_cinema()
+	pickup_point = Vector3.INF
+	rendezvous_clock = 0.0
 	_set_stage(4)
 	if is_instance_valid(bike): _target(bike.global_position,"Moto de Yordi")
 
@@ -586,7 +594,7 @@ func _start_robbery() -> void:
 	if yordi.global_position.distance_to(game.player.global_position)>5.0:
 		business._notify("Espera a Yordi, que tiene el PS5.")
 		return
-	var at := game.player.global_position-Vector3.UP*.86
+	var at: Vector3 = game.player.global_position-Vector3.UP*.86
 	if not _spawn_foes(at):
 		business._notify("Espera un momento junto a la moto.")
 		return
@@ -603,6 +611,7 @@ func _start_chase() -> void:
 	run_clock = 0.0
 	chase_sample = 0.0
 	chase_grace = 2.0
+	slow_clock = 0.0
 	key_line = false
 	last_player = game.player.global_position
 	stone = Node3D.new()
@@ -646,15 +655,18 @@ func _chase_tick(delta: float) -> void:
 		chase_sample = 0.0
 		var moving := Vector2(player_at.x-last_player.x,player_at.z-last_player.z).length()/elapsed
 		last_player = player_at
-		if moving>=5.5: run_clock += elapsed
-		else: run_clock = maxf(0.0,run_clock-elapsed*1.8)
-	if chase_grace<=0.0 and nearest<1.15:
+		if moving>=5.5:
+			run_clock += elapsed
+			slow_clock = 0.0
+		else:
+			run_clock = maxf(0.0,run_clock-elapsed*1.8)
+			slow_clock += elapsed
+	if chase_grace<=0.0 and slow_clock>=1.25 and nearest<1.15:
 		_retry_chase()
 		return
 	if run_clock>=11.0 and player_at.distance_to(chase_origin)>=55.0 and nearest>=12.0:
 		var safe := _near_ground(target,yordi,8.0)
 		if not safe.is_finite(): return
-		if yordi.global_position.distance_to(target)>8.0: return
 		_clear_foes()
 		pickup_point = safe
 		state.pickup = _encode(safe)
@@ -671,7 +683,7 @@ func _retry_chase() -> void:
 	business._notify("Te alcanzaron. Volviendo al punto de control antes de la huida.")
 
 func checkpoint_reset() -> bool:
-	if _stage()!=8: return false
+	if _stage() not in [7,8]: return false
 	_retry_chase()
 	return true
 
@@ -755,15 +767,38 @@ func _deliver_home() -> void:
 	business._notify("Yordi: Déjalo aquí. Publícalo en Marketplace y te doy los mil pesos cuando se venda.")
 
 func _arrival_tick(delta: float) -> void:
-	if not is_instance_valid(trip_body) or not service.ready_to_exit(): return
+	if not is_instance_valid(trip_body): return
+	trip_elapsed += delta
+	if not service.ready_to_exit():
+		if trip_elapsed>180.0:
+			var failed_role := trip_role
+			service.finish_trip()
+			trip_role = ""
+			trip_body = null
+			if failed_role=="visit": _discard_bike()
+			else: _discard_cab()
+			retry_clock = 4.0
+		return
+	arrival_wait -= delta
+	if arrival_wait>0.0: return
+	arrival_wait = .5
 	var role := trip_role
 	var body := trip_body
 	var p := _near_ground(body.global_position,yordi,14.0)
-	if not p.is_finite(): return
+	if not p.is_finite():
+		if trip_elapsed>200.0:
+			service.finish_trip()
+			trip_body = null
+			trip_role = ""
+			if role=="visit": _discard_bike()
+			else: _discard_cab()
+		return
 	service.finish_trip()
 	trip_role = ""
 	trip_body = null
 	if role=="visit":
+		pickup_point = Vector3.INF
+		rendezvous_clock = 0.0
 		_remove_riders()
 		_ensure_yordi(p)
 		_set_stage(3)
@@ -826,9 +861,12 @@ func tick(delta: float) -> void:
 			var home := _home()
 			if game.garage.inside:
 				if yordi.global_position.y<50.0:
-					var door_point := _near_ground(home,yordi,3.5)
-					if not door_point.is_finite(): return
-					if not _walk(yordi,door_point,delta,2.4,1.2): return
+					rendezvous_clock -= delta
+					if rendezvous_clock<=0.0:
+						rendezvous_clock = 1.0
+						var door_point := _near_ground(home,yordi,3.5)
+						if door_point.is_finite(): pickup_point = door_point
+					if not pickup_point.is_finite() or not _walk(yordi,pickup_point,delta,2.4,1.2): return
 					_ensure_yordi(Garage.ROOM+Vector3(-1.6,0,4.1))
 				if _walk(yordi,player_at,delta,2.0,2.1): _visit_scene()
 			elif _walk(yordi,player_at,delta,2.5,2.1): _visit_scene()
@@ -839,8 +877,12 @@ func tick(delta: float) -> void:
 				var p := _near_ground(_home(),yordi,4.0)
 				if not p.is_finite(): return
 				_ensure_yordi(p)
-			var target := _near_ground(bike.global_position,yordi,10.0)
-			if target.is_finite(): _walk(yordi,target,delta,2.8,1.1)
+			rendezvous_clock -= delta
+			if rendezvous_clock<=0.0:
+				rendezvous_clock = 1.0
+				var target := _near_ground(bike.global_position,yordi,10.0)
+				if target.is_finite(): pickup_point = target
+			if pickup_point.is_finite(): _walk(yordi,pickup_point,delta,2.8,1.1)
 		6:
 			if is_instance_valid(yordi):
 				_walk(yordi,player_at,delta,3.5,1.8)
