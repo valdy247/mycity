@@ -15,6 +15,13 @@ var shop_items: Array = []
 var inventory: Dictionary = {}
 var residents: Array = []
 var road_names: Array = []
+var lot_cells: Dictionary = {}
+var map_surfaces: Dictionary = {}
+var map_collision: Dictionary = {}
+var kept_footprints: Array = []
+var market_drawn := false
+var mapped_buildings := 0
+var plaque_count := 0
 var service_count := 0
 var public_rooms: Array = []
 var current_room := -1
@@ -38,13 +45,15 @@ func setup(builder: Builder) -> void:
 	road_ground.collision_layer = 2
 	road_ground.collision_mask = 0
 	add_child(road_ground)
-	_visual_box(road_ground,Vector3(0,-.25,0),Vector3(1240,.50,1240),_mat("urban_ground",Color("#aaa394")))
-	_shape(road_ground,Vector3(0,-.25,0),Vector3(1240,.50,1240))
+	_visual_box(road_ground,Vector3(0,-.25,0),Vector3(2520,.50,2520),_mat("urban_ground",Color("#aaa394")))
+	_shape(road_ground,Vector3(0,-.25,0),Vector3(2520,.50,2520))
 	_load_inventory()
 	_make_osm_streets()
 	_make_frontages()
+	_make_corner_plaques()
 	_flush_city_boxes()
-	print("Pilar-Atarés: ",slots.size()," generated facade lots, ",service_count," game services, ",residents.size()," citizens.")
+	_flush_footprints()
+	print("Pilar-Atarés: ",slots.size()," generated facade lots, ",service_count," game services, ",residents.size()," citizens; ",mapped_buildings," OSM building footprints; ",plaque_count," corner plaques.")
 	# Real-world source attribution is visible in HUD via main.gd.
 
 func _cube(at: Vector3, size: Vector3, material: StandardMaterial3D, angle: float = 0.0, solid: bool = false) -> void:
@@ -99,6 +108,8 @@ func _make_osm_streets() -> void:
 			for i in range(int(a.distance_to(b)/9.0)):
 				var p := a+d*(float(i)*9.0+3.0)
 				_line(p,p+d*2.5,.09,.014,.058,stripe)
+		if not bool(edge.driveable):
+			continue
 		for side in [-1.0,1.0]:
 			var off := right*float(side)*(width*.5+.70)
 			_line(a+off,b+off,1.40,.055,.031,concrete)
@@ -110,13 +121,10 @@ func _make_osm_streets() -> void:
 				var end := b+right*(width*.5+.55)
 				for offset in [-.32,.32]:
 					_line(p+Vector3(float(offset),0,0),end+Vector3(float(offset),0,0),.026,.026,5.04,wires)
-		if String(edge.name)!="Calle sin nombre" and not road_names.has(edge.name) and road_names.size()<55:
-			road_names.append(edge.name)
-			var p := a.lerp(b,.5)+right*(width*.5+.85)
-			_label(String(edge.name),p+Vector3.UP*2.55,.009,atan2(-right.x,-right.z),Color("#edf0d6"))
+
 
 func _street_clear(p: Vector3,padding: float,ignore: Dictionary = {}) -> bool:
-	for e in geography.roads:
+	for e in geography.roads_near(p,padding+1.0):
 		if not ignore.is_empty() and e.a_id==ignore.a_id and e.b_id==ignore.b_id:
 			continue
 		var a: Vector3 = e.a
@@ -134,53 +142,124 @@ func _lot_clear(center: Vector3,front: Vector3,edge: Dictionary) -> bool:
 		for z in [-4.2,0.0,4.2]:
 			if not _street_clear(center+side*float(x)+front*float(z),.85,edge):
 				return false
-	for existing in slots:
+	for existing in _lots_near(center):
 		var other: Vector3 = existing.center
 		if center.distance_squared_to(other)<76.0:
 			return false
 	return true
 
+func _lots_near(p: Vector3) -> Array:
+	var k := Vector2i(floori(p.x/24.0),floori(p.z/24.0))
+	var result: Array = []
+	for x in range(k.x-1,k.x+2):
+		for z in range(k.y-1,k.y+2):
+			result.append_array(lot_cells.get(Vector2i(x,z),[]))
+	return result
+
+func _add_lot(lot: Dictionary) -> void:
+	slots.append(lot)
+	var p: Vector3 = lot.center
+	var k := Vector2i(floori(p.x/24.0),floori(p.z/24.0))
+	if not lot_cells.has(k):
+		lot_cells[k] = []
+	lot_cells[k].append(lot)
+
+func _lot_polygon(lot: Dictionary) -> PackedVector2Array:
+	var c: Vector3 = lot.center
+	var front: Vector3 = lot.front
+	var side := Vector3(front.z,0,-front.x)
+	var poly := PackedVector2Array()
+	for v in [Vector2(-4.45,-4.50),Vector2(4.45,-4.50),Vector2(4.45,4.50),Vector2(-4.45,4.50)]:
+		var p := c+side*v.x+front*v.y
+		poly.append(Vector2(p.x,p.z))
+	return poly
+
+func _overlaps_footprint(lot: Dictionary) -> bool:
+	var shape := _lot_polygon(lot)
+	for fp in geography.footprints_near(lot.center,9.0):
+		if not Geometry2D.intersect_polygons(shape,fp.poly).is_empty():
+			return true
+	return false
+
+func _overlaps_game_lot(fp: Dictionary) -> bool:
+	var low: Vector3 = fp.low
+	var high: Vector3 = fp.high
+	var start := Vector2i(floori((low.x-7.0)/24.0),floori((low.z-7.0)/24.0))
+	var finish := Vector2i(floori((high.x+7.0)/24.0),floori((high.z+7.0)/24.0))
+	for x in range(start.x,finish.x+1):
+		for z in range(start.y,finish.y+1):
+			for lot in lot_cells.get(Vector2i(x,z),[]):
+				if not Geometry2D.intersect_polygons(_lot_polygon(lot),fp.poly).is_empty():
+					return true
+	return false
+
 func _make_frontages() -> void:
-	var ordered: Array = geography.roads.duplicate()
-	ordered.sort_custom(func(a,b): return ((a.a+a.b)*.5).length_squared()<((b.a+b.b)*.5).length_squared())
 	var proposals: Array = []
-	for edge in ordered:
+	var public_anchor: Vector3 = geography.project(23.12230,-82.36677)
+	for place in geography.poi:
+		if String(place.id)=="5233654525":
+			public_anchor = place.position
+			break
+	for edge in geography.roads:
+		if not bool(edge.driveable) or float(edge.width)<3.5:
+			continue
 		var a: Vector3 = edge.a
 		var b: Vector3 = edge.b
 		var length := a.distance_to(b)
-		if length<17.0:
+		if length<12.0:
 			continue
 		var d := (b-a).normalized()
 		var right := Vector3(-d.z,0,d.x)
+		var count := maxi(1,floori((length-7.0)/9.0))
 		for side in [-1.0,1.0]:
 			var outward := right*float(side)
-			for i in range(maxi(1,int((length-8.0)/9.0))):
-				var p := a+d*(8.5+float(i)*9.0)
-				if p.distance_to(b)<5.0:
-					continue
-				var center := p+outward*(float(edge.width)*.5+1.7+4.5)
-				proposals.append({"center":center,"front":-outward,"edge":edge,"curb":p,"outward":outward,"d":d})
+			for i in range(count):
+				var p := a+d*((length-float(count-1)*9.0)*.5+float(i)*9.0)
+				var center := p+outward*(float(edge.width)*.5+1.65+4.5)
+				proposals.append({"center":center,"front":-outward,"edge":edge,"curb":p,"outward":outward,"d":d,"portal":bool(edge.portal)})
+	# Use a public landmark as a general neighborhood reference. The game
+	# residence is fictional; do not encode a private dwelling's address.
+	proposals.sort_custom(func(a,b): return a.center.distance_squared_to(public_anchor)<b.center.distance_squared_to(public_anchor))
+	for lot in proposals:
+		var c: Vector3 = lot.center
+		if not bool(lot.portal) or not _lot_clear(c,lot.front,lot.edge):
+			continue
+		# Do not replace the market or a large mapped complex with a house.
+		var huge := false
+		for fp in geography.footprints_near(c,10.0):
+			var extent: Vector3 = fp.high-fp.low
+			if extent.x*extent.z>380.0 and not Geometry2D.intersect_polygons(_lot_polygon(lot),fp.poly).is_empty():
+				huge = true
+				break
+		if huge: continue
+		_add_lot(lot)
+		_make_humble_home(lot)
+		break
+	# Keep special interiors from the prototype in small unrecorded lots.
+	for lot in proposals:
+		if service_count>=service_names.size():
+			break
+		if lot.center.distance_to(public_anchor)<35.0 or lot.center.length()>1000.0:
+			continue
+		if not _lot_clear(lot.center,lot.front,lot.edge) or _overlaps_footprint(lot):
+			continue
+		_add_lot(lot)
+		_facade(lot,slots.size(),service_names[service_count])
+		service_count += 1
+	# Geographic footprints are authoritative; procedural infill is secondary.
+	_make_mapped_buildings(public_anchor)
 	proposals.sort_custom(func(a,b): return a.center.length_squared()<b.center.length_squared())
 	for lot in proposals:
-		if slots.size()>=680:
+		if slots.size()>=1400:
 			break
-		var c: Vector3 = lot.center
-		var f: Vector3 = lot.front
-		var e: Dictionary = lot.edge
-		if not _lot_clear(c,f,e):
+		if not _lot_clear(lot.center,lot.front,lot.edge) or _overlaps_footprint(lot):
 			continue
-		slots.append(lot)
-		if home_root==null and float(e.width)>=6.0:
-			_make_humble_home(lot)
-		elif service_count<service_names.size() and slots.size()%7==0:
-			_facade(lot,slots.size(),service_names[service_count])
-			service_count += 1
-		else:
-			_facade(lot,slots.size(),"")
-	# If OSM topology is unusually sparse, do not place a home inside a road.
+		_add_lot(lot)
+		_facade(lot,slots.size(),"")
 	if home_root==null:
 		push_warning("Pilar-Atarés: no safe home lot found.")
-		home_spawn = geography.roads[0].a+Vector3.UP*.9
+		var edge: Dictionary = geography.roads[0]
+		home_spawn = edge.a+Vector3.UP*.9
 		van_spawn = home_spawn+Vector3(0,0,5)
 
 func _local_cube(c: Vector3,basis: Basis,p: Vector3,size: Vector3,material: StandardMaterial3D,solid: bool = false) -> void:
@@ -212,24 +291,28 @@ func _facade(lot: Dictionary,index: int,service: String) -> void:
 	var iron := _mat("iron",Color("#43433d"))
 	var upper := 1+index%3
 	var h: float = float(upper)*3.1
+	var portal: bool = bool(lot.get("portal",false))
+	var face_z: float = 1.52 if portal else 4.43
 	# Deep covered portal, facade behind columns, upper floors above walkway.
-	_local_cube(c,basis,Vector3(0,.065,2.8),Vector3(8.8,.13,3.3),stone,true)
+	if portal or service in ["BODEGA","HOSPITAL • LA DEPENDIENTE"]:
+		_local_cube(c,basis,Vector3(0,.065,2.8),Vector3(8.8,.13,3.3),stone,true)
 	if service in ["BODEGA","HOSPITAL • LA DEPENDIENTE"]:
+		face_z = 1.52
 		_public_room(c,basis,plaster,service)
 	else:
-		_local_cube(c,basis,Vector3(0,1.55,-1.45),Vector3(8.8,3.1,5.9),plaster,true)
+		_local_cube(c,basis,Vector3(0,1.55,-1.45 if portal else 0.0),Vector3(8.8,3.1,5.9 if portal else 8.8),plaster,true)
 	_local_cube(c,basis,Vector3(0,3.05,0),Vector3(8.8,.24,9.0),stone,true)
 	if upper>1:
 		_local_cube(c,basis,Vector3(0,3.1+(h-3.1)*.5,0),Vector3(8.8,h-3.1,8.8),plaster,true)
 	_local_cube(c,basis,Vector3(0,h+.07,0),Vector3(8.95,.14,9.0),stone)
-	for x in [-4.15,-1.4,1.4,4.15]:
+	for x in ([-4.15,-1.4,1.4,4.15] if portal else []):
 		_local_cube(c,basis,Vector3(float(x),1.58,4.10),Vector3(.36,3.0,.36),stone,true)
 		_local_cube(c,basis,Vector3(float(x),.18,4.10),Vector3(.52,.31,.52),weathered)
 		_local_cube(c,basis,Vector3(float(x),2.96,4.10),Vector3(.50,.21,.50),stone)
 	for x in [-2.7,0.0,2.7]:
 		if service not in ["BODEGA","HOSPITAL • LA DEPENDIENTE"] or float(x)!=0.0:
-			_local_cube(c,basis,Vector3(float(x),1.35,1.52),Vector3(1.12,2.55,.06),doors)
-		_local_cube(c,basis,Vector3(float(x),2.77,1.56),Vector3(1.34,.16,.12),stone)
+			_local_cube(c,basis,Vector3(float(x),1.35,face_z),Vector3(1.12,2.55,.06),doors)
+		_local_cube(c,basis,Vector3(float(x),2.77,face_z+.04),Vector3(1.34,.16,.12),stone)
 		for floor in range(1,upper):
 			var y := float(floor)*3.1+1.5
 			_local_cube(c,basis,Vector3(float(x),y,4.43),Vector3(1.0,1.85,.07),recess)
@@ -243,13 +326,13 @@ func _facade(lot: Dictionary,index: int,service: String) -> void:
 	for k in range(4):
 		var px := -3.85+fmod(float(index*17+k*13)*.37,7.7)
 		var py := .40+fmod(float(index+k*3)*.73,2.2)
-		_local_cube(c,basis,Vector3(px,py,1.514),Vector3(.48+float(k)*.12,.30,.008),weathered)
+		_local_cube(c,basis,Vector3(px,py,face_z+.006),Vector3(.48+float(k)*.12,.30,.008),weathered)
 	if not service.is_empty():
-		_local_cube(c,basis,Vector3(0,2.65,1.62),Vector3(5.2,.48,.10),doors)
-		_label(service,c+basis*Vector3(0,2.66,1.69),.010,angle,Color("#fff2cb"))
-	elif index%13==0 and residents.size()<45:
+		_local_cube(c,basis,Vector3(0,2.65,face_z+.10),Vector3(5.2,.48,.10),doors)
+		_label(service,c+basis*Vector3(0,2.66,face_z+.17),.010,angle,Color("#fff2cb"))
+	elif portal and index%13==0 and residents.size()<45:
 		_vendor(lot,index)
-	elif index%5==0 and residents.size()<65:
+	elif portal and index%5==0 and residents.size()<65:
 		_citizen(lot,index,false)
 
 func _public_room(c: Vector3,basis: Basis,wall: StandardMaterial3D,service: String) -> void:
