@@ -205,6 +205,7 @@ func _refresh_preview() -> void:
 	preview.visible = not owned.has(kind)
 
 func _free_hands() -> bool:
+	if game.backpack!=null and not game.backpack.empty_hands(): return false
 	return business.ledger.carry.is_empty() and business.life.state.meal.is_empty() and (game.monte_services==null or game.monte_services.player_bag==null) and String(state.part).is_empty() and String(state.held_furniture).is_empty()
 
 func _home_menu() -> void:
