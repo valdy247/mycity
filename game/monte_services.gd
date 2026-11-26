@@ -489,6 +489,21 @@ func _civilian_route(raw: Array) -> Array:
 				result.append({"p":at})
 	return result
 
+func _small_traffic_street(p: Vector3,d: Vector3) -> bool:
+	var nearest: Dictionary = {}
+	var best := INF
+	for edge in world.geography.roads_near(p,8.0):
+		if not bool(edge.driveable): continue
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		if absf((b-a).normalized().dot(d))<.8: continue
+		var q := Geometry3D.get_closest_point_to_segment(p,a,b)
+		var dist := p.distance_to(q)
+		if dist>float(edge.width)*.5 or dist>=best: continue
+		nearest = edge
+		best = dist
+	return not nearest.is_empty() and float(nearest.width)>=5.6 and float(nearest.width)<8.5 and not world._is_monte_edge(nearest)
+
 func _make_vehicle(route: Array,truck: bool,index: int,slots: int = 8,slot: int = -1,kind: String = "avenue",outer: bool = false) -> void:
 	var start := -1
 	if route.size()<2: return
@@ -520,8 +535,15 @@ func _make_vehicle(route: Array,truck: bool,index: int,slots: int = 8,slot: int 
 		var d := (next-p).normalized()
 		if item.has("stop"): d = item.stop.direction
 		if not truck and not world.street_geometry.intersection_clear_for_stop(p,4.25,1.83): continue
-		if not truck and kind=="neighborhood" and not world.street_geometry.four_lane_at(p,d).is_empty(): continue
-		if not truck and outer and world.street_geometry.four_lane_at(p,d).is_empty(): continue
+		if not truck and kind=="neighborhood" and not _small_traffic_street(p,d): continue
+		if not truck and outer:
+			if world.street_geometry.four_lane_at(p,d).is_empty(): continue
+			var service_clear := true
+			for stop in bus_berths:
+				if p.distance_to(stop.position)<14.0: service_clear = false
+			for site in sites:
+				if p.distance_to(site.parking)<14.0: service_clear = false
+			if not service_clear: continue
 		if not Bypass._on_road(world.street_geometry,p,d,2.3 if truck else 1.83,6.2 if truck else 4.25): continue
 		if d.length_squared()<.1: continue
 		if not _free_box(p,d,Vector3(2.3 if truck else 1.83,2.7 if truck else 1.5,6.2 if truck else 4.25)): continue
