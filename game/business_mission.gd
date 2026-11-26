@@ -15,6 +15,7 @@ var stand: Node3D
 var factory_arrow: Node3D
 var crate_view: Node3D
 var crate_rack: Node3D
+var purchase_rack: Node3D
 var buyer: Person
 var buyer_time := 0.0
 var buyer_path := PackedVector3Array()
@@ -49,7 +50,7 @@ func setup(city: World,taxi_service: Taxi,actor: CharacterBody3D,vehicle: Charac
 	_sync_visuals()
 	_update_hud()
 	if world.food_factory.is_empty() or world.business_frontage==null:
-		_notify("La primera misión requiere un puesto de venta y una parcela libre para la fábrica.")
+		_notify("La primera misión requiere un puesto de venta y una parcela libre para la MIPYME.")
 	else:
 		taxis.set_business_points(world.food_factory.road,world.van_spawn,ledger.stage>=1)
 
@@ -130,6 +131,58 @@ func _crate(root: Node3D,p: Vector3,key: String) -> Node3D:
 	_box(node,Vector3(0,0,.204),Vector3(.46,.105,.012),band)
 	return node
 
+func _selectable_crate(root: Node3D,p: Vector3,key: String,paid: bool) -> void:
+	var node := _crate(root,p,key)
+	var target := StaticBody3D.new()
+	target.collision_layer = 16
+	target.collision_mask = 0
+	node.add_child(target)
+	var collider := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(.52,.34,.40)
+	collider.shape = shape
+	target.add_child(collider)
+	target.set_meta("mipyme_key",key)
+	target.set_meta("paid",paid)
+
+func _aimed_crate(at: Vector3) -> Node3D:
+	if camera==null or player==null: return null
+	var origin := camera.global_position
+	var direction := -camera.global_transform.basis.z
+	var query := PhysicsRayQueryParameters3D.create(origin,origin+direction*8.0,1|4|16)
+	query.exclude = [player.get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	if hit.is_empty(): return null
+	var node := hit.collider as Node3D
+	if node!=null and node.has_meta("mipyme_key") and at.distance_to(node.global_position)<3.0:
+		return node
+	return null
+
+func aimed_text(at: Vector3) -> String:
+	var target := _aimed_crate(at)
+	if target==null: return ""
+	var key := String(target.get_meta("mipyme_key"))
+	if bool(target.get_meta("paid")): return "[E] Recoger caja de "+_product_name(key)
+	return "[E] Comprar y recoger "+_product_name(key)+" · %d CUP" % int(Ledger.PRODUCTS[key].cost)
+
+func take_aimed(at: Vector3) -> bool:
+	var target := _aimed_crate(at)
+	if target==null: return false
+	if not ledger.carry.is_empty():
+		_notify("Ya llevas una caja. G para cargarla en un vehículo.")
+		return true
+	if ledger.stage<2:
+		_notify("Primero acepta la misión de Albertico y llega a la MIPYME.")
+		return true
+	var key := String(target.get_meta("mipyme_key"))
+	if not bool(target.get_meta("paid")) and not ledger.buy(key,1):
+		_notify("No tienes suficiente dinero para esta caja.")
+		return true
+	if ledger.pick_up(key):
+		_notify("Llevas una caja de "+_product_name(key)+". G para cargarla.")
+		_sync_visuals()
+	return true
+
 func _make_scene() -> void:
 	if world.business_frontage==null or world.food_factory.is_empty(): return
 	var home := world.business_frontage
@@ -152,13 +205,14 @@ func _make_scene() -> void:
 	buyer = Person.new()
 	add_child(buyer)
 	buyer.setup(210)
+	buyer.social_context = "shopping"
 	buyer.hide()
 	var counter: Vector3 = world.food_factory.counter
 	var clerk := _person(self,Color("#8196b0"))
 	var basis: Basis = world.food_factory.basis
 	clerk.position = counter+basis*Vector3(0,-.84,-2.05)
 	clerk.rotation.y = basis.get_euler().y
-	_label(clerk,"Mayorista",Vector3(0,2.02,0))
+	_label(clerk,"MIPYME",Vector3(0,2.02,0))
 	var pickup: Vector3 = world.food_factory.pickup
 	var sign := Node3D.new()
 	add_child(sign)
@@ -169,6 +223,16 @@ func _make_scene() -> void:
 	add_child(crate_rack)
 	crate_rack.position = pickup+basis*Vector3(0,-.10,-1.3)
 	crate_rack.rotation.y = basis.get_euler().y
+	purchase_rack = Node3D.new()
+	add_child(purchase_rack)
+	purchase_rack.position = counter+basis*Vector3(0,-.10,.05)
+	purchase_rack.rotation.y = basis.get_euler().y
+	for i in range(Ledger.PRODUCTS.size()):
+		var key := String(Ledger.PRODUCTS.keys()[i])
+		var product: Dictionary = Ledger.PRODUCTS[key]
+		var at := Vector3(-.70+float(i)*.70,.17,0)
+		_selectable_crate(purchase_rack,at,key,false)
+		_label(purchase_rack,"%s · %d CUP" % [product.name,product.cost],at+Vector3(0,.43,0))
 	crate_view = Node3D.new()
 	camera.add_child(crate_view)
 	crate_view.position = Vector3(.26,-.31,-.88)
@@ -311,7 +375,7 @@ func taxi_arrival(at: Vector3) -> void:
 		var factory: Vector3 = world.food_factory.counter
 		if _flat_distance(at,factory)<=50.0:
 			ledger.factory_arrival()
-			_notify("Llegaste a la fábrica. Habla con el mayorista.")
+			_notify("Llegaste a la MIPYME. Mira una caja y pulsa E.")
 			_sync_visuals()
 
 func action_text(at: Vector3) -> String:
@@ -322,11 +386,11 @@ func action_text(at: Vector3) -> String:
 		if ledger.stage==3 and ledger.total(ledger.stock)>0: return "[E] Contratar a Albertico"
 		return "[E] Hablar con Albertico"
 	if not world.food_factory.is_empty():
-		if _near(at,world.food_factory.pickup,1.55): return "[E] Recoger caja"
-		if _near(at,world.food_factory.counter,1.65): return "[E] Comprar al por mayor"
+		if _near(at,world.food_factory.pickup,2.0) or _near(at,world.food_factory.counter,2.0): return "MIPYME · Mira una caja y pulsa E"
 	return ""
 
 func interact(at: Vector3) -> bool:
+	if take_aimed(at): return true
 	var action := action_text(at)
 	if action.is_empty(): return false
 	if action.contains("Albertico"):
@@ -343,12 +407,10 @@ func interact(at: Vector3) -> bool:
 			_button("Contratar a Albertico",_hire)
 			_button("Ahora no",close)
 		else:
-			_open("Albertico","Trae las cajas de la fábrica, cárgalas en el carro y déjamelas aquí.\n\n"+_stock_text())
+			_open("Albertico","Trae las cajas de la MIPYME, cárgalas en el carro y déjamelas aquí.\n\n"+_stock_text())
 			_button("Cerrar",close)
-	elif action.contains("Comprar"):
-		_open_shop()
 	else:
-		_open_pickup()
+		_notify("Mira directamente la caja que deseas y pulsa E.")
 	return true
 
 func _accept() -> void:
@@ -365,10 +427,10 @@ func _hire() -> void:
 
 func _open_shop() -> void:
 	if ledger.stage<2:
-		_open("Fábrica de alimentos","Primero habla con Albertico y llega aquí en taxi.")
+		_open("MIPYME de alimentos","Primero habla con Albertico y llega aquí en taxi.")
 		_button("Cerrar",close)
 		return
-	_open("Fábrica · Venta mayorista","Billetera: %d CUP. Cada caja contiene 10 unidades. Compra y recógelas en el mostrador de cajas." % ledger.cash)
+	_open("MIPYME · Venta mayorista","Billetera: %d CUP. Cada caja contiene 10 unidades. Compra y recógelas en el mostrador de cajas." % ledger.cash)
 	for key in Ledger.PRODUCTS:
 		var product: Dictionary = Ledger.PRODUCTS[key]
 		var k := String(key)
@@ -438,7 +500,7 @@ func _sync_visuals() -> void:
 	for key in Ledger.PRODUCTS:
 		for i in range(mini(int(ledger.pending.get(key,0)),6)):
 			if slot>=9: break
-			_crate(crate_rack,Vector3(-.58+float(slot%3)*.58,.17+floorf(float(slot)/3.0)*.35,0),String(key))
+			_selectable_crate(crate_rack,Vector3(-.58+float(slot%3)*.58,.17+floorf(float(slot)/3.0)*.35,0),String(key),true)
 			slot += 1
 	var product_slot := 0
 	for key in Ledger.PRODUCTS:
@@ -472,10 +534,10 @@ func _sync_cargo_views() -> void:
 		cargo_views[key] = _label(body,"%d cajas · G" % count,Vector3(0,2.65,0),Color("#ffe19a"))
 
 func _objective() -> String:
-	if albertico==null: return "Misión no disponible: falta la fábrica o el puesto."
+	if albertico==null: return "Misión no disponible: falta la MIPYME o el puesto."
 	match ledger.stage:
 		0: return "Habla con Albertico en su puesto de Monte."
-		1: return "Toma un taxi y selecciona Fábrica de alimentos."
+		1: return "Toma un taxi y selecciona MIPYME de alimentos."
 		2: return "Compra cajas y cárgalas en el carro con G."
 		3:
 			if ledger.total(ledger.stock)>0: return "Contrata a Albertico para vender."
