@@ -347,6 +347,7 @@ func _populate() -> void:
 	var at := camera.global_position
 	for i in range(walkers.size()-1,-1,-1):
 		var person: Person = walkers[i].node
+		if person.has_meta("incident_role"): continue
 		if person.global_position.distance_to(at)>190.0:
 			person.queue_free()
 			walkers.remove_at(i)
@@ -389,7 +390,7 @@ func yield_to_bus(stop: Dictionary,bus: CharacterBody3D) -> void:
 	var approach := maxf(0.0,(center-bus.global_position).dot(direction))
 	for agent in walkers:
 		var person: Person = agent.node
-		if bool(agent.get("indoors",false)) or agent.has("yield_target"): continue
+		if person.has_meta("incident_role") or bool(agent.get("indoors",false)) or agent.has("yield_target"): continue
 		var at := person.global_position
 		var offset := at-center
 		if absf(offset.dot(side))>1.55 or offset.dot(direction)<-approach-4.7 or offset.dot(direction)>5.6: continue
@@ -426,6 +427,12 @@ func tick(delta: float) -> void:
 	for i in range(walkers.size()-1,-1,-1):
 		var agent: Dictionary = walkers[i]
 		var person: Person = agent.node
+		if person.has_meta("incident_role"): continue
+		if bool(agent.get("incident_replan",false)):
+			agent.erase("incident_replan")
+			agent.erase("yield_target")
+			agent.pause = 0.0
+			if not _choose_route(agent,true): agent.pause = .5
 		person.visible = not bool(agent.get("indoors",false)) and (camera==null or person.global_position.distance_squared_to(camera.global_position)<14400.0)
 		if agent.has("yield_target"):
 			var safe: Vector3 = agent.yield_target
