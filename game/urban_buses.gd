@@ -520,6 +520,10 @@ func tick(delta: float) -> void:
 		var ray := PhysicsRayQueryParameters3D.create(body.position+Vector3.UP*.95+d*(BUS_LENGTH*.5+.15),body.position+Vector3.UP*.95+d*(BUS_LENGTH*.5+1.2+float(bus.speed)*.8),1|4)
 		ray.exclude = [body.get_rid()]
 		var blocked := not get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
+		if not blocked:
+			var low_ray := PhysicsRayQueryParameters3D.create(ray.from-Vector3.UP*.68,ray.to-Vector3.UP*.68,1|4)
+			low_ray.exclude = [body.get_rid()]
+			blocked = not get_world_3d().direct_space_state.intersect_ray(low_ray).is_empty()
 		bus.bypass_cooldown = maxf(0.0,float(bus.get("bypass_cooldown",0.0))-delta)
 		if blocked:
 			bus.blocked = float(bus.blocked)+delta
