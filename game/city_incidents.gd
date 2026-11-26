@@ -138,7 +138,27 @@ func _foot(p: Vector3) -> Dictionary:
 
 func _ped_path(a: Vector3,b: Vector3) -> PackedVector3Array:
 	if world.pedestrian_segment_clear(a,b): return PackedVector3Array([b])
-	return router.route_between(a,b)
+	var normal: PackedVector3Array = router.route_between(a,b)
+	if not normal.is_empty(): return normal
+	var starts: Array = router._near_ids(a,12.0)
+	var ends: Array = router._near_ids(b,12.0)
+	starts.sort_custom(func(x,y): return a.distance_squared_to(router.graph.get_point_position(int(x)))<a.distance_squared_to(router.graph.get_point_position(int(y))))
+	ends.sort_custom(func(x,y): return b.distance_squared_to(router.graph.get_point_position(int(x)))<b.distance_squared_to(router.graph.get_point_position(int(y))))
+	var valid_starts: Array = []
+	var valid_ends: Array = []
+	for id in starts.slice(0,18):
+		if world.pedestrian_segment_clear(a,router.graph.get_point_position(int(id))): valid_starts.append(id)
+		if valid_starts.size()>=3: break
+	for id in ends.slice(0,18):
+		if world.pedestrian_segment_clear(router.graph.get_point_position(int(id)),b): valid_ends.append(id)
+		if valid_ends.size()>=3: break
+	for first in valid_starts:
+		for last in valid_ends:
+			var path: PackedVector3Array = router.graph.get_point_path(int(first),int(last))
+			if path.is_empty(): continue
+			path.append(b)
+			return path
+	return PackedVector3Array()
 
 func _advance_actor(person: Person,path: PackedVector3Array,index: int,dt: float,speed: float = 1.5) -> int:
 	if index>=path.size(): return index
@@ -162,6 +182,7 @@ func _crowd_tick(center: Vector3,delta: float) -> void:
 		crowd_clock = 0.0
 		var candidates: Array = _walkers(center,42.0)
 		var spots := _witness_spots(center)
+		_watch_nearby(center)
 		# Other visible citizens, including passengers waiting at stops,
 		# may become witnesses. Do not steal working vendors or residents.
 		for node in get_tree().get_nodes_in_group("social_people"):
@@ -209,6 +230,15 @@ func _crowd_tick(center: Vector3,delta: float) -> void:
 			var d := center-p.global_position
 			p.rotation.y = lerp_angle(p.rotation.y,atan2(d.x,d.z),minf(1.0,delta*6.0))
 			p.animate(delta,false)
+
+func _watch_nearby(center: Vector3) -> void:
+	for agent in _walkers(center,8.0):
+		if crowd.size()>=3: break
+		var p: Person = agent.node
+		var at := p.global_position
+		if streets.point_on_road(at) or at.distance_to(center)<1.8 or not _witness_slot_free(at): continue
+		_lock(agent,"curioso")
+		crowd.append({"agent":agent,"target":at,"path":PackedVector3Array(),"index":0,"time":0.0,"last":at,"stuck":0.0})
 
 func _witness_slot_free(spot: Vector3) -> bool:
 	for other in crowd:
@@ -424,9 +454,7 @@ func _car_trip(body: CharacterBody3D,at: Vector3,radius: float = 38.0,exclude: D
 		if not exclude.is_empty() and _flat_distance_to_berth(goal,exclude)<4.0: continue
 		if not _clear_pose(body,goal): continue
 		if radius>=RESCUE_WALK_RANGE:
-			var ground := _sidewalk(goal,at)
-			if ground.is_empty(): continue
-			if _rescue_access(ground.p,at).is_empty(): continue
+			if _rescue_foot_access(goal,at).is_empty(): continue
 		for origin in start.slice(0,4):
 			var route := _route(origin,goal,body.global_position)
 			if not route.is_empty(): return {"trip":_new_trip(body,route),"berth":goal}
@@ -842,12 +870,11 @@ func _reserve_responder(victim: Dictionary,center: Vector3) -> bool:
 	# One supplementary civilian, only on a free road away from the event.
 	# It has the same geometry and navigation rules as ordinary traffic.
 	for car in municipal.vehicles:
-		if bool(car.get("rescue_extra",false)): return false
+		if bool(car.get("rescue_extra",false)) and bool(car.get("incident_hold",false)): return false
 	if municipal.civilian_route.size()<2: return false
 	var goals: Array = []
 	for goal in _berths(center,RESCUE_WALK_RANGE).slice(0,24):
-		var ground := _sidewalk(goal,center)
-		if ground.is_empty() or _rescue_access(ground.p,center).is_empty(): continue
+		if _rescue_foot_access(goal,center).is_empty(): continue
 		goals.append(goal)
 	if goals.is_empty(): return false
 	var tested: Dictionary = {}
@@ -880,31 +907,80 @@ func _reserve_responder(victim: Dictionary,center: Vector3) -> bool:
 		if tested.size()>=32: break
 	return false
 
+func _local_responder(victim: Dictionary,center: Vector3) -> bool:
+	if municipal.civilian_route.size()<2: return false
+	var camera := get_viewport().get_camera_3d()
+	var goals := _berths(center,RESCUE_WALK_RANGE)
+	# Prefer a curb outside the current view. A driver may already be
+	# parked on this block; a disconnected driving graph is not a veto.
+	var ranked: Array = []
+	for goal in goals:
+		var p: Vector3 = goal.p
+		if p.distance_to(center)<6.0: continue
+		if not municipal._free_box(p,goal.d,Vector3(WIDTH,HEIGHT,LENGTH)): continue
+		var visible := camera!=null and camera.is_position_in_frustum(p+Vector3.UP)
+		ranked.append({"goal":goal,"score":p.distance_to(center)+(35.0 if visible else 0.0)})
+	ranked.sort_custom(func(a,b): return float(a.score)<float(b.score))
+	for entry in ranked.slice(0,20):
+		var goal: Dictionary = entry.goal
+		if _rescue_foot_access(goal,center).is_empty(): continue
+		var existing := 0
+		for car in municipal.vehicles:
+			if bool(car.get("rescue_extra",false)): existing += 1
+		if existing>=2: return false
+		var body: CharacterBody3D = municipal._body(false,10+existing)
+		var p: Vector3 = goal.p
+		var d: Vector3 = goal.d
+		body.global_position = p+Vector3.UP*.04
+		body.rotation.y = atan2(d.x,d.z)
+		var car := {"body":body,"route":municipal.civilian_route,"index":0,"speed":0.0,"truck":false,"crew":[],"site":{},"blocked":0.0,"cooldown":0.0,"detour":[],"detour_index":0,"resume":0,"rescue_extra":true}
+		municipal.vehicles.append(car)
+		_assign_rescue(victim,car,{"trip":_new_trip(body,[]),"berth":goal})
+		return true
+	return false
+
 func _rescue_start(victim: Dictionary) -> void:
 	var person: Node3D = victim.agent.node
 	var center := person.global_position
 	var candidates: Array = []
+	var failed: Dictionary = victim.get("failed_cars",{})
 	for car in municipal.vehicles:
 		if bool(car.truck) or bool(car.get("incident_hold",false)): continue
 		var body: CharacterBody3D = car.body
 		if not is_instance_valid(body) or String(body.name).begins_with("Patrulla") or body.global_position.distance_to(center)>240.0: continue
-		if not streets.intersection_clear_for_stop(body.global_position,LENGTH,WIDTH): continue
+		if int(failed.get(body.get_instance_id(),0))>Time.get_ticks_msec(): continue
 		candidates.append(car)
 	candidates.sort_custom(func(a,b): return (a.body as Node3D).global_position.distance_squared_to(center)<(b.body as Node3D).global_position.distance_squared_to(center))
 	for car in candidates.slice(0,8):
 		var body: CharacterBody3D = car.body
-		var approach := _car_trip(body,center,RESCUE_WALK_RANGE)
-		if approach.is_empty():
-			var parked := _park_here(body,center)
-			if parked.is_empty(): continue
-			approach = {"trip":_new_trip(body,[]),"berth":parked}
+		var parked := _park_here(body,center)
+		var approach := {"trip":_new_trip(body,[]),"berth":parked} if not parked.is_empty() else _car_trip(body,center,RESCUE_WALK_RANGE)
+		if approach.is_empty(): continue
 		_assign_rescue(victim,car,approach)
 		return
+	if float(victim.time)>=8.0 and _local_responder(victim,center): return
 	if _reserve_responder(victim,center): return
+	if _local_responder(victim,center): return
 	_rescue_log(victim,"esperando automóvil con acceso seguro; reintentando.")
 
 # Find a reachable approach beside the casualty instead of insisting on
 # the exact foot position, which may overlap a pole or parked vehicle.
+func _rescue_foot_access(berth: Dictionary,at: Vector3) -> Dictionary:
+	var p: Vector3 = berth.p
+	var side: Vector3 = berth.right
+	var d: Vector3 = berth.d
+	for shift in [0.0,1.8,-1.8,3.5,-3.5,5.5,-5.5]:
+		for dist in [1.65,2.45,3.4,4.6,6.0]:
+			var candidate := p+side*float(dist)+d*float(shift)
+			if streets.point_on_road(candidate): continue
+			var ground := _foot(candidate)
+			if ground.is_empty(): continue
+			var access := _rescue_access(ground.p,at)
+			if not access.is_empty():
+				access["spawn"] = ground.p
+				return access
+	return {}
+
 func _rescue_access(from: Vector3,at: Vector3) -> Dictionary:
 	var candidates: Array = [at]
 	for radius in [.65,1.15,1.75,2.4]:
@@ -951,19 +1027,15 @@ func _park_here(body: CharacterBody3D,center: Vector3) -> Dictionary:
 		if _flat(p-origin).length()>1.35: continue
 		var candidate: Dictionary = berth.duplicate()
 		candidate.p = origin
-		var ground := _sidewalk(candidate,center)
-		if ground.is_empty(): continue
-		if _rescue_access(ground.p,center).is_empty(): continue
+		if _rescue_foot_access(candidate,center).is_empty(): continue
 		return candidate
 	return {}
 
 func _rescue_parked(victim: Dictionary,body: CharacterBody3D) -> bool:
-	var ground := _sidewalk(scene.berth,scene.center)
-	if ground.is_empty(): return false
-	var spawn: Vector3 = ground.p
 	var casualty: Vector3 = victim.old.origin
-	var access := _rescue_access(spawn,casualty)
+	var access := _rescue_foot_access(scene.berth,casualty)
 	if access.is_empty(): return false
+	var spawn: Vector3 = access.spawn
 	Bypass._junction_release(scene.trip,body,streets)
 	body.set_meta("junction_guard",false)
 	body.set_meta("traffic_servicing",true)
@@ -1078,6 +1150,8 @@ func _rescue_tick(delta: float) -> void:
 					scene.trip = alternate.trip
 					scene.berth = alternate.berth
 			return
+		if float(scene.time)<float(scene.get("park_retry_at",0.0)): return
+		scene.park_retry_at = float(scene.time)+1.5
 		if _rescue_parked(victim,body): return
 		_rescue_log(victim,"buscando otro acceso a pie.")
 		var alternative := _car_trip(body,scene.center,RESCUE_WALK_RANGE,scene.berth)
@@ -1085,6 +1159,7 @@ func _rescue_tick(delta: float) -> void:
 			scene.trip = alternative.trip
 			scene.berth = alternative.berth
 			scene.time = 0.0
+			scene.park_retry_at = 0.0
 		elif float(scene.time)>15.0:
 			_end_rescue(false)
 	elif phase=="help":
@@ -1276,8 +1351,13 @@ func _end_rescue(delivered: bool) -> void:
 		person.rotation.x = -PI*.5
 		person.global_position.y += .13
 		person.show()
-		victim.retry = 8.0
-	_crowd_clear()
+		victim.severe = true
+		victim.retry = .5
+		var failed: Dictionary = victim.get("failed_cars",{})
+		failed[body.get_instance_id()] = Time.get_ticks_msec()+30000
+		victim.failed_cars = failed
+		_rescue_log(victim,"cambiando automóvil o acceso; rescate sigue pendiente.")
+	if delivered: _crowd_clear()
 	scene = {}
 
 func _rejoin_car(car: Dictionary) -> void:
@@ -1353,5 +1433,7 @@ func tick(delta: float) -> void:
 		if not scene.is_empty() and float(scene.age)>155.0: _finish_police(false)
 	else:
 		_rescue_tick(delta)
-		if not scene.is_empty() and float(scene.age)>150.0 and String(scene.phase) not in ["hospital","hospital_retry","hospital_reposition","load"]:
+		if not scene.is_empty() and float(scene.age)>55.0 and String(scene.phase)=="approach":
+			_end_rescue(false)
+		elif not scene.is_empty() and float(scene.age)>150.0 and String(scene.phase) not in ["hospital","hospital_retry","hospital_reposition","load"]:
 			_end_rescue(false)
