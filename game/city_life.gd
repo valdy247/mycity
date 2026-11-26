@@ -334,6 +334,16 @@ func _draw_meal(root: Node3D,kind: String,count: int) -> void:
 		business._box(root,Vector3.ZERO,Vector3(.20*float(count)/3.0,.07,.08),Color("#d9aa6d"))
 		business._box(root,Vector3(0,.04,0),Vector3(.20*float(count)/3.0,.035,.04),Color("#a95644"))
 
+# Discarded food uses the same three-bite animation and fullness system,
+# but records exposure for a future health/hospital module.
+func start_found_meal(key: String,dirty: bool) -> bool:
+	if not MENU.has(key) or not state.meal.is_empty() or not ledger.carry.is_empty(): return false
+	var item: Dictionary = MENU[key]
+	state.meal = {"key":key,"food_bites":3 if not String(item.food).is_empty() else 0,"drink_sips":3 if not String(item.drink).is_empty() else 0,"dirty":dirty}
+	_refresh_meal()
+	business._notify("Comida encontrada · E para comer" if dirty else "E para comer / beber")
+	return true
+
 func _eat() -> void:
 	if bite_anim>0.0 or active_hand>=0: return
 	var meal: Dictionary = state.meal
@@ -357,8 +367,11 @@ func _finish_bite() -> void:
 	else:
 		meal.drink_sips = maxi(0,int(meal.drink_sips)-1)
 	active_hand = -1
+	if bool(meal.get("dirty",false)):
+		state["dirty_food_bites"] = int(state.get("dirty_food_bites",0))+1
 	state.fullness = minf(100.0,float(state.fullness)+gain)
 	if int(meal.food_bites)<=0 and int(meal.drink_sips)<=0:
+		if bool(meal.get("dirty",false)): state["dirty_meals"] = int(state.get("dirty_meals",0))+1
 		state.meal = {}
 		business._notify("Buen provecho · saciedad %d%%" % roundi(float(state.fullness)))
 	else:
