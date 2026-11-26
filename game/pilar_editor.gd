@@ -20,6 +20,7 @@ var view_mode := 0
 var step_index := 1
 var snaps: Array[float] = [.10,.50,1.0]
 var records: Dictionary = {}
+var archived_home: Dictionary = {}
 var objects: Dictionary = {}
 var selected_id := ""
 var selected_type := ""
@@ -801,7 +802,8 @@ func _replace_object(id: String,record: Dictionary) -> void:
 func _save_objects() -> void:
 	var f := FileAccess.open(SAVE,FileAccess.WRITE)
 	if f!=null:
-		var payload := records.duplicate(true)
+		var payload := archived_home.duplicate(true)
+		payload.merge(records,true)
 		if world.home_root!=null:
 			var home := world.home_root.global_transform
 			payload["__home_layout"] = {"x":home.origin.x,"z":home.origin.z,"angle":world.home_root.rotation.y}
@@ -827,6 +829,8 @@ func _load_objects() -> void:
 	var previous := world.old_home_transform
 	var have_previous: bool = world.old_home_found
 	var saved: Variant = data.get("__home_layout",null)
+	if world.home_root==null and saved is Dictionary:
+		archived_home["__home_layout"] = saved
 	if saved is Dictionary:
 		previous = Transform3D(Basis(Vector3.UP,float(saved.get("angle",0))),Vector3(float(saved.get("x",0)),0,float(saved.get("z",0))))
 		have_previous = true
@@ -838,6 +842,11 @@ func _load_objects() -> void:
 		var p := Vector3(float(r.get("x",0)),float(r.get("y",0)),float(r.get("z",0)))
 		if not p.is_finite():
 			continue
+		if world.home_root==null:
+			var local: Vector3 = previous.affine_inverse()*p
+			if String(id).begins_with("home_") or (have_previous and absf(local.x)<=4.7 and absf(local.z)<=4.7):
+				archived_home[id] = r
+				continue
 		if have_previous and world.home_root!=null and String(r.kind) in ["Cama","Inodoro","Pared","Mesa"]:
 			var current := world.home_root.global_transform
 			var local: Vector3 = previous.affine_inverse()*p
