@@ -1,6 +1,10 @@
 extends Node3D
 # First playable local prototype. Static world, third-person movement.
 const CITY_PATH = "res://city.glb"
+const CityBuilder = preload("res://city_builder.gd")
+var builder: CityBuilder
+var play_camera: Camera3D
+var building_mode := false
 const SPAWN = Vector3(-2.4, 1.0, 5.5)
 var player: CharacterBody3D
 var pivot: Node3D
@@ -58,6 +62,8 @@ func _ready() -> void:
 		_make_demo_van()
 	_make_player()
 	_make_hud()
+	builder = CityBuilder.new()
+	add_child(builder)
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 func _add_world_collision(node: Node) -> void:
@@ -137,6 +143,7 @@ func _make_player() -> void:
 	if van != null:
 		arm.add_excluded_object(van.get_rid())
 	cam.current = true
+	play_camera = cam
 	pivot.rotation = Vector3(pitch, yaw, 0)
 
 func _make_hud() -> void:
@@ -152,6 +159,21 @@ func _make_hud() -> void:
 	_update_hud()
 
 func _unhandled_input(event: InputEvent) -> void:
+	if builder != null and builder.active:
+		builder.handle(event)
+		return
+	if building_mode:
+		return
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_B:
+		if not driving and builder != null:
+			building_mode = true
+			player.velocity = Vector3.ZERO
+			status.hide()
+			builder.open(player.global_position)
+		elif driving:
+			exit_message = "Baja de la van antes de construir."
+			message_time = 2.0
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
 			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -501,12 +523,24 @@ func _update_hud() -> void:
 			status.text += "\n[E] Subir a la van"
 		elif van == null:
 			status.text += "\nVan no encontrada en la exportacion."
+	if not driving:
+		status.text += "\n[B] Construir ciudad"
 	if message_time > 0.0:
 		status.text += "\n" + exit_message
 
 func _physics_process(delta: float) -> void:
 	if player == null:
 		return
+	if building_mode:
+		if builder.active:
+			builder.tick(delta)
+			return
+		building_mode = false
+		play_camera.current = true
+		status.show()
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		interact_requested = false
+		reset_requested = false
 	if van != null and not van_ground_initialized:
 		if _support_van():
 			van_home = van.global_transform
