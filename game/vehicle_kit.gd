@@ -45,7 +45,7 @@ static func _box(root: Node3D,p: Vector3,size: Vector3,color: Color,ghost: bool,
 static func _bar(root: Node3D,a: Vector3,b: Vector3,width: float,color: Color,ghost: bool) -> void:
 	var d := b-a
 	var node := _box(root,(a+b)*.5,Vector3(width,width,d.length()),color,ghost)
-	node.look_at(node.global_position+root.global_transform.basis*d,Vector3.UP if absf(d.normalized().dot(Vector3.UP))<.97 else Vector3.FORWARD)
+	if d.length_squared()>.00001: node.rotation = Basis(Quaternion(Vector3.FORWARD,d.normalized())).get_euler()
 
 static func _wheel(root: Node3D,p: Vector3,r: float,width: float,ghost: bool) -> void:
 	for i in range(2):
@@ -140,6 +140,35 @@ static func build(root: Node3D,kind: String,installed: Dictionary,all_parts: boo
 			"battery":
 				_box(root,Vector3(0,.60,-.60),Vector3(.45 if car or tri else .23,.21,.32),Color("#38413c"),ghost)
 
+# Only finished vehicles are batched. The assembly preview keeps its
+# separate parts and translucent installation guides.
+static func _batch_finished(root: Node3D) -> void:
+	var batches: Dictionary = {}
+	var originals: Array[MeshInstance3D] = []
+	for child in root.get_children():
+		if not child is MeshInstance3D: continue
+		var part := child as MeshInstance3D
+		var mat := part.material_override as StandardMaterial3D
+		if mat==null or mat.transparency!=BaseMaterial3D.TRANSPARENCY_DISABLED: continue
+		var key := mat.get_instance_id()
+		if not batches.has(key):
+			var surface := SurfaceTool.new()
+			surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+			batches[key] = {"surface":surface,"material":mat}
+		var builder: SurfaceTool = batches[key].surface
+		builder.append_from(part.mesh,0,part.transform)
+		originals.append(part)
+	for key in batches:
+		var builder: SurfaceTool = batches[key].surface
+		var mesh := MeshInstance3D.new()
+		mesh.mesh = builder.commit()
+		mesh.material_override = batches[key].material
+		mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		root.add_child(mesh)
+	for part in originals:
+		root.remove_child(part)
+		part.queue_free()
+
 static func body(root: Node3D,kind: String) -> CharacterBody3D:
 	var spec: Dictionary = KITS[kind]
 	var node := CharacterBody3D.new()
@@ -148,6 +177,7 @@ static func body(root: Node3D,kind: String) -> CharacterBody3D:
 	node.collision_mask = 1|4|8|32
 	root.add_child(node)
 	build(node,kind,{},true)
+	_batch_finished(node)
 	var col := CollisionShape3D.new()
 	var shape := BoxShape3D.new()
 	shape.size = Vector3(float(spec.width),float(spec.height),float(spec.length))
