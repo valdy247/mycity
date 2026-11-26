@@ -162,7 +162,7 @@ func _ready() -> void:
 			avoid.append(body.global_position)
 		monte_services = MonteServices.new()
 		add_child(monte_services)
-		monte_services.setup(cuba_world,cuba_world.home_spawn,avoid,player,play_camera)
+		monte_services.setup(cuba_world,cuba_world.home_spawn,avoid,player,play_camera,urban_buses.stops)
 		monte_pedestrians = MontePedestrians.new()
 		add_child(monte_pedestrians)
 		monte_pedestrians.setup(cuba_world,urban_buses)
