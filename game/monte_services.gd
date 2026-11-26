@@ -558,6 +558,7 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 		if not Bypass.safe_step(body,direction,advance,angle,delta):
 			vehicle.speed = 0.0
 	else:
+		if junction_limit<0.0: Bypass.align_if_clear(body,angle)
 		body.velocity = Vector3.ZERO
 		vehicle.speed = 0.0
 	if body.global_position.distance_to(previous)<.10*delta:
