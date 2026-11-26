@@ -261,7 +261,7 @@ func _aimed() -> Dictionary:
 	var best: Dictionary = {}
 	var nearest := INF
 	for stall in stalls:
-		if not bool(stall.open): continue
+		if not bool(stall.open) or bool(stall.get("incident_busy",false)) or bool(stall.get("detained",false)): continue
 		var root: Node3D = stall.root
 		if root.global_position.distance_to(at)>3.7: continue
 		var local := root.to_local(origin)
@@ -407,6 +407,11 @@ func tick(delta: float) -> void:
 	var next_day := minute+720<previous
 	state.last_minute = minute
 	for stall in stalls:
+		if bool(stall.get("incident_busy",false)): continue
+		if bool(stall.get("detained",false)):
+			if not next_day: continue
+			stall.detained = false
+			stall.person.show()
 		if next_day:
 			for item in stall.items:
 				var key := String(item.key)
