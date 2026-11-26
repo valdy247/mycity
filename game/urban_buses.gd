@@ -2,8 +2,8 @@ extends Node3D
 const MapData = preload("res://pilar_map.gd")
 const StreetGeometry = preload("res://street_geometry.gd")
 const Planner = preload("res://urban_bus_routes.gd")
-const BUS_LENGTH := 8.0
-const BUS_WIDTH := 2.35
+const BUS_LENGTH := 9.4
+const BUS_WIDTH := 2.45
 const MAX_PASSENGERS := 18
 var data: MapData
 var streets: StreetGeometry
@@ -47,7 +47,7 @@ func setup(map_data: MapData,street_geometry: StreetGeometry,anchor: Vector3,avo
 		var stop: Dictionary = item.stop
 		var direction: Vector3 = stop.direction
 		var start_point: Vector3 = item.p
-		body.position = start_point+Vector3.UP*.065
+		body.position = start_point+Vector3.UP*.035
 		body.rotation.y = atan2(direction.x,direction.z)
 		var bus := {"body":body,"door":model.door,"route":itinerary,"index":start_index,"speed":0.0,"line":line,"dwell":0.0,"active_stop":{},"onboard":[],"transfer":{},"served":0,"blocked":0.0}
 		buses.append(bus)
@@ -161,6 +161,63 @@ func _part(root: Node3D,p: Vector3,dimensions: Vector3,color: Color) -> MeshInst
 	instance.position = p
 	return instance
 
+# Reference-inspired Havana city bus: white/blue livery, flat front,
+# panoramic glazing, real wheel openings, and a hollow passenger cabin.
+func _bus_strip(root: Node3D,x: float,lo: float,hi: float,y: float,h: float,color: Color) -> void:
+	if hi-lo<.025: return
+	_part(root,Vector3(x,y,(lo+hi)*.5),Vector3(.065,h,hi-lo),color)
+
+func _bus_wheel(root: Node3D,x: float,z: float,dark: Color,rim: Color) -> void:
+	for layer in range(3):
+		var mesh := CylinderMesh.new()
+		mesh.top_radius = [.51,.32,.13][layer]
+		mesh.bottom_radius = mesh.top_radius
+		mesh.height = [.29,.055,.065][layer]
+		mesh.radial_segments = 16 if layer==0 else 12
+		var wheel := MeshInstance3D.new()
+		wheel.mesh = mesh
+		wheel.material_override = _mat(dark if layer==0 else (rim if layer==1 else dark))
+		wheel.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		root.add_child(wheel)
+		wheel.rotation.z = PI*.5
+		wheel.position = Vector3(x+signf(x)*[0.0,.155,.19][layer],.51,z)
+
+func _bus_glass(root: Node3D,p: Vector3,dimensions: Vector3) -> void:
+	var pane := _part(root,p,dimensions,Color("#526b7790"))
+	var glass := pane.material_override as StandardMaterial3D
+	glass.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	glass.roughness = .34
+
+func _batch_bus_shell(root: Node3D) -> void:
+	# Consolidate all fixed opaque panels into one mesh per material.
+	# Keep transparent windows separate for sorting and doors separate
+	# for animation. This avoids dozens of independent draw calls.
+	var batches: Dictionary = {}
+	var originals: Array[MeshInstance3D] = []
+	for child in root.get_children():
+		if not child is MeshInstance3D: continue
+		var part := child as MeshInstance3D
+		var material := part.material_override as StandardMaterial3D
+		if material==null or material.transparency!=BaseMaterial3D.TRANSPARENCY_DISABLED: continue
+		var key := material.get_instance_id()
+		if not batches.has(key):
+			var surface := SurfaceTool.new()
+			surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+			batches[key] = {"surface":surface,"material":material}
+		var tool: SurfaceTool = batches[key].surface
+		tool.append_from(part.mesh,0,part.transform)
+		originals.append(part)
+	for key in batches:
+		var tool: SurfaceTool = batches[key].surface
+		var view := MeshInstance3D.new()
+		view.mesh = tool.commit()
+		view.material_override = batches[key].material
+		view.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		root.add_child(view)
+	for part in originals:
+		root.remove_child(part)
+		part.queue_free()
+
 func _make_bus(line: String,index: int) -> Dictionary:
 	var body := CharacterBody3D.new()
 	body.name = "Guagua_"+line
@@ -168,67 +225,151 @@ func _make_bus(line: String,index: int) -> Dictionary:
 	body.collision_layer = 1
 	body.collision_mask = 1|4
 	add_child(body)
-	var paint := Color("#d2b56c") if index%2==0 else Color("#9bbcc4")
-	var ivory := Color("#e1dfd1")
-	var glass := Color("#526b73")
-	var dark := Color("#353a3c")
-	# Leave a real opening on the right side at the front door.
-	# The rest of the bus remains a few inexpensive box meshes.
-	_part(body,Vector3(0,1.03,-.98),Vector3(BUS_WIDTH,1.25,6.04),paint)
-	_part(body,Vector3(0,2.16,-.98),Vector3(2.27,1.15,5.96),ivory)
-	_part(body,Vector3(0,1.03,3.61),Vector3(BUS_WIDTH,1.25,.78),paint)
-	_part(body,Vector3(0,2.16,3.59),Vector3(2.27,1.15,.74),ivory)
-	_part(body,Vector3(.62,1.03,2.60),Vector3(1.11,1.25,1.25),paint)
-	_part(body,Vector3(.62,2.16,2.60),Vector3(1.03,1.15,1.25),ivory)
-	_part(body,Vector3(-.56,.48,2.60),Vector3(1.16,.18,1.18),dark)
-	_part(body,Vector3(-.83,.28,2.60),Vector3(.60,.18,1.18),dark)
-	_part(body,Vector3(-.50,2.58,2.60),Vector3(1.25,.22,1.25),ivory)
-	_part(body,Vector3(0,2.78,0),Vector3(2.32,.17,8.0),ivory)
-	_part(body,Vector3(0,2.1,4.015),Vector3(2.02,.86,.06),glass)
-	_part(body,Vector3(0,2.18,-4.015),Vector3(1.9,.65,.06),glass)
-	_part(body,Vector3(0,.65,4.025),Vector3(2.35,.19,.13),dark)
-	_part(body,Vector3(0,.65,-4.025),Vector3(2.35,.19,.13),dark)
+	var white := Color("#e5e4db")
+	var blue := Color("#2986bc")
+	var pale_blue := Color("#65afd1")
+	var dark := Color("#303739")
+	var rubber := Color("#242729")
+	var metal := Color("#8b9191")
+	var black := Color("#20292d")
+	var floor_color := Color("#65645e")
+	var half := BUS_LENGTH*.5
+	var side_x := BUS_WIDTH*.5-.033
+	# Flat underframe with no solid block through the wheel arches.
+	_part(body,Vector3(0,.65,0),Vector3(1.40,.35,BUS_LENGTH-.6),dark)
+	_part(body,Vector3(0,.91,-.77),Vector3(BUS_WIDTH-.15,.14,7.50),floor_color)
+	_part(body,Vector3(.43,.91,3.65),Vector3(1.45,.14,1.30),floor_color)
+	_part(body,Vector3(0,.91,4.35),Vector3(BUS_WIDTH-.15,.14,.62),floor_color)
+	# Slightly stepped roof shoulders and full-length white roof.
+	_part(body,Vector3(0,2.82,0),Vector3(BUS_WIDTH-.02,.30,BUS_LENGTH-.04),white)
+	_part(body,Vector3(0,3.00,0),Vector3(BUS_WIDTH-.19,.13,BUS_LENGTH-.17),white)
+	# Side skins segmented around both wheel openings and front entrance.
 	for side in [-1.0,1.0]:
-		var x := float(side)
-		for z in [-3.05,-1.65,-.25,1.15,2.55]:
-			if x<0.0 and float(z)>2.0: continue
-			_part(body,Vector3(x*1.145,2.18,float(z)),Vector3(.035,.80,1.25),glass)
-		_part(body,Vector3(x*.86,.99,4.05),Vector3(.36,.24,.06),Color("#faf0c2"))
-		_part(body,Vector3(x*.86,.99,-4.05),Vector3(.24,.25,.06),Color("#ac4039"))
-		for z in [-2.65,2.65]:
-			var wheel := MeshInstance3D.new()
-			var tyre := CylinderMesh.new()
-			tyre.top_radius = .49
-			tyre.bottom_radius = .49
-			tyre.height = .25
-			tyre.radial_segments = 12
-			wheel.mesh = tyre
-			wheel.material_override = _mat(dark)
-			wheel.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-			body.add_child(wheel)
-			wheel.rotation.z = PI*.5
-			wheel.position = Vector3(x*1.05,.48,float(z))
+		var x := float(side)*side_x
+		var cuts: Array[float] = [-half,-3.46,-2.18,-.82,.60,2.18,3.46,half]
+		# Right side uses a forward door; other side remains continuous.
+		if side<0.0:
+			cuts.append(2.92)
+			cuts.append(4.12)
+			cuts.sort()
+		for k in range(cuts.size()-1):
+			var lo: float = cuts[k]
+			var hi: float = cuts[k+1]
+			var mid := (lo+hi)*.5
+			if side<0.0 and mid>2.92 and mid<4.12: continue
+			var arch := absf(absf(mid)-2.82)<.64
+			var bottom := 1.09 if arch else .39
+			_bus_strip(body,x,lo,hi,(bottom+1.46)*.5,1.46-bottom,white)
+			_bus_strip(body,x+float(side)*.037,lo,hi,1.28,.30,blue)
+			if not arch:
+				_bus_strip(body,x+float(side)*.037,lo,hi,.53,.18,pale_blue)
+		# Window frames and individual panes leave the cabin genuinely hollow.
+		var frames: Array[float] = [-4.62,-3.36,-2.07,-.78,.51,1.80,3.09,4.62]
+		if side<0.0:
+			frames = [-4.62,-3.36,-2.07,-.78,.51,1.80,2.92,4.12,4.62]
+		for k in range(frames.size()-1):
+			var lo: float = frames[k]
+			var hi: float = frames[k+1]
+			if side<0.0 and lo>=2.91 and hi<=4.13: continue
+			_bus_strip(body,x,lo,lo+.065,2.03,1.14,dark)
+			_bus_strip(body,x,lo,hi,2.64,.13,white)
+			_bus_strip(body,x,lo,hi,1.49,.10,dark)
+			_bus_glass(body,Vector3(x,2.045,(lo+hi)*.5),Vector3(.025,1.0,maxf(.04,hi-lo-.09)))
+		_bus_strip(body,x,4.53,4.68,2.03,1.16,dark)
+		for z in [-2.82,2.82]:
+			_bus_wheel(body,float(side)*1.07,float(z),rubber,metal)
+		# Wheel wells protrude slightly into the cabin above the wheels.
+		for z in [-2.82,2.82]:
+			_part(body,Vector3(float(side)*.89,1.02,float(z)),Vector3(.57,.35,1.18),dark)
+	# Two visible entry steps and a separate sliding pair of door leaves.
+	_part(body,Vector3(-.89,.33,3.52),Vector3(.60,.13,1.18),dark)
+	_part(body,Vector3(-.67,.60,3.52),Vector3(.76,.13,1.18),floor_color)
+	_part(body,Vector3(-.49,.86,3.52),Vector3(.65,.13,1.18),floor_color)
 	var door := Node3D.new()
 	body.add_child(door)
-	door.position = Vector3(-1.19,1.63,2.60)
-	_part(door,Vector3(0,0,0),Vector3(.06,1.95,1.12),paint)
-	_part(door,Vector3(-.035,.36,0),Vector3(.035,.75,.94),glass)
-	_part(body,Vector3(0,2.68,4.052),Vector3(1.83,.23,.05),dark)
+	door.position = Vector3(-BUS_WIDTH*.5-.045,1.53,3.52)
+	for side in [-1.0,1.0]:
+		var leaf := Node3D.new()
+		door.add_child(leaf)
+		leaf.position.z = float(side)*.30
+		leaf.set_meta("closed_z",leaf.position.z)
+		_part(leaf,Vector3(0,-.60,0),Vector3(.06,.86,.57),white)
+		_part(leaf,Vector3(-.04,-.35,0),Vector3(.035,.24,.57),blue)
+		_part(leaf,Vector3(0,.50,0),Vector3(.06,.10,.57),dark)
+		for edge in [-.265,.265]:
+			_part(leaf,Vector3(0,.06,float(edge)),Vector3(.06,1.00,.05),dark)
+		_bus_glass(leaf,Vector3(0,.05,0),Vector3(.025,.91,.48))
+	# Front fascia: large dark destination board over a split windshield.
+	_part(body,Vector3(0,1.05,half-.035),Vector3(BUS_WIDTH-.05,1.24,.09),white)
+	_part(body,Vector3(0,1.19,half+.025),Vector3(BUS_WIDTH-.06,.30,.05),blue)
+	_part(body,Vector3(0,.62,half+.025),Vector3(BUS_WIDTH-.06,.23,.05),pale_blue)
+	_part(body,Vector3(0,.43,half+.045),Vector3(BUS_WIDTH-.08,.16,.16),dark)
+	_part(body,Vector3(0,2.68,half),Vector3(BUS_WIDTH-.12,.38,.10),black)
+	_part(body,Vector3(0,1.71,half),Vector3(BUS_WIDTH-.12,.12,.10),black)
+	for side in [-1.0,1.0]:
+		var x := float(side)
+		_part(body,Vector3(x*1.10,2.12,half),Vector3(.12,.92,.10),black)
+		_bus_glass(body,Vector3(x*.55,2.13,half+.045),Vector3(1.03,.83,.026))
+		_part(body,Vector3(x*.91,.93,half+.065),Vector3(.43,.23,.055),dark)
+		_part(body,Vector3(x*.91,.93,half+.10),Vector3(.31,.16,.04),Color("#f3efcf"))
+		_part(body,Vector3(x*1.12,.91,half+.10),Vector3(.09,.16,.04),Color("#dca54b"))
+		var wiper := _part(body,Vector3(x*.53,1.96,half+.08),Vector3(.033,.48,.026),black)
+		wiper.rotation.z = x*.60
+		_part(body,Vector3(x*1.30,2.37,half-.38),Vector3(.26,.055,.06),black)
+		_part(body,Vector3(x*1.39,2.29,half-.38),Vector3(.13,.29,.16),dark)
+	_part(body,Vector3(0,2.12,half+.065),Vector3(.045,.92,.08),black)
+	_part(body,Vector3(0,.77,half+.07),Vector3(.54,.13,.045),black)
 	var sign_label := Label3D.new()
 	sign_label.text = line
-	sign_label.font_size = 48
-	sign_label.pixel_size = .0034
-	sign_label.modulate = Color("#f3dd89")
+	sign_label.font_size = 52
+	sign_label.pixel_size = .0035
+	sign_label.modulate = Color("#e9b96d")
 	sign_label.outline_size = 0
 	body.add_child(sign_label)
-	sign_label.position = Vector3(0,2.68,4.09)
+	sign_label.position = Vector3(0,2.68,half+.075)
+	var fleet := Label3D.new()
+	fleet.text = str(5304+index)
+	fleet.font_size = 36
+	fleet.pixel_size = .0035
+	fleet.modulate = black
+	fleet.outline_size = 0
+	body.add_child(fleet)
+	fleet.position = Vector3(.70,1.57,half+.075)
+	# Rear panel and tail lamps.
+	_part(body,Vector3(0,1.0,-half+.03),Vector3(BUS_WIDTH-.05,1.28,.09),white)
+	_part(body,Vector3(0,1.22,-half-.025),Vector3(BUS_WIDTH-.06,.30,.05),blue)
+	_part(body,Vector3(0,2.68,-half),Vector3(BUS_WIDTH-.08,.24,.08),white)
+	_part(body,Vector3(0,1.68,-half),Vector3(BUS_WIDTH-.08,.12,.08),dark)
+	_bus_glass(body,Vector3(0,2.14,-half-.03),Vector3(2.04,.84,.035))
+	for side in [-1.0,1.0]:
+		var x := float(side)
+		_part(body,Vector3(x*1.09,2.14,-half),Vector3(.13,.94,.10),white)
+		_part(body,Vector3(x*1.02,.91,-half-.06),Vector3(.18,.34,.055),Color("#b53d39"))
+	# Simple seats and yellow hand rails, visible behind the tinted glass.
+	for z in [-3.7,-2.25,-.85,.55,1.95]:
+		for side in [-1.0,1.0]:
+			var x := float(side)*.74
+			_part(body,Vector3(x,1.18,float(z)),Vector3(.72,.16,.46),Color("#51616a"))
+			_part(body,Vector3(x,1.48,float(z)-.22),Vector3(.72,.48,.10),Color("#51616a"))
+	for x in [-.48,.48]:
+		_part(body,Vector3(float(x),2.51,-.6),Vector3(.035,.035,6.6),Color("#c5ae55"))
+		for z in [-3.55,-.70,2.1]:
+			_part(body,Vector3(float(x),1.75,float(z)),Vector3(.04,1.52,.04),Color("#c5ae55"))
+	_batch_bus_shell(body)
 	var collision := CollisionShape3D.new()
 	var shape := BoxShape3D.new()
-	shape.size = Vector3(BUS_WIDTH,2.70,BUS_LENGTH)
+	shape.size = Vector3(BUS_WIDTH,3.02,BUS_LENGTH)
 	collision.shape = shape
 	body.add_child(collision)
-	collision.position.y = 1.40
+	collision.position.y = 1.54
 	return {"body":body,"door":door}
+
+func _set_bus_door(door: Node3D,opened: bool) -> void:
+	for child in door.get_children():
+		var leaf := child as Node3D
+		var closed_z := float(leaf.get_meta("closed_z",0.0))
+		leaf.position.z = closed_z+signf(closed_z)*.59 if opened else closed_z
+		leaf.position.x = -.065 if opened else 0.0
 
 func _person(style: int) -> Node3D:
 	var root := Node3D.new()
@@ -277,15 +418,14 @@ func _start_stop(bus: Dictionary,stop: Dictionary) -> void:
 	var direction: Vector3 = stop.direction
 	body.rotation.y = atan2(direction.x,direction.z)
 	var door: Node3D = bus.door
-	door.position.z = 3.62
+	_set_bus_door(door,true)
 
 func _transfer_tick(bus: Dictionary,delta: float) -> void:
 	var stop: Dictionary = bus.active_stop
 	var body: CharacterBody3D = bus.body
 	var onboard: Array = bus.onboard
 	var transfer: Dictionary = bus.transfer
-	var door_point := body.to_global(Vector3(-1.32,0,2.6))
-	door_point.y = .065
+	var door_point := body.to_global(Vector3(-.59,.89,3.52))
 	var stop_direction: Vector3 = stop.direction
 	var wait_point: Vector3 = stop.wait
 	var exit_point: Vector3 = wait_point+stop_direction*2.3
@@ -320,7 +460,7 @@ func _transfer_tick(bus: Dictionary,delta: float) -> void:
 	for passenger_data in onboard:
 		passenger_data.remaining = int(passenger_data.remaining)-1
 	var door: Node3D = bus.door
-	door.position.z = 2.60
+	_set_bus_door(door,false)
 	bus.active_stop = {}
 	var route: Array = bus.route
 	bus.index = (int(bus.index)+1)%route.size()
@@ -354,7 +494,7 @@ func tick(delta: float) -> void:
 		var next_dir := (next_target-target).normalized()
 		if next_dir.length_squared()>.1 and d.dot(next_dir)<.85:
 			speed = minf(speed,maxf(1.1,distance*.7))
-		var ray := PhysicsRayQueryParameters3D.create(body.position+Vector3.UP*.95+d*4.15,body.position+Vector3.UP*.95+d*(5.2+float(bus.speed)*.8),1|4)
+		var ray := PhysicsRayQueryParameters3D.create(body.position+Vector3.UP*.95+d*(BUS_LENGTH*.5+.15),body.position+Vector3.UP*.95+d*(BUS_LENGTH*.5+1.2+float(bus.speed)*.8),1|4)
 		ray.exclude = [body.get_rid()]
 		if not get_world_3d().direct_space_state.intersect_ray(ray).is_empty():
 			speed = 0.0
