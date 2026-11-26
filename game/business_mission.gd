@@ -3,6 +3,8 @@ const Ledger = preload("res://business_ledger.gd")
 const World = preload("res://cuba_world.gd")
 const Taxi = preload("res://taxi_service.gd")
 const Person = preload("res://street_person.gd")
+const CityLife = preload("res://city_life.gd")
+var life: CityLife
 var ledger := Ledger.new()
 var world: World
 var taxis: Taxi
@@ -48,6 +50,9 @@ func setup(city: World,taxi_service: Taxi,actor: CharacterBody3D,vehicle: Charac
 	box_mesh.size = Vector3.ONE
 	_make_ui()
 	_make_scene()
+	life = CityLife.new()
+	add_child(life)
+	life.setup(self)
 	_sync_visuals()
 	_update_hud()
 	if world.food_factory.is_empty() or world.business_frontage==null:
@@ -132,7 +137,7 @@ func _crate(root: Node3D,p: Vector3,key: String) -> Node3D:
 	_box(node,Vector3(0,0,.204),Vector3(.46,.105,.012),band)
 	return node
 
-func _selectable_crate(root: Node3D,p: Vector3,key: String,paid: bool) -> void:
+func _selectable_crate(root: Node3D,p: Vector3,key: String,paid: bool,supplier: String = "primary") -> void:
 	var node := _crate(root,p,key)
 	var target := StaticBody3D.new()
 	target.collision_layer = 16
@@ -145,6 +150,7 @@ func _selectable_crate(root: Node3D,p: Vector3,key: String,paid: bool) -> void:
 	target.add_child(collider)
 	target.set_meta("mipyme_key",key)
 	target.set_meta("paid",paid)
+	target.set_meta("supplier",supplier)
 
 func _aimed_crate(at: Vector3) -> Node3D:
 	if camera==null or player==null: return null
@@ -169,6 +175,9 @@ func aimed_text(at: Vector3) -> String:
 func take_aimed(at: Vector3) -> bool:
 	var target := _aimed_crate(at)
 	if target==null: return false
+	if life!=null and not life.state.meal.is_empty():
+		_notify("Termina de comer antes de recoger una caja.")
+		return true
 	if not ledger.carry.is_empty():
 		_notify("Ya llevas una caja. G para cargarla en un vehículo.")
 		return true
@@ -176,9 +185,16 @@ func take_aimed(at: Vector3) -> bool:
 		_notify("Primero acepta la misión de Albertico y llega a la MIPYME.")
 		return true
 	var key := String(target.get_meta("mipyme_key"))
-	if not bool(target.get_meta("paid")) and not ledger.buy(key,1):
-		_notify("No tienes suficiente dinero para esta caja.")
-		return true
+	if not bool(target.get_meta("paid")):
+		var supplier := String(target.get_meta("supplier","primary"))
+		if life!=null and not life.reserve_crate(supplier,key):
+			_notify("No quedan cajas de este producto.")
+			return true
+		if not ledger.buy(key,1):
+			if life!=null: life.restore_crate(supplier,key)
+			_notify("No tienes suficiente dinero para esta caja.")
+			return true
+		if life!=null: life.refresh_supplier(supplier)
 	if ledger.pick_up(key):
 		_notify("Llevas una caja de "+_product_name(key)+". G para cargarla.")
 		_sync_visuals()
@@ -228,8 +244,9 @@ func _make_scene() -> void:
 	add_child(purchase_rack)
 	purchase_rack.position = counter+basis*Vector3(0,-.10,.05)
 	purchase_rack.rotation.y = basis.get_euler().y
-	for i in range(Ledger.PRODUCTS.size()):
-		var key := String(Ledger.PRODUCTS.keys()[i])
+	var primary_products := ["pollo","picadillo","perrito"]
+	for i in range(primary_products.size()):
+		var key := String(primary_products[i])
 		var product: Dictionary = Ledger.PRODUCTS[key]
 		var at := Vector3(-.70+float(i)*.70,.17,0)
 		_selectable_crate(purchase_rack,at,key,false)
@@ -355,6 +372,9 @@ func _nearest_vehicle(at: Vector3) -> Dictionary:
 	return nearest
 
 func cargo_action(at: Vector3) -> bool:
+	if life!=null and not life.state.meal.is_empty():
+		_notify("Termina de comer antes de cargar mercancía.")
+		return true
 	var vehicle := _nearest_vehicle(at)
 	if vehicle.is_empty():
 		_notify("Acércate a la van o a un taxi detenido.")
@@ -381,6 +401,9 @@ func taxi_arrival(at: Vector3) -> void:
 			_sync_visuals()
 
 func action_text(at: Vector3) -> String:
+	if life!=null:
+		var context := life.action_text(at)
+		if not context.is_empty(): return context
 	if albertico==null: return ""
 	if _near(at,albertico.position,2.0):
 		if ledger.stage==0: return "[E] Hablar con Albertico"
@@ -393,6 +416,7 @@ func action_text(at: Vector3) -> String:
 
 func interact(at: Vector3) -> bool:
 	if take_aimed(at): return true
+	if life!=null and life.interact(at): return true
 	var action := action_text(at)
 	if action.is_empty(): return false
 	if action.contains("Albertico"):
@@ -412,7 +436,9 @@ func interact(at: Vector3) -> bool:
 			_open("Albertico","Trae las cajas de la MIPYME, cárgalas en el carro y déjamelas aquí.\n\n"+_stock_text())
 			_button("Cerrar",close)
 	else:
-		_notify("Mira directamente la caja que deseas y pulsa E.")
+		if life!=null and life.sites.has("primary"):
+			life._contact_page("primary")
+		else: _notify("Mira directamente la caja que deseas y pulsa E.")
 	return true
 
 func _accept() -> void:
@@ -467,6 +493,51 @@ func open_phone() -> void:
 	if modal_open():
 		close()
 		return
+	open_phone_home()
+
+func open_phone_home() -> void:
+	_open("Mi teléfono","")
+	var skin := StyleBoxFlat.new()
+	skin.bg_color = Color("#172432")
+	skin.border_color = Color("#475867")
+	skin.set_border_width_all(2)
+	skin.set_corner_radius_all(24)
+	skin.content_margin_left = 12
+	skin.content_margin_right = 12
+	skin.content_margin_top = 12
+	skin.content_margin_bottom = 12
+	panel.add_theme_stylebox_override("panel",skin)
+	var balance := Label.new()
+	balance.text = "%s CUP" % str(ledger.cash)
+	balance.add_theme_font_size_override("font_size",28)
+	content.add_child(balance)
+	var apps := GridContainer.new()
+	apps.columns = 2
+	apps.add_theme_constant_override("h_separation",12)
+	apps.add_theme_constant_override("v_separation",12)
+	content.add_child(apps)
+	_phone_tile(apps,"Mensajes · "+str(ledger.unread),open_messages)
+	if life!=null: _phone_tile(apps,"Contactos",life.open_contacts)
+	_phone_tile(apps,"Mi negocio",open_business_summary)
+	_phone_tile(apps,"Cerrar",close)
+
+func _phone_tile(root: Control,label_value: String,callback: Callable) -> void:
+	var tile := Button.new()
+	tile.text = label_value
+	tile.custom_minimum_size = Vector2(184,76)
+	tile.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color("#304b62")
+	style.set_corner_radius_all(15)
+	tile.add_theme_stylebox_override("normal",style)
+	tile.pressed.connect(callback)
+	root.add_child(tile)
+
+func open_business_summary() -> void:
+	_open("MI NEGOCIO","Billetera: %d CUP\\nVendidas: %d | Ingresos: %d CUP | Comisión: %d CUP\\nStock: %s" % [ledger.cash,ledger.sold,ledger.revenue,ledger.wages,_stock_text()])
+	_button("Inicio",open_phone_home)
+
+func open_messages() -> void:
 	ledger.unread = 0
 	ledger.save_game()
 	_open("TELÉFONO · Mensajes","Billetera: %d CUP\nVendidas: %d | Ingresos: %d CUP | Comisión: %d CUP\nStock: %s" % [ledger.cash,ledger.sold,ledger.revenue,ledger.wages,_stock_text()])
@@ -487,7 +558,8 @@ func open_phone() -> void:
 		entry.custom_minimum_size.x = 365
 		entry.text = String(message.sender)+"\n"+String(message.body)+"\n"
 		list.add_child(entry)
-	_button("Guardar y cerrar",close)
+	_button("Inicio",open_phone_home)
+	_button("Cerrar",close)
 
 func _sync_visuals() -> void:
 	if arrow==null: return
@@ -610,6 +682,7 @@ func _tick_buyer(delta: float) -> void:
 		buyer_index += -1 if buyer_returning else 1
 
 func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
+	if life!=null: life.tick(delta,in_vehicle,editor)
 	phase += delta
 	toast_time = maxf(0.0,toast_time-delta)
 	hud.visible = not editor
