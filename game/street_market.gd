@@ -319,6 +319,9 @@ func _buy() -> void:
 		_refresh()
 		return
 	var price := int(GOODS[key].price)
+	if game.backpack!=null and not game.backpack.can_receive(key):
+		info.text = "No tienes espacio en la mochila ni las manos libres."
+		return
 	if business.ledger.cash<price:
 		info.text = "No tienes suficiente dinero. Esc para salir."
 		return
@@ -329,6 +332,9 @@ func _buy() -> void:
 		stock[key] = int(stock[key])+1
 		inventory[key] = int(inventory[key])-1
 		return
+	if game.backpack!=null:
+		game.backpack.receive(key,false)
+		business.ledger.save_game()
 	item.node.visible = int(stock[key])>0
 	_refresh()
 	info.text += "\n"+String(["Gracias, mi hermano.","Que lo disfrutes.","Dale, aquí estamos.","Gracias, vuelve cuando quieras."].pick_random())
