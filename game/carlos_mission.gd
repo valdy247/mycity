@@ -19,6 +19,7 @@ var room: Node3D
 var marker: Node3D
 var hand: Node3D
 var brush_item: Node3D
+var worker_brush: Node3D
 var bucket: Node3D
 var walls: Array[MeshInstance3D] = []
 var images: Array[Image] = []
@@ -86,7 +87,7 @@ func _door_data(entry: Dictionary) -> Dictionary:
 	var normal: Vector3 = entry.normal
 	for distance in [.65,1.05,1.50]:
 		var ground := _ground(door+normal*float(distance))
-		if not ground.is_empty(): return {"door":door,"normal":normal,"p":ground.p}
+		if not ground.is_empty(): return {"door":door,"normal":normal,"p":ground.p,"width":float(entry.get("width",1.15))}
 	return {}
 
 func _restore_door(key: String) -> Dictionary:
@@ -206,11 +207,37 @@ func open_call() -> void:
 	if _stage()==0: return
 	if _stage()!=1:
 		business._open("Carlos",objective())
+		if _stage()==2:
+			business._button("Confirmar la puerta de Carlos que estoy mirando",_confirm_home)
 		business._button("Cerrar",business.close)
 		return
 	business._open("Llamada entrante · Carlos","Asere, conseguí un trabajo pintando una casa cerca de la mía. ¿Vienes conmigo? Vivo en Flores, esquina Estévez.")
 	business._button("Sí, cuenta conmigo",_accept)
 	business._button("Ahora no",business.close)
+
+# Local maps may differ in street spelling or doorway generation.
+# Let the player correct the exact house without changing the map itself.
+func _confirm_home() -> void:
+	if _stage()!=2: return
+	var at: Vector3 = game.player.global_position
+	for entry in world.npc_doorways:
+		if String(entry.kind)!="home": continue
+		var door: Vector3 = entry.threshold
+		if at.distance_to(door)>3.5: continue
+		var site := _door_data(entry)
+		if site.is_empty() or not _aim_door_at(site): continue
+		home = site
+		customer = {}
+		_remember("home",home)
+		state.erase("customer")
+		_save()
+		business.close()
+		if _locate():
+			_spawn_carlos(home.p)
+			_target(home,"Casa de Carlos · Flores y Estévez")
+		else: business._notify("Casa de Carlos confirmada. Buscando cliente cercano.")
+		return
+	business._notify("Mira directamente una puerta residencial cercana antes de confirmar.")
 
 func _accept() -> void:
 	state.stage = 2
@@ -248,9 +275,12 @@ func _aim_node(node: Node3D,center: Vector3,extent: Vector3,reach: float = 3.0) 
 	return get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
 
 func _aim_door() -> bool:
-	if customer.is_empty(): return false
-	var door: Vector3 = customer.door
-	var normal: Vector3 = customer.normal
+	return _aim_door_at(customer)
+
+func _aim_door_at(site: Dictionary) -> bool:
+	if site.is_empty(): return false
+	var door: Vector3 = site.door
+	var normal: Vector3 = site.normal
 	var camera: Camera3D = game.play_camera
 	var origin := camera.global_position
 	var direction := -camera.global_basis.z
@@ -260,7 +290,7 @@ func _aim_door() -> bool:
 	if depth<=0.0 or depth>8.0: return false
 	var offset := origin+direction*depth-door
 	var side := Vector3(-normal.z,0,normal.x)
-	if absf(offset.dot(side))>.60 or offset.y<.03 or offset.y>2.2: return false
+	if absf(offset.dot(side))>float(site.get("width",1.15))*.5 or offset.y<.03 or offset.y>2.2: return false
 	var ray := PhysicsRayQueryParameters3D.create(origin,origin+direction*maxf(.01,depth-.12),1|4|8|16)
 	ray.exclude = [game.player.get_rid()]
 	return get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
@@ -375,11 +405,10 @@ func _make_room() -> void:
 	business._label(room,"SALIR · E",Vector3(0,2.55,2.87)).rotation.y = PI
 	_spawn_carlos(ROOM+Vector3(-2.8,0,-1.9))
 	carlos.rotation.y = -PI*.5
-	var worker_brush := Node3D.new()
-	room.add_child(worker_brush)
-	worker_brush.name = "CarlosBrush"
-	worker_brush.position = Vector3(-3.35,1.1,-1.9)
-	worker_brush.rotation.y = PI*.5
+	worker_brush = Node3D.new()
+	carlos.arms[1].add_child(worker_brush)
+	worker_brush.position = Vector3(0,-.51,.045)
+	worker_brush.rotation.x = PI*.5
 	_make_brush(worker_brush)
 	_refresh_hand()
 	_refresh_client()
@@ -425,6 +454,8 @@ func _exit_aim() -> bool:
 
 func _destroy_room() -> void:
 	if is_instance_valid(hand): hand.hide()
+	if is_instance_valid(worker_brush): worker_brush.queue_free()
+	worker_brush = null
 	if is_instance_valid(client): client.queue_free()
 	client = null
 	if is_instance_valid(room): room.queue_free()
@@ -564,7 +595,7 @@ func tick(delta: float) -> void:
 	if _stage()==0:
 		if business.ledger.stage!=4: return
 		call_wait += delta
-		if call_wait<8.0 or business.modal_open() or game.driving or game.taxi_riding or game.bus_riding or game.garage.inside or game.garage.riding: return
+		if call_wait<8.0 or business.modal_open() or game.driving or game.taxi_riding or game.bus_riding or game.garage.inside or game.garage.riding or game.taxis.dialog.visible: return
 		state.stage = 1
 		business.ledger.add_message("Carlos","Llámame. Tengo un trabajo pintando una casa cerca de Flores y Estévez.")
 		_save()
@@ -575,7 +606,7 @@ func tick(delta: float) -> void:
 	if not inside and not is_instance_valid(carlos):
 		locate_wait -= delta
 		if locate_wait>0.0: return
-		locate_wait = 5.0
+		locate_wait = 15.0 if locate_reported else 5.0
 		if not _locate(): return
 		_spawn_carlos(home.p if _stage()<=3 else customer.p)
 		_target(home if _stage()==2 else customer,"Casa de Carlos · Flores y Estévez" if _stage()==2 else "Casa del cliente")
@@ -600,11 +631,10 @@ func tick(delta: float) -> void:
 						# Move Carlos along the wall as he finishes each section.
 						var z := -2.45+float(x)*.70
 						carlos.global_position = ROOM+Vector3(-3.0,0,z)
-						var prop := room.get_node_or_null("CarlosBrush") as Node3D
-						if prop!=null: prop.position = Vector3(-3.65,2.45-float(y)*.65,z)
+						carlos.arms[1].rotation.x = -1.7+float(y)*.35
 						break
 				if done: break
-			if is_instance_valid(carlos): carlos.arms[1].rotation.x = -1.1 if state.painted.size()<TOTAL else 0.0
+			if is_instance_valid(carlos) and state.painted.size()>=TOTAL: carlos.arms[1].rotation.x = 0.0
 		if brush_clock>=.13 and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
 			brush_clock = 0.0
 			_paint()
