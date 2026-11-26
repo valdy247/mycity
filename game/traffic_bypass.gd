@@ -131,11 +131,10 @@ static func _four_lane_pass(body: CharacterBody3D,route: Array,index: int,street
 				var cross := lerpf(change*out,float(option.cross),back)
 				var p := origin+forward*along+right*cross
 				var d := (p-previous).normalized()
-				if not streets.in_carriageway(p,d,width,length) or not _on_road(streets,p,d,width,length) or not _segment_clear(body,previous,p,d,shape):
+				if not streets.in_carriageway(p,d,width,length,forward) or not _on_road(streets,p,d,width,length) or not _segment_clear(body,previous,p,d,shape):
 					valid = false
 					break
-				# Do not change lanes through an intersection; the ordinary
-				# junction controller must admit the subsequent crossing.
+				# The ordinary junction controller still governs crossing entry.
 				if j<steps: points.append({"p":p,"node":"","bypass":true})
 				previous = p
 			if valid and not points.is_empty():
@@ -440,7 +439,7 @@ static func rejoin_index(body: CharacterBody3D,route: Array,index: int,streets: 
 
 # Initiate a lane change before the driver has reached a complete stop.
 # The expensive path search is still throttled by each driver's cooldown.
-static func early_lane_pass(body: CharacterBody3D,streets: Streets,blocked: bool,free: float) -> bool:
+static func early_lane_pass(body: CharacterBody3D,streets: Streets,blocked: bool,_free: float) -> bool:
 	return blocked and not streets.four_lane_at(body.global_position,body.global_transform.basis.z).is_empty()
 
 # Intersection admission: reserve one crossing at a time, before the
