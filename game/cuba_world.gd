@@ -2533,6 +2533,33 @@ func _market_portal_floor(face: Dictionary,poly: PackedVector2Array,depth: float
 	for piece in Geometry2D.intersect_polygons(strip,poly):
 		_draw_street_polygon(piece,.072,mat,"market_portal_floor")
 
+# Ground moulding must follow the actual lower wall, not the upper
+# footprint. At a portal corner the first metres of the side facade
+# have no ground-floor wall; an uncut band becomes a floating white bar.
+func _market_ground_trim(face: Dictionary,lower: PackedVector2Array,mat: StandardMaterial3D) -> void:
+	var a: Vector3 = face.a
+	var b: Vector3 = face.b
+	var n: Vector3 = face.normal
+	var t := (b-a).normalized()
+	var length := a.distance_to(b)
+	var angle := atan2(n.x,n.z)
+	for i in range(lower.size()):
+		var p := Vector3(lower[i].x,0,lower[i].y)
+		var q := Vector3(lower[(i+1)%lower.size()].x,0,lower[(i+1)%lower.size()].y)
+		if absf((p-a).dot(n))>.08 or absf((q-a).dot(n))>.08: continue
+		var first := clampf(minf((p-a).dot(t),(q-a).dot(t)),0.0,length)
+		var last := clampf(maxf((p-a).dot(t),(q-a).dot(t)),0.0,length)
+		if last-first<.15: continue
+		var center := a+t*((first+last)*.5)
+		if not _wall_has_opening(lower,center+n*.045,n): continue
+		_cube(center+n*.09+Vector3.UP*.40,Vector3(last-first,.32,.30),mat,angle)
+
+func _market_unique_column(p: Vector3,angle: float,ceiling: float,mat: StandardMaterial3D,trim: StandardMaterial3D,placed: Array) -> void:
+	for old in placed:
+		if p.distance_to(old)<.96: return
+	placed.append(p)
+	_market_portal_column(p,angle,ceiling,mat,trim)
+
 func _make_market_landmark(poly: PackedVector2Array,anchor: Vector3) -> void:
 	var tile := Vector2i(floori(anchor.x/96.0),floori(anchor.z/96.0))
 	var wall := _mat("cuatro_caminos_ivory",Color("#e2dfd5"))
@@ -2579,6 +2606,8 @@ func _make_market_landmark(poly: PackedVector2Array,anchor: Vector3) -> void:
 		_extrude(poly,h,h+.28,roof,tile)
 	var primary := _front_edge(poly,true)
 	if primary.is_empty(): primary = _front_edge(poly)
+	var placed_columns: Array = []
+	var placed_upper_corners: Array = []
 	for face in fronts:
 		var a: Vector3 = face.a
 		var b: Vector3 = face.b
@@ -2592,8 +2621,8 @@ func _make_market_landmark(poly: PackedVector2Array,anchor: Vector3) -> void:
 		if arcade:
 			_market_portal_floor(face,poly,depth,floor_mat)
 			print("Cuatro Caminos: portal real ",face.term," longitud=",length," profundidad=",depth)
-		for band in [[.40,.32],[5.18,.32],[5.66,.24],[9.92,.26],[10.62,.36]]:
-			if arcade and float(band[0])<ceiling: continue
+		if not arcade: _market_ground_trim(face,lower,trim)
+		for band in [[5.18,.32],[5.66,.24],[9.92,.26],[10.62,.36]]:
 			_cube(mid+n*.09+Vector3.UP*float(band[0]),Vector3(length,float(band[1]),.30),trim,angle)
 		if length<3.0: continue
 		var count := maxi(1,roundi(length/3.65))
@@ -2614,13 +2643,13 @@ func _make_market_landmark(poly: PackedVector2Array,anchor: Vector3) -> void:
 				# segmental arch spans the clear opening between them.
 				var arch_center := p-n*.10
 				_market_portal_arch(arch_center,t,n,step,ceiling,wall,tile)
-				var pier := a+t*(float(k)*step+.40 if k==0 else float(k)*step)-n*.38
+				var pier := a+t*(float(k)*step+.48 if k==0 else float(k)*step)-n*.45
 				if Geometry2D.is_point_in_polygon(Vector2(pier.x,pier.z),poly):
-					_market_portal_column(pier,angle,ceiling,wall,trim)
+					_market_unique_column(pier,angle,ceiling,wall,trim,placed_columns)
 				if k==count-1:
-					var last := b-t*.40-n*.38
+					var last := b-t*.48-n*.45
 					if Geometry2D.is_point_in_polygon(Vector2(last.x,last.z),poly):
-						_market_portal_column(last,angle,ceiling,wall,trim)
+						_market_unique_column(last,angle,ceiling,wall,trim,placed_columns)
 				var walk_a := a+t*float(k)*step-n*depth*.56
 				var walk_b := a+t*float(k+1)*step-n*depth*.56
 				var door := p-n*(depth-.55)
@@ -2643,6 +2672,11 @@ func _make_market_landmark(poly: PackedVector2Array,anchor: Vector3) -> void:
 				_cube(pier+n*.12+Vector3.UP*7.92,Vector3(.40,3.95,.35),trim,angle)
 				_cube(pier+n*.15+Vector3.UP*9.76,Vector3(.63,.34,.42),trim,angle)
 		for corner in [a,b]:
+			var duplicate := false
+			for old in placed_upper_corners:
+				if corner.distance_to(old)<.25: duplicate = true
+			if duplicate: continue
+			placed_upper_corners.append(corner)
 			_cube(corner+Vector3.UP*((h+ceiling)*.5),Vector3(.55,h-ceiling,.55),trim,angle)
 		if main_side:
 			var p := a+t*(float(entrance)+.5)*step
