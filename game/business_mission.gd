@@ -432,16 +432,38 @@ func taxi_arrival(at: Vector3) -> void:
 			_notify("Llegaste a la MIPYME. Mira una caja y pulsa E.")
 			_sync_visuals()
 
+# Test only the visible body meshes, not the floating name or mission arrow.
+# Albertico has no physics collider; a ray against his mesh bounds provides
+# precise selection without adding a collision body or continuous physics.
+func aimed_albertico_text(at: Vector3) -> String:
+	if not is_instance_valid(albertico) or not albertico.is_visible_in_tree() or camera==null or player==null: return ""
+	if not _near(at,albertico.global_position,2.0): return ""
+	var origin := camera.global_position
+	var direction := -camera.global_transform.basis.z
+	var finish := origin+direction*8.0
+	var depth := INF
+	for child in albertico.get_children():
+		if not child is MeshInstance3D or not child.is_visible_in_tree(): continue
+		var part := child as MeshInstance3D
+		var local_hit: Variant = part.get_aabb().intersects_segment(part.to_local(origin),part.to_local(finish))
+		if local_hit==null: continue
+		var hit: Vector3 = part.to_global(local_hit)
+		depth = minf(depth,(hit-origin).dot(direction))
+	if not is_finite(depth) or depth<0.0: return ""
+	var ray := PhysicsRayQueryParameters3D.create(origin,origin+direction*depth,1|4|8|16|32)
+	ray.exclude = [player.get_rid()]
+	if not get_world_3d().direct_space_state.intersect_ray(ray).is_empty(): return ""
+	if ledger.stage==0: return "[E] Hablar con Albertico"
+	if not ledger.carry.is_empty() and ledger.stage>=3: return "[E] Entregar caja a Albertico"
+	if ledger.stage==3 and ledger.total(ledger.stock)>0: return "[E] Contratar a Albertico"
+	return "[E] Hablar con Albertico"
+
 func action_text(at: Vector3) -> String:
 	if life!=null:
 		var context := life.action_text(at)
 		if not context.is_empty(): return context
-	if albertico==null: return ""
-	if _near(at,albertico.position,2.0):
-		if ledger.stage==0: return "[E] Hablar con Albertico"
-		if not ledger.carry.is_empty() and ledger.stage>=3: return "[E] Entregar caja a Albertico"
-		if ledger.stage==3 and ledger.total(ledger.stock)>0: return "[E] Contratar a Albertico"
-		return "[E] Hablar con Albertico"
+	var aimed := aimed_albertico_text(at)
+	if not aimed.is_empty(): return aimed
 	if not world.food_factory.is_empty():
 		if _near(at,world.food_factory.pickup,2.0) or _near(at,world.food_factory.counter,2.0): return "MIPYME · Mira una caja y pulsa E"
 	return ""
@@ -452,25 +474,29 @@ func interact(at: Vector3) -> bool:
 	var action := action_text(at)
 	if action.is_empty(): return false
 	if action.contains("Albertico"):
-		if ledger.stage==0:
-			_open("Albertico","Asere, te tengo un bisne. Te voy a dar la luz: hay una gente que vende comida. Tú me la traes y yo la vendo. ¿Te sirve?")
-			_button("Sí, vamos arriba",_accept)
-			_button("No, ahora no",close)
-		elif not ledger.carry.is_empty() and ledger.stage>=3:
-			if ledger.deliver():
-				_notify("Caja entregada. "+_stock_text())
-				_sync_visuals()
-		elif ledger.stage==3 and ledger.total(ledger.stock)>0:
-			_open("Albertico","Déjame la mercancía aquí. Yo la vendo y me quedo con el 15% de cada venta. ¿Hacemos el negocio?")
-			_button("Contratar a Albertico",_hire)
-			_button("Ahora no",close)
-		else:
-			_open("Albertico","Trae las cajas de la MIPYME, cárgalas en el carro y déjamelas aquí.\n\n"+_stock_text())
-			_button("Cerrar",close)
+		return interact_albertico(at)
+	if life!=null and life.sites.has("primary"):
+		life._contact_page("primary")
+	else: _notify("Mira directamente la caja que deseas y pulsa E.")
+	return true
+
+func interact_albertico(at: Vector3) -> bool:
+	if aimed_albertico_text(at).is_empty(): return false
+	if ledger.stage==0:
+		_open("Albertico","Asere, te tengo un bisne. Te voy a dar la luz: hay una gente que vende comida. Tú me la traes y yo la vendo. ¿Te sirve?")
+		_button("Sí, vamos arriba",_accept)
+		_button("No, ahora no",close)
+	elif not ledger.carry.is_empty() and ledger.stage>=3:
+		if ledger.deliver():
+			_notify("Caja entregada. "+_stock_text())
+			_sync_visuals()
+	elif ledger.stage==3 and ledger.total(ledger.stock)>0:
+		_open("Albertico","Déjame la mercancía aquí. Yo la vendo y me quedo con el 15% de cada venta. ¿Hacemos el negocio?")
+		_button("Contratar a Albertico",_hire)
+		_button("Ahora no",close)
 	else:
-		if life!=null and life.sites.has("primary"):
-			life._contact_page("primary")
-		else: _notify("Mira directamente la caja que deseas y pulsa E.")
+		_open("Albertico","Trae las cajas de la MIPYME, cárgalas en el carro y déjamelas aquí.\n\n"+_stock_text())
+		_button("Cerrar",close)
 	return true
 
 func _accept() -> void:
