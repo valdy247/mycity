@@ -101,7 +101,13 @@ func animate(delta: float,moving: bool) -> void:
 		limbs[i].rotation.x = lerpf(limbs[i].rotation.x,swing,minf(1.0,delta*15.0))
 		arms[i].rotation.x = lerpf(arms[i].rotation.x,-swing*.72 if carried==null else -.85,minf(1.0,delta*15.0))
 
+func conversation_active(delta: float) -> bool:
+	if Time.get_ticks_msec()>=int(get_meta("conversation_until",0)): return false
+	animate(delta,false)
+	return true
+
 func walk_to(target: Vector3,delta: float,speed: float = 1.4) -> bool:
+	if conversation_active(delta): return false
 	var diff := target-global_position
 	if diff.length()<.12:
 		global_position = target
