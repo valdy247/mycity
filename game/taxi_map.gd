@@ -71,7 +71,7 @@ func set_business_markers(factory: Vector3,home: Vector3,enabled: bool) -> void:
 	business_markers.clear()
 	if enabled:
 		business_markers.append({"p":Vector2(factory.x,factory.z),"label":"FÁBRICA"})
-		business_markers.append({"p":Vector2(home.x,home.z),"label":"MI CASA"})
+		business_markers.append({"p":Vector2(home.x,home.z),"label":"ALBERTICO"})
 	queue_redraw()
 
 func clear_route() -> void:
