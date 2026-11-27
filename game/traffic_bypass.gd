@@ -141,12 +141,116 @@ static func _four_lane_pass(body: CharacterBody3D,route: Array,index: int,street
 				return {"path":points,"resume":int(option.index)}
 	return {}
 
+# Emergency overtaking is allowed across the painted centreline, not
+# across sidewalks, physical medians, occupied lanes or junctions.
+# Check the complete outward/return manoeuvre before committing.
+static func _opposing_pass(body: CharacterBody3D,route: Array,index: int,streets: Streets,width: float,length: float,signals: Dictionary,height: float) -> Dictionary:
+	if streets.map_data==null or not streets.intersection_clear_for_stop(body.global_position,length,width): return {}
+	var origin := body.global_position
+	var heading := body.global_basis.z
+	heading.y = 0.0
+	heading = heading.normalized()
+	var chosen: Dictionary = {}
+	var best := INF
+	var forward := heading
+	var center := origin
+	for edge in streets.map_data.roads_near(origin,12.0):
+		if not bool(edge.get("driveable",false)): continue
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		var first := String(edge.a_id)
+		var last := String(edge.b_id)
+		if not streets.map_data.graph.get(first,[]).has(last) or not streets.map_data.graph.get(last,[]).has(first): continue
+		var axis := (b-a).normalized()
+		if absf(axis.dot(heading))<.82: continue
+		var nearest := Geometry3D.get_closest_point_to_segment(Vector3(origin.x,0,origin.z),a,b)
+		var distance := Vector2(origin.x-nearest.x,origin.z-nearest.z).length()
+		if distance>float(edge.width)*.5+.1 or distance>=best: continue
+		best = distance
+		chosen = edge
+		forward = axis if axis.dot(heading)>0.0 else -axis
+		center = nearest
+	if chosen.is_empty(): return {}
+	var right := Vector3(-forward.z,0,forward.x)
+	var lateral := (origin-center).dot(right)
+	var half := float(chosen.width)*.5
+	var lane_center := -maxf(width*.5+.20,half*(.25 if int(chosen.get("lanes_per_direction",1))==2 else .50))
+	if absf(lane_center)+width*.5+.10>half: return {}
+	var change := lane_center-lateral
+	if absf(change)<.45: return {}
+	# Never overtake just because an intersection admission or signal is
+	# holding this vehicle. The existing junction controller stays in charge.
+	var options: Array = []
+	var previous_along := 0.0
+	for i in range(index,mini(route.size(),index+70)):
+		var item: Dictionary = route[i]
+		var p: Vector3 = item.p
+		var diff := p-origin
+		var along := diff.dot(forward)
+		var cross := diff.dot(right)
+		if along<-.7 or along<previous_along-.7 or absf(cross)>half+.6: break
+		previous_along = maxf(previous_along,along)
+		var mandatory := item.has("stop") or signals.has(String(item.get("node",""))) or i==route.size()-1
+		if along>=maxf(12.0,length*3.0) and along<=55.0 and streets.intersection_clear_for_stop(p,length,width):
+			# End on the original side, not at an arbitrary oncoming waypoint.
+			if lateral+cross>=width*.5: options.append({"p":p,"along":along,"cross":cross,"index":i})
+		if mandatory or along>55.0: break
+	if options.is_empty(): return {}
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(width+.10,height,length+.10)
+	# Predict approaching traffic over the duration of the low-speed pass.
+	var traffic := body.get_tree().get_nodes_in_group("autonomous_traffic")
+	var oncoming: Array[Dictionary] = []
+	for node in traffic:
+		if not node is CharacterBody3D or node==body or not is_instance_valid(node): continue
+		var other := node as CharacterBody3D
+		var diff := other.global_position-origin
+		if absf(diff.y)>2.5 or diff.length_squared()>22500.0: continue
+		var along := diff.dot(forward)
+		var cross := lateral+diff.dot(right)
+		if along< -length or cross>width*.5 or other.global_basis.z.dot(forward)>-.5: continue
+		oncoming.append({"along":along,"speed":maxf(0.0,-other.velocity.dot(forward))})
+	var leave_base := maxf(4.5,length*1.1+absf(change)*.6)
+	for option in options:
+		var total := float(option.along)
+		var returning := maxf(4.5,length*1.15+absf(change)*.55)
+		var unsafe := false
+		for other in oncoming:
+			# The pass is driven at at most 4 m/s. Keep a buffer for
+			# vehicles already approaching and recheck each physical step.
+			if float(other.along)<total+length+8.0+maxf(3.0,float(other.speed))*(total/3.0+2.0):
+				unsafe = true
+				break
+		if unsafe: continue
+		for leave in [leave_base,leave_base+2.0]:
+			if total<float(leave)+returning+length: continue
+			var steps := ceili(total/.85)
+			var previous := origin
+			var points: Array = []
+			var valid := true
+			for j in range(1,steps+1):
+				var along := total*float(j)/float(steps)
+				var cross := lerpf(change*smoothstep(0.0,float(leave),along),float(option.cross),smoothstep(total-returning,total,along))
+				var p := origin+forward*along+right*cross
+				var d := (p-previous).normalized()
+				if not streets.intersection_clear_for_stop(p,length,width) or not _on_road(streets,p,d,width,length) or not _segment_clear(body,previous,p,d,shape):
+					valid = false
+					break
+				if j<steps: points.append({"p":p,"node":"","bypass":true,"opposing_pass":true})
+				previous = p
+			if valid and not points.is_empty(): return {"path":points,"resume":int(option.index)}
+	return {}
+
 static func recover(body: CharacterBody3D,route: Array,index: int,streets: Streets,width: float,length: float,signals: Dictionary = {},height: float = 1.8) -> Dictionary:
 	if bool(body.get_meta("junction_guard",false)): return {}
 	if index<0 or index>=route.size(): return {}
 	var lane := streets.four_lane_at(body.global_position,body.global_transform.basis.z)
 	if not lane.is_empty():
-		return _four_lane_pass(body,route,index,streets,width,length,signals,height,lane)
+		var same_lane := _four_lane_pass(body,route,index,streets,width,length,signals,height,lane)
+		if not same_lane.is_empty(): return same_lane
+		return _opposing_pass(body,route,index,streets,width,length,signals,height)
+	var opposite := _opposing_pass(body,route,index,streets,width,length,signals,height)
+	if not opposite.is_empty(): return opposite
 	var normal := find(body,route,index,streets,width,length,signals,height)
 	if not normal.is_empty(): return normal
 	if index<0 or index>=route.size(): return {}
@@ -580,7 +684,7 @@ static func rejoin_index(body: CharacterBody3D,route: Array,index: int,streets: 
 # Initiate a lane change before the driver has reached a complete stop.
 # The expensive path search is still throttled by each driver's cooldown.
 static func early_lane_pass(body: CharacterBody3D,streets: Streets,blocked: bool,_free: float) -> bool:
-	return blocked and not streets.four_lane_at(body.global_position,body.global_transform.basis.z).is_empty()
+	return blocked
 
 # Intersection admission: reserve one crossing at a time, before the
 # vehicle's nose enters the junction. Verify that its tail can exit too.
