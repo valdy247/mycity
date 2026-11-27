@@ -1184,6 +1184,16 @@ func _traffic_tick(delta: float) -> void:
 		elif not Bypass.safe_step(body,d,advance,angle,delta): entry.speed = 0.0
 
 func tick(delta: float) -> void:
+	# Repair stale room state from older saves/mission teleports. Never move
+	# the player here; just restore the house tools to their proper place.
+	if inside and absf(game.player.global_position.y-ROOM.y)>12.0:
+		inside = false
+		garage_near = false
+		_stop_home_paint()
+		game.first_person = previous_first
+		game._apply_camera_mode()
+	elif not inside and has_home_tool():
+		_stop_home_paint()
 	_tick_listing(delta)
 	if not traffic_ready:
 		refresh_clock += delta
@@ -1643,10 +1653,10 @@ func _house_tool_action(at: Vector3) -> String:
 	if tool=="brush":
 		if not _aim_can().is_empty(): return "[E] Embarrar brocha"
 		if _aim_tool(resting_brush,Vector3.ZERO,Vector3(.38,.14,.28)): return "[E] Dejar brocha sobre el papel"
-		return "Clic izquierdo: pintar" if int(state.paint_charge)>0 else "Moja la brocha en un cubo de pintura"
+		return "Clic izquierdo: pintar · [X] Guardar brocha" if int(state.paint_charge)>0 else "Moja la brocha en un cubo de pintura · [X] Guardar"
 	if tool=="broom":
 		if _near_broom(at) or _aim_tool(resting_broom,Vector3(0,.65,0),Vector3(.30,.75,.25)): return "[E] Dejar escoba"
-		return "Clic izquierdo: barrer"
+		return "Clic izquierdo: barrer · [X] Guardar escoba"
 	if not _free_hands(): return ""
 	if _aim_tool(resting_brush,Vector3.ZERO,Vector3(.27,.12,.24)): return "[E] Recoger brocha"
 	if _near_broom(at) or _aim_tool(resting_broom,Vector3(0,.65,0),Vector3(.30,.75,.25)): return "[E] Recoger escoba"
@@ -1741,6 +1751,18 @@ func _tick_paint_order(delta: float) -> void:
 	_refresh_paint_station()
 	_save()
 	business._notify("Tu pintura de Facebook llegó a casa.")
+
+func has_home_tool() -> bool:
+	return not String(state.get("paint_tool","")).is_empty()
+
+# Manual emergency return: tools are domestic items and return to their
+# actual resting place rather than being destroyed or dropped in the city.
+func return_home_tool() -> bool:
+	if not has_home_tool(): return false
+	var tool := String(state.paint_tool)
+	_stop_home_paint()
+	business._notify("Escoba devuelta a su esquina." if tool=="broom" else "Brocha devuelta al papel.")
+	return true
 
 func _stop_home_paint() -> void:
 	var tool := String(state.paint_tool)
