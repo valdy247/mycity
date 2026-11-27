@@ -832,7 +832,7 @@ func tick(delta: float,_clock: float,boost_requested: bool = false) -> void:
 	# bypass timer. Retain the crossing gate and the original destination.
 	passenger.shift_pass_retry = maxf(0.0,float(passenger.get("shift_pass_retry",0.0))-delta)
 	# Normal taxi driving uses either same-direction lane on four-lane roads.
-	if blocked and not lane.is_empty() and not bool(body.get_meta("junction_guard",false)) and not stop_requested and float(passenger.shift_pass_retry)<=0.0 and not bool(waypoints[index].get("lane_change",false)):
+	if blocked and not lane.is_empty() and not bool(body.get_meta("junction_guard",false)) and not stop_requested and float(passenger.shift_pass_retry)<=0.0 and not bool(waypoints[index].get("lane_change",false)) and not bool(waypoints[index].get("bypass",false)):
 		passenger.shift_pass_retry = 1.5
 		var choice := TrafficBypass.taxi_lane_change(body,waypoints,index,streets,dims.x,dims.z,dims.y)
 		if not choice.is_empty():

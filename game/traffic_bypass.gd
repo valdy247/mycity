@@ -948,18 +948,19 @@ static func junction_gate(state: Dictionary,body: CharacterBody3D,streets: Stree
 			state.junction_claim = id
 			state.junction_entered = true
 		return -1.0
-	if stop_distance>maxf(8.0,float(state.get("speed",0.0))*1.2+3.0): return stop_distance
-	body.set_meta("junction_guard",true)
 	# Real signal phase; turbo bypasses the light, not the occupancy guard.
 	var green := false
 	if bool(selected.signal):
-		var approach := center-origin
+		var approach := body.global_basis.z
 		approach.y = 0.0
 		var color := streets.signal_color(selected,approach)
 		green = color==2 or bool(state.get("ignore_red",false))
 		if not green:
 			state.red_wait = true
+			body.set_meta("junction_guard",true)
 			return stop_distance
+	if stop_distance>maxf(8.0,float(state.get("speed",0.0))*1.2+3.0): return -1.0 if green else stop_distance
+	body.set_meta("junction_guard",true)
 	# On green, approach normally instead of braking at an arbitrary point.
 	# The intersection claim is still required before entry.
 	if stop_distance>4.0: return -1.0 if green else stop_distance
@@ -1018,7 +1019,7 @@ static func taxi_lane_change(body: CharacterBody3D,route: Array,index: int,stree
 	if absf(change)<.6: return {}
 	var shape := BoxShape3D.new()
 	shape.size = Vector3(width+.08,height,length+.08)
-	var best: Dictionary = {}
+	var options: Array = []
 	for i in range(index,mini(route.size()-1,index+65)):
 		var item: Dictionary = route[i]
 		var p: Vector3 = item.p
@@ -1031,6 +1032,14 @@ static func taxi_lane_change(body: CharacterBody3D,route: Array,index: int,stree
 		if along<length*3.0: continue
 		var ramp := maxf(6.0,length*1.3)
 		if along<ramp+length: continue
+		options.append({"i":i,"along":along})
+	# Try at most three straight segments, longest first. Expensive shape
+	# sweeps must never grow quadratically with the number of route samples.
+	options.reverse()
+	for option in options.slice(0,3):
+		var i := int(option.i)
+		var along := float(option.along)
+		var ramp := maxf(6.0,length*1.3)
 		var count := ceili(along/1.0)
 		var points: Array = []
 		var previous := origin
@@ -1050,5 +1059,5 @@ static func taxi_lane_change(body: CharacterBody3D,route: Array,index: int,stree
 			var next: Vector3 = route[i+1].p
 			var d := (next-previous).normalized()
 			if next.distance_to(previous)<2.0 or not _on_road(streets,next,d,width,length) or not _segment_clear(body,previous,next,d,shape): continue
-			best = {"path":points,"resume":i+1,"side":1 if change>0.0 else -1}
-	return best
+			return {"path":points,"resume":i+1,"side":1 if change>0.0 else -1}
+	return {}
