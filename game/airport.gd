@@ -54,6 +54,7 @@ var driver_opening := false
 var driver_route_index := 0
 var driver_return_index := 0
 var driver_ready := false
+var cabin_look := Vector2.ZERO
 var waiting_people: Array[Person] = []
 var ambient_clock := 0.0
 var dialogue: Label
@@ -291,17 +292,37 @@ func _car_shell(root: Node3D,paint: Color,interactive: bool) -> void:
 	var chrome := Color("#b9beb8")
 	_box(root,Vector3(0,.39,0),Vector3(1.72,.28,4.5),dark,interactive)
 	_box(root,Vector3(0,.74,1.25),Vector3(1.76,.52,1.90),paint,interactive)
-	_box(root,Vector3(0,.78,-.03),Vector3(1.54,.45,1.84),paint,interactive)
-	_box(root,Vector3(0,1.51,-.10),Vector3(1.57,.12,1.86),paint)
-	_box(root,Vector3(0,1.20,.84),Vector3(1.45,.48,.055),glass)
-	_box(root,Vector3(0,1.20,-1.03),Vector3(1.45,.48,.055),glass)
+	if interactive:
+		# Hollow passenger cabin: floor and sills instead of a solid body block.
+		_box(root,Vector3(0,.55,-.03),Vector3(1.54,.12,1.84),paint)
+		_box(root,Vector3(0,1.66,-.10),Vector3(1.59,.10,1.96),paint)
+		_box(root,Vector3(0,.78,-1.04),Vector3(1.54,.42,.11),paint)
+		for z in [-1.04,.89]:
+			_cabin_glass(root,Vector3(0,1.35,float(z)),Vector3(1.45,.53,.028))
+			_box(root,Vector3(0,1.08,float(z)),Vector3(1.54,.055,.055),chrome)
+			_box(root,Vector3(0,1.62,float(z)),Vector3(1.56,.07,.065),paint)
+	else:
+		_box(root,Vector3(0,.78,-.03),Vector3(1.54,.45,1.84),paint)
+		_box(root,Vector3(0,1.51,-.10),Vector3(1.57,.12,1.86),paint)
+		_box(root,Vector3(0,1.20,.84),Vector3(1.45,.48,.055),glass)
+		_box(root,Vector3(0,1.20,-1.03),Vector3(1.45,.48,.055),glass)
 	_box(root,Vector3(0,.55,-1.66),Vector3(1.72,.14,1.26),dark)
 	_box(root,Vector3(0,.75,-2.26),Vector3(1.74,.40,.10),paint,interactive)
 	for side in [-1.0,1.0]:
 		var x := float(side)
 		_box(root,Vector3(x*.83,.77,-1.65),Vector3(.12,.44,1.16),paint,interactive)
-		_box(root,Vector3(x*.78,1.20,-.40),Vector3(.06,.48,1.2),glass)
-		_box(root,Vector3(x*.78,1.21,-.93),Vector3(.08,.53,.09),paint)
+		if interactive:
+			for z in [-1.01,.02,.87]:
+				_box(root,Vector3(x*.77,1.35,float(z)),Vector3(.065,.57,.065),paint)
+			if x>0.0:
+				_box(root,Vector3(x*.78,.82,-.06),Vector3(.10,.46,1.80),paint)
+				_cabin_glass(root,Vector3(x*.78,1.35,-.52),Vector3(.028,.51,.92))
+			else:
+				_box(root,Vector3(x*.78,.82,.45),Vector3(.10,.46,.84),paint)
+			_cabin_glass(root,Vector3(x*.78,1.35,.45),Vector3(.028,.51,.80))
+		else:
+			_box(root,Vector3(x*.78,1.20,-.40),Vector3(.06,.48,1.2),glass)
+			_box(root,Vector3(x*.78,1.21,-.93),Vector3(.08,.53,.09),paint)
 		_box(root,Vector3(x*.70,.76,2.21),Vector3(.26,.19,.07),Color("#f2e7bb"))
 		_box(root,Vector3(x*.70,.75,-2.32),Vector3(.22,.15,.05),Color("#aa3633"))
 		for z in [-1.39,1.38]:
@@ -315,12 +336,114 @@ func _car_shell(root: Node3D,paint: Color,interactive: bool) -> void:
 		_box(lid,Vector3(0,0,-.60),Vector3(1.72,.09,1.20),paint)
 		door = Node3D.new()
 		root.add_child(door)
-		door.position = Vector3(.82,.85,.76)
-		_box(door,Vector3(0,0,-.50),Vector3(.09,.47,1.0),paint)
-		_box(door,Vector3(0,.35,-.50),Vector3(.055,.39,1.0),glass)
-		_box(door,Vector3(.06,.13,-.79),Vector3(.025,.04,.15),chrome)
+		door.position = Vector3(-.78,.83,.02)
+		_box(door,Vector3(0,0,-.50),Vector3(.09,.46,.98),paint)
+		_cabin_glass(door,Vector3(0,.52,-.50),Vector3(.027,.51,.94))
+		_box(door,Vector3(0,.79,-.50),Vector3(.055,.055,1.0),paint)
+		_box(door,Vector3(0,.52,-.97),Vector3(.055,.56,.045),paint)
+		_box(door,Vector3(-.06,.13,-.79),Vector3(.025,.04,.15),chrome)
+		_make_taxi_interior(root,door)
 	else:
 		_box(root,Vector3(0,1.0,-1.65),Vector3(1.72,.09,1.2),paint)
+
+func _cabin_glass(root: Node3D,at: Vector3,dims: Vector3) -> void:
+	var pane := _box(root,at,dims,Color("#92b9cb"))
+	var key := "taxi_clear_glass"
+	if not mats.has(key):
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(.68,.84,.92,.09)
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		mat.roughness = .16
+		mats[key] = mat
+	pane.material_override = mats[key] as StandardMaterial3D
+
+func _cabin_disc(root: Node3D,at: Vector3,radius: float,depth: float,color: Color) -> MeshInstance3D:
+	var node := MeshInstance3D.new()
+	var cylinder := CylinderMesh.new()
+	cylinder.top_radius = radius
+	cylinder.bottom_radius = radius
+	cylinder.height = depth
+	cylinder.radial_segments = 20
+	cylinder.rings = 0
+	node.mesh = cylinder
+	node.material_override = _mat(color)
+	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	root.add_child(node)
+	node.position = at
+	node.rotation.x = PI*.5
+	return node
+
+func _make_taxi_interior(root: Node3D,rear_door: Node3D) -> void:
+	var red := Color("#ad282b")
+	var vinyl := Color("#712728")
+	var cream := Color("#d9c1ac")
+	var metal := Color("#bfc3bd")
+	var black := Color("#252627")
+	# Classic red painted dashboard and cream roof liner, based on the reference.
+	_box(root,Vector3(0,.59,-.04),Vector3(1.43,.04,1.84),black)
+	_box(root,Vector3(0,1.595,-.09),Vector3(1.46,.028,1.88),cream)
+	_box(root,Vector3(0,.97,.73),Vector3(1.45,.29,.32),red)
+	_box(root,Vector3(0,1.125,.72),Vector3(1.44,.048,.35),red)
+	_box(root,Vector3(0,1.015,.552),Vector3(1.38,.025,.018),metal)
+	_box(root,Vector3(.37,1.065,.545),Vector3(.59,.145,.024),cream)
+	for i in range(3):
+		var x := .19+float(i)*.17
+		_cabin_disc(root,Vector3(x,1.071,.522),.061,.018,metal)
+		_cabin_disc(root,Vector3(x,1.071,.507),.049,.015,black)
+		var needle := _box(root,Vector3(x,1.071,.494),Vector3(.004,.065,.006),cream)
+		needle.rotation.z = -.65+float(i)*.4
+	_box(root,Vector3(-.14,.977,.544),Vector3(.26,.085,.028),metal)
+	_box(root,Vector3(-.14,.986,.521),Vector3(.17,.045,.012),black)
+	for x in [-.25,-.035]: _cabin_disc(root,Vector3(float(x),.971,.503),.018,.016,black)
+	_box(root,Vector3(-.49,1.043,.55),Vector3(.35,.11,.025),red)
+	_box(root,Vector3(-.49,1.06,.53),Vector3(.11,.018,.02),metal)
+	# Steering wheel with a thin rim, three spokes and horn hub.
+	var steering := Node3D.new()
+	root.add_child(steering)
+	steering.position = Vector3(.40,1.16,.43)
+	steering.rotation.x = -.30
+	var rim := TorusMesh.new()
+	rim.inner_radius = .151
+	rim.outer_radius = .171
+	rim.rings = 24
+	rim.ring_segments = 8
+	var wheel := MeshInstance3D.new()
+	wheel.mesh = rim
+	wheel.material_override = _mat(black)
+	wheel.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	steering.add_child(wheel)
+	wheel.rotation.x = PI*.5
+	for i in range(3):
+		var angle := TAU*float(i)/3.0
+		var spoke := _box(steering,Vector3(sin(angle)*.085,cos(angle)*.085,0),Vector3(.019,.145,.018),metal)
+		spoke.rotation.z = -angle
+	_cabin_disc(steering,Vector3.ZERO,.045,.032,red)
+	_box(root,Vector3(.40,1.10,.56),Vector3(.07,.07,.23),black)
+	# Wide bench seats, stitched seams and trim.
+	for z in [-.82,.16]:
+		var seat_z := float(z)
+		_box(root,Vector3(0,.70,seat_z),Vector3(1.39,.22,.45),vinyl)
+		_box(root,Vector3(0,.94,seat_z-.24),Vector3(1.38,.42,.12),vinyl)
+		_box(root,Vector3(0,1.155,seat_z-.24),Vector3(1.40,.047,.13),cream)
+		for x in [-.46,0.0,.46]:
+			_box(root,Vector3(float(x),.817,seat_z),Vector3(.008,.007,.39),cream)
+			_box(root,Vector3(float(x),.95,seat_z-.305),Vector3(.008,.35,.006),cream)
+	for x in [-.72,.72]:
+		if x>0.0: _box(root,Vector3(float(x),.84,-.06),Vector3(.035,.40,1.80),vinyl)
+		else: _box(root,Vector3(float(x),.84,.45),Vector3(.035,.40,.82),vinyl)
+		_box(root,Vector3(float(x),1.055,.45),Vector3(.045,.045,.82),cream)
+		_box(root,Vector3(float(x),.95,.38),Vector3(.065,.045,.27),cream)
+	_box(rear_door,Vector3(.052,0,-.50),Vector3(.025,.37,.92),vinyl)
+	_box(rear_door,Vector3(.07,.21,-.50),Vector3(.05,.045,.92),cream)
+	_box(rear_door,Vector3(.075,.07,-.50),Vector3(.06,.045,.28),cream)
+	# Rear-view mirror, sun strip, and small taxi sign on the dashboard.
+	_box(root,Vector3(0,1.53,.77),Vector3(.035,.15,.035),black)
+	_box(root,Vector3(0,1.46,.72),Vector3(.30,.10,.042),black)
+	_box(root,Vector3(0,1.46,.693),Vector3(.27,.077,.008),Color("#738c95"))
+	_box(root,Vector3(0,1.58,.895),Vector3(1.45,.09,.03),Color("#315b78"))
+	_box(root,Vector3(-.04,1.185,.76),Vector3(.20,.075,.11),Color("#dfb43e"))
+	_label3(root,"TAXI",Vector3(-.04,1.185,.70),.0017,black).rotation.y = PI
 
 func _make_taxi() -> void:
 	taxi = Node3D.new()
@@ -363,7 +486,7 @@ func _make_people() -> void:
 	if progress.stage>=11 and progress.stage<16:
 		driver.position = taxi.to_global(Vector3(.85,0,-2.90))
 	elif progress.stage==16:
-		driver.position = taxi.to_global(Vector3(-1.65,0,.30))
+		driver.position = taxi.to_global(Vector3(1.65,0,.30))
 		driver_ready = true
 
 func _idle_person(person: Person,delta: float,offset: float) -> void:
@@ -516,7 +639,7 @@ func _trunk_point() -> Vector3:
 	return taxi.to_global(Vector3(0,0,-2.9))
 
 func _door_point() -> Vector3:
-	return taxi.to_global(Vector3(1.35,0,.23))
+	return taxi.to_global(Vector3(-1.35,0,-.50))
 
 func _target() -> Vector3:
 	match progress.stage:
@@ -715,20 +838,23 @@ func _seat_player() -> void:
 	player.hide()
 	if is_instance_valid(driver):
 		driver.reparent(taxi,false)
-		driver.position = Vector3(-.34,.32,.30)
+		driver.position = Vector3(.39,.17,.19)
 		driver.rotation = Vector3.ZERO
-		driver.scale = Vector3(.66,.66,.66)
-		for leg in driver.limbs: leg.rotation.x = -1.0
-		for knee in driver.knees: knee.rotation.x = 1.0
-		for arm in driver.arms: arm.rotation.x = -1.05
+		driver.scale = Vector3(.74,.74,.74)
+		for leg in driver.limbs: leg.rotation.x = -1.45
+		for knee in driver.knees: knee.rotation.x = 1.35
+		for arm in driver.arms: arm.rotation.x = -1.15
 	camera.reparent(taxi,false)
-	camera.position = Vector3(.36,1.31,.03)
-	camera.rotation = Vector3(0,PI,0)
+	# Right rear seat, facing the windshield over the front bench.
+	camera.position = Vector3(-.24,1.42,-.77)
+	camera.rotation = Vector3(-.06,PI,0)
+	cabin_look = Vector2.ZERO
+	camera.fov = 82.0
 	camera.make_current()
-	door.rotation.y = -.70
+	door.rotation.y = .90
 	var boarding := create_tween()
 	boarding.tween_property(door,"rotation:y",0.0,.45)
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if mobile else Input.MOUSE_MODE_CAPTURED
 	_notice("Maletas guardadas. Listo para comenzar el viaje.")
 
 func _notice(words: String) -> void:
@@ -830,7 +956,7 @@ func _toggle_menu() -> void:
 	menu_open = not menu_open
 	menu.visible = menu_open
 	touch_keys.clear()
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if menu_open or mobile or progress.stage==Progress.COMPLETE else Input.MOUSE_MODE_CAPTURED
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if menu_open or mobile else Input.MOUSE_MODE_CAPTURED
 
 func _restart() -> void:
 	# Only the new airport checkpoint is reset. Legacy saves remain untouched.
@@ -849,11 +975,16 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.keycode==KEY_E:
 			_interact()
 			get_viewport().set_input_as_handled()
-	if menu_open or progress.stage==Progress.COMPLETE: return
+	if menu_open: return
 	var look := Vector2.ZERO
 	if event is InputEventMouseMotion and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED: look = event.relative
 	elif event is InputEventScreenDrag and mobile: look = event.relative
 	if look!=Vector2.ZERO:
+		if progress.stage==Progress.COMPLETE:
+			cabin_look.x = clampf(cabin_look.x-look.x*.003,-1.15,1.15)
+			cabin_look.y = clampf(cabin_look.y-look.y*.003,-.50,.38)
+			camera.rotation = Vector3(cabin_look.y-.06,PI+cabin_look.x,0)
+			return
 		yaw -= look.x*.003
 		pitch = clampf(pitch-look.y*.003,-1.25,1.25)
 		player.rotation.y = yaw
@@ -933,7 +1064,7 @@ func _physics_process(delta: float) -> void:
 					driver.arms[1].rotation.x = 0.0
 		16:
 			if not driver_ready:
-				var return_route: Array[Vector3] = [Vector3(-1.65,0,-2.90),Vector3(-1.65,0,.30)]
+				var return_route: Array[Vector3] = [Vector3(1.65,0,-2.90),Vector3(1.65,0,.30)]
 				driver_return_index = _driver_walk_route(return_route,driver_return_index,delta)
 				driver_ready = driver_return_index>=return_route.size()
 	if progress.stage<10 or (progress.stage==10 and not driver_opening) or progress.stage in [11,12,13,14] or (progress.stage==16 and driver_ready):
