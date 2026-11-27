@@ -27,11 +27,45 @@ func reserve(city) -> void:
 		areas.append(source)
 		city.street_geometry._register(index,poly)
 		if areas.size()>=MAX_PARKS: break
+	_identify_alcobenda()
 	for id in ["373927999","23917140"]:
 		var found := false
 		for item in areas:
 			if String(item.id)==id: found = true
 		if not found: push_warning("MyCity parques: falta polígono OSM "+id+" en el mapa local; no se inventa perímetro.")
+
+# The user identified the park by Monte / Estévez. Match its existing
+# polygon rather than guessing a new parcel or deleting adjacent houses.
+func _identify_alcobenda() -> void:
+	for item in areas:
+		if world.geography.normalized(String(item.name)).contains("alcobenda"):
+			item.name = "Parque Alcobenda"
+			item["neglected"] = true
+			return
+	var anchor: Vector3 = world.texture_anchor
+	var corner: Vector3 = world._market_corner("monte","estevez",anchor)
+	if not corner.is_finite(): return
+	var q := Vector2(corner.x,corner.z)
+	var best := 55.0
+	var chosen: Dictionary = {}
+	for item in areas:
+		var label: String = world.geography.normalized(String(item.name))
+		if label not in ["parque publico","parque",""]: continue
+		var poly: PackedVector2Array = item.poly
+		var distance := INF
+		for i in range(poly.size()):
+			var edge_point := Geometry2D.get_closest_point_to_segment(q,poly[i],poly[(i+1)%poly.size()])
+			distance = minf(distance,q.distance_to(edge_point))
+		if Geometry2D.is_point_in_polygon(q,poly): distance = 0.0
+		if distance<best:
+			best = distance
+			chosen = item
+	if chosen.is_empty():
+		push_warning("Alcobenda: no se encontró un parque público sin nombre cerca de Monte y Estévez.")
+		return
+	chosen.name = "Parque Alcobenda"
+	chosen["neglected"] = true
+	print("Alcobenda: parcela OSM ",chosen.id," identificada por Monte y Estévez.")
 
 func reserved(poly: PackedVector2Array) -> bool:
 	for park in world.street_geometry.near(index,poly):
@@ -135,9 +169,73 @@ func _lamp(p: Vector2) -> void:
 	world._cube(_v(p,3.40),Vector3(.28,.35,.28),_mat("lamp",Color("#e2dcb7")))
 	world._cube(_v(p,3.62),Vector3(.38,.12,.38),metal)
 
+# Three reused mesh batches for debris: bags, broken masonry and scrap.
+# No rigid bodies, lights, or per-frame simulation.
+func _debris(poly: PackedVector2Array,routes: Array,hub: Vector2,rng: RandomNumberGenerator) -> void:
+	var rect: Rect2 = world.street_geometry.bounds(poly)
+	var material := StandardMaterial3D.new()
+	material.vertex_color_use_as_albedo = true
+	material.roughness = 1.0
+	var bag := SphereMesh.new()
+	bag.radius = .5
+	bag.height = 1.0
+	bag.radial_segments = 6
+	bag.rings = 3
+	var block := BoxMesh.new()
+	block.size = Vector3.ONE
+	var palette := [Color("#252923"),Color("#43473c"),Color("#737364"),Color("#8b8270"),Color("#b4ac94"),Color("#755741"),Color("#52666a")]
+	var centers: Array[Vector2] = []
+	for attempt in range(80):
+		var point := Vector2(rng.randf_range(rect.position.x,rect.end.x),rng.randf_range(rect.position.y,rect.end.y))
+		if not _free(point,poly,1.25) or point.distance_to(hub)<2.0: continue
+		var clear := true
+		for route in routes:
+			if Geometry2D.get_closest_point_to_segment(point,route.a,route.b).distance_to(point)<2.1: clear = false
+		for old in centers:
+			if old.distance_to(point)<3.0: clear = false
+		if clear: centers.append(point)
+		if centers.size()>=clampi(roundi(area(poly)/22.0),5,24): break
+	for kind in range(3):
+		var transforms: Array[Transform3D] = []
+		var colors: Array[Color] = []
+		for pile in centers:
+			for j in range(9 if kind==0 else (8 if kind==1 else 12)):
+				var point := pile+Vector2(rng.randf_range(-1.1,1.1),rng.randf_range(-1.1,1.1))
+				if not _free(point,poly,.55): continue
+				var clear := true
+				for route in routes:
+					if Geometry2D.get_closest_point_to_segment(point,route.a,route.b).distance_to(point)<1.45: clear = false
+				if not clear: continue
+				var dims := Vector3(rng.randf_range(.28,.65),rng.randf_range(.20,.48),rng.randf_range(.25,.58))
+				if kind==1: dims = Vector3(rng.randf_range(.32,.85),rng.randf_range(.15,.38),rng.randf_range(.20,.52))
+				if kind==2: dims = Vector3(rng.randf_range(.12,.48),.035,rng.randf_range(.14,.55))
+				var at := _v(point,.055+dims.y*.5)
+				if kind!=2 and j%4==0: at.y += .12
+				var tilt := rng.randf_range(-.22,.22) if kind==1 else 0.0
+				var rotation := Basis.from_euler(Vector3(tilt,rng.randf_range(0.0,TAU),tilt*.5))
+				transforms.append(Transform3D(rotation.scaled_local(dims),at))
+				colors.append(palette[rng.randi_range(0,1)] if kind==0 else palette[rng.randi_range(2,6)])
+		if transforms.is_empty(): continue
+		var batch := MultiMesh.new()
+		batch.transform_format = MultiMesh.TRANSFORM_3D
+		batch.use_colors = true
+		batch.mesh = bag if kind==0 else block
+		batch.instance_count = transforms.size()
+		for i in range(transforms.size()):
+			batch.set_instance_transform(i,transforms[i])
+			batch.set_instance_color(i,colors[i])
+		var visual := MultiMeshInstance3D.new()
+		visual.multimesh = batch
+		visual.material_override = material
+		visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		visual.visibility_range_end = 85.0
+		add_child(visual)
+
 func build() -> void:
 	var lawn := _mat("lawn",Color("#687d49"))
 	var paving := _mat("path",Color("#b6ad97"))
+	var bare := _mat("bare_dirt",Color("#81765f"))
+	var damaged := _mat("damaged_path",Color("#8d887a"))
 	leaf_mesh.radial_segments = 8
 	leaf_mesh.rings = 4
 	leaf_mesh.radius = .5
@@ -148,7 +246,8 @@ func build() -> void:
 	for item in areas:
 		var poly: PackedVector2Array = item.poly
 		var hub := _hub(poly)
-		_paint(poly,.048,lawn,"park_grass")
+		var neglected := bool(item.get("neglected",false))
+		_paint(poly,.048,bare if neglected else lawn,"park_bare" if neglected else "park_grass")
 		if not hub.is_finite(): continue
 		var rng := RandomNumberGenerator.new()
 		rng.seed = String(item.id).hash()
@@ -169,7 +268,7 @@ func build() -> void:
 				if separated:
 					entries.append(entry)
 					routes.append({"a":hub,"b":entry})
-					_path(hub,entry,poly,paving)
+					_path(hub,entry,poly,damaged if neglected else paving)
 				break
 			if entries.size()>=6: break
 		var gps := hub
@@ -191,16 +290,16 @@ func build() -> void:
 			var side := Vector2(-direction.y,direction.x)
 			for sign_value in [-1.0,1.0]:
 				var point: Vector2 = route.a.lerp(route.b,.58)+side*2.0*float(sign_value)
-				if _free(point,poly,1.1) and seats<8:
+				if _free(point,poly,1.1) and seats<(1 if neglected else 8):
 					_bench(point,-side*float(sign_value))
 					seats += 1
 			var lamp_at: Vector2 = route.a.lerp(route.b,.82)+side*1.7
-			if _free(lamp_at,poly,.65): _lamp(lamp_at)
+			if not neglected and _free(lamp_at,poly,.65): _lamp(lamp_at)
 		var transforms: Array[Transform3D] = []
 		var colors: Array[Color] = []
 		var planted: Array[Vector2] = []
 		var rect: Rect2 = world.street_geometry.bounds(poly)
-		var target := clampi(roundi(area(poly)/110.0),2,MAX_TREES)
+		var target := clampi(roundi(area(poly)/(240.0 if neglected else 110.0)),2,MAX_TREES)
 		for i in range(target*8):
 			if planted.size()>=target: break
 			var point := Vector2(rng.randf_range(rect.position.x,rect.end.x),rng.randf_range(rect.position.y,rect.end.y))
@@ -228,7 +327,6 @@ func build() -> void:
 			visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			visual.visibility_range_end = 220.0
 			add_child(visual)
-		var text: Label3D = world._label(String(item.name).to_upper(),_v(gps,2.35),.021,0.0,Color("#f3ecd8"))
-		text.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		text.visibility_range_end = 55.0
+		if neglected: _debris(poly,routes,hub,rng)
+		# Names remain in the GPS. No floating world-space park labels.
 	print("MyCity: ",sites.size()," parques públicos del OSM local, ",walkways.size()," caminos peatonales.")

@@ -13,6 +13,8 @@ var half_x := 84.0
 var half_z := 94.0
 var surfaces: Dictionary = {}
 var floor_faces := PackedVector3Array()
+var shell_faces := PackedVector3Array()
+var structural_concrete: StandardMaterial3D
 var world
 var grass: StandardMaterial3D
 var dirt: StandardMaterial3D
@@ -130,6 +132,20 @@ func _quad(a: Vector3,b: Vector3,c: Vector3,d: Vector3,mat: StandardMaterial3D,w
 	_tri(a,b,c,mat,walk)
 	_tri(a,c,d,mat,walk)
 
+# Batched solid walls close exposed sides and undercroft. Keep them
+# separate from walkable floors, using the city's obstacle layer.
+func _shell(a: Vector3,b: Vector3,c: Vector3,d: Vector3,mat: StandardMaterial3D) -> void:
+	_quad(a,b,c,d,mat)
+	shell_faces.append_array([a-center,b-center,c-center,a-center,c-center,d-center])
+
+func _end_wall(q: Vector2,inner: float,outer: float,top_inner: float,top_outer: float) -> void:
+	_shell(_point(q*inner,.045),_point(q*outer,.045),_point(q*outer,top_outer),_point(q*inner,top_inner),structural_concrete)
+
+func _rear_wall(a: Vector2,b: Vector2,height: float) -> void:
+	_shell(_point(a*.99,.045),_point(b*.99,.045),_point(b*.99,height),_point(a*.99,height),structural_concrete)
+	# Low concrete parapet behind the outer landing.
+	_shell(_point(a*.99,height),_point(b*.99,height),_point(b*.99,height+.85),_point(a*.99,height+.85),blue)
+
 func _poly(points: PackedVector2Array,y: float,mat: StandardMaterial3D,walk: bool = false) -> void:
 	var ids := Geometry2D.triangulate_polygon(points)
 	for i in range(0,ids.size(),3):
@@ -222,15 +238,28 @@ func _seat_strip(a: Vector2,b: Vector2,covered: bool) -> void:
 		var s := _point(a*outer,y)
 		_quad(p,q,r,s,light_concrete if row%4!=0 else blue,true)
 		_quad(s,r,_point(b*outer,top),_point(a*outer,top),blue if row%4==0 else concrete)
-		# Continuous ramp along a narrow aisle rather than individual
-		# collision boxes for every stair. Visual rows remain recognizable.
-	# Outer landing continuous with adjacent sectors.
+		# Actual stepped side profile down to the foundation. No visible
+		# gaps when looking from the entrances or from below a grandstand.
+		_end_wall(a,inner,outer,y,y)
+		_end_wall(b,inner,outer,y,y)
+		var lip := lerpf(inner,outer,.83)
+		_quad(_point(a*lip,y+.008),_point(b*lip,y+.008),_point(b*outer,y+.008),_point(a*outer,y+.008),blue if row%4==0 else structural_concrete)
+	# Outer landing and closed underside behind the seats.
 	_quad(_point(a*.96,.12+height),_point(b*.96,.12+height),_point(b*.99,.12+height),_point(a*.99,.12+height),blue,true)
+	_end_wall(a,.96,.99,.12+height,.12+height)
+	_end_wall(b,.96,.99,.12+height,.12+height)
+	_rear_wall(a,b,.12+height)
+	_shell(_point(a*.69,.045),_point(b*.69,.045),_point(b*.69,.12),_point(a*.69,.12),concrete)
 
 func _aisle(a: Vector2,b: Vector2,covered: bool) -> void:
 	var height := 11.5 if covered else 9.2
 	_quad(_point(a*.69,.12),_point(b*.69,.12),_point(b*.96,.12+height),_point(a*.96,.12+height),concrete,true)
 	_quad(_point(a*.96,.12+height),_point(b*.96,.12+height),_point(b*.99,.12+height),_point(a*.99,.12+height),concrete,true)
+	_end_wall(a,.69,.96,.12,.12+height)
+	_end_wall(b,.69,.96,.12,.12+height)
+	_end_wall(a,.96,.99,.12+height,.12+height)
+	_end_wall(b,.96,.99,.12+height,.12+height)
+	_rear_wall(a,b,.12+height)
 
 func _sector(i: int) -> void:
 	var a: Vector2 = OUTLINE[i]
@@ -251,6 +280,11 @@ func _sector(i: int) -> void:
 		var door := _point(mid)
 		var outward := (door-center).normalized()
 		var p := door+outward*1.2
+		# Physical lintel and corridor roof above the open entrance. The
+		# sides are enclosed by the neighboring grandstand foundations.
+		var ga := a.lerp(b,left)
+		var gb := a.lerp(b,right)
+		_quad(_point(ga*.69,4.55),_point(gb*.69,4.55),_point(gb*.99,4.55),_point(ga*.99,4.55),structural_concrete)
 		var label_value := "Entrada principal" if i==0 else "Acceso "+str(gates.size()+1)
 		gates.append({"label":label_value,"p":p,"inside":_point(mid*.69,.1),"sector":i})
 		var sign: Label3D = world._label(label_value.to_upper(),door+outward*.30+Vector3.UP*5.35,.032,atan2(outward.x,outward.z),Color("#edf2ef"))
@@ -352,6 +386,7 @@ func build(city) -> void:
 	warning_track = _mat("warning",Color("#a98d65"))
 	blue = _mat("blue",Color("#235d98"))
 	concrete = _mat("concrete",Color("#a9aeae"))
+	structural_concrete = _mat("foundation",Color("#89949c"))
 	light_concrete = _mat("seat",Color("#d0d3d0"))
 	dark = _mat("dark",Color("#18374c"))
 	roof = _mat("roof",Color("#397fb9"))
@@ -381,5 +416,18 @@ func build(city) -> void:
 	collision.shape = shape
 	body.add_child(collision)
 	floor_faces.clear()
+	if not shell_faces.is_empty():
+		var walls := StaticBody3D.new()
+		walls.collision_layer = 1
+		walls.collision_mask = 0
+		add_child(walls)
+		walls.global_position = center
+		var wall_shape := ConcavePolygonShape3D.new()
+		wall_shape.backface_collision = true
+		wall_shape.set_faces(shell_faces)
+		var wall_collision := CollisionShape3D.new()
+		wall_collision.shape = wall_shape
+		walls.add_child(wall_collision)
+		shell_faces.clear()
 	world.editable_buildings["landmark_latinoamericano"] = {"poly":ring,"center":center,"height":25.0,"name":"Estadio Latinoamericano","protected":true,"front":{}}
 	print("Latinoamericano: ",gates.size()," accessible gates; grandstands, canopy, field and scoreboard generated.")
