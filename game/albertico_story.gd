@@ -594,7 +594,7 @@ func _finish_handshake() -> void:
 
 func _fetch_stock(delta: float) -> void:
 	if state.is_empty() or ledger.stage!=4 or home.is_empty(): return
-	if fetch_phase.is_empty() and (not business.is_trading_hour() or is_instance_valid(business.buyer)): return
+	if fetch_phase.is_empty() and (not business.is_trading_hour() or is_instance_valid(business.buyer) or not business.auto_unload_id.is_empty()): return
 	var cold: Dictionary = state.get("cold",{})
 	if ledger.total(cold)<=0 or game.taxi_riding or business.modal_open(): return
 	var actor: Person = business.albertico as Person

@@ -177,6 +177,19 @@ func unload_vehicle(id: String) -> bool:
 		return true
 	return false
 
+# Move exactly one paid vehicle crate to the stall in a single save.
+func deliver_vehicle_box(id: String,key: String) -> bool:
+	if stage!=4 or not PRODUCTS.has(key): return false
+	var counts: Dictionary = cargo.get(id,{})
+	if int(counts.get(key,0))<=0: return false
+	counts[key] = int(counts[key])-1
+	if total(counts)==0: cargo.erase(id)
+	else: cargo[id] = counts
+	stock[key] = int(stock.get(key,0))+int(PRODUCTS[key].units)
+	low_alert[key] = false
+	save_game()
+	return true
+
 func deliver() -> bool:
 	if carry.is_empty() or stage<3: return false
 	var product: Dictionary = PRODUCTS[carry]

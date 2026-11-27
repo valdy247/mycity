@@ -57,6 +57,20 @@ var buyer_agent: Dictionary = {}
 var last_customer_style := -1
 var recent_customers: Array[int] = []
 var trading_open := false
+const AUTO_UNLOAD_RADIUS := 18.0
+var last_unloaded_id := ""
+var auto_unload_id := ""
+var auto_vehicle: CharacterBody3D
+var auto_home := Vector3.ZERO
+var auto_angle := 0.0
+var auto_phase := ""
+var auto_box := ""
+var auto_prop: Node3D
+var auto_path := PackedVector3Array()
+var auto_index := 0
+var auto_retry := 0.0
+var auto_stall := 0.0
+var auto_pickup := Vector3.INF
 var buyer_time := 0.0
 var buyer_path := PackedVector3Array()
 var buyer_index := 0
@@ -851,6 +865,30 @@ func _stock_text() -> String:
 		lines.append("%s: %d" % [_product_name(key),int(ledger.stock.get(key,0))])
 	return " | ".join(lines)
 
+func _cargo_vehicle(id: String) -> CharacterBody3D:
+	if id=="van": return van if is_instance_valid(van) else null
+	if id=="carro" and first_story!=null and first_story.game.garage!=null:
+		var car: CharacterBody3D = first_story.game.garage.owned.get("carro")
+		return car if is_instance_valid(car) else null
+	if id.begins_with("taxi_"):
+		var index := int(id.trim_prefix("taxi_"))
+		if index>=0 and index<taxis.taxis.size():
+			var body: CharacterBody3D = taxis.taxis[index].body
+			return body if is_instance_valid(body) else null
+	return null
+
+func _cargo_parked(id: String,body: CharacterBody3D) -> bool:
+	if not is_instance_valid(body) or body.velocity.length()>=.4: return false
+	if id.begins_with("taxi_"):
+		var index := int(id.trim_prefix("taxi_"))
+		if index<0 or index>=taxis.taxis.size(): return false
+		var taxi: Dictionary = taxis.taxis[index]
+		return taxi.body==body and taxi!=taxis.passenger and taxi.path.is_empty() and (taxi.get("yield_path",[]) as Array).is_empty() and (taxi.get("cooperative_path",[]) as Array).is_empty()
+	if first_story!=null:
+		if id=="van" and first_story.game.driving: return false
+		if id=="carro" and first_story.game.garage.riding: return false
+	return true
+
 func _nearest_vehicle(at: Vector3) -> Dictionary:
 	var nearest: Dictionary = {}
 	var distance := 4.0
@@ -866,6 +904,10 @@ func _nearest_vehicle(at: Vector3) -> Dictionary:
 		if d<distance and body.velocity.length()<.8 and taxi.path.is_empty():
 			nearest = {"id":"taxi_"+str(i),"body":body}
 			distance = d
+	var car := _cargo_vehicle("carro")
+	if is_instance_valid(car) and _cargo_parked("carro",car) and absf(at.y-car.global_position.y)<2.0:
+		var d := _flat_distance(at,car.global_position)
+		if d<distance: nearest = {"id":"carro","body":car}
 	return nearest
 
 func cargo_action(at: Vector3) -> bool:
@@ -875,15 +917,19 @@ func cargo_action(at: Vector3) -> bool:
 		return true
 	var vehicle := _nearest_vehicle(at)
 	if vehicle.is_empty():
-		_notify("Acércate a la van o a un taxi detenido.")
+		_notify("Acércate a la van, un carro propio o un taxi detenido.")
 		return true
 	var id := String(vehicle.id)
 	if not ledger.carry.is_empty():
 		if ledger.load_vehicle(id):
+			last_unloaded_id = ""
 			_notify("Caja cargada. Ahora viaja al puesto o sigue comprando.")
 		else:
 			_notify("El vehículo está lleno: máximo 8 cajas.")
+	elif id==auto_unload_id and not auto_box.is_empty():
+		_notify("Albertico está descargando ese vehículo.")
 	elif ledger.unload_vehicle(id):
+		last_unloaded_id = id
 		_notify("Caja descargada. Llévasela a Albertico.")
 	else:
 		_notify("No hay cajas en este vehículo.")
@@ -960,6 +1006,8 @@ func interact_albertico(at: Vector3) -> bool:
 			delivery_gesture = .65
 			_notify("Caja entregada. "+_stock_text())
 			_sync_visuals()
+			if ledger.stage==4: _request_auto_unload()
+			last_unloaded_id = ""
 	elif ledger.stage==3 and ledger.total(ledger.stock)>0:
 		open_story(albertico,"Albertico",["Albertico: Déjame la mercancía aquí. Yo la vendo y me quedo con el 15% de cada venta.","Albertico: ¿Hacemos el negocio?"],"Contratar a Albertico",_hire,"Ahora no")
 	else:
@@ -1445,14 +1493,8 @@ func _sync_cargo_views() -> void:
 	for key in ledger.cargo:
 		var count := ledger.total(ledger.cargo[key])
 		if count<=0: continue
-		var body: CharacterBody3D = null
-		if key=="van":
-			body = van
-		elif String(key).begins_with("taxi_"):
-			var index := int(String(key).trim_prefix("taxi_"))
-			if index>=0 and index<taxis.taxis.size():
-				body = taxis.taxis[index].body
-		if body==null: continue
+		var body := _cargo_vehicle(String(key))
+		if not is_instance_valid(body): continue
 		cargo_views[key] = _label(body,"%d cajas · G" % count,Vector3(0,2.65,0),Color("#ffe19a"))
 
 func _objective() -> String:
@@ -1489,7 +1531,7 @@ func is_trading_hour() -> bool:
 	return life!=null and trading_hour(float(life.state.get("minutes",480.0)))
 
 func _merchant_ready() -> bool:
-	return is_instance_valid(albertico) and albertico.is_visible_in_tree() and is_instance_valid(stand) and albertico.global_position.distance_to(stand.global_position)<2.5 and (first_story==null or first_story.fetch_phase.is_empty())
+	return auto_unload_id.is_empty() and is_instance_valid(albertico) and albertico.is_visible_in_tree() and is_instance_valid(stand) and albertico.global_position.distance_to(stand.global_position)<2.5 and (first_story==null or first_story.fetch_phase.is_empty())
 
 func _start_buyer() -> void:
 	if is_instance_valid(buyer) or not is_trading_hour() or not _merchant_ready() or ledger.total(ledger.stock)<=0 or world.pedestrian_router==null: return
@@ -1576,6 +1618,7 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 		arrow.position.y = 2.68+sin(phase*3.0)*.13
 		factory_arrow.position.y = 1.90+sin(phase*3.0)*.13
 	if ledger.stage==4 and not editor:
+		_tick_auto_unload(delta)
 		var open_now := is_trading_hour()
 		if trading_open!=open_now:
 			trading_open = open_now
@@ -1593,3 +1636,154 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 		refresh = 0.0
 		_update_hud()
 		_update_phone_status()
+
+# The first handover authorizes only the vehicle the player just unloaded.
+# Until a visible delivery succeeds, its paid box remains in vehicle cargo.
+func _request_auto_unload() -> void:
+	if not auto_unload_id.is_empty() or last_unloaded_id.is_empty() or not is_instance_valid(stand): return
+	if ledger.total(ledger.cargo.get(last_unloaded_id,{}))<=0: return
+	var body := _cargo_vehicle(last_unloaded_id)
+	if not _cargo_parked(last_unloaded_id,body): return
+	if not _near(body.global_position,stand.global_position,AUTO_UNLOAD_RADIUS): return
+	auto_vehicle = body
+	auto_unload_id = last_unloaded_id
+	auto_home = first_story.original_actor if first_story!=null else albertico.global_position
+	auto_angle = first_story.original_angle if first_story!=null else albertico.rotation.y
+	auto_phase = "wait"
+	auto_retry = .45
+	_notify("Albertico: Deja el carro aquí, yo recojo las demás cajas.")
+
+func _auto_route(from: Vector3,to: Vector3) -> PackedVector3Array:
+	if not to.is_finite(): return PackedVector3Array()
+	if world.pedestrian_segment_clear(from,to): return PackedVector3Array([to])
+	if world.pedestrian_router==null: return PackedVector3Array()
+	var path: PackedVector3Array = world.pedestrian_router.call("route_between",from,to)
+	if path.is_empty(): return path
+	var length := 0.0
+	var previous := from
+	for point in path:
+		length += previous.distance_to(point)
+		if length>32.0: return PackedVector3Array()
+		previous = point
+	return path
+
+func _auto_find_pickup(actor: Person) -> PackedVector3Array:
+	var best := PackedVector3Array()
+	var distance := INF
+	for side in [-1.0,1.0]:
+		for offset in [1.6,2.3,3.0]:
+			var p := auto_vehicle.to_global(Vector3(float(side)*float(offset),0,-1.8))
+			var target: Vector3 = first_story.game.yordi_mission._ground(p,false)
+			if not target.is_finite() or not world.pedestrian_space_clear(actor,target,.65,false): continue
+			var path := _auto_route(actor.global_position,target)
+			if path.is_empty(): continue
+			var length := 0.0
+			var previous := actor.global_position
+			for point in path:
+				length += previous.distance_to(point)
+				previous = point
+			if length<distance:
+				distance = length
+				best = path
+				auto_pickup = target
+	return best
+
+func _auto_set_route(path: PackedVector3Array) -> void:
+	auto_path = path
+	auto_index = 0
+	auto_stall = 0.0
+
+func _auto_walk(actor: Person,delta: float) -> bool:
+	if auto_index>=auto_path.size(): return false
+	var target := auto_path[auto_index]
+	if actor.global_position.distance_to(target)<.22:
+		auto_index += 1
+		return auto_index>=auto_path.size()
+	var next := actor.global_position.move_toward(target,2.2*delta)
+	if world.pedestrian_segment_clear(actor.global_position,next) and world.pedestrian_space_clear(actor,next,.58):
+		actor.walk_to(target,delta,2.2)
+		auto_stall = 0.0
+	else:
+		actor.animate(delta,false)
+		auto_stall += delta
+	if not auto_box.is_empty():
+		for arm in actor.arms: arm.rotation.x = -.85
+	if auto_stall>2.5:
+		_auto_set_route(PackedVector3Array())
+		auto_retry = 1.5
+	return false
+
+func _auto_drop_prop() -> void:
+	if is_instance_valid(auto_prop): auto_prop.queue_free()
+	auto_prop = null
+	auto_box = ""
+
+func _auto_finish(message: String) -> void:
+	_auto_drop_prop()
+	auto_unload_id = ""
+	auto_vehicle = null
+	auto_phase = ""
+	_auto_set_route(PackedVector3Array())
+	if is_instance_valid(albertico):
+		albertico.rotation.y = auto_angle
+		(albertico as Person).animate(.25,false)
+	if not message.is_empty(): _notify(message)
+
+func _tick_auto_unload(delta: float) -> void:
+	if auto_unload_id.is_empty() or first_story==null or not is_instance_valid(albertico): return
+	if not first_story.fetch_phase.is_empty() or modal_open(): return
+	var actor := albertico as Person
+	auto_retry = maxf(0.0,auto_retry-delta)
+	if auto_phase=="wait":
+		if is_instance_valid(buyer) or auto_retry>0.0: return
+		if not _cargo_parked(auto_unload_id,auto_vehicle) or _cargo_vehicle(auto_unload_id)!=auto_vehicle or not _near(auto_vehicle.global_position,auto_home,AUTO_UNLOAD_RADIUS):
+			_auto_finish("Deja el vehículo cerca del puesto para que Albertico pueda descargarlo.")
+			return
+		if ledger.total(ledger.cargo.get(auto_unload_id,{}))<=0:
+			_auto_finish("Albertico: Ya descargué todas las cajas.")
+			return
+		_auto_set_route(_auto_find_pickup(actor))
+		if auto_path.is_empty():
+			auto_retry = 3.0
+			return
+		auto_phase = "pickup"
+	if auto_phase=="pickup":
+		if not _cargo_parked(auto_unload_id,auto_vehicle) or _cargo_vehicle(auto_unload_id)!=auto_vehicle or auto_pickup.distance_to(auto_vehicle.global_position)>4.5:
+			auto_phase = "cancel"
+			_auto_set_route(PackedVector3Array())
+		else:
+			if auto_path.is_empty():
+				if auto_retry>0.0: return
+				_auto_set_route(_auto_find_pickup(actor))
+				auto_retry = 2.0
+				if auto_path.is_empty(): return
+			if not _auto_walk(actor,delta): return
+			var counts: Dictionary = ledger.cargo.get(auto_unload_id,{})
+			for key in Ledger.PRODUCTS:
+				if int(counts.get(key,0))>0:
+					auto_box = String(key)
+					break
+			if auto_box.is_empty(): auto_phase = "cancel"
+			else:
+				auto_prop = _crate(actor,Vector3(0,1.05,.30),auto_box)
+				auto_phase = "return"
+			_auto_set_route(PackedVector3Array())
+	if auto_phase in ["return","cancel"]:
+		if auto_path.is_empty():
+			if auto_retry>0.0: return
+			_auto_set_route(_auto_route(actor.global_position,auto_home))
+			auto_retry = 2.0
+			if auto_path.is_empty(): return
+		if not _auto_walk(actor,delta): return
+		if auto_phase=="return" and _cargo_vehicle(auto_unload_id)==auto_vehicle and ledger.deliver_vehicle_box(auto_unload_id,auto_box):
+			_notify("Albertico recogió una caja de "+_product_name(auto_box)+".")
+			_sync_visuals()
+		_auto_drop_prop()
+		actor.rotation.y = auto_angle
+		if auto_phase=="cancel":
+			_auto_finish("Descarga pausada. Las cajas siguen en el vehículo.")
+		elif ledger.total(ledger.cargo.get(auto_unload_id,{}))<=0:
+			_auto_finish("Albertico: Ya descargué todas las cajas.")
+		else:
+			auto_phase = "wait"
+			auto_retry = .5
