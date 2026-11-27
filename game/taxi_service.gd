@@ -213,6 +213,54 @@ func _part(root: Node3D,p: Vector3,size: Vector3,color: Color) -> void:
 	root.add_child(view)
 	view.position = p
 
+# Shared cylinder mesh for hubcaps and round classic headlights.
+func _round_part(root: Node3D,p: Vector3,radius: float,depth: float,color: Color,axle: bool) -> void:
+	var key := "round:"+str(radius)+":"+str(depth)
+	if not meshes.has(key):
+		var cylinder := CylinderMesh.new()
+		cylinder.top_radius = radius
+		cylinder.bottom_radius = radius
+		cylinder.height = depth
+		cylinder.radial_segments = 12
+		cylinder.rings = 0
+		meshes[key] = cylinder
+	var part := MeshInstance3D.new()
+	part.mesh = meshes[key] as Mesh
+	part.material_override = _material(color)
+	part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	root.add_child(part)
+	part.position = p
+	if axle: part.rotation.z = PI*.5
+	else: part.rotation.x = PI*.5
+
+# Merge fixed opaque shell pieces without touching labels or light nodes.
+func _batch_taxi_shell(root: Node3D) -> void:
+	var batches: Dictionary = {}
+	var originals: Array[MeshInstance3D] = []
+	for child in root.get_children():
+		if not child is MeshInstance3D: continue
+		var part := child as MeshInstance3D
+		var material := part.material_override as StandardMaterial3D
+		if material==null or material.transparency!=BaseMaterial3D.TRANSPARENCY_DISABLED: continue
+		var key := material.get_instance_id()
+		if not batches.has(key):
+			var builder := SurfaceTool.new()
+			builder.begin(Mesh.PRIMITIVE_TRIANGLES)
+			batches[key] = {"builder":builder,"material":material}
+		var surface: SurfaceTool = batches[key].builder
+		surface.append_from(part.mesh,0,part.transform)
+		originals.append(part)
+	for key in batches:
+		var surface: SurfaceTool = batches[key].builder
+		var merged := MeshInstance3D.new()
+		merged.mesh = surface.commit()
+		merged.material_override = batches[key].material
+		merged.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		root.add_child(merged)
+	for part in originals:
+		root.remove_child(part)
+		part.queue_free()
+
 func _make_taxi(index: int) -> CharacterBody3D:
 	var body := CharacterBody3D.new()
 	body.name = "TaxiClasico_"+str(index+1)
@@ -235,30 +283,32 @@ func _make_taxi(index: int) -> CharacterBody3D:
 	_part(body,Vector3(0,1.54,-.30),Vector3(1.55,.17,1.95),ivory)
 	for side in [-1.0,1.0]:
 		var x: float = float(side)
-		_part(body,Vector3(x*.75,1.18,-.29),Vector3(.08,.62,.11),ivory)
+		for z in [-1.22,-.29,.64]:
+			_part(body,Vector3(x*.75,1.18,float(z)),Vector3(.07,.59,.09),ivory)
 		_part(body,Vector3(x*.88,.78,0),Vector3(.055,.10,4.35),ivory)
+		_part(body,Vector3(x*.916,.73,0),Vector3(.022,.036,4.25),chrome)
+		for z in [-.75,.37]:
+			_part(body,Vector3(x*.924,.91,float(z)),Vector3(.025,.045,.16),chrome)
+		if posmod(index,2)==1:
+			_part(body,Vector3(x*.79,.97,-1.77),Vector3(.13,.18,.90),paint)
+			_part(body,Vector3(x*.80,1.07,-1.91),Vector3(.10,.08,.44),chrome)
 		_part(body,Vector3(x*.80,.84,-1.75),Vector3(.20,.29,1.12),paint)
 		_part(body,Vector3(x*.79,.83,1.43),Vector3(.22,.30,1.24),paint)
-		_part(body,Vector3(x*.70,.81,2.35),Vector3(.28,.24,.06),Color("#f6e9b9"))
+		_round_part(body,Vector3(x*.70,.81,2.345),.145,.06,chrome,false)
+		_round_part(body,Vector3(x*.70,.81,2.377),.115,.018,Color("#f6e9b9"),false)
 		_part(body,Vector3(x*.70,.76,-2.35),Vector3(.18,.24,.06),Color("#b33133"))
 		for z in [-1.46,1.43]:
-			var wheel := MeshInstance3D.new()
-			var cylinder := CylinderMesh.new()
-			cylinder.top_radius = .34
-			cylinder.bottom_radius = .34
-			cylinder.height = .22
-			cylinder.radial_segments = 12
-			wheel.mesh = cylinder
-			wheel.material_override = _material(rubber)
-			wheel.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-			body.add_child(wheel)
-			wheel.rotation.z = PI*.5
-			wheel.position = Vector3(x*.86,.34,float(z))
-			_part(body,Vector3(x*1.0,.34,float(z)),Vector3(.025,.28,.28),chrome)
+			_round_part(body,Vector3(x*.86,.34,float(z)),.34,.22,rubber,true)
+			_round_part(body,Vector3(x*.978,.34,float(z)),.25,.018,ivory,true)
+			_round_part(body,Vector3(x*.990,.34,float(z)),.15,.025,chrome,true)
 	for z in [-2.35,2.35]:
 		_part(body,Vector3(0,.43,float(z)),Vector3(1.92,.14,.12),chrome)
-	_part(body,Vector3(0,.72,2.35),Vector3(1.10,.23,.07),chrome)
+	_part(body,Vector3(0,.72,2.35),Vector3(1.10,.23,.07),rubber)
+	for bar in range(5):
+		_part(body,Vector3(0,.64+float(bar)*.04,2.392),Vector3(1.06,.018,.014),chrome)
+	_part(body,Vector3(0,.58,-2.397),Vector3(.33,.11,.020),ivory)
 	_part(body,Vector3(0,1.73,-.30),Vector3(.71,.23,.34),Color("#e6bb46"))
+	_batch_taxi_shell(body)
 	for side in [-1.0,1.0]:
 		var sign_label := Label3D.new()
 		sign_label.text = "TAXI"
