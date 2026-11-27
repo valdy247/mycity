@@ -478,6 +478,35 @@ func return_player_bag() -> void:
 	player_site = {}
 
 
+# Opaque fixed vehicle panels are rendered together by material.
+# The turn lamps, night lights and collision are added afterwards.
+func _batch_vehicle_shell(root: Node3D) -> void:
+	var batches: Dictionary = {}
+	var originals: Array[MeshInstance3D] = []
+	for child in root.get_children():
+		if not child is MeshInstance3D: continue
+		var part := child as MeshInstance3D
+		var material := part.material_override as StandardMaterial3D
+		if material==null or material.transparency!=BaseMaterial3D.TRANSPARENCY_DISABLED: continue
+		var key := material.get_instance_id()
+		if not batches.has(key):
+			var builder := SurfaceTool.new()
+			builder.begin(Mesh.PRIMITIVE_TRIANGLES)
+			batches[key] = {"builder":builder,"material":material}
+		var surface: SurfaceTool = batches[key].builder
+		surface.append_from(part.mesh,0,part.transform)
+		originals.append(part)
+	for key in batches:
+		var surface: SurfaceTool = batches[key].builder
+		var merged := MeshInstance3D.new()
+		merged.mesh = surface.commit()
+		merged.material_override = batches[key].material
+		merged.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		root.add_child(merged)
+	for part in originals:
+		root.remove_child(part)
+		part.queue_free()
+
 func _body(truck: bool,index: int) -> CharacterBody3D:
 	var body := CharacterBody3D.new()
 	body.name = "Camion_Comunales" if truck else "Auto_Monte_"+str(index)
@@ -545,13 +574,30 @@ func _body(truck: bool,index: int) -> CharacterBody3D:
 				elif style==2:
 					_part(body,Vector3(x*.77,.89,-1.45),Vector3(.17,.10,1.13),roof)
 		else:
-			_part(body,Vector3(0,.66,0),Vector3(width,.67,length),paint)
-			_part(body,Vector3(0,1.12,-.18),Vector3(1.55,.58,1.9),glass)
-			_part(body,Vector3(0,1.45,-.19),Vector3(1.62,.11,1.85),paint.lightened(.25))
+			# Lada-inspired boxy sedan: shorter hood, upright pillars, black
+			# radiator grille, square lamps. Keep the existing road envelope.
+			var lada_colors: Array[Color] = [Color("#d8d2b9"),Color("#7d9772"),Color("#a75d4c"),Color("#69879b")]
+			paint = lada_colors[posmod(floori(float(index)/5.0),lada_colors.size())]
+			_part(body,Vector3(0,.60,0),Vector3(1.78,.49,4.12),paint)
+			_part(body,Vector3(0,.88,1.32),Vector3(1.65,.17,1.48),paint)
+			_part(body,Vector3(0,.86,-1.54),Vector3(1.65,.16,1.04),paint)
+			_part(body,Vector3(0,1.17,-.17),Vector3(1.45,.48,1.96),glass)
+			_part(body,Vector3(0,1.45,-.19),Vector3(1.52,.10,1.91),paint)
+			_part(body,Vector3(0,.79,2.09),Vector3(1.04,.21,.055),black)
+			for slat in range(3):
+				_part(body,Vector3(0,.72+float(slat)*.065,2.125),Vector3(.99,.015,.022),chrome)
+			for end in [-1.0,1.0]:
+				_part(body,Vector3(0,.49,float(end)*2.065),Vector3(1.78,.14,.12),black)
+			_part(body,Vector3(0,.59,-2.132),Vector3(.32,.12,.022),Color("#e1ddc8"))
 			for side in [-1.0,1.0]:
-				_part(body,Vector3(float(side)*.76,1.12,-.14),Vector3(.065,.56,.12),paint)
-				_part(body,Vector3(float(side)*.65,.79,length*.5+.03),Vector3(.25,.19,.05),Color("#f0e8bd"))
-				_part(body,Vector3(float(side)*.65,.79,-length*.5-.03),Vector3(.22,.17,.05),Color("#af4940"))
+				var x := float(side)
+				for z in [-1.10,-.18,.76]:
+					_part(body,Vector3(x*.74,1.17,float(z)),Vector3(.055,.48,.10),paint)
+				_part(body,Vector3(x*.895,.80,0),Vector3(.022,.055,3.76),black)
+				for z in [-.73,.35]:
+					_part(body,Vector3(x*.900,.91,float(z)),Vector3(.024,.045,.14),chrome)
+				_part(body,Vector3(x*.65,.79,length*.5+.03),Vector3(.25,.19,.05),Color("#f0e8bd"))
+				_part(body,Vector3(x*.65,.79,-length*.5-.03),Vector3(.22,.17,.05),Color("#af4940"))
 	var radius := .45 if truck else .33
 	for side in [-1.0,1.0]:
 		for z in ([-2.05,1.95] if truck else [-1.35,1.35]):
@@ -564,6 +610,8 @@ func _body(truck: bool,index: int) -> CharacterBody3D:
 				whitewall.rotation.z = PI*.5
 				var hub := _part(body,Vector3(float(side)*(width*.5+.04),radius,float(z)),Vector3(radius*.90,.035,radius*.90),Color("#bfc5c5"),wheel_mesh)
 				hub.rotation.z = PI*.5
+	# Consolidate only static shell pieces before creating the animated lamps.
+	_batch_vehicle_shell(body)
 	if not truck:
 		var indicators: Array = []
 		for side in [-1.0,1.0]:
