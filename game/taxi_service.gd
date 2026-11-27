@@ -38,6 +38,8 @@ const PASSENGER_BOOST := 2.0
 var boost_active := false
 var stop_requested := false
 var idle_scan := 0.0
+var parking_scan := 0.0
+var parking_cursor := 0
 const SPEED_NAMES := ["Normal","Rápido","Exprés"]
 var mats: Dictionary = {}
 var meshes: Dictionary = {}
@@ -61,7 +63,7 @@ func setup(data: MapData,street_geometry: Streets,anchor: Vector3,van_pos: Vecto
 		candidates.append({"edge":edge,"point":p})
 	var anchors: Array[Vector3] = [anchor,anchor+Vector3(210,0,0),anchor+Vector3(-180,0,160),anchor+Vector3(0,0,-210)]
 	for target in anchors:
-		candidates.sort_custom(func(a,b): return target.distance_squared_to(a.point)<target.distance_squared_to(b.point))
+		candidates.sort_custom(func(a,b): return _idle_berth_score(a.edge,target.distance_to(a.point))<_idle_berth_score(b.edge,target.distance_to(b.point)))
 		for candidate in candidates:
 			var p: Vector3 = candidate.point
 			var free := true
@@ -82,8 +84,8 @@ func setup(data: MapData,street_geometry: Streets,anchor: Vector3,van_pos: Vecto
 			var a: Vector3 = data.points[a_id]
 			var b: Vector3 = data.points[b_id]
 			var d := (b-a).normalized()
-			var berth := p+geography.lane_offset(a,b,1.90,true)
-			if not streets.intersection_clear_for_stop(berth,4.80,1.90): continue
+			var berth := p+Vector3(-d.z,0,d.x)*curb_offset(float(edge.width),1.90)
+			if not streets.intersection_clear_for_stop(berth,4.80,1.90) or not TrafficBypass._on_road(streets,berth,d,1.90,4.80): continue
 			var body := _make_taxi(taxis.size())
 			body.position = berth+Vector3.UP*.065
 			body.rotation.y = atan2(d.x,d.z)
@@ -91,6 +93,104 @@ func setup(data: MapData,street_geometry: Streets,anchor: Vector3,van_pos: Vecto
 			body.set_meta("traffic_priority",4.8)
 			taxis.append({"body":body,"next_node":b_id,"path":[],"index":0,"speed":0.0,"blocked":0.0,"goal":"","label":"","note":""})
 			break
+
+static func curb_offset(road_width: float,vehicle_width: float) -> float:
+	return maxf(0.0,road_width*.5-vehicle_width*.5-.25)
+
+static func _idle_berth_score(edge: Dictionary,distance: float) -> float:
+	return distance+(55.0 if int(edge.get("lanes_per_direction",1))>=2 else 0.0)
+
+static func parallel_to_road(heading: Vector3,direction: Vector3) -> bool:
+	return heading.normalized().dot(direction.normalized())>=.985
+
+func _parking_road(at: Vector3,heading: Vector3) -> Dictionary:
+	var result: Dictionary = {}
+	var best := INF
+	for edge in geography.roads_near(at,12.0):
+		if not bool(edge.driveable): continue
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		var d := (b-a).normalized()
+		if absf(d.dot(heading))<.25: continue
+		var first := String(edge.a_id)
+		var last := String(edge.b_id)
+		if d.dot(heading)<0.0:
+			var swap := a
+			a = b
+			b = swap
+			d = -d
+			var swap_id := first
+			first = last
+			last = swap_id
+		if not geography.graph.get(first,[]).has(last): continue
+		var flat := Vector3(at.x,0,at.z)
+		var center := Geometry3D.get_closest_point_to_segment(flat,a,b)
+		var side := Vector3(-d.z,0,d.x)
+		var lateral := (flat-center).dot(side)
+		if lateral<-.6 or lateral>float(edge.width)*.5+.2: continue
+		var score := center.distance_to(flat)+(1.0-absf(heading.dot(d)))*3.0
+		if score>=best: continue
+		best = score
+		result = {"a":a,"b":b,"d":d,"side":side,"center":center,"lateral":lateral,"width":float(edge.width),"next":last}
+	return result
+
+func _parking_plan(body: CharacterBody3D,road: Dictionary) -> Array:
+	var origin := body.global_position
+	var d: Vector3 = road.d
+	var side: Vector3 = road.side
+	var center: Vector3 = road.center
+	center.y = origin.y
+	var desired := curb_offset(float(road.width),1.90)
+	var lateral := float(road.lateral)
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(2.0,1.8,4.9)
+	for distance in [7.0,10.0,14.0]:
+		var end := center+d*float(distance)+side*desired
+		if (road.b-end).dot(d)<3.0 or not streets.intersection_clear_for_stop(end,4.8,1.9): continue
+		var points: Array = []
+		var previous := origin
+		var valid := true
+		var count := ceili(float(distance)/.75)
+		for i in range(1,count+1):
+			var along := float(distance)*float(i)/float(count)
+			var blend := smoothstep(0.0,maxf(1.0,float(distance)-2.0),along)
+			var p := center+d*along+side*lerpf(lateral,desired,blend)
+			var facing := (p-previous).normalized()
+			if not streets.intersection_clear_for_stop(p,4.8,1.9) or not TrafficBypass._on_road(streets,p,facing,1.9,4.8) or not TrafficBypass._segment_clear(body,previous,p,facing,shape):
+				valid = false
+				break
+			points.append(p)
+			previous = p
+		if valid and TrafficBypass._clear(body,end,d,shape): return points
+	return []
+
+func _maintain_parked_taxis(delta: float) -> void:
+	parking_scan += delta
+	if parking_scan<1.5 or taxis.is_empty(): return
+	parking_scan = 0.0
+	parking_cursor = posmod(parking_cursor,taxis.size())
+	var taxi: Dictionary = taxis[parking_cursor]
+	parking_cursor += 1
+	if taxi==passenger or taxi==selected or not taxi.path.is_empty(): return
+	if not (taxi.get("yield_path",[]) as Array).is_empty() or not (taxi.get("cooperative_path",[]) as Array).is_empty(): return
+	var body: CharacterBody3D = taxi.body
+	if not is_instance_valid(body): return
+	var road := _parking_road(body.global_position,body.global_basis.z)
+	if road.is_empty(): return
+	var d: Vector3 = road.d
+	var at_curb := absf(float(road.lateral)-curb_offset(float(road.width),1.90))<.40
+	if at_curb and parallel_to_road(body.global_basis.z,d): return
+	if at_curb and TrafficBypass._on_road(streets,body.global_position,d,1.90,4.80):
+		TrafficBypass.align_if_clear(body,atan2(d.x,d.z))
+		if parallel_to_road(body.global_basis.z,d):
+			taxi.next_node = road.next
+			return
+	var plan := _parking_plan(body,road)
+	if plan.is_empty(): return
+	taxi.yield_path = plan
+	taxi.yield_index = 0
+	taxi.parking_heading = d
+	taxi.next_node = road.next
 
 func _material(color: Color) -> StandardMaterial3D:
 	var key := color.to_html()
@@ -409,6 +509,26 @@ func _ensure_safe_arrival(waypoints: Array,ids: Array[String],result: Dictionary
 	waypoints.append({"p":options[0].p,"node":""})
 	return true
 
+func _parallel_arrival(points: Array,dims: Vector3) -> void:
+	if points.size()<2: return
+	var last: Vector3 = points.back().p
+	var prior: Vector3 = points[points.size()-2].p
+	var heading := (last-prior).normalized()
+	if heading.length_squared()<.1: return
+	var road := _parking_road(last,heading)
+	if road.is_empty(): return
+	var d: Vector3 = road.d
+	var side: Vector3 = road.side
+	var center: Vector3 = road.center
+	var end := center+side*curb_offset(float(road.width),dims.x)
+	end.y = last.y
+	var approach := end-d*5.0
+	if (approach-prior).dot(d)<1.0 or absf((approach-prior).dot(side))>5.0: return
+	if (approach-road.a).dot(d)<dims.z*.5 or not streets.intersection_clear_for_stop(end,dims.z,dims.x): return
+	if not TrafficBypass._on_road(streets,approach,d,dims.x,dims.z) or not TrafficBypass._on_road(streets,end,d,dims.x,dims.z): return
+	points[points.size()-1] = {"p":approach,"node":"","parking_approach":true}
+	points.append({"p":end,"node":"","parking_approach":true})
+
 func prepare_trip() -> bool:
 	if selected.is_empty() or not passenger.is_empty(): return false
 	if not pending_query.is_empty():
@@ -474,6 +594,7 @@ func prepare_trip() -> bool:
 	if not _ensure_safe_arrival(waypoints,ids,result,body):
 		_show_selection({"error":"No hay una parada segura junto a ese destino. Elige una calle cercana."})
 		return false
+	if dims.z>=4.0: _parallel_arrival(waypoints,dims)
 	selected.path = _smooth_route(waypoints,body.global_position,dims.x)
 	stop_requested = false
 	selected.index = 0
@@ -547,7 +668,7 @@ func _smooth_route(raw: Array,origin: Vector3,width: float = 1.90) -> Array:
 	for i in range(raw.size()):
 		var item: Dictionary = raw[i]
 		var corner: Vector3 = item.p
-		if i==raw.size()-1 or geography.signal_nodes.has(String(item.node)):
+		if i==raw.size()-1 or bool(item.get("parking_approach",false)) or geography.signal_nodes.has(String(item.node)):
 			result.append(item)
 			continue
 		var previous: Vector3 = origin if i==0 else raw[i-1].p
@@ -658,6 +779,8 @@ func yield_to_bus(stop: Dictionary,bus: CharacterBody3D) -> void:
 		if taxi==passenger or taxi==selected or not taxi.path.is_empty(): continue
 		if not (taxi.get("yield_path",[]) as Array).is_empty() or not (taxi.get("cooperative_path",[]) as Array).is_empty(): continue
 		var body: CharacterBody3D = taxi.body
+		var road := _parking_road(body.global_position,body.global_basis.z)
+		if not road.is_empty() and float(road.width)>=10.0: continue
 		var offset := body.global_position-center
 		if absf(offset.dot(side))>2.30 or offset.dot(direction)<-approach-2.5 or offset.dot(direction)>8.5: continue
 		var forward := body.global_transform.basis.z.normalized()
@@ -709,7 +832,7 @@ func _tick_yielding_taxis(delta: float) -> void:
 		if taxi==passenger or taxi==selected: continue
 		var parked: CharacterBody3D = taxi.body
 		var requested := Time.get_ticks_msec()<int(parked.get_meta("traffic_yield_until",0))
-		if requested or not (taxi.get("cooperative_path",[]) as Array).is_empty() or Time.get_ticks_msec()<int(taxi.get("cooperative_hold",0)):
+		if not taxi.has("parking_heading") and (requested or not (taxi.get("cooperative_path",[]) as Array).is_empty() or Time.get_ticks_msec()<int(taxi.get("cooperative_hold",0))):
 			if TrafficBypass.cooperate(taxi,parked,streets,1.90,4.80,1.8,delta,0.0,parked.global_position+parked.global_transform.basis.z*5.0):
 				taxi.yield_path = []
 				continue
@@ -739,12 +862,17 @@ func _tick_yielding_taxis(delta: float) -> void:
 			if index>=path.size():
 				taxi.yield_path = []
 				body.velocity = Vector3.ZERO
+				if taxi.has("parking_heading"):
+					var heading: Vector3 = taxi.parking_heading
+					TrafficBypass.align_if_clear(body,atan2(heading.x,heading.z))
+					taxi.erase("parking_heading")
 			continue
 		var d := diff.normalized()
 		var step := minf(diff.length(),2.4*delta)
 		var angle := lerp_angle(body.rotation.y,atan2(d.x,d.z),minf(delta*7.0,1.0))
 		if not TrafficBypass.safe_step(body,d,step,angle,delta):
 			taxi.yield_path = []
+			taxi.erase("parking_heading")
 			body.velocity = Vector3.ZERO
 
 # An idle taxi also yields to approaching municipal and ordinary traffic,
@@ -769,6 +897,7 @@ func _yield_idle_traffic(delta: float) -> void:
 func tick(delta: float,_clock: float,boost_requested: bool = false) -> void:
 	boost_active = boost_requested and not stop_requested and not arrived and not passenger.is_empty()
 	_yield_idle_traffic(delta)
+	_maintain_parked_taxis(delta)
 	_tick_yielding_taxis(delta)
 	if passenger.is_empty(): return
 	var body: CharacterBody3D = passenger.body
@@ -907,7 +1036,7 @@ func tick(delta: float,_clock: float,boost_requested: bool = false) -> void:
 	var advance := TrafficBypass.junction_advance(minf(float(passenger.speed)*delta,distance),junction_limit)
 	if blocked: advance = minf(advance,maxf(0.0,free-.7))
 	if advance<=.0001:
-		if junction_limit<0.0: TrafficBypass.align_if_clear(body,angle)
+		if junction_limit<0.0 and not blocked and not should_stop: TrafficBypass.align_if_clear(body,angle)
 		body.velocity = Vector3.ZERO
 		passenger.speed = 0.0
 	elif not TrafficBypass.safe_step(body,d,advance,angle,delta): passenger.speed = 0.0

@@ -429,7 +429,8 @@ func _road_berth(near: Vector3,min_distance: float,max_distance: float,width: fl
 				p.y = .065
 				var distance := p.distance_to(near)
 				if distance<min_distance or distance>max_distance: continue
-				choices.append({"p":p,"d":d,"next":last,"score":absf(distance-(min_distance+max_distance)*.5)})
+				var parking_penalty := 22.0 if width>=1.8 and int(edge.get("lanes_per_direction",1))>=2 else 0.0
+				choices.append({"p":p,"d":d,"next":last,"score":absf(distance-(min_distance+max_distance)*.5)+parking_penalty})
 	choices.sort_custom(func(a,b): return float(a.score)<float(b.score))
 	for choice in choices.slice(0,40):
 		var p: Vector3 = choice.p
