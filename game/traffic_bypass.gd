@@ -241,6 +241,66 @@ static func _opposing_pass(body: CharacterBody3D,route: Array,index: int,streets
 			if valid and not points.is_empty(): return {"path":points,"resume":int(option.index)}
 	return {}
 
+# Shift requests an actual left detour even near junction approaches.
+# Preserve named signals/stops and validate the full swept footprint.
+static func requested_left_pass(body: CharacterBody3D,route: Array,index: int,streets: Streets,width: float,length: float,signals: Dictionary = {},height: float = 1.8) -> Dictionary:
+	if index<0 or index>=route.size(): return {}
+	var origin := body.global_position
+	var forward := body.global_basis.z.normalized()
+	forward.y = 0.0
+	var left := Vector3(forward.z,0,-forward.x)
+	var options: Array = []
+	var along_last := 0.0
+	for i in range(index,mini(route.size(),index+65)):
+		var item: Dictionary = route[i]
+		var target: Vector3 = item.p
+		var diff := target-origin
+		var along := diff.dot(forward)
+		if along<-.6 or along<along_last-.6 or absf(diff.dot(left))>maxf(2.0,width): break
+		along_last = maxf(along,along_last)
+		if along>=maxf(8.0,length*2.2) and along<=52.0:
+			options.append({"along":along,"cross":diff.dot(left),"index":i})
+		if item.has("stop") or signals.has(String(item.get("node",""))) or i==route.size()-1 or along>52.0: break
+	if options.is_empty(): return {}
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(width+.08,height,length+.08)
+	var traffic := body.get_tree().get_nodes_in_group("autonomous_traffic")
+	for shift in [width+.45,width+1.3,width+2.2,width+3.0]:
+		var amount := float(shift)
+		for option in options.slice(0,8):
+			var total := float(option.along)
+			var ramp := maxf(2.6,length*.85+amount*.35)
+			if total<ramp*2.0+length: continue
+			var unsafe := false
+			for node in traffic:
+				var other := node as CharacterBody3D
+				if not is_instance_valid(other) or other==body: continue
+				var diff := other.global_position-origin
+				var gap := diff.dot(forward)
+				if absf(diff.y)>2.0 or gap<0.0 or gap>140.0: continue
+				if other.global_basis.z.dot(forward)>-.55: continue
+				if absf(diff.dot(left)-amount)>width+2.0: continue
+				if gap<total+length+6.0+maxf(2.0,-other.velocity.dot(forward))*(total/3.0+1.5):
+					unsafe = true
+					break
+			if unsafe: continue
+			var count := maxi(4,ceili(total/.8))
+			var points: Array = []
+			var previous := origin
+			var valid := true
+			for j in range(1,count+1):
+				var along := total*float(j)/float(count)
+				var cross := amount*smoothstep(0.0,ramp,along)*(1.0-smoothstep(total-ramp,total,along))+float(option.cross)*smoothstep(total-ramp,total,along)
+				var p := origin+forward*along+left*cross
+				var d := (p-previous).normalized()
+				if not _on_road(streets,p,d,width,length) or not _segment_clear(body,previous,p,d,shape):
+					valid = false
+					break
+				if j<count: points.append({"p":p,"node":"","bypass":true,"requested_left":true})
+				previous = p
+			if valid and not points.is_empty(): return {"path":points,"resume":int(option.index)}
+	return {}
+
 static func recover(body: CharacterBody3D,route: Array,index: int,streets: Streets,width: float,length: float,signals: Dictionary = {},height: float = 1.8) -> Dictionary:
 	if bool(body.get_meta("junction_guard",false)): return {}
 	if index<0 or index>=route.size(): return {}
