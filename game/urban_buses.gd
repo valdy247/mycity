@@ -830,8 +830,9 @@ func _recover_bus_route(body: CharacterBody3D,route: Array,index: int) -> Dictio
 				return {"path":points,"resume":at}
 	return {}
 
-func tick(delta: float) -> void:
+func tick(delta: float,boost_requested: bool = false) -> void:
 	for bus in buses:
+		var boosted: bool = boost_requested and not player_bus.is_empty() and bus==player_bus and not player_exit_requested
 		var body: CharacterBody3D = bus.body
 		body.set_meta("traffic_priority",BUS_LENGTH)
 		body.set_meta("traffic_servicing",not bus.active_stop.is_empty())
@@ -936,7 +937,7 @@ func tick(delta: float) -> void:
 				bus.index = (index+1)%route.size()
 			continue
 		var d := diff.normalized()
-		var speed := minf(8.5,maxf(.75,sqrt(2.0*3.5*distance)))
+		var speed := minf(17.0 if boosted else 8.5,maxf(.75,sqrt(2.0*3.5*distance)))
 		if item.has("stop"):
 			speed = minf(speed,maxf(.75,distance*.75))
 		var next_target: Vector3 = original[int(bus.get("resume_index",0))].p if detouring and index==route.size()-1 else route[(index+1)%route.size()].p
@@ -1026,7 +1027,7 @@ func tick(delta: float) -> void:
 			continue
 		if stalled<.1 and not blocked: bus.backed_up = 0.0
 		if detouring: speed = minf(speed,3.5)
-		bus.speed = move_toward(current_speed,speed,delta*(BUS_BRAKE if speed<current_speed else 2.5))
+		bus.speed = move_toward(current_speed,speed,delta*(BUS_BRAKE if speed<current_speed else (4.5 if boosted else 2.5)))
 		# Hard safety cap: the bus cannot move into its stopping gap even
 		# when a player suddenly drives across its route.
 		if blocked:
