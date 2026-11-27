@@ -1387,7 +1387,7 @@ func _update_hud() -> void:
 
 # Gameplay prompts remain visible with the large help overlay collapsed.
 func _update_compact_hud() -> void:
-	var lines: Array[String] = ["[H] Controles · [M] Mapa · [F11] Pantalla completa" if city_navigation!=null else "[H] Controles · [F11] Pantalla completa"]
+	var lines: Array[String] = ["[H] Controles · [M] Mapa · [F10] Menú · [F11] Pantalla completa" if city_navigation!=null else "[H] Controles · [F11] Pantalla completa"]
 	if garage!=null and garage.riding:
 		var ride_name := "Moto de Yordi · " if garage.riding_borrowed() else ""
 		lines.append(ride_name+("%d km/h · [Shift] Turbo · [E] Bajar" % roundi(absf(garage.ride_speed)*3.6)))
@@ -1579,7 +1579,9 @@ func _leave_taxi(emergency: bool = false) -> bool:
 	if business!=null and not emergency and not mission_ride and not first_trip:
 		business.taxi_arrival(player.global_position)
 	taxis.finish_trip()
-	if first_trip: business.first_story.ride_ended(reached and not emergency)
+	if first_trip:
+		business.first_story.ride_ended(reached and not emergency)
+		if emergency: business.first_story.reset_checkpoint()
 	_apply_camera_mode()
 	if mission_ride: yordi_mission.on_ride_end(emergency,interrupted)
 	exit_message = "Vuelve a subir para continuar la misión." if interrupted else "Viaje terminado."

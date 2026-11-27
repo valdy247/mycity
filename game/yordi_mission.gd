@@ -74,6 +74,7 @@ var stone_velocity := Vector3.ZERO
 var robbery_phase := ""
 var robbery_clock := 0.0
 var robbery_plan_failures := 0
+var environmental_chase_failures := 0
 var escape_route := PackedVector3Array()
 var escape_index := 0
 var escape_goal := Vector3.INF
@@ -1093,6 +1094,7 @@ func _purchase() -> void:
 	_cue("success")
 	state.purchased = true
 	robbery_plan_failures = 0
+	environmental_chase_failures = 0
 	state.checkpoint = {"seller":_encode(seller_point),"bike":_encode(bike.global_position),"heading":_encode(bike.global_basis.z)}
 	_set_stage(7)
 	if is_instance_valid(seller): seller.hide()
@@ -1338,7 +1340,10 @@ func _start_robbery() -> void:
 		business._notify("Espera a Yordi, que tiene el PS5.")
 		return
 	var at: Vector3 = game.player.global_position-Vector3.UP*.86
-	var path := _plan_escape(yordi.global_position)
+	if environmental_chase_failures>=3 and is_instance_valid(bike) and at.distance_to(bike.global_position)<5.0 and yordi.global_position.distance_to(bike.global_position)<6.0:
+		_safe_robbery_alternative()
+		return
+	var path := _plan_escape(yordi.global_position) if environmental_chase_failures<2 else PackedVector3Array()
 	if path.is_empty(): path = _plan_short_escape(yordi.global_position)
 	if path.is_empty() or not _spawn_foes(at):
 		robbery_plan_failures += 1
@@ -1659,12 +1664,14 @@ func _chase_tick(delta: float) -> void:
 		bike_wait_point = Vector3.INF
 		rendezvous_clock = 0.0
 		bike_walk_elapsed = 0.0
+		environmental_chase_failures = 0
 		_set_stage(9)
 		_cue("success")
 		_target(bike.global_position,"Moto de Yordi · regreso a casa")
 		business._notify("Yordi: ¡Ya los perdimos! Sube a la moto; vamos a casa.")
 		return
 	if leader_stall_clock>=12.0 or not is_instance_valid(bike) or not is_instance_valid(yordi):
+		environmental_chase_failures += 1
 		_retry_chase()
 		business._notify("La ruta quedó bloqueada. Recuperando el punto de control.")
 		return
