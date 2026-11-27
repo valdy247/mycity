@@ -258,7 +258,7 @@ func _make_stall_details() -> void:
 				[Vector3(-.48,2.08,.30),Vector3(.24,.105,.015),cream],
 				[Vector3(0,2.08,.30),Vector3(.24,.105,.015),cream],
 				[Vector3(.48,2.08,.30),Vector3(.24,.105,.015),cream],
-				[Vector3(0,.59,.311),Vector3(.92,.13,.008),green]
+				[Vector3(0,.44,.296),Vector3(.92,.035,.008),green]
 			])
 		group.hide()
 
@@ -767,6 +767,7 @@ func aimed_albertico_text(at: Vector3) -> String:
 	var parts := albertico.find_children("*","MeshInstance3D",true,false)
 	for child in parts:
 		if not child is MeshInstance3D or not child.is_visible_in_tree(): continue
+		if is_instance_valid(arrow) and arrow.is_ancestor_of(child): continue
 		var part := child as MeshInstance3D
 		var local_hit: Variant = part.get_aabb().intersects_segment(part.to_local(origin),part.to_local(finish))
 		if local_hit==null: continue
@@ -1324,7 +1325,12 @@ func _tick_buyer(delta: float) -> void:
 			buyer_served = true
 			buyer.set_bag(true)
 			if is_instance_valid(buyer.carried):
-				_box(buyer.carried,Vector3(0,.025,.19),Vector3(.15,.10,.015),crate_band(buyer_product))
+				var key := buyer_product
+				for product_key in Ledger.PRODUCTS:
+					if String(Ledger.PRODUCTS[product_key].name)==buyer_product:
+						key = String(product_key)
+						break
+				_box(buyer.carried,Vector3(0,.025,.19),Vector3(.15,.10,.015),crate_band(key))
 		if is_instance_valid(albertico) and albertico is Person:
 			albertico.arms[1].rotation.x = lerpf(albertico.arms[1].rotation.x,-.85,minf(delta*8.0,1.0))
 		if buyer_time>=2.0:
