@@ -220,7 +220,7 @@ func _walk(actor: Person,target: Vector3,delta: float,speed: float,stop_range: f
 		elif game.garage.inside and actor.global_position.y>50.0 and destination.y>50.0:
 			# The city sidewalk graph cannot route inside the separate house.
 			for offset in [Vector3(-1.2,0,0),Vector3(1.2,0,0),Vector3(-1.2,0,-2.1),Vector3(-1.2,0,2.1),Vector3(-1.7,0,-2.8)]:
-				var via := Garage.ROOM+offset
+				var via: Vector3 = Garage.ROOM+Vector3(offset)
 				if world.pedestrian_segment_clear(actor.global_position,via) and world.pedestrian_segment_clear(via,destination):
 					path = PackedVector3Array([via,destination])
 					break
