@@ -964,7 +964,7 @@ func tick(delta: float) -> void:
 			_save()
 		if is_instance_valid(client): client.walk_to(ROOM+Vector3(1.4,0,1.7),delta,1.4)
 		_worker_tick(delta)
-		if brush_clock>=.13 and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		if brush_clock>=.13 and game.gameplay_input() and game.primary_held():
 			brush_clock = 0.0
 			_paint()
 		if _finished() and paint_dirty:

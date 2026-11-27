@@ -1,6 +1,9 @@
 extends Node3D
 # First playable local prototype. Static world, third-person movement.
 const CITY_PATH = "res://city.glb"
+const TouchControls = preload("res://mobile_controls.gd")
+var mobile_controls: TouchControls
+var mobile_mode := false
 const VehicleLights = preload("res://vehicle_lights.gd")
 var road_headlight: SpotLight3D
 const Shoe = preload("res://character_shoe.gd")
@@ -258,7 +261,65 @@ func _ready() -> void:
 		_face_cuba_home()
 		_apply_camera_mode()
 	_apply_performance_mode()
-	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	mobile_mode = OS.has_feature("mobile") or DisplayServer.is_touchscreen_available() or args.has("--touch-controls")
+	if OS.has_feature("web"):
+		var coarse = JavaScriptBridge.eval("window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0",true)
+		mobile_mode = mobile_mode or coarse==true
+	if mobile_mode:
+		_enable_mobile_controls()
+	else:
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+func _enable_mobile_controls() -> void:
+	if is_instance_valid(mobile_controls): return
+	mobile_mode = true
+	var layer := CanvasLayer.new()
+	layer.layer = 20
+	add_child(layer)
+	mobile_controls = TouchControls.new()
+	layer.add_child(mobile_controls)
+	mobile_controls.setup(self)
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+func touch_blocked() -> bool:
+	return building_mode or (business!=null and (business.modal_open() or business.story_active)) or (taxis!=null and taxis.dialog.visible) or (city_navigation!=null and city_navigation.active) or (street_market!=null and not street_market.active.is_empty())
+
+func gameplay_input() -> bool:
+	if mobile_mode: return not touch_blocked()
+	return Input.mouse_mode==Input.MOUSE_MODE_CAPTURED
+
+func control_pressed(key: Key) -> bool:
+	return Input.is_physical_key_pressed(key) or (is_instance_valid(mobile_controls) and mobile_controls.held(key))
+
+func primary_held() -> bool:
+	if mobile_mode: return is_instance_valid(mobile_controls) and mobile_controls.use_held
+	return Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+
+func touch_action(key: Key) -> void:
+	if touch_blocked(): return
+	var event := InputEventKey.new()
+	event.keycode = key
+	event.pressed = true
+	if key==KEY_M:
+		_open_city_map()
+	else:
+		_unhandled_input(event)
+
+func touch_look(relative: Vector2) -> void:
+	if touch_blocked() or pivot==null: return
+	yaw -= relative.x*.005
+	var limit := -1.05
+	var top := .35
+	if driving or taxi_riding or bus_riding or (garage!=null and garage.riding):
+		limit = -.95
+		top = .30
+	elif (garage!=null and garage.inside) or (carlos_mission!=null and carlos_mission.inside) or (yordi_mission!=null and yordi_mission.robbery_active()):
+		limit = -1.48
+	pitch = clampf(pitch-relative.y*.005,limit,top)
+	pivot.rotation = Vector3(pitch,yaw,0)
+
+func touch_use() -> void:
+	if not touch_blocked() and yordi_mission!=null: yordi_mission.throw_stone()
 
 # Recognize terrain even when GLB import renames its mesh node or wraps it
 # in another Node3D. Never recolor roads, buildings or industrial platforms.
@@ -648,6 +709,7 @@ func _update_vehicle_lights() -> void:
 var mission_tracker_clock := 0.0
 
 func _process(delta: float) -> void:
+	if is_instance_valid(mobile_controls): mobile_controls.sync()
 	_update_vehicle_lights()
 	mission_tracker_clock += delta
 	if mission_tracker_clock>=.15:
@@ -692,6 +754,11 @@ func _open_city_map() -> void:
 	city_navigation.open()
 
 func _input(event: InputEvent) -> void:
+	if player!=null and (event is InputEventScreenTouch or event is InputEventScreenDrag):
+		if not mobile_mode and event is InputEventScreenTouch and event.pressed: _enable_mobile_controls()
+		if is_instance_valid(mobile_controls) and mobile_controls.handle_touch(event):
+			get_viewport().set_input_as_handled()
+			return
 	if not event is InputEventKey or not event.pressed or event.echo: return
 	if event.keycode==KEY_F11:
 		var window := get_window()
@@ -708,6 +775,9 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 func _unhandled_input(event: InputEvent) -> void:
+	# Touch gestures own the camera; emulated mouse clicks still reach GUI
+	# controls first, but must not trigger gameplay or browser pointer lock.
+	if mobile_mode and (event is InputEventMouseButton or event is InputEventMouseMotion): return
 	if city_navigation!=null and city_navigation.active: return
 	if cuba_world!=null and diagnostics_panel!=null and event is InputEventKey and event.pressed and not event.echo and event.keycode==KEY_F8:
 		diagnostics_panel.visible = not diagnostics_panel.visible
@@ -731,7 +801,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			elif event.keycode==KEY_P and garage.riding_borrowed():
 				if absf(garage.ride_speed)<.6: business.open_phone()
 				else: business._notify("Detén la moto antes de usar el teléfono.")
-		if event is InputEventMouseMotion and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED:
+		if event is InputEventMouseMotion and gameplay_input():
 			yaw -= event.relative.x*.003
 			pitch = clampf(pitch-event.relative.y*.003,-.95,.30)
 			pivot.rotation = Vector3(pitch,yaw,0)
@@ -761,7 +831,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event is InputEventKey and event.pressed and not event.echo:
 			if event.keycode==KEY_E: urban_buses.player_exit_requested = true
 			elif event.keycode==KEY_R: bus_reset_requested = true
-		if event is InputEventMouseMotion and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED:
+		if event is InputEventMouseMotion and gameplay_input():
 			yaw -= event.relative.x*.003
 			pitch = clampf(pitch-event.relative.y*.003,-.95,.30)
 			pivot.rotation = Vector3(pitch,yaw,0)
@@ -775,7 +845,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			elif event.keycode==KEY_T:
 				taxis.cycle_speed()
 				_update_hud()
-		if event is InputEventMouseMotion and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED:
+		if event is InputEventMouseMotion and gameplay_input():
 			yaw -= event.relative.x*.003
 			pitch = clampf(pitch-event.relative.y*.003,-.95,.30)
 			pivot.rotation = Vector3(pitch,yaw,0)
@@ -824,13 +894,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			_apply_camera_mode()
 		elif event.keycode == KEY_R and player != null:
 			reset_requested = true
-		elif event.keycode == KEY_E and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		elif event.keycode == KEY_E and gameplay_input():
 			interact_requested = true
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		if Input.mouse_mode==Input.MOUSE_MODE_CAPTURED and yordi_mission!=null and yordi_mission.throw_stone():
 			return
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and pivot != null:
+	if event is InputEventMouseMotion and gameplay_input() and pivot != null:
 		yaw -= event.relative.x * 0.003
 		var down_limit := -1.48 if (garage!=null and garage.inside) or (carlos_mission!=null and carlos_mission.inside) or (yordi_mission!=null and yordi_mission.robbery_active()) else -1.05
 		pitch = clampf(pitch - event.relative.y * 0.003, down_limit, 0.35)
@@ -1172,8 +1242,9 @@ func _reset_player() -> void:
 
 func _read_controls() -> Vector2:
 	var movement := Vector2.ZERO
-	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+	if not gameplay_input():
 		return movement
+	if is_instance_valid(mobile_controls): movement = mobile_controls.movement
 	if Input.is_physical_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP):
 		movement.y -= 1
 	if Input.is_physical_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN):
@@ -1182,12 +1253,12 @@ func _read_controls() -> Vector2:
 		movement.x -= 1
 	if Input.is_physical_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT):
 		movement.x += 1
-	return movement
+	return movement.limit_length(1.0)
 
 func _drive(delta: float, movement: Vector2) -> void:
-	var boost := Input.is_physical_key_pressed(KEY_SHIFT) and movement.y<0.0 and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED
+	var boost := control_pressed(KEY_SHIFT) and movement.y<0.0 and gameplay_input()
 	var target := -movement.y * ((39.0 if boost else 13.0) if movement.y <= 0 else 4.0)
-	var brake := Input.is_physical_key_pressed(KEY_SPACE) or Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
+	var brake := control_pressed(KEY_SPACE) or not gameplay_input()
 	if brake:
 		target = 0.0
 	drive_speed = move_toward(drive_speed, target, delta * (18.0 if brake else (15.0 if boost else 5.0)))
@@ -1601,7 +1672,7 @@ func _physics_process(delta: float) -> void:
 			_leave_bus(true)
 			return
 		cuba_world.tick(delta)
-		urban_buses.tick(delta,Input.is_physical_key_pressed(KEY_SHIFT) and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED)
+		urban_buses.tick(delta,control_pressed(KEY_SHIFT) and gameplay_input())
 		if monte_services!=null: monte_services.tick(delta)
 		if monte_pedestrians!=null: monte_pedestrians.tick(delta)
 		if taxis!=null: taxis.tick(delta,cuba_world.cuba_clock)
@@ -1639,7 +1710,7 @@ func _physics_process(delta: float) -> void:
 		if interact_requested:
 			taxis.request_stop()
 		interact_requested = false
-		taxis.tick(delta,cuba_world.cuba_clock,Input.is_physical_key_pressed(KEY_SHIFT) and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED)
+		taxis.tick(delta,cuba_world.cuba_clock,control_pressed(KEY_SHIFT) and gameplay_input())
 		var taxi: CharacterBody3D = taxis.passenger.body
 		player.global_position = taxi.global_position+Vector3.UP*.8
 		if taxis.ready_to_exit():
@@ -1786,7 +1857,7 @@ func _physics_process(delta: float) -> void:
 		_drive(delta, movement)
 	else:
 		var direction := Vector3(movement.x, 0, movement.y).normalized().rotated(Vector3.UP, yaw)
-		var speed: float = 8.0 if Input.is_physical_key_pressed(KEY_SHIFT) else 4.5
+		var speed: float = 8.0 if control_pressed(KEY_SHIFT) else 4.5
 		if business!=null and business.first_story!=null and business.first_story.carrying_table(): speed = 2.1
 		if city_world != null and city_world.family_home != null and city_world.family_home.pool_inside:
 			speed = 2.0
@@ -1796,7 +1867,7 @@ func _physics_process(delta: float) -> void:
 			avatar.rotation.y = lerp_angle(avatar.rotation.y, atan2(direction.x, direction.z), minf(delta * 13.0, 1.0))
 		if not player.is_on_floor():
 			player.velocity.y -= 18.0 * delta
-		elif Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and Input.is_physical_key_pressed(KEY_SPACE):
+		elif gameplay_input() and control_pressed(KEY_SPACE):
 			player.velocity.y = 5.5
 		player.move_and_slide()
 		if not first_person:
