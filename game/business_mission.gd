@@ -1298,7 +1298,7 @@ func _clear_visual_children(root: Node3D) -> void:
 
 func _sync_visuals() -> void:
 	if arrow==null: return
-	albertico.visible = ledger.albertico_visible()
+	albertico.visible = ledger.albertico_visible() and (first_story==null or (not first_story.rider_trip and first_story.fetch_phase!="inside"))
 	arrow.visible = ledger.albertico_visible() and (ledger.stage==0 or (ledger.stage==3 and (first_story==null or not first_story.active())))
 	factory_arrow.visible = ledger.stage in [1,2]
 	stand.visible = ledger.stage==4 or (first_story!=null and first_story._phase()=="handshake") or (ledger.stage>=1 and not ledger.life_data.has("albertico_story"))

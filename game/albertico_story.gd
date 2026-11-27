@@ -28,6 +28,9 @@ var loading := ""
 var loading_clock := 0.0
 var pickup_clock := 0.0
 var fetch_clock := 0.0
+var fetch_phase := ""
+var fetch_target := Vector3.ZERO
+var fetch_retry := 0.0
 var marker: Node3D
 var banner: Label
 var banner_clock := 0.0
@@ -399,20 +402,54 @@ func _finish_handshake() -> void:
 	business._notify("Ahora puedes comprar mercancía, entregarla a Albertico o guardarla en el frío.")
 
 func _fetch_stock(delta: float) -> void:
-	if state.is_empty() or ledger.stage!=4 or state.get("cold",{}).is_empty(): return
-	if game.taxi_riding or business.modal_open(): return
-	var cold: Dictionary = state.cold
-	var total := ledger.total(cold)
-	if total<=0: return
-	fetch_clock += delta
+	if state.is_empty() or ledger.stage!=4 or home.is_empty(): return
+	var cold: Dictionary = state.get("cold",{})
+	if ledger.total(cold)<=0 or game.taxi_riding or business.modal_open(): return
 	var actor: Person = business.albertico as Person
-	if fetch_clock<2.5:
-		var target: Vector3 = _home_door()+home.basis.z*.8
-		game.yordi_mission._walk(actor,target,delta,2.2,.8)
+	fetch_retry = maxf(0.0,fetch_retry-delta)
+	if fetch_retry>0.0: return
+	fetch_clock += delta
+	if fetch_phase.is_empty():
+		var ground: Vector3 = game.yordi_mission._near_ground(_home_door()+home.basis.z*.8,actor,4.0)
+		if not ground.is_finite():
+			fetch_retry = 4.0
+			return
+		fetch_target = ground
+		fetch_phase = "door"
+		fetch_clock = 0.0
+	if fetch_phase=="door":
+		if game.yordi_mission._walk(actor,fetch_target,delta,2.2,.75):
+			fetch_phase = "inside"
+			fetch_clock = 0.0
+			actor.hide()
+		elif fetch_clock>18.0:
+			fetch_phase = ""
+			fetch_retry = 4.0
 		return
-	if fetch_clock<3.5:
+	if fetch_phase=="inside":
 		actor.hide()
+		if fetch_clock<1.0: return
+		actor.show()
+		actor.global_position = fetch_target
+		fetch_phase = "return"
+		fetch_clock = 0.0
+		for key in cold:
+			if int(cold[key])>0:
+				helper_box = business._crate(actor,Vector3(0,1.05,.30),String(key))
+				break
 		return
+	if not game.yordi_mission._walk(actor,original_actor,delta,2.2,.90):
+		for arm in actor.arms: arm.rotation.x = -.85
+		if fetch_clock<18.0: return
+		# Preserve every paid box on failure; retry from the stand.
+		if is_instance_valid(helper_box): helper_box.queue_free()
+		helper_box = null
+		actor.global_position = original_actor
+		fetch_phase = ""
+		fetch_retry = 4.0
+		return
+	if is_instance_valid(helper_box): helper_box.queue_free()
+	helper_box = null
 	for key in cold:
 		var count := int(cold[key])
 		if count>0:
@@ -422,6 +459,7 @@ func _fetch_stock(delta: float) -> void:
 	actor.global_position = original_actor
 	actor.rotation.y = original_angle
 	actor.show()
+	fetch_phase = ""
 	fetch_clock = 0.0
 	_save()
 	business._sync_visuals()
@@ -480,7 +518,9 @@ func destination() -> Dictionary:
 		"outbound","return": 
 			if not cab.is_empty(): return {"p":cab.body.global_position,"label":"Taxi con Albertico"}
 		"shopping": return {"p":game.cuba_world.food_factory.counter,"label":"MIPYME"}
-		"cold": return {"p":_home_door(),"label":"Mi casa · refrigerador"}
+		"cold":
+			if ledger.carry.is_empty() and not cab.is_empty(): return {"p":cab.body.global_position,"label":"Taxi · descargar cajas"}
+			return {"p":_home_door(),"label":"Mi casa · refrigerador"}
 		"table":
 			if not neighbor.is_empty(): return {"p":neighbor.door,"label":"Casa de Albertico"}
 		"street_carry": return {"p":business.stand.global_position,"label":"Colocar mesa"}
@@ -576,5 +616,5 @@ func tick(delta: float) -> void:
 			if actor.global_position.distance_to(ground)>2.0: game.yordi_mission._walk(actor,ground,delta,2.4,1.8)
 		elif _phase()=="cold": actor.global_position = original_actor
 	var dest := destination()
-	marker.visible = not dest.is_empty() and _phase() in ["table","street_carry"]
+	marker.visible = not dest.is_empty() and not game.garage.inside and _phase() in ["outbound","return","cold","table","street_carry"]
 	if marker.visible: marker.global_position = dest.p+Vector3.UP*2.2
