@@ -31,5 +31,18 @@ func _initialize() -> void:
 		printerr("FAIL: ambient pedestrians got story detail")
 		quit(1)
 		return
-	print("Character identities, rider layout and animation blend: PASS")
+	# Representative ambient male variants must have different silhouettes;
+	# story-only meshes and the rescue/rider limb layout stay independent.
+	var hair_names: Array[String] = ["AmbientHairCropped","AmbientHairCurly","AmbientCap","AmbientHairReceding","AmbientHairSwept"]
+	for variant in range(hair_names.size()):
+		var resident := Person.new()
+		root.add_child(resident)
+		resident.setup(variant*3,false,true)
+		if resident.story_character or resident.get_node_or_null(NodePath(hair_names[variant]))==null or resident.arms.size()!=2 or resident.knees.size()!=2:
+			printerr("FAIL: ambient hair variation or articulated rig ",variant)
+			quit(1)
+			return
+		resident.animate(1.0/60.0,true)
+		resident.animate(1.0/60.0,false)
+	print("Character identities, ambient hair variants, rider layout and animation blend: PASS")
 	quit(0)
