@@ -4,6 +4,8 @@ extends Node3D
 const Ledger = preload("res://business_ledger.gd")
 const Person = preload("res://street_person.gd")
 var taxi_companion: Person
+var exit_retry := false
+var exit_retry_clock := 0.0
 var handshake_camera := false
 const REQUIRED := ["huevos","perrito","pollo","picadillo"]
 const ROOM := Vector3(60,110,0)
@@ -180,21 +182,40 @@ func _start_trip() -> bool:
 	taxi_companion.setup(810)
 	taxi_companion.remove_from_group("social_people")
 	taxi_companion.remove_from_group("pedestrian_spacing")
-	taxi_companion.position = Vector3(-.39,.55,-.65)
-	taxi_companion.scale = Vector3.ONE*.75
-	for limb in taxi_companion.limbs: limb.rotation.x = -1.0
-	for knee in taxi_companion.knees: knee.rotation.x = 1.0
+	# The classic taxi has solid opaque windows and a low roof. Keep
+	# the seated passenger inside the cabin envelope, never above the roof.
+	taxi_companion.position = Vector3(-.36,.22,-.65)
+	taxi_companion.scale = Vector3.ONE*.60
+	for limb in taxi_companion.limbs: limb.rotation.x = -1.15
+	for knee in taxi_companion.knees: knee.rotation.x = 1.15
+	taxi_companion.hide() # Opaque cabin: no external passenger geometry.
 	game._start_taxi_ride()
 	return true
+
+func _separate_exit(actor: Person) -> Vector3:
+	var ground: Vector3 = game.player.global_position-Vector3.UP*.86
+	var heading: Vector3 = cab.body.global_basis.z if not cab.is_empty() and is_instance_valid(cab.body) else Vector3.FORWARD
+	var side := Vector3(-heading.z,0,heading.x)
+	for distance in [1.8,2.5,3.4,4.5]:
+		for direction in [heading,-heading,side,-side,(heading+side).normalized(),(-heading+side).normalized()]:
+			var candidate: Vector3 = game.yordi_mission._ground(ground+direction*float(distance))
+			if not candidate.is_finite() or candidate.distance_to(ground)<1.65: continue
+			if not game.cuba_world.pedestrian_space_clear(actor,candidate,.75,false): continue
+			return candidate
+	return Vector3.INF
 
 func ride_ended(reached: bool) -> void:
 	rider_trip = false
 	if is_instance_valid(taxi_companion): taxi_companion.queue_free()
 	taxi_companion = null
 	var actor: Person = business.albertico as Person
-	var at: Vector3 = game.yordi_mission._near_ground(game.player.global_position,actor,6.0)
-	actor.global_position = at if at.is_finite() else original_actor
-	actor.show()
+	var at := _separate_exit(actor)
+	if at.is_finite():
+		actor.global_position = at
+		actor.show()
+	else:
+		actor.hide()
+		exit_retry = true
 	if not reached:
 		business._notify("Vuelve a subir al taxi para continuar con Albertico.")
 		return
@@ -584,6 +605,16 @@ func tick(delta: float) -> void:
 		next_retry = 3.0
 		_ensure_cab(game.cuba_world.food_factory.road if _phase() in ["shopping","return"] else _home_road())
 	var actor: Person = business.albertico as Person
+	if exit_retry:
+		exit_retry_clock -= delta
+		if exit_retry_clock<=0.0:
+			exit_retry_clock = .40
+			var safe := _separate_exit(actor)
+			if safe.is_finite():
+				actor.global_position = safe
+				actor.show()
+				exit_retry = false
+		if exit_retry: return
 	if not loading.is_empty():
 		loading_clock += delta
 		if cab.is_empty() and loading_clock>12.0:
@@ -613,7 +644,11 @@ func tick(delta: float) -> void:
 	else:
 		if _phase() in ["outbound","shopping","return","table"] and not game.garage.inside:
 			var ground: Vector3 = game.player.global_position-Vector3.UP*.86
-			if actor.global_position.distance_to(ground)>2.0: game.yordi_mission._walk(actor,ground,delta,2.4,1.8)
+			if actor.global_position.distance_to(ground)>2.3:
+				game.yordi_mission._walk(actor,ground,delta,2.4,2.0)
+			elif actor.global_position.distance_to(ground)<1.25:
+				var safe := _separate_exit(actor)
+				if safe.is_finite(): actor.global_position = safe
 		elif _phase()=="cold": actor.global_position = original_actor
 	var dest := destination()
 	marker.visible = not dest.is_empty() and not game.garage.inside and _phase() in ["outbound","return","cold","table","street_carry"]

@@ -399,6 +399,10 @@ static func reset_watchdog(state: Dictionary) -> void:
 		state.erase(key)
 
 static func watchdog(state: Dictionary,body: CharacterBody3D,streets: Streets,route: Array,index: int,width: float,length: float,height: float,delta: float,loop: bool = true,stuck_after: float = 30.0) -> int:
+	if bool(state.get("red_wait",false)):
+		state.watch_still = 0.0
+		state.watch_anchor = body.global_position
+		return -1
 	if route.is_empty() or index<0 or index>=route.size(): return -1
 	state.watch_elapsed = float(state.get("watch_elapsed",0.0))+delta
 	if float(state.watch_elapsed)<.5: return -1
@@ -593,6 +597,7 @@ static func reverse_clear(body: CharacterBody3D,streets: Streets,width: float,le
 # Keep reverse manoeuvres active across frames. Otherwise a few centimetres
 # of reverse progress reset the stall detector and cause forward/reverse loops.
 static func retreat(state: Dictionary,body: CharacterBody3D,streets: Streets,width: float,length: float,delta: float,requested: bool) -> bool:
+	if bool(state.get("red_wait",false)): return false
 	if bool(body.get_meta("junction_guard",false)):
 		state.retreat_remaining = 0.0
 		return false
@@ -683,6 +688,7 @@ static func _yield_path(body: CharacterBody3D,streets: Streets,width: float,leng
 # Return true only when this vehicle owns a temporary yielding maneuver.
 # Ordinary physics safety checks remain active on every movement.
 static func cooperate(state: Dictionary,body: CharacterBody3D,streets: Streets,width: float,length: float,height: float,delta: float,stalled_time: float,target: Vector3) -> bool:
+	if bool(state.get("red_wait",false)): return false
 	if bool(body.get_meta("junction_guard",false)): return false
 	body.set_meta("traffic_priority",length)
 	# On Monte, lane discipline replaces arbitrary refuge manoeuvres.
@@ -860,6 +866,7 @@ static func _junction_release(state: Dictionary,body: CharacterBody3D,streets: S
 # Returns metres of permitted forward travel, or -1 when unrestricted.
 # The caller uses both a braking curve and a hard per-frame movement cap.
 static func junction_gate(state: Dictionary,body: CharacterBody3D,streets: Streets,route: Array,index: int,loop: bool,width: float,length: float,height: float,delta: float,continuation: Array = [],resume: int = 0) -> float:
+	state["red_wait"] = false
 	var origin := body.global_position
 	var extent := Vector2(length,width).length()*.5
 	var owner := body.get_instance_id()
@@ -943,16 +950,19 @@ static func junction_gate(state: Dictionary,body: CharacterBody3D,streets: Stree
 		return -1.0
 	if stop_distance>maxf(8.0,float(state.get("speed",0.0))*1.2+3.0): return stop_distance
 	body.set_meta("junction_guard",true)
-	# Signal dwell occurs at the approach, never at the mapped node.
+	# Real signal phase; turbo bypasses the light, not the occupancy guard.
+	var green := false
 	if bool(selected.signal):
-		if String(state.get("junction_signal_id",""))!=id:
-			state.junction_signal_id = id
-			state.junction_signal_wait = 0.0
-		if stop_distance<=.12 and float(state.get("speed",0.0))<.15:
-			state.junction_signal_wait = float(state.junction_signal_wait)+delta
-		if float(state.junction_signal_wait)<.8: return stop_distance
-	# Don't lock the box far in advance; queue at the line first.
-	if stop_distance>4.0: return stop_distance
+		var approach := center-origin
+		approach.y = 0.0
+		var color := streets.signal_color(selected,approach)
+		green = color==2 or bool(state.get("ignore_red",false))
+		if not green:
+			state.red_wait = true
+			return stop_distance
+	# On green, approach normally instead of braking at an arbitrary point.
+	# The intersection claim is still required before entry.
+	if stop_distance>4.0: return -1.0 if green else stop_distance
 	var existing: Dictionary = streets.intersection_claims.get(id,{})
 	if not existing.is_empty():
 		var other := instance_from_id(int(existing.owner)) as CharacterBody3D
@@ -992,3 +1002,53 @@ static func align_if_clear(body: CharacterBody3D,angle: float) -> void:
 	body.global_rotation.y = angle
 	if body.test_move(body.global_transform,Vector3.ZERO,null,.001,true):
 		body.global_rotation.y = old
+
+# Stay in the alternate lane for the straight segment. Return only when
+# the original route needs the next junction/turn or the destination.
+static func taxi_lane_change(body: CharacterBody3D,route: Array,index: int,streets: Streets,width: float,length: float,height: float) -> Dictionary:
+	var origin := body.global_position
+	var lane := streets.four_lane_at(origin,body.global_basis.z)
+	if lane.is_empty(): return {}
+	var forward: Vector3 = lane.direction
+	var right: Vector3 = lane.right
+	var half := float(lane.half)
+	var lateral := float(lane.lateral)
+	if lateral<width*.5 or lateral>half-width*.5: return {}
+	var change := (half*.25 if lateral>half*.50 else half*.75)-lateral
+	if absf(change)<.6: return {}
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(width+.08,height,length+.08)
+	var best: Dictionary = {}
+	for i in range(index,mini(route.size()-1,index+65)):
+		var item: Dictionary = route[i]
+		var p: Vector3 = item.p
+		var diff := p-origin
+		var along := diff.dot(forward)
+		var cross := diff.dot(right)
+		if along<-.5 or absf(cross)>half or along>65.0: break
+		if item.has("stop") or streets.map_data.signal_nodes.has(String(item.get("node",""))): break
+		if not streets.intersections_near(p,length+5.0).is_empty(): break
+		if along<length*3.0: continue
+		var ramp := maxf(6.0,length*1.3)
+		if along<ramp+length: continue
+		var count := ceili(along/1.0)
+		var points: Array = []
+		var previous := origin
+		var safe := true
+		for j in range(1,count+1):
+			var distance := along*float(j)/float(count)
+			var q := origin+forward*distance+right*(change*smoothstep(0.0,ramp,distance))
+			var d := (q-previous).normalized()
+			if not streets.in_carriageway(q,d,width,length,forward) or not _segment_clear(body,previous,q,d,shape):
+				safe = false
+				break
+			points.append({"p":q,"node":"","lane_change":true})
+			previous = q
+		if safe and not points.is_empty():
+			# Connect to the next original sample only if a swept return is clear.
+			# Keep the lane for as long as the validated straight segment lasts.
+			var next: Vector3 = route[i+1].p
+			var d := (next-previous).normalized()
+			if next.distance_to(previous)<2.0 or not _on_road(streets,next,d,width,length) or not _segment_clear(body,previous,next,d,shape): continue
+			best = {"path":points,"resume":i+1,"side":1 if change>0.0 else -1}
+	return best

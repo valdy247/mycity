@@ -10,6 +10,20 @@ var protected_index: Dictionary = {}
 var map_data: MapData
 var intersection_cells: Dictionary = {}
 var intersection_claims: Dictionary = {}
+var signal_clock := 0.0
+var signal_sites: Array = []
+
+# One shared clock for vehicles and visible lights. Opposing approaches
+# on the same axis share a phase; both directions have an all-red gap.
+static func phase_color(clock: float,main_axis: bool,offset: float = 0.0) -> int:
+	var phase := fposmod(clock+offset,40.0)
+	if not main_axis: phase = fposmod(phase+20.0,40.0)
+	return 2 if phase<16.0 else (1 if phase<19.0 else 0)
+
+func signal_color(junction: Dictionary,heading: Vector3) -> int:
+	var axis: Vector3 = junction.get("axis",Vector3.FORWARD)
+	var main_axis := absf(heading.normalized().dot(axis))>=.707
+	return phase_color(signal_clock,main_axis,float(junction.get("offset",0.0)))
 
 func rect(a: Vector3,b: Vector3,width: float,extension: float = 0.0) -> PackedVector2Array:
 	var d := Vector2(b.x-a.x,b.z-a.z).normalized()
@@ -196,10 +210,15 @@ func in_carriageway(p: Vector3,heading: Vector3,width: float,length: float,road_
 func _build_intersections(data: MapData) -> void:
 	intersection_cells.clear()
 	intersection_claims.clear()
+	signal_sites.clear()
 	for id in data.junctions:
 		var incident: Array = data.junctions[id]
 		var directions: Array = []
 		var half_width := 0.0
+		var major := false
+		var axis := Vector3.FORWARD
+		var axis_width := 0.0
+		var approaches: Array = []
 		var p: Vector3 = data.points[id]
 		for edge in incident:
 			if not bool(edge.driveable): continue
@@ -210,12 +229,25 @@ func _build_intersections(data: MapData) -> void:
 				if d.dot(direction)>.96:
 					duplicate = true
 					break
-			if not duplicate: directions.append(d)
+			if not duplicate:
+				directions.append(d)
+				approaches.append({"d":d,"width":float(edge.width)})
+			var name_value := data.normalized(String(edge.get("name","")))
+			var corridor := name_value.contains("monte") or name_value.contains("calzada") or int(edge.get("lanes_per_direction",1))==2
+			if corridor: major = true
+			var priority := float(edge.width)+(30.0 if corridor else 0.0)
+			if priority>axis_width:
+				axis_width = priority
+				axis = d
 			half_width = maxf(half_width,float(edge.width)*.5)
 		if directions.size()<3 and not data.signal_nodes.has(id): continue
 		if half_width<=0.0: continue
 		var radius := half_width+1.0
-		var item := {"id":String(id),"p":p,"radius":radius,"signal":data.signal_nodes.has(id)}
+		var controlled := data.signal_nodes.has(id) or (major and directions.size()>=3)
+		var item := {"id":String(id),"p":p,"radius":radius,"signal":controlled,"axis":axis,"offset":float(posmod(String(id).hash(),8)),"approaches":approaches}
+		if controlled:
+			signal_sites.append(item)
+			data.signal_nodes[id] = true
 		var cell := Vector2i(floori(p.x/CELL),floori(p.z/CELL))
 		if not intersection_cells.has(cell): intersection_cells[cell] = []
 		intersection_cells[cell].append(item)

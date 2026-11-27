@@ -130,6 +130,7 @@ func setup(builder: Builder) -> void:
 	_make_frontages()
 	_make_corner_plaques()
 	_make_utility_network()
+	_make_signal_visuals()
 	var frontage_ms := Time.get_ticks_msec()
 	_flush_city_boxes()
 	_flush_monte_columns()
@@ -3692,6 +3693,8 @@ func add_school_bus(original: Node3D) -> void:
 
 func tick(delta: float) -> void:
 	cuba_clock += delta
+	street_geometry.signal_clock += delta
+	_update_signal_visuals(delta)
 	prompt_time = maxf(0.0,prompt_time-delta)
 	for entry in travel:
 		var car: CharacterBody3D = entry.node
@@ -3790,3 +3793,56 @@ func tick(delta: float) -> void:
 			npc.position = next
 			var d: Vector3 = direction if cos(phase)>0.0 else -direction
 			npc.rotation.y = atan2(d.x,d.z)
+
+# Small unlit signal lenses; no dynamic lights, shadows or physics bodies.
+var signal_visuals: Array = []
+var signal_refresh := 0.0
+var signal_mesh := BoxMesh.new()
+var signal_materials: Array[StandardMaterial3D] = []
+
+func _signal_part(root: Node3D,p: Vector3,size: Vector3,color: Color) -> MeshInstance3D:
+	var mesh := MeshInstance3D.new()
+	mesh.mesh = signal_mesh
+	mesh.scale = size
+	mesh.material_override = _mat("signal_"+color.to_html(),color)
+	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	root.add_child(mesh)
+	mesh.position = p
+	mesh.visibility_range_end = 140.0
+	return mesh
+
+func _make_signal_visuals() -> void:
+	for color in [Color("#eb3634"),Color("#f4b72e"),Color("#42d96b")]:
+		var material := StandardMaterial3D.new()
+		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		material.albedo_color = color
+		signal_materials.append(material)
+	for junction in street_geometry.signal_sites:
+		var center: Vector3 = junction.p
+		for approach in junction.approaches:
+			var direction: Vector3 = approach.d
+			var right := Vector3(-direction.z,0,direction.x)
+			var position := center+direction*(float(junction.radius)+1.8)-right*(float(approach.width)*.5+.28)
+			if street_geometry.point_on_road(position): continue
+			var root := Node3D.new()
+			add_child(root)
+			root.position = position
+			root.rotation.y = atan2(direction.x,direction.z)
+			_signal_part(root,Vector3(0,1.45,0),Vector3(.085,2.9,.085),Color("#545b5c"))
+			_signal_part(root,Vector3(0,3.03,0),Vector3(.25,.68,.22),Color("#24282a"))
+			var lenses: Array[MeshInstance3D] = []
+			for i in range(3):
+				lenses.append(_signal_part(root,Vector3(0,3.25-float(i)*.22,.121),Vector3(.15,.15,.035),Color("#33383a")))
+			signal_visuals.append({"junction":junction,"direction":direction,"lenses":lenses,"last":-1})
+	_update_signal_visuals(1.0)
+
+func _update_signal_visuals(delta: float) -> void:
+	signal_refresh += delta
+	if signal_refresh<.25: return
+	signal_refresh = 0.0
+	for entry in signal_visuals:
+		var color := street_geometry.signal_color(entry.junction,entry.direction)
+		if color==int(entry.last): continue
+		entry.last = color
+		for i in range(3):
+			entry.lenses[i].material_override = signal_materials[i] if i==color else _mat("signal_dark",Color("#33383a"))

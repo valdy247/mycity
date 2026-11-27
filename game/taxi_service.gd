@@ -31,7 +31,7 @@ var feedback: Label
 var arrived := false
 var speed_mode := 1
 var speed_choice: OptionButton
-const SPEEDS := [12.0,18.0,22.0]
+const SPEEDS := [14.0,19.0,23.0]
 const BRAKE := 9.0
 const ACCEL := 6.5
 const PASSENGER_BOOST := 2.0
@@ -175,8 +175,30 @@ func _make_taxi(index: int) -> CharacterBody3D:
 	col.shape = shape
 	body.add_child(col)
 	col.position.y = .82
+	_make_indicators(body)
 	VehicleLights.attach(body,Vector3(.70,.81,2.39),Vector3(.70,.76,-2.39),Vector3(.25,.21,.025),Vector3(.16,.21,.025))
 	return body
+
+func _make_indicators(body: Node3D) -> void:
+	for side in [-1,1]:
+		var root := Node3D.new()
+		body.add_child(root)
+		root.name = "IndicatorRight" if side==1 else "IndicatorLeft"
+		var x := -float(side)*.82
+		_part(root,Vector3(x,.81,2.397),Vector3(.14,.11,.035),Color("#ffad25"))
+		_part(root,Vector3(x,.76,-2.397),Vector3(.14,.11,.035),Color("#ffad25"))
+		var glow := StandardMaterial3D.new()
+		glow.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		glow.albedo_color = Color("#ffad25")
+		for child in root.get_children():
+			if child is MeshInstance3D: child.material_override = glow
+		root.hide()
+
+func _indicators(body: Node3D,side: int) -> void:
+	var flash := posmod(Time.get_ticks_msec(),720)<360
+	for pair in [[-1,"IndicatorLeft"],[1,"IndicatorRight"]]:
+		var root := body.get_node_or_null(NodePath(pair[1])) as Node3D
+		if root!=null: root.visible = flash and side==pair[0]
 
 func _make_dialog() -> void:
 	var layer := CanvasLayer.new()
@@ -751,6 +773,9 @@ func tick(delta: float,_clock: float,boost_requested: bool = false) -> void:
 	if passenger.is_empty(): return
 	var body: CharacterBody3D = passenger.body
 	var dims := _trip_dimensions(body)
+	passenger.ignore_red = boost_active
+	passenger.indicator_left = maxf(0.0,float(passenger.get("indicator_left",0.0))-delta)
+	_indicators(body,int(passenger.get("indicator_side",0)) if float(passenger.indicator_left)>0.0 and not arrived else 0)
 	if arrived:
 		body.velocity = Vector3.ZERO
 		passenger.speed = 0.0
@@ -787,18 +812,40 @@ func tick(delta: float,_clock: float,boost_requested: bool = false) -> void:
 	if bool(waypoints[index].get("bypass",false)): speed = minf(speed,4.0)
 	passenger.signal_wait = 0.0
 	var reach := minf(maxf(5.0,float(passenger.speed)*float(passenger.speed)/(2.0*BRAKE)+3.0),distance+.7)
+	var lane := streets.four_lane_at(body.global_position,body.global_basis.z)
+	if not lane.is_empty() and not bool(waypoints[index].get("lane_change",false)) and d.dot(body.global_basis.z)>.94: reach = maxf(reach,18.0)
 	var free := TrafficBypass.clear_distance(body,d,reach,dims.x,dims.z)
 	var blocked := free<reach-.05
 	var stalled := TrafficBypass.stalled(passenger,body,delta)
 	var junction_limit := TrafficBypass.junction_gate(passenger,body,streets,waypoints,index,false,dims.x,dims.z,dims.y,delta)
 	speed = TrafficBypass.junction_speed(speed,junction_limit,BRAKE)
+	if bool(passenger.get("red_wait",false)):
+		passenger.signal_wait = 1.0
+		passenger.traffic_stall = 0.0
+		ride_status = "Semáforo rojo · "+String(passenger.label)
+	elif ride_status.begins_with("Semáforo rojo"):
+		ride_status = "Destino: "+String(passenger.label)
 	var should_stop := stop_requested and streets.intersection_clear_for_stop(body.global_position,dims.z,dims.x)
 	body.set_meta("traffic_priority",dims.z)
 	body.set_meta("traffic_servicing",stop_requested or float(passenger.signal_wait)>0.0)
 	# Shift requests a left pass before cooperative waiting or the ordinary
 	# bypass timer. Retain the crossing gate and the original destination.
 	passenger.shift_pass_retry = maxf(0.0,float(passenger.get("shift_pass_retry",0.0))-delta)
-	var wants_pass := boost_active and (blocked or (stalled>.65 and junction_limit>=0.0 and junction_limit<3.0))
+	# Normal taxi driving uses either same-direction lane on four-lane roads.
+	if blocked and not lane.is_empty() and not bool(body.get_meta("junction_guard",false)) and not stop_requested and float(passenger.shift_pass_retry)<=0.0 and not bool(waypoints[index].get("lane_change",false)):
+		passenger.shift_pass_retry = 1.5
+		var choice := TrafficBypass.taxi_lane_change(body,waypoints,index,streets,dims.x,dims.z,dims.y)
+		if not choice.is_empty():
+			var changed: Array = waypoints.slice(0,index)
+			changed.append_array(choice.path)
+			changed.append_array(waypoints.slice(int(choice.resume)))
+			passenger.path = changed
+			passenger.indicator_side = int(choice.side)
+			passenger.indicator_left = 3.0
+			passenger.traffic_stall = 0.0
+			ride_status = "Cambiando al carril "+("derecho" if int(choice.side)>0 else "izquierdo")+" · "+String(passenger.label)
+			return
+	var wants_pass := boost_active and lane.is_empty() and not bool(body.get_meta("junction_guard",false)) and blocked
 	if wants_pass and float(passenger.shift_pass_retry)<=0.0 and not bool(waypoints[index].get("requested_left",false)):
 		passenger.shift_pass_retry = 1.25
 		var base := index
@@ -816,6 +863,8 @@ func tick(delta: float,_clock: float,boost_requested: bool = false) -> void:
 				passenger.cooperative_hold = 0
 				passenger.cooperative_rejoin = false
 				passenger.speed = minf(float(passenger.speed),2.0)
+				passenger.indicator_side = -1
+				passenger.indicator_left = 3.0
 				ride_status = "Adelantando por la izquierda · "+String(passenger.label)
 				return
 	if not bool(body.get_meta("traffic_servicing")) and TrafficBypass.cooperate(passenger,body,streets,dims.x,dims.z,dims.y,delta,stalled,target): return
@@ -838,6 +887,10 @@ func tick(delta: float,_clock: float,boost_requested: bool = false) -> void:
 				changed.append_array(waypoints.slice(int(bypass.resume)))
 				passenger.path = changed
 				passenger.traffic_stall = 0.0
+				var first: Vector3 = bypass.path[0].p
+				var side := Vector3(-body.global_basis.z.z,0,body.global_basis.z.x)
+				passenger.indicator_side = 1 if (first-body.global_position).dot(side)>0.0 else -1
+				passenger.indicator_left = 3.0
 				ride_status = "Bordeando el atasco · "+String(passenger.label)
 				return
 			elif base>index:
@@ -895,6 +948,7 @@ func finish_trip() -> void:
 	if passenger.is_empty(): return
 	var body: CharacterBody3D = passenger.body
 	TrafficBypass._junction_release(passenger,body,streets)
+	_indicators(body,0)
 	body.set_meta("junction_guard",false)
 	body.remove_from_group("autonomous_traffic")
 	body.add_to_group("traffic_parked")
