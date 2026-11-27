@@ -109,18 +109,14 @@ func _label(root: Node3D,value: String,p: Vector3,color: Color = Color.WHITE) ->
 	label.position = p
 	return label
 
-func _person(root: Node3D,shirt: Color) -> Node3D:
-	var npc := Node3D.new()
+func _person(root: Node3D,style: int) -> Person:
+	var npc := Person.new()
 	root.add_child(npc)
-	var skin := Color("#b98762")
-	_box(npc,Vector3(0,1.17,0),Vector3(.43,.62,.29),shirt)
-	_box(npc,Vector3(0,1.67,0),Vector3(.29,.33,.28),skin)
-	_box(npc,Vector3(0,1.86,0),Vector3(.30,.10,.29),Color("#3e332b"))
-	for side in [-1.0,1.0]:
-		var x := float(side)
-		_box(npc,Vector3(x*.115,.47,0),Vector3(.18,.76,.23),Color("#465263"))
-		_box(npc,Vector3(x*.115,.075,.06),Vector3(.19,.15,.30),Color("#33342e"))
-		_box(npc,Vector3(x*.28,1.11,0),Vector3(.12,.51,.14),skin)
+	npc.setup(style)
+	# Stationary mission merchants must not be treated as ordinary greetings.
+	npc.remove_from_group("social_people")
+	npc.remove_from_group("pedestrian_spacing")
+	npc.social_context = "shopping"
 	return npc
 
 func _arrow(root: Node3D,p: Vector3,color: Color) -> Node3D:
@@ -254,7 +250,7 @@ func _make_scene() -> void:
 	if world.business_frontage==null or world.food_factory.is_empty(): return
 	var home := world.business_frontage
 	var side_offset := _albertico_side_offset(home)
-	albertico = _person(self,Color("#638e77"))
+	albertico = _person(self,810)
 	albertico.position = home.to_global(Vector3(-2.55+side_offset,.105,2.85))
 	albertico.rotation.y = home.rotation.y
 	_label(albertico,"Albertico",Vector3(0,2.03,0))
@@ -276,7 +272,9 @@ func _make_scene() -> void:
 	buyer.social_context = "shopping"
 	buyer.hide()
 	var counter: Vector3 = world.food_factory.counter
-	var clerk := _person(self,Color("#8196b0"))
+	var clerk := _person(self,813)
+	clerk.add_to_group("mission_merchant_visuals")
+	albertico.add_to_group("mission_merchant_visuals")
 	var basis: Basis = world.food_factory.basis
 	clerk.position = counter+basis*Vector3(0,-.84,-2.05)
 	clerk.rotation.y = basis.get_euler().y
@@ -480,7 +478,8 @@ func aimed_albertico_text(at: Vector3) -> String:
 	var direction := -camera.global_transform.basis.z
 	var finish := origin+direction*8.0
 	var depth := INF
-	for child in albertico.get_children():
+	var parts := albertico.find_children("*","MeshInstance3D",true,false)
+	for child in parts:
 		if not child is MeshInstance3D or not child.is_visible_in_tree(): continue
 		var part := child as MeshInstance3D
 		var local_hit: Variant = part.get_aabb().intersects_segment(part.to_local(origin),part.to_local(finish))
@@ -1033,6 +1032,11 @@ func _tick_buyer(delta: float) -> void:
 func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	if life!=null: life.tick(delta,in_vehicle,editor)
 	phase += delta
+	# Only two stationary merchants; animate when near the camera.
+	if not editor and is_instance_valid(camera):
+		for merchant in get_tree().get_nodes_in_group("mission_merchant_visuals"):
+			if merchant is Person and merchant.global_position.distance_squared_to(camera.global_position)<625.0:
+				merchant.animate(delta,false)
 	toast_time = maxf(0.0,toast_time-delta)
 	hud.visible = not editor
 	if crate_view!=null: crate_view.visible = not in_vehicle and not editor and not ledger.carry.is_empty()

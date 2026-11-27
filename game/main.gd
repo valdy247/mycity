@@ -88,6 +88,9 @@ var reset_requested := false
 var limb_arms: Array[Node3D] = []
 var limb_legs: Array[Node3D] = []
 var step_phase := 0.0
+var avatar_idle_phase := 0.0
+var avatar_stride_weight := 0.0
+var avatar_sphere_mesh: SphereMesh
 var player_shape: CollisionShape3D
 var van_home := Transform3D.IDENTITY
 var van_ground_initialized := false
@@ -885,14 +888,15 @@ func _box(parent: Node3D, part_name: String, at: Vector3, size: Vector3, mat: St
 	return instance
 
 func _sphere(parent: Node3D, part_name: String, at: Vector3, size: Vector3, mat: StandardMaterial3D) -> MeshInstance3D:
-	var mesh := SphereMesh.new()
-	mesh.radius = 0.5
-	mesh.height = 1.0
-	mesh.radial_segments = 12
-	mesh.rings = 6
+	if avatar_sphere_mesh==null:
+		avatar_sphere_mesh = SphereMesh.new()
+		avatar_sphere_mesh.radius = .5
+		avatar_sphere_mesh.height = 1.0
+		avatar_sphere_mesh.radial_segments = 12
+		avatar_sphere_mesh.rings = 6
 	var instance := MeshInstance3D.new()
 	instance.name = part_name
-	instance.mesh = mesh
+	instance.mesh = avatar_sphere_mesh
 	instance.material_override = mat
 	parent.add_child(instance)
 	instance.position = at
@@ -942,12 +946,14 @@ func _make_cartoon_avatar() -> void:
 	# Capsule collision remains the same. All limbs are purely visual.
 	_sphere(avatar, "Shirt", Vector3(0, 0.05, 0), Vector3(0.58, 0.64, 0.35), shirt)
 	_sphere(avatar, "Hip", Vector3(0, -0.23, 0), Vector3(0.44, 0.25, 0.30), jeans)
-	_sphere(avatar, "Head", Vector3(0, 0.53, 0), Vector3(0.52, 0.55, 0.48), skin)
-	_sphere(avatar, "Hair", Vector3(0, 0.73, -0.045), Vector3(0.53, 0.26, 0.49), hair)
+	_sphere(avatar, "Neck", Vector3(0,.36,0),Vector3(.19,.20,.19),skin)
+	_sphere(avatar, "Head", Vector3(0, 0.53, 0), Vector3(0.48, 0.52, 0.44), skin)
+	_sphere(avatar, "Hair", Vector3(0, 0.72, -0.035), Vector3(0.49, 0.22, 0.45), hair)
 	for side in [-1, 1]:
-		_sphere(avatar, "Ear", Vector3(side * 0.25, 0.53, 0), Vector3(0.10, 0.14, 0.11), skin)
-		_sphere(avatar, "EyeWhite", Vector3(side * 0.105, 0.57, 0.212), Vector3(0.115, 0.14, 0.075), eye_white)
-		_sphere(avatar, "Eye", Vector3(side * 0.105, 0.57, 0.245), Vector3(0.053, 0.078, 0.035), eye)
+		_sphere(avatar, "Ear", Vector3(side * 0.235, 0.53, 0), Vector3(0.075, 0.11, 0.08), skin)
+		_sphere(avatar, "EyeWhite", Vector3(side * 0.096, 0.57, 0.194), Vector3(0.080, 0.055, 0.036), eye_white)
+		_sphere(avatar, "Eye", Vector3(side * 0.096, 0.57, 0.213), Vector3(0.033, 0.042, 0.020), eye)
+		_sphere(avatar, "Brow",Vector3(side*.096,.623,.193),Vector3(.087,.018,.019),hair)
 		var shoulder := Node3D.new()
 		avatar.add_child(shoulder)
 		shoulder.position = Vector3(side * 0.32, 0.21, 0)
@@ -961,20 +967,24 @@ func _make_cartoon_avatar() -> void:
 		limb_legs.append(hip)
 		_sphere(hip, "Leg", Vector3(0, -0.23, 0), Vector3(0.22, 0.48, 0.23), jeans)
 		_sphere(hip, "Shoe", Vector3(0, -0.46, 0.075), Vector3(0.24, 0.18, 0.36), shoes)
-	_sphere(avatar, "Nose", Vector3(0, 0.48, 0.247), Vector3(0.09, 0.10, 0.09), skin)
+	_sphere(avatar, "Nose", Vector3(0, 0.51, 0.218), Vector3(0.065, 0.085, 0.065), skin)
+	_sphere(avatar, "Mouth", Vector3(0,.43,.204),Vector3(.085,.022,.015),_material(Color("#925b49")))
 
 func _animate_avatar(delta: float, speed: float) -> void:
 	var moving := speed > 0.1 and player.is_on_floor()
-	var strength := 0.68 if speed < 6.0 else 0.95
+	var strength := lerpf(.45,.86,smoothstep(2.0,8.0,speed))
+	avatar_stride_weight = move_toward(avatar_stride_weight,1.0 if moving else 0.0,delta*7.0)
+	avatar_idle_phase = fposmod(avatar_idle_phase+delta*2.0,TAU)
 	if moving:
-		step_phase += delta * (6.5 + speed * 0.8)
+		step_phase = fposmod(step_phase+delta*(5.5+speed*.9),TAU)
 	for i in range(limb_legs.size()):
-		var swing := sin(step_phase + i * PI) * strength if moving else 0.0
+		var swing := sin(step_phase + i * PI) * strength * avatar_stride_weight
 		if not player.is_on_floor():
 			swing = -0.25 if i == 0 else 0.35
 		limb_legs[i].rotation.x = lerpf(limb_legs[i].rotation.x, swing, minf(delta * 12.0, 1.0))
 		limb_arms[i].rotation.x = lerpf(limb_arms[i].rotation.x, -swing * 0.85, minf(delta * 12.0, 1.0))
-	avatar.position.y = lerpf(avatar.position.y, absf(sin(step_phase)) * 0.045 if moving else 0.0, minf(delta * 12.0, 1.0))
+	var bob := absf(sin(step_phase))*.032*avatar_stride_weight
+	avatar.position.y = lerpf(avatar.position.y,bob+sin(avatar_idle_phase)*.003,minf(delta*12.0,1.0))
 
 func _near_van() -> bool:
 	if van == null or player == null:

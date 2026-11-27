@@ -16,6 +16,14 @@ var gait := 1.0
 var leisure_prop: Node3D
 var phone_idle := false
 var knees: Array[Node3D] = []
+# Story detail is limited to the main cast, not every city pedestrian.
+const STORY_STYLES := [806,807,810,813,933,945]
+var story_character := false
+var idle_phase := 0.0
+var stride_weight := 0.0
+var facial_eyes: Array[MeshInstance3D] = []
+var facial_blink := 0.0
+var blink_clock := 0.0
 
 func _material(color: Color) -> StandardMaterial3D:
 	var key := color.to_html()
@@ -28,12 +36,12 @@ func _material(color: Color) -> StandardMaterial3D:
 
 func _mesh(kind: String) -> Mesh:
 	if not meshes.has(kind):
-		if kind=="head":
+		if kind=="head" or kind=="portrait":
 			var sphere := SphereMesh.new()
 			sphere.radius = .5
 			sphere.height = 1.0
-			sphere.radial_segments = 10
-			sphere.rings = 5
+			sphere.radial_segments = 14 if kind=="portrait" else 10
+			sphere.rings = 7 if kind=="portrait" else 5
 			meshes[kind] = sphere
 		elif kind=="limb":
 			var cylinder := CylinderMesh.new()
@@ -63,7 +71,9 @@ func _part(root: Node3D,kind: String,p: Vector3,dims: Vector3,color: Color,detai
 
 func setup(style: int,worker: bool = false,ambient: bool = false) -> void:
 	style_id = style
-	female = not worker and posmod(style,3)==1
+	story_character = not worker and not ambient and style in STORY_STYLES
+	female = not worker and posmod(style,3)==1 and not story_character
+	blink_clock = 2.2+float(posmod(style,7))*.23
 	add_to_group("social_people")
 	add_to_group("pedestrian_spacing")
 	# Deterministic wardrobe: no random allocations or extra per-frame logic.
@@ -82,6 +92,28 @@ func setup(style: int,worker: bool = false,ambient: bool = false) -> void:
 	elif female and outfit==3:
 		shirt = Color("#922e42")
 		pants = shirt
+	# Stable wardrobe for recurring story characters; shared palette and meshes.
+	if story_character:
+		shorts = false
+		match style:
+			806: # Carlos: practical work shirt and faded jeans.
+				shirt = Color("#c5b79a")
+				pants = Color("#435b70")
+			807: # Yordi: dark red shirt, charcoal trousers.
+				shirt = Color("#983c3e")
+				pants = Color("#373b42")
+			810: # Albertico: green polo, dark blue trousers.
+				shirt = Color("#638e77")
+				pants = Color("#384b5c")
+			813:
+				shirt = Color("#8196b0")
+				pants = Color("#414950")
+			933:
+				shirt = Color("#d2ae79")
+				pants = Color("#474e54")
+			945:
+				shirt = Color("#a3a59a")
+				pants = Color("#685e4e")
 	var build := posmod(variant,4)
 	var torso_width: float = .43 if worker else .37+float(build)*.04
 	var hip_width := .35 if worker else (.36+float(build)*.025 if female else .32+float(build)*.018)
@@ -96,19 +128,35 @@ func setup(style: int,worker: bool = false,ambient: bool = false) -> void:
 		height *= .94
 		gait = .76
 	scale = Vector3(height,height,height)
-	_part(self,"limb",Vector3(0,1.18,0),Vector3(torso_width,.58,depth),shirt)
+	# A rounded chest instead of a hard cylinder only on featured characters.
+	_part(self,"portrait" if story_character else "limb",Vector3(0,1.18,0),Vector3(torso_width,.58,depth),shirt)
 	_part(self,"head",Vector3(0,.88,0),Vector3(hip_width,.23,depth),pants)
 	_part(self,"limb",Vector3(0,1.48,0),Vector3(.14,.16,.13),skin)
-	_part(self,"head",Vector3(0,1.66,.015),Vector3(.28,.34,.29),skin)
+	_part(self,"portrait" if story_character else "head",Vector3(0,1.66,.015),Vector3(.28,.34,.29),skin)
 	var hair_colors: Array[Color] = [Color("#231e1b"),Color("#302b28"),Color("#4b3428"),Color("#3c3531")]
 	var hair: Color = Color("#d5c14b") if worker else hair_colors[posmod(variant,hair_colors.size())]
 	if age_group=="mayor": hair = Color("#a29d96")
 	_part(self,"head",Vector3(0,1.77,-.028),Vector3(.29,.17,.29),hair)
 	_part(self,"head",Vector3(0,1.65,.155),Vector3(.055,.067,.048),skin,true)
 	for side in [-1.0,1.0]:
-		_part(self,"box",Vector3(float(side)*.060,1.69,.146),Vector3(.045,.022,.014),Color("#d9d3c9"),true)
-		_part(self,"box",Vector3(float(side)*.060,1.69,.156),Vector3(.017,.019,.008),Color("#302823"),true)
+		var eye := _part(self,"box",Vector3(float(side)*.060,1.69,.146),Vector3(.045,.022,.014),Color("#d9d3c9"),true)
+		var pupil := _part(self,"box",Vector3(float(side)*.060,1.69,.156),Vector3(.017,.019,.008),Color("#302823"),true)
+		if story_character:
+			facial_eyes.append(eye)
+			facial_eyes.append(pupil)
+			_part(self,"head",Vector3(float(side)*.141,1.655,.005),Vector3(.054,.095,.053),skin,true)
+			_part(self,"box",Vector3(float(side)*.060,1.723,.143),Vector3(.050,.012,.012),hair,true)
 	_part(self,"box",Vector3(0,1.59,.149),Vector3(.062,.012,.009),Color("#805345"),true)
+	if story_character:
+		# A few tiny accessories, culled beyond the existing detail distance.
+		_part(self,"limb",Vector3(0,.974,0),Vector3(hip_width*.98,.045,depth*.99),Color("#40372d"),true)
+		_part(self,"box",Vector3(0,.978,depth*.52),Vector3(.049,.031,.012),Color("#887c65"),true)
+		if style==806:
+			_part(self,"box",Vector3(-.10,1.26,depth*.49),Vector3(.088,.088,.018),shirt.darkened(.16),true)
+		elif style==807:
+			_part(self,"box",Vector3(.10,1.26,depth*.49),Vector3(.040,.028,.012),Color("#cbbca9"),true)
+		elif style==810:
+			_part(self,"box",Vector3(0,1.38,depth*.47),Vector3(.06,.13,.016),shirt.darkened(.22),true)
 	var shoe: Color = Color("#393832") if worker or outfit==0 else (Color("#e1ddd4") if outfit%2==1 else Color("#464b50"))
 	for side in [-1.0,1.0]:
 		var x := float(side)
@@ -168,16 +216,32 @@ func setup(style: int,worker: bool = false,ambient: bool = false) -> void:
 
 func animate(delta: float,moving: bool,run_speed: float = 0.0) -> void:
 	var sprint := clampf((run_speed-4.5)/4.0,0.0,1.0) if moving else 0.0
-	if moving: phase += delta*9.5*gait*(1.0+sprint*.55)
+	# Fade between idle, walk and run rather than snapping at a stop.
+	var pace := run_speed if run_speed>0.0 else 1.4
+	var cadence := clampf(5.2+pace*1.55,6.5,14.5)
+	if moving: phase = fposmod(phase+delta*cadence*gait,TAU)
+	stride_weight = move_toward(stride_weight,1.0 if moving else 0.0,delta*6.0)
+	idle_phase = fposmod(idle_phase+delta*2.0,TAU)
+	if story_character and not facial_eyes.is_empty():
+		blink_clock -= delta
+		if blink_clock<=0.0:
+			blink_clock = 3.4+float(posmod(style_id,5))*.27
+			facial_blink = .13
+		facial_blink = maxf(0.0,facial_blink-delta)
+		var open := facial_blink<=.015
+		for eye in facial_eyes:
+			if eye.visible!=open: eye.visible = open
 	var use_phone := phone_idle and not moving and carried==null and not has_meta("incident_role")
 	if is_instance_valid(leisure_prop): leisure_prop.visible = use_phone
 	for i in range(limbs.size()):
-		var stride := sin(phase+float(i)*PI) if moving else 0.0
+		var stride := sin(phase+float(i)*PI)*stride_weight
 		var swing := stride*lerpf(.43,.76,sprint)
 		var blend := minf(1.0,delta*15.0)
 		limbs[i].rotation.x = lerpf(limbs[i].rotation.x,swing,blend)
 		knees[i].rotation.x = lerpf(knees[i].rotation.x,maxf(0.0,-stride)*lerpf(.48,1.02,sprint),blend)
 		var arm_pose := -swing*.72 if carried==null else -.85
+		if story_character and not moving and carried==null and not has_meta("incident_role"):
+			arm_pose += sin(idle_phase+float(i)*.7)*.035
 		if use_phone and i==1: arm_pose = -1.15
 		arms[i].rotation.x = lerpf(arms[i].rotation.x,arm_pose,blend)
 
@@ -197,7 +261,7 @@ func walk_to(target: Vector3,delta: float,speed: float = 1.4) -> bool:
 	if flat.length()>.03:
 		rotation.y = lerp_angle(rotation.y,atan2(flat.x,flat.z),minf(1.0,delta*12.0))
 	global_position = global_position.move_toward(target,speed*delta)
-	animate(delta,true)
+	animate(delta,true,speed)
 	return false
 
 func set_bag(value: bool) -> void:
