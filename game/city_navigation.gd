@@ -1,6 +1,7 @@
 extends CanvasLayer
 # A single reusable 2D map. No extra camera, viewport or background route search.
 const MapView = preload("res://taxi_map.gd")
+const Interface = preload("res://interface_style.gd")
 var game
 var root: PanelContainer
 var map: MapView
@@ -36,7 +37,7 @@ func setup(controller) -> void:
 	var header := HBoxContainer.new()
 	layout.add_child(header)
 	var title := Label.new()
-	title.text = "MYCITY  /  MAPA"
+	title.text = "MYCITY  /  NAVEGACIÓN"
 	title.add_theme_font_size_override("font_size",24)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(title)
@@ -66,11 +67,21 @@ func setup(controller) -> void:
 	layout.add_child(map)
 	map.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	map.point_selected.connect(_choose_point)
+	var route_card := PanelContainer.new()
+	var route_style := StyleBoxFlat.new()
+	route_style.bg_color = Color("#1c3042")
+	route_style.set_corner_radius_all(8)
+	route_style.content_margin_left = 12.0
+	route_style.content_margin_right = 12.0
+	route_style.content_margin_top = 9.0
+	route_style.content_margin_bottom = 9.0
+	route_card.add_theme_stylebox_override("panel",route_style)
+	layout.add_child(route_card)
 	info = Label.new()
 	info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	layout.add_child(info)
+	route_card.add_child(info)
 	var hint := Label.new()
-	hint.text = "Clic: marcar destino  ·  Arrastrar: mover mapa  ·  Rueda: zoom  ·  Azul: ruta calculada"
+	hint.text = "Amarillo: tú  ·  Verde: lugares  ·  Rojo: destino  ·  Azul: ruta\nClic: destino  ·  Arrastrar: mover  ·  Rueda: zoom"
 	hint.add_theme_color_override("font_color",Color("#aab9c9"))
 	layout.add_child(hint)
 	root.hide()
@@ -316,7 +327,7 @@ func _draw_route(fit: bool) -> void:
 			map.route.append(Vector2(point.x,point.z))
 			distance += previous.distance_to(point)
 			previous = point
-		info.text = "%s · %.0f m por ruta  %s" % [selected_label,distance,note]
+		info.text = "%s · %s por ruta\n%s" % [selected_label,Interface.distance_text(distance),note]
 	else:
 		info.text = selected_label+" · "+note
 	if fit:

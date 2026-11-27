@@ -123,7 +123,7 @@ func _limit_center() -> void:
 	center.y = clampf(center.y,-MapData.LIMIT,MapData.LIMIT)
 
 func _draw() -> void:
-	draw_rect(Rect2(Vector2.ZERO,size),Color("#242d35"))
+	draw_rect(Rect2(Vector2.ZERO,size),Color("#1d2a34"))
 	if geography==null: return
 	# All roads are cached as flat line arrays. The map is redrawn only
 	# on interaction, resize or a new destination, with no second 3D view.
@@ -136,7 +136,7 @@ func _draw() -> void:
 		draw_multiline(main_roads,Color("#d4c5a2"),maxf(4.5,2.5/zoom),true)
 	if route.size()>=2:
 		draw_polyline(route,Color("#132338"),7.0/zoom,true)
-		draw_polyline(route,Color("#58aaff"),4.0/zoom,true)
+		draw_polyline(route,Color("#63b7ff"),4.0/zoom,true)
 	draw_set_transform(Vector2.ZERO)
 	var font := get_theme_default_font()
 	var used: Array[Rect2] = []

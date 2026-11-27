@@ -5,6 +5,12 @@ const Taxi = preload("res://taxi_service.gd")
 const Person = preload("res://street_person.gd")
 const CityLife = preload("res://city_life.gd")
 const StoryCamera = preload("res://story_camera.gd")
+const Interface = preload("res://interface_style.gd")
+var phone_destination: Callable
+var notice_panel: PanelContainer
+var notice_title: Label
+var notice_body: Label
+var phone_tiles: Array[Button] = []
 var story_camera: StoryCamera
 var story_active := false
 var story_lines: Array = []
@@ -467,6 +473,31 @@ func _make_ui() -> void:
 	hud.add_theme_color_override("font_shadow_color",Color.BLACK)
 	hud.add_theme_constant_override("shadow_offset_x",2)
 	hud.add_theme_constant_override("shadow_offset_y",2)
+	hud.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hud.add_theme_stylebox_override("normal",_phone_style(Color("#101b28e8"),9,Color("#34485c"),1,10))
+	notice_panel = PanelContainer.new()
+	layer.add_child(notice_panel)
+	notice_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
+	notice_panel.offset_left = -345
+	notice_panel.offset_right = -12
+	notice_panel.offset_top = -170
+	notice_panel.offset_bottom = -80
+	notice_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	notice_panel.add_theme_stylebox_override("panel",_phone_style(Color("#182737f5"),10,Color("#52677d"),1,10))
+	var notice_stack := VBoxContainer.new()
+	notice_stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	notice_panel.add_child(notice_stack)
+	notice_title = Label.new()
+	notice_title.add_theme_font_size_override("font_size",12)
+	notice_title.add_theme_color_override("font_color",Color("#edcd8c"))
+	notice_title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	notice_stack.add_child(notice_title)
+	notice_body = Label.new()
+	notice_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	notice_body.add_theme_font_size_override("font_size",14)
+	notice_body.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	notice_stack.add_child(notice_body)
+	notice_panel.hide()
 	panel = PanelContainer.new()
 	layer.add_child(panel)
 	panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
@@ -474,6 +505,7 @@ func _make_ui() -> void:
 	panel.offset_right = 240
 	panel.offset_top = -200
 	panel.offset_bottom = 200
+	panel.add_theme_stylebox_override("panel",_phone_style(Color("#152130f5"),14,Color("#40536a"),1,4))
 	var margin := MarginContainer.new()
 	for side in ["left","right","top","bottom"]:
 		margin.add_theme_constant_override("margin_"+side,16)
@@ -516,6 +548,7 @@ func _open(title: String,body: String = "") -> void:
 	_end_story()
 	content = phone_content if phone_mode else dialog_content
 	phone_balance = null
+	phone_tiles.clear()
 	for child in content.get_children():
 		content.remove_child(child)
 		child.queue_free()
@@ -523,6 +556,7 @@ func _open(title: String,body: String = "") -> void:
 		phone_title.text = title
 		phone_scroll.scroll_vertical = 0
 		panel.hide()
+		_resize_phone()
 		phone_panel.show()
 		_update_phone_status()
 	else:
@@ -672,7 +706,7 @@ func _end_story() -> void:
 	story_lines.clear()
 	story_callback = Callable()
 	story_confirming = false
-	panel.remove_theme_stylebox_override("panel")
+	panel.add_theme_stylebox_override("panel",_phone_style(Color("#152130f5"),14,Color("#40536a"),1,4))
 	panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 	panel.offset_left = -240
 	panel.offset_right = 240
@@ -692,6 +726,16 @@ func _button(text_value: String,callback: Callable,disabled_value: bool = false)
 func _notify(value: String) -> void:
 	toast = value
 	toast_time = 5.0
+	_refresh_notice()
+
+func _refresh_notice() -> void:
+	if not is_instance_valid(notice_panel): return
+	var show_notice := toast_time>0.0 and not modal_open() and hud.visible
+	if notice_panel.visible!=show_notice: notice_panel.visible = show_notice
+	if show_notice:
+		var heading := Interface.notice_title(toast)
+		if notice_title.text!=heading: notice_title.text = heading
+		if notice_body.text!=toast: notice_body.text = toast
 
 func _flat_distance(a: Vector3,b: Vector3) -> float:
 	return Vector2(a.x,a.z).distance_to(Vector2(b.x,b.z))
@@ -897,6 +941,11 @@ func open_phone_home() -> void:
 	phone_balance.add_theme_font_size_override("font_size",32)
 	stack.add_child(phone_balance)
 	_update_phone_status()
+	var missions := Button.new()
+	missions.text = "Misiones · Ver objetivos"
+	missions.custom_minimum_size.y = 40
+	missions.pressed.connect(open_mission_log)
+	content.add_child(missions)
 	var apps := GridContainer.new()
 	apps.columns = 3
 	apps.add_theme_constant_override("h_separation",9)
@@ -924,7 +973,8 @@ func open_phone_home() -> void:
 
 func _phone_tile(root: Control,label_value: String,callback: Callable,key: String,color: Color,count: int = 0) -> void:
 	var tile := Button.new()
-	tile.custom_minimum_size = Vector2(0,103)
+	tile.custom_minimum_size = Vector2(0,82)
+	phone_tiles.append(tile)
 	tile.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	tile.add_theme_stylebox_override("normal",_phone_style(Color("#202c3d"),15,Color("#344558"),1,5))
 	tile.add_theme_stylebox_override("hover",_phone_style(Color("#2d3e52"),15,Color("#7494ac"),1,5))
@@ -941,7 +991,7 @@ func _phone_tile(root: Control,label_value: String,callback: Callable,key: Strin
 	stack.add_theme_constant_override("separation",5)
 	var icon := TextureRect.new()
 	icon.texture = _phone_icon(key,color)
-	icon.custom_minimum_size = Vector2(46,46)
+	icon.custom_minimum_size = Vector2(36,36)
 	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	icon.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
@@ -966,6 +1016,19 @@ func _phone_tile(root: Control,label_value: String,callback: Callable,key: Strin
 		badge.offset_right = -6
 		badge.offset_top = 5
 		badge.offset_bottom = 25
+
+func open_mission_log() -> void:
+	phone_mode = true
+	_open("Misiones","Objetivos actuales y progreso")
+	_phone_metric("01 · Albertico",_objective())
+	var carlos_stage := int(ledger.life_data.get("carlos_paint",{}).get("stage",0))
+	var carlos_text := String(carlos_objective.call()) if carlos_objective.is_valid() else ""
+	_phone_metric("02 · Carlos",carlos_text if not carlos_text.is_empty() else ("Trabajo completado" if carlos_stage>=5 else "Disponible tras el negocio de Albertico"))
+	var yordi_stage := int(ledger.life_data.get("yordi_ps5",{}).get("stage",0))
+	var yordi_text := String(yordi_objective.call()) if yordi_objective.is_valid() else ""
+	_phone_metric("03 · Yordi",yordi_text if not yordi_text.is_empty() else ("Misión completada" if yordi_stage>=14 else "Pendiente de desbloquear"))
+	if city_map.is_valid(): _button("Abrir mapa",city_map)
+	_button("Inicio",open_phone_home)
 
 func open_business_summary() -> void:
 	_open("Mi negocio","Resumen de tu actividad comercial")
@@ -1021,10 +1084,8 @@ func _make_phone() -> void:
 	phone_panel = PanelContainer.new()
 	layer.add_child(phone_panel)
 	phone_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_RIGHT)
-	phone_panel.offset_left = -465
-	phone_panel.offset_right = -24
-	phone_panel.offset_top = -318
-	phone_panel.offset_bottom = 318
+	_resize_phone()
+	get_viewport().size_changed.connect(_resize_phone)
 	var frame := _phone_style(Color("#101822"),30,Color("#5b6877"),3,16)
 	frame.shadow_color = Color(0,0,0,.45)
 	frame.shadow_size = 12
@@ -1096,6 +1157,16 @@ func _make_phone() -> void:
 	shell.add_child(bar)
 	phone_panel.hide()
 
+func _resize_phone() -> void:
+	if not is_instance_valid(phone_panel): return
+	var dimensions := Interface.phone_size(get_viewport().get_visible_rect().size)
+	phone_panel.offset_left = -dimensions.x-12.0
+	phone_panel.offset_right = -12.0
+	phone_panel.offset_top = -dimensions.y*.5
+	phone_panel.offset_bottom = dimensions.y*.5
+	# Reset stale minimum size after switching F6 resolution.
+	phone_panel.reset_size()
+
 func _update_phone_status() -> void:
 	if not phone_mode or not is_instance_valid(phone_clock): return
 	var minute := int(life.state.get("minutes",480))%1440 if life!=null else 480
@@ -1148,12 +1219,12 @@ func _phone_thread(name_value: String) -> void:
 		if other!=name_value: continue
 		var bubble := PanelContainer.new()
 		bubble.size_flags_horizontal = Control.SIZE_SHRINK_END if outgoing else Control.SIZE_SHRINK_BEGIN
-		bubble.custom_minimum_size.x = 280
+		bubble.custom_minimum_size.x = 0
 		bubble.add_theme_stylebox_override("panel",_phone_style(Color("#245b51") if outgoing else Color("#25374b"),15,Color.TRANSPARENT,0,11))
 		content.add_child(bubble)
 		var message := Label.new()
 		message.text = String(item.get("body",""))
-		message.custom_minimum_size.x = 280
+		message.custom_minimum_size.x = minf(260.0,maxf(150.0,Interface.phone_size(get_viewport().get_visible_rect().size).x-100.0))
 		message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		bubble.add_child(message)
 	if life!=null:
@@ -1174,6 +1245,10 @@ func open_phone_gps() -> void:
 	var at: Vector3 = phone_position.call() if phone_position.is_valid() else player.global_position
 	var current := world.geography.coordinate_text(at)
 	_phone_metric("Ubicación actual",current)
+	if phone_destination.is_valid():
+		var destination: Dictionary = phone_destination.call()
+		if not destination.is_empty():
+			_phone_metric("Destino activo",String(destination.label)+" · "+Interface.distance_text(float(destination.distance)))
 	_button("Copiar coordenadas",_copy_phone_gps.bind(current))
 	if not world.garage_home_site.is_empty():
 		var door: Vector3 = world.garage_home_site.door
@@ -1288,7 +1363,7 @@ func _update_hud() -> void:
 	if yordi_objective.is_valid():
 		var yordi_job: String = yordi_objective.call()
 		if not yordi_job.is_empty(): hud.text += "\n"+yordi_job
-	if toast_time>0: hud.text += "\n"+toast
+	_refresh_notice()
 
 # Sales and stock remain independent of the visual customer. If no
 # verified doorway can reach the stall, do not fake a walk through a wall.
@@ -1375,6 +1450,7 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 		for arm in albertico.arms: arm.rotation.x = lerpf(arm.rotation.x,-.9,minf(delta*10.0,1.0))
 	toast_time = maxf(0.0,toast_time-delta)
 	hud.visible = not editor
+	_refresh_notice()
 	if crate_view!=null: crate_view.visible = not in_vehicle and not editor and not ledger.carry.is_empty()
 	if arrow!=null:
 		arrow.position.y = 2.68+sin(phase*3.0)*.13

@@ -173,7 +173,13 @@ func _ready() -> void:
 		business.phone_position = func() -> Vector3:
 			if driving: return van.global_position
 			if garage!=null and garage.inside and not cuba_world.garage_home_site.is_empty(): return cuba_world.garage_home_site.door
+			if carlos_mission!=null and carlos_mission.inside and not carlos_mission.customer.is_empty(): return carlos_mission.customer.p
 			return player.global_position
+		business.phone_destination = func() -> Dictionary:
+			if garage==null or not garage.waypoint_active: return {}
+			var at: Vector3 = business.phone_position.call()
+			var goal: Vector3 = garage.waypoint_point
+			return {"label":garage.waypoint_label,"distance":Vector2(at.x,at.z).distance_to(Vector2(goal.x,goal.z))}
 		business.life.attach_avatar(limb_arms)
 		for bus in urban_buses.buses:
 			var body: CharacterBody3D = bus.body
@@ -368,7 +374,15 @@ func _make_hud() -> void:
 	add_child(canvas)
 	status = Label.new()
 	status.position = Vector2(18, 16)
-	status.add_theme_font_size_override("font_size", 15)
+	status.add_theme_font_size_override("font_size", 14)
+	var status_style := StyleBoxFlat.new()
+	status_style.bg_color = Color("#101b28df")
+	status_style.set_corner_radius_all(8)
+	status_style.content_margin_left = 10.0
+	status_style.content_margin_right = 10.0
+	status_style.content_margin_top = 7.0
+	status_style.content_margin_bottom = 7.0
+	status.add_theme_stylebox_override("normal",status_style)
 	status.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	status.add_theme_color_override("font_shadow_color", Color.BLACK)
 	status.add_theme_constant_override("shadow_offset_x", 2)
