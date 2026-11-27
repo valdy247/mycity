@@ -65,6 +65,9 @@ var driver_return_index := 0
 var driver_ready := false
 var cabin_look := Vector2.ZERO
 var waiting_people: Array[Person] = []
+var terminal_people: Array[Dictionary] = []
+var ambient_bag_slots: Dictionary = {}
+var ambient_trolley: Node3D
 var ambient_clock := 0.0
 var dialogue: Label
 
@@ -78,6 +81,7 @@ func _ready() -> void:
 	_make_player()
 	_make_arrivals_props()
 	_make_bags()
+	_make_terminal_people()
 	_update_belt(0.0)
 	_make_hud()
 	var voices := DisplayServer.tts_get_voices_for_language("es")
@@ -558,6 +562,145 @@ func _make_people() -> void:
 		driver.position = taxi.to_global(Vector3(1.65,0,.30))
 		driver_ready = true
 
+func _terminal_person(style: int,at: Vector3,worker: bool=false) -> Person:
+	var person := Person.new()
+	add_child(person)
+	person.setup(style,worker,true)
+	person.position = at
+	return person
+
+func _make_terminal_people() -> void:
+	# Small groups deliberately stay off the migration lane and exit corridor.
+	for i in range(2):
+		var x := -10.5 if i==0 else 7.3
+		var z := -26.8 if i==0 else -5.1
+		var a := _terminal_person(561+i*39,Vector3(x,.03,z))
+		var b := _terminal_person(582+i*41,Vector3(x+1.05,.03,z+.12))
+		a.rotation.y = PI*.5
+		b.rotation.y = -PI*.5
+		terminal_people.append({"node":a,"role":"talk","partner":b,"offset":float(i)*3.0})
+		terminal_people.append({"node":b,"role":"talk","partner":a,"offset":float(i)*3.0+2.8})
+	# Workers patrol along the side wall rather than crossing the player's gate.
+	var worker := _terminal_person(617,Vector3(-11.2,.03,-18.0),true)
+	terminal_people.append({"node":worker,"role":"patrol","route":[Vector3(-11.2,.03,-18),Vector3(-11.2,.03,-10),Vector3(-11.2,.03,-4.6)],"index":1,"pause":1.7})
+	# A passenger takes a non-player suitcase from the moving belt and carries it away.
+	var collector := _terminal_person(643,Vector3(5,.03,-15.9))
+	collector.rotation.y = 0.0
+	terminal_people.append({"node":collector,"role":"collect","state":0,"pause":2.0,"bag_slot":0,"index":0,"route":[Vector3(5,.03,-14.05),Vector3(5,.03,-16.0),Vector3(9.5,.03,-16.0)],"bag":null})
+	# A separate ambient trolley, never used by the player's mission.
+	var pusher := _terminal_person(672,Vector3(-8.5,.03,-14.6))
+	pusher.rotation.y = 0.0
+	ambient_trolley = Node3D.new()
+	add_child(ambient_trolley)
+	var steel := Color("#a9afb1")
+	_box(ambient_trolley,Vector3(0,.24,0),Vector3(.80,.06,1.04),steel)
+	for x in [-.37,.37]:
+		_box(ambient_trolley,Vector3(float(x),.57,.45),Vector3(.04,.70,.04),steel)
+		for z in [-.43,.43]:
+			_box(ambient_trolley,Vector3(float(x),.085,float(z)),Vector3(.09,.15,.14),Color("#303638"))
+	_box(ambient_trolley,Vector3(0,.90,.45),Vector3(.80,.05,.05),Color("#253c57"))
+	var load := _suitcase(Color("#465e55"))
+	load.reparent(ambient_trolley,false)
+	load.position = Vector3(0,.28,-.08)
+	terminal_people.append({"node":pusher,"role":"push","route":[Vector3(-8.5,.03,-14.6),Vector3(-8.5,.03,-6.5)],"index":1,"pause":2.3})
+	_update_ambient_trolley(pusher)
+
+func _update_ambient_trolley(person: Person) -> void:
+	var forward := person.global_transform.basis.z
+	ambient_trolley.global_position = person.global_position+forward*.86
+	ambient_trolley.global_position.y = .03
+	ambient_trolley.rotation.y = person.rotation.y+PI
+	for arm in person.arms:
+		arm.rotation.x = -1.08
+
+func _ambient_player_near(person: Person) -> bool:
+	if player==null: return false
+	return Vector2(person.global_position.x,person.global_position.z).distance_to(Vector2(player.global_position.x,player.global_position.z))<1.0
+
+func _tick_terminal_people(delta: float) -> void:
+	for item in terminal_people:
+		var person: Person = item.node
+		var role: String = item.role
+		if role=="talk":
+			var partner: Person = item.partner
+			var diff := partner.global_position-person.global_position
+			person.rotation.y = lerp_angle(person.rotation.y,atan2(diff.x,diff.z),minf(1.0,delta*3.0))
+			_idle_person(person,delta,float(item.offset))
+			var rhythm := sin((ambient_clock+float(item.offset))*1.1)
+			if rhythm>.1:
+				person.arms[1].rotation.x = lerpf(person.arms[1].rotation.x,-.35-rhythm*.32,minf(1.0,delta*5.0))
+			continue
+		if role=="collect":
+			_tick_bag_collector(item,delta)
+			continue
+		var route: Array = item.route
+		if float(item.pause)>0.0 or _ambient_player_near(person):
+			item.pause = maxf(0.0,float(item.pause)-delta)
+			_idle_person(person,delta,float(person.style_id)*.31)
+		else:
+			var goal: Vector3 = route[int(item.index)]
+			if person.walk_to(goal,delta,.82 if role=="push" else 1.05):
+				item.index = (int(item.index)+1)%route.size()
+				item.pause = 2.0+float(posmod(person.style_id,3))*.6
+		if role=="push": _update_ambient_trolley(person)
+
+func _tick_bag_collector(item: Dictionary,delta: float) -> void:
+	var person: Person = item.node
+	var state: int = item.state
+	var slot: int = item.bag_slot
+	var bag: Node3D = other_bags[slot]
+	var route: Array = item.route
+	if state==0:
+		item.pause = maxf(0.0,float(item.pause)-delta)
+		_idle_person(person,delta,2.0)
+		if float(item.pause)<=0.0: item.state = 1
+	elif state==1:
+		if _ambient_player_near(person):
+			_idle_person(person,delta,2.0)
+			return
+		if person.walk_to(route[0],delta,1.05):
+			person.rotation.y = 0.0
+			item.state = 2
+	elif state==2:
+		_idle_person(person,delta,2.0)
+		if not bag.visible: return
+		var at := bag.global_position
+		if absf(at.x-person.global_position.x)>.55 or absf(at.z+12.5)>.2: return
+		if _ambient_player_near(person): return
+		# Reach only for the assigned ambient bag, never the player's luggage.
+		ambient_bag_slots[slot] = true
+		bag.reparent(person.arms[1],false)
+		bag.position = Vector3(0,-.98,.02)
+		bag.rotation = Vector3.ZERO
+		item.state = 3
+		item.index = 1
+	elif state==3:
+		if _ambient_player_near(person):
+			_idle_person(person,delta,2.0)
+		else:
+			if person.walk_to(route[int(item.index)],delta,1.0):
+				item.index = int(item.index)+1
+				if int(item.index)>=route.size():
+					item.state = 4
+					item.pause = 8.0
+		person.arms[1].rotation.x = -.08
+	elif state==4:
+		_idle_person(person,delta,2.0)
+		person.arms[1].rotation.x = -.08
+		item.pause = maxf(0.0,float(item.pause)-delta)
+		# Recycle the ambient prop only when the player is away from this area.
+		if float(item.pause)<=0.0 and player.global_position.distance_to(person.global_position)>8.0:
+			bag.reparent(self,false)
+			ambient_bag_slots.erase(slot)
+			item.state = 5
+	elif state==5:
+		if _ambient_player_near(person):
+			_idle_person(person,delta,2.0)
+			return
+		if person.walk_to(Vector3(5,.03,-15.9),delta,1.0):
+			item.state = 0
+			item.pause = 4.0
+
 func _idle_person(person: Person,delta: float,offset: float) -> void:
 	person.animate(delta,false)
 	var t := ambient_clock+offset
@@ -571,6 +714,7 @@ func _idle_person(person: Person,delta: float,offset: float) -> void:
 
 func _tick_ambient_people(delta: float) -> void:
 	ambient_clock = fposmod(ambient_clock+delta,600.0)
+	_tick_terminal_people(delta)
 	for person in waiting_people:
 		_idle_person(person,delta,float(person.style_id)*.31)
 	for item in walkers:
@@ -799,7 +943,7 @@ func _update_belt(delta: float) -> void:
 		slat.rotation.y = atan2(tangent.x,tangent.z)
 		slat.visible = p.x<BELT_WALL-.13
 	for i in range(other_bags.size()):
-		_move_belt_bag(other_bags[i],i+2)
+		if not ambient_bag_slots.has(i): _move_belt_bag(other_bags[i],i+2)
 	for i in range(bags.size()):
 		if Progress.bag_location(progress.stage,i,progress.first_bag)=="belt":
 			_move_belt_bag(bags[i],i)
