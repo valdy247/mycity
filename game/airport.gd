@@ -9,6 +9,13 @@ const GATE := Vector3(0,0,-20)
 const CART_START := Vector3(-5,.03,-16)
 const EXIT := Vector3(0,0,1)
 const BELT := Vector3(4,.72,-11)
+const BELT_LEFT := 1.0
+const BELT_HIDDEN := 12.6
+const BELT_RADIUS := 1.5
+const BELT_WALL := 10.8
+const BELT_LOOP := 2.0*(BELT_HIDDEN-BELT_LEFT)+TAU*BELT_RADIUS
+var luggage_mesh: ArrayMesh
+var baggage_slats: Array[MeshInstance3D] = []
 const TASKS := ["Espera tu turno en migración.","Acércate a la agente y entrega el pasaporte.","Espera la revisión y recoge el pasaporte.","Cruza el pasador verde.","Recoge un carrito de equipaje.","Recoge tu primera maleta de la cinta.","Coloca la primera maleta en el carrito.","Recoge tu segunda maleta de la cinta.","Coloca la segunda maleta en el carrito.","Sal del aeropuerto con tus maletas.","Acércate al taxi con el carrito.","Recoge la primera maleta del carrito.","Coloca la primera maleta en el maletero.","Recoge la segunda maleta del carrito.","Coloca la segunda maleta en el maletero.","Espera a que el chofer cierre el maletero.","Sube al taxi por cualquiera de las puertas traseras.","Fase 1 completada. Viaje pendiente."]
 var progress := Progress.new()
 var mats: Dictionary = {}
@@ -237,14 +244,7 @@ func _make_terminal() -> void:
 	for z in [-17.0,-14.0,-8.0]:
 		_box(self,Vector3(-13.5,.46,float(z)),Vector3(1.0,.13,2.2),blue,true)
 		_box(self,Vector3(-13.95,.85,float(z)),Vector3(.13,.75,2.2),blue)
-	# Baggage hall has an open aisle west of the carousel.
-	_box(self,Vector3(4,.30,-11),Vector3(10.0,.60,4.0),metal,true)
-	_box(self,Vector3(4,.65,-11),Vector3(9.85,.12,3.85),Color("#252b2d"))
-	_box(self,Vector3(4,.76,-11),Vector3(5.4,.18,1.3),metal)
-	_box(self,Vector3(4,1.4,-11),Vector3(.13,1.3,.13),metal)
-	_box(self,Vector3(4,2.07,-11),Vector3(1.8,.65,.14),Color("#168bbb"))
-	_label3(self,"2  EQUIPAJE",Vector3(4,2.08,-11.09),.006).rotation.y = PI
-	_label3(self,"2  EQUIPAJE",Vector3(4,2.08,-10.91),.006)
+	_make_baggage_carousel(metal,cream)
 	_label3(self,"RECOGIDA DE EQUIPAJE",Vector3(-5,3.40,-19.80),.008)
 	_box(self,Vector3(0,3.25,-2.25),Vector3(5,.5,.15),red)
 	_label3(self,"SALIDA",Vector3(0,3.25,-2.36),.008).rotation.y = PI
@@ -272,6 +272,68 @@ func _make_terminal() -> void:
 		for leaf in [-1.0,1.0]:
 			var v := _box(self,Vector3(x+float(leaf)*.70,2.96,23.4),Vector3(1.8,.16,.62),Color("#668453"))
 			v.rotation.z = float(leaf)*-.25
+
+func _make_baggage_carousel(metal: Color,cream: Color) -> void:
+	# The belt runs through two real openings into a screened service area.
+	var rubber := Color("#25292c")
+	var trim := Color("#777f82")
+	# Straight runs and a rounded return. Collision remains on the low deck.
+	_box(self,Vector3(5.9,.30,-11),Vector3(9.8,.60,3.9),metal,true)
+	var cap := MeshInstance3D.new()
+	var drum := CylinderMesh.new()
+	drum.top_radius = 1.95
+	drum.bottom_radius = 1.95
+	drum.height = .60
+	drum.radial_segments = 32
+	drum.rings = 0
+	cap.mesh = drum
+	cap.material_override = _mat(metal)
+	cap.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(cap)
+	cap.position = Vector3(BELT_LEFT,.30,-11)
+	var body := StaticBody3D.new()
+	add_child(body)
+	body.position = cap.position
+	var shape := CylinderShape3D.new()
+	shape.radius = 1.95
+	shape.height = .60
+	var col := CollisionShape3D.new()
+	col.shape = shape
+	body.add_child(col)
+	# Moving slats trace the same path as luggage; the edge remains continuous.
+	for z in [-12.5,-9.5]:
+		_box(self,Vector3(6,.655,float(z)),Vector3(10.0,.07,.92),rubber)
+		for edge in [-1.0,1.0]:
+			_box(self,Vector3(6,.70,float(z)+float(edge)*.50),Vector3(10.0,.055,.075),trim)
+	_box(self,Vector3(6,.69,-11),Vector3(10.0,.12,1.90),metal)
+	for i in range(36):
+		var a := -PI*.5-PI*(float(i)+.5)/36.0
+		var p := Vector3(BELT_LEFT+cos(a)*BELT_RADIUS,.69,-11+sin(a)*BELT_RADIUS)
+		var segment := _box(self,p,Vector3(.94,.065,.15),rubber)
+		segment.rotation.y = -a
+	# Slats provide visible belt motion without textures or per-frame mesh rebuilding.
+	for i in range(84):
+		var slat := _box(self,Vector3.ZERO,Vector3(.89,.012,.027),Color("#3c4244"))
+		baggage_slats.append(slat)
+	# Wall panels leave openings at z=-12.5 and -9.5, with black rubber curtains.
+	_box(self,Vector3(BELT_WALL,2,-16.7),Vector3(.22,4,6.2),cream,true)
+	_box(self,Vector3(BELT_WALL,2,-5.65),Vector3(.22,4,7.3),cream,true)
+	_box(self,Vector3(BELT_WALL,2,-11),Vector3(.22,4,1.72),cream,true)
+	for z in [-12.5,-9.5]:
+		var zz := float(z)
+		_box(self,Vector3(BELT_WALL,.32,zz),Vector3(.24,.64,1.28),metal,true)
+		_box(self,Vector3(BELT_WALL,2.82,zz),Vector3(.24,2.36,1.28),cream,true)
+		_box(self,Vector3(BELT_WALL+.24,1.12,zz),Vector3(.035,1.0,1.25),Color("#101415"))
+		for i in range(9):
+			_box(self,Vector3(BELT_WALL-.14,1.16,zz-.56+float(i)*.14),Vector3(.045,.94,.125),Color("#202427"))
+		for side in [-1.0,1.0]:
+			_box(self,Vector3(BELT_WALL-.15,1.15,zz+float(side)*.67),Vector3(.08,1.1,.08),trim)
+		_box(self,Vector3(BELT_WALL-.15,1.65,zz),Vector3(.08,.10,1.40),trim)
+	# The signs and approach aisles stay in their existing locations.
+	_box(self,Vector3(4,1.4,-11),Vector3(.13,1.3,.13),metal)
+	_box(self,Vector3(4,2.07,-11),Vector3(1.8,.65,.14),Color("#168bbb"))
+	_label3(self,"2  EQUIPAJE",Vector3(4,2.08,-11.09),.006).rotation.y = PI
+	_label3(self,"2  EQUIPAJE",Vector3(4,2.08,-10.91),.006)
 
 func _wheel(root: Node3D,p: Vector3) -> void:
 	var wheel := MeshInstance3D.new()
@@ -549,13 +611,73 @@ func _make_player() -> void:
 	player.rotation.y = yaw
 	camera.rotation.x = pitch
 
+func _rounded_luggage_mesh() -> ArrayMesh:
+	# Rounded rectangle extruded through depth; all seven bags share one mesh.
+	var points: Array[Vector2] = []
+	var radius := .048
+	for i in range(4):
+		var corner := Vector2(.152,.162)
+		if i==1: corner.x = -corner.x
+		elif i==2: corner = -corner
+		elif i==3: corner.y = -corner.y
+		for j in range(5):
+			var angle := (float(i)+float(j)/4.0)*PI*.5
+			points.append(corner+Vector2(cos(angle),sin(angle))*radius)
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i in range(points.size()):
+		var a := points[i]
+		var b := points[(i+1)%points.size()]
+		for z in [-.115,.115]:
+			var depth := float(z)
+			var vertices: Array[Vector3] = [Vector3(0,0,depth),Vector3(b.x,b.y,depth),Vector3(a.x,a.y,depth)]
+			if depth<0.0:
+				vertices.reverse()
+			for v in vertices:
+				surface.set_normal(Vector3(0,0,signf(depth)))
+				surface.add_vertex(v)
+		var edge := b-a
+		var normal := Vector3(edge.y,-edge.x,0).normalized()
+		var sides: Array[Vector3] = [Vector3(a.x,a.y,-.115),Vector3(b.x,b.y,.115),Vector3(b.x,b.y,-.115),Vector3(a.x,a.y,-.115),Vector3(a.x,a.y,.115),Vector3(b.x,b.y,.115)]
+		for v in sides:
+			surface.set_normal(normal)
+			surface.add_vertex(v)
+	return surface.commit()
+
 func _suitcase(color: Color) -> Node3D:
 	var bag := Node3D.new()
 	add_child(bag)
-	_box(bag,Vector3(0,.23,0),Vector3(.40,.44,.24),color)
-	_box(bag,Vector3(0,.46,0),Vector3(.15,.045,.055),Color("#303738"))
-	for x in [-.15,.15]:
-		_box(bag,Vector3(float(x),.025,0),Vector3(.06,.05,.065),Color("#25292b"))
+	if luggage_mesh==null: luggage_mesh = _rounded_luggage_mesh()
+	var shell := MeshInstance3D.new()
+	shell.mesh = luggage_mesh
+	shell.material_override = _mat(color)
+	shell.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	bag.add_child(shell)
+	shell.position.y = .255
+	# Zipper seam, molded ribs, wheel housings, grip and retracted telescopic handle.
+	var dark := Color("#303638")
+	for x in [-.14,.14]:
+		_box(bag,Vector3(float(x),.26,.118),Vector3(.014,.30,.009),color.darkened(.18))
+		_box(bag,Vector3(float(x),.055,0),Vector3(.08,.075,.10),dark)
+		var wheel := MeshInstance3D.new()
+		var tire := CylinderMesh.new()
+		tire.top_radius = .034
+		tire.bottom_radius = .034
+		tire.height = .032
+		tire.radial_segments = 10
+		tire.rings = 0
+		wheel.mesh = tire
+		wheel.material_override = _mat(dark)
+		wheel.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		bag.add_child(wheel)
+		wheel.position = Vector3(float(x),.035,.015)
+		wheel.rotation.z = PI*.5
+	for x in [-.073,.073]:
+		_box(bag,Vector3(float(x),.476,0),Vector3(.028,.048,.045),dark)
+		_box(bag,Vector3(float(x),.29,-.119),Vector3(.018,.29,.010),Color("#a3a9ab"))
+	_box(bag,Vector3(0,.503,0),Vector3(.17,.025,.047),dark)
+	_box(bag,Vector3(0,.254,.120),Vector3(.36,.012,.010),color.darkened(.42))
+	_box(bag,Vector3(.13,.27,.13),Vector3(.025,.036,.009),Color("#c2c3bd"))
 	return bag
 
 func _make_arrivals_props() -> void:
@@ -634,17 +756,52 @@ func _make_bags() -> void:
 	marker_arrow = _label3(marker,"▼",Vector3(0,1.7,0),.010,Color("#ffd976"))
 	marker_arrow.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 
+func _belt_pose(distance: float) -> Vector3:
+	var d := fposmod(distance,BELT_LOOP)
+	var length := BELT_HIDDEN-BELT_LEFT
+	var arc := PI*BELT_RADIUS
+	if d<length:
+		return Vector3(BELT_HIDDEN-d,.72,-11-BELT_RADIUS)
+	d -= length
+	if d<arc:
+		var a := -PI*.5-d/BELT_RADIUS
+		return Vector3(BELT_LEFT+cos(a)*BELT_RADIUS,.72,-11+sin(a)*BELT_RADIUS)
+	d -= arc
+	if d<length:
+		return Vector3(BELT_LEFT+d,.72,-11+BELT_RADIUS)
+	d -= length
+	var a := PI*.5-d/BELT_RADIUS
+	return Vector3(BELT_HIDDEN+cos(a)*BELT_RADIUS,.72,-11+sin(a)*BELT_RADIUS)
+
+func _belt_distance(slot: int) -> float:
+	return belt_time+7.8+float(slot)*BELT_LOOP/7.0
+
 func _belt_point(slot: int) -> Vector3:
-	var a := belt_time*.17+float(slot)*TAU/7.0
-	return BELT+Vector3(cos(a)*4.35,0,sin(a)*1.65)
+	return _belt_pose(_belt_distance(slot))
+
+func _move_belt_bag(bag: Node3D,slot: int) -> void:
+	var distance := _belt_distance(slot)
+	var p := _belt_pose(distance)
+	var tangent := _belt_pose(distance+.04)-p
+	bag.position = p
+	bag.rotation.y = atan2(tangent.x,tangent.z)
+	bag.visible = p.x<BELT_WALL-.12
 
 func _update_belt(delta: float) -> void:
-	belt_time = fposmod(belt_time+delta,TAU/.17)
+	belt_time = fposmod(belt_time+delta*.85,BELT_LOOP)
+	for i in range(baggage_slats.size()):
+		var distance := belt_time+float(i)*BELT_LOOP/float(baggage_slats.size())
+		var p := _belt_pose(distance)
+		var tangent := _belt_pose(distance+.04)-p
+		var slat := baggage_slats[i]
+		slat.position = Vector3(p.x,.736,p.z)
+		slat.rotation.y = atan2(tangent.x,tangent.z)
+		slat.visible = p.x<BELT_WALL-.13
 	for i in range(other_bags.size()):
-		other_bags[i].position = _belt_point(i+2)
+		_move_belt_bag(other_bags[i],i+2)
 	for i in range(bags.size()):
 		if Progress.bag_location(progress.stage,i,progress.first_bag)=="belt":
-			bags[i].position = _belt_point(i)
+			_move_belt_bag(bags[i],i)
 
 func _say(words: String) -> void:
 	_notice("Agente: "+words)
@@ -667,10 +824,11 @@ func _can_board() -> bool:
 	return absf(local.x)>=.65 and absf(local.x)<=2.65 and local.z>=-1.45 and local.z<=.50
 
 func _nearest_belt_bag() -> int:
-	var best := 0
+	var best := progress.first_bag if progress.stage<=5 else 1-progress.first_bag
 	var distance := INF
 	for i in range(bags.size()):
 		if Progress.bag_location(progress.stage,i,progress.first_bag)!="belt": continue
+		if not bags[i].visible: continue
 		var at := bags[i].global_position
 		var d := Vector2(at.x,at.z).distance_to(Vector2(player.global_position.x,player.global_position.z))
 		if d<distance:
@@ -738,13 +896,14 @@ func _sync() -> void:
 		elif place=="trunk": parent = taxi
 		if bag.get_parent()!=parent: bag.reparent(parent,false)
 		bag.rotation = Vector3.ZERO
+		bag.show()
 		match place:
 			"hand": bag.position = Vector3(.40,-.62,-.75)
 			"cart": bag.position = Vector3(-.225 if i==0 else .225,.27,-.13)
 			"trunk":
 				bag.position = Vector3(-.28 if i==0 else .28,.61,-1.65)
 				bag.rotation.x = PI*.5
-			"belt": bag.position = _belt_point(i)
+			"belt": _move_belt_bag(bag,i)
 		bag_arrows[i].visible = place=="belt" and step>=4
 	lid.rotation.x = 1.15 if step>=11 and step<=15 else 0.0
 	_refresh_objective()
@@ -862,7 +1021,7 @@ func _interact() -> void:
 		return
 	if step==4:
 		var bag_id := _nearest_belt_bag()
-		if _near(bags[bag_id].global_position,1.60):
+		if bags[bag_id].visible and _near(bags[bag_id].global_position,1.60):
 			_advance("pickup_first",bag_id)
 		elif _near(cart.global_position,1.60):
 			_advance("cart")
@@ -874,7 +1033,7 @@ func _interact() -> void:
 		return
 	if step in [5,7] and not progress.cart_attached:
 		var candidate := _nearest_belt_bag()
-		if _near(bags[candidate].global_position,1.60):
+		if bags[candidate].visible and _near(bags[candidate].global_position,1.60):
 			_advance(Progress.expected_action(step),candidate)
 		elif _near(cart.global_position,1.60):
 			_toggle_cart(true)
@@ -1160,12 +1319,12 @@ func _physics_process(delta: float) -> void:
 	var actions := ["","Entregar pasaporte","Recoger pasaporte","","Recoger maleta","Recoger primera maleta","Cargar maleta en carrito","Recoger segunda maleta","Cargar maleta en carrito","","","Tomar primera maleta","Guardar en maletero","Tomar segunda maleta","Guardar en maletero","","Subir al taxi"]
 	var action: String = actions[progress.stage]
 	if progress.stage==4:
-		if near: prompt.text = "[E] Recoger maleta"
+		if near and bags[_nearest_belt_bag()].visible: prompt.text = "[E] Recoger maleta"
 		elif _near(cart.global_position,1.60): prompt.text = "[E] Acercar carrito (opcional)"
 		else: prompt.text = "Recoge una maleta y llévala al carrito."
 		return
 	if progress.stage in [5,7] and not progress.cart_attached:
-		if near: prompt.text = "[E] Recoger maleta"
+		if near and bags[_nearest_belt_bag()].visible: prompt.text = "[E] Recoger maleta"
 		elif _near(cart.global_position,1.60): prompt.text = "[E] Mover carrito"
 		else: prompt.text = "Recoge una de tus maletas marcadas."
 		return
