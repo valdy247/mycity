@@ -1120,9 +1120,9 @@ func drive(delta: float,movement: Vector2) -> void:
 	if not is_instance_valid(body): return
 	var spec: Dictionary = Kit.KITS[ride_kind]
 	var speed := float(spec.speed)*(1.0 if riding_borrowed() else 1.0+.08*float(state.upgrades.get(ride_kind,0)))
-	var boost := game.control_pressed(KEY_SHIFT) and movement.y<0.0 and game.gameplay_input()
+	var boost: bool = game.control_pressed(KEY_SHIFT) and movement.y<0.0 and game.gameplay_input()
 	var target := -movement.y*(minf(45.0,speed*3.0) if boost else (speed if movement.y<=0 else speed*.28))
-	var brake := game.control_pressed(KEY_SPACE) or ride_exit_requested
+	var brake: bool = game.control_pressed(KEY_SPACE) or ride_exit_requested
 	ride_speed = move_toward(ride_speed,0.0 if brake else target,delta*(16.0 if brake else (15.0 if boost else 4.0)))
 	if ride_exit_requested and absf(ride_speed)<.3:
 		_dismount()
