@@ -64,6 +64,11 @@ var escape_route := PackedVector3Array()
 var escape_index := 0
 var escape_goal := Vector3.INF
 var leader_retry := 0.0
+var leader_detour := PackedVector3Array()
+var leader_detour_index := 0
+var leader_rejoin := 0
+var leader_probe_clock := 0.0
+var leader_yield_clock := 0.0
 var leader_last := Vector3.ZERO
 var distracted_foe := -1
 var stone_camera_previous := true
@@ -900,6 +905,10 @@ func _clear_foes() -> void:
 	escape_route = PackedVector3Array()
 	escape_index = 0
 	escape_goal = Vector3.INF
+	leader_detour.clear()
+	leader_detour_index = 0
+	leader_probe_clock = 0.0
+	leader_yield_clock = 0.0
 	if stone_camera_changed:
 		game.first_person = stone_camera_previous
 		game._apply_camera_mode()
@@ -930,7 +939,9 @@ func _plan_escape(from: Vector3) -> PackedVector3Array:
 		var point: Vector3 = pedestrians.graph.get_point_position(int(id))
 		var gap := from.distance_to(point)
 		if gap<30.0 or gap>90.0: continue
-		if pedestrians.graph.get_point_connections(int(id)).is_empty(): continue
+		if pedestrians.graph.get_point_connections(int(id)).size()<2: continue
+		if world.street_geometry.point_on_road(point): continue
+		if not world.pedestrian_space_clear(yordi,point,1.0,false): continue
 		candidates.append({"id":int(id),"score":absf(gap-65.0)})
 	candidates.sort_custom(func(a,b): return float(a.score)<float(b.score))
 	var fallback := PackedVector3Array()
@@ -939,10 +950,14 @@ func _plan_escape(from: Vector3) -> PackedVector3Array:
 		if middle.size()<3: continue
 		var length := 0.0
 		var previous := from
+		var valid := true
 		for point in middle:
+			if not world.pedestrian_segment_clear(previous,point):
+				valid = false
+				break
 			length += previous.distance_to(point)
 			previous = point
-		if length>145.0 or length<35.0: continue
+		if not valid or length>145.0 or length<35.0: continue
 		var end := middle[middle.size()-1]
 		if not world.pedestrian_segment_clear(end,end): continue
 		var route := PackedVector3Array([from])
@@ -1105,6 +1120,10 @@ func _start_chase() -> void:
 	last_player = game.player.global_position
 	leader_last = yordi.global_position
 	leader_retry = 0.0
+	leader_detour.clear()
+	leader_detour_index = 0
+	leader_probe_clock = 0.0
+	leader_yield_clock = 0.0
 	walkers.erase(yordi.get_instance_id())
 	_target(escape_goal,"Refugio · sigue a Yordi")
 	business._notify("Yordi: ¡Corre, sígueme! Yo sé por dónde.")
@@ -1115,51 +1134,107 @@ func _run_leader(target: Vector3,delta: float,pace: float) -> bool:
 	var origin := yordi.global_position
 	var diff := target-origin
 	var length := diff.length()
-	if length<.03: return false
+	if length<.025: return false
 	var direction := diff/length
-	var distance := minf(length,pace*delta)
-	for angle in [0.0,.35,-.35,.75,-.75,1.2,-1.2]:
-		var heading := direction.rotated(Vector3.UP,float(angle))
-		var step := origin+heading*distance
-		if not world.pedestrian_segment_clear(origin,step): continue
-		if not world.pedestrian_space_clear(yordi,step,.55): continue
-		yordi.global_position = step
-		yordi.rotation.y = lerp_angle(yordi.rotation.y,atan2(heading.x,heading.z),minf(1.0,delta*18.0))
-		yordi.animate(delta,true,pace)
-		return true
-	yordi.animate(delta,false)
-	return false
+	var step := origin+direction*minf(length,pace*delta)
+	if not world.pedestrian_segment_clear(origin,step) or not world.pedestrian_space_clear(yordi,step,.55):
+		yordi.animate(delta,false)
+		return false
+	yordi.global_position = step
+	yordi.rotation.y = lerp_angle(yordi.rotation.y,atan2(direction.x,direction.z),minf(1.0,delta*18.0))
+	yordi.animate(delta,true,pace)
+	return true
+
+func _leader_segment(a: Vector3,b: Vector3) -> bool:
+	if not world.pedestrian_segment_clear(a,b): return false
+	var samples := maxi(1,ceili(a.distance_to(b)/.5))
+	for i in range(1,samples+1):
+		var p := a.lerp(b,float(i)/float(samples))
+		if not world.pedestrian_space_clear(yordi,p,.60,false): return false
+	return true
+
+# Choose an entire short bypass, not a different random heading each frame.
+# Keep the same refuge and rejoin only at a later point on the existing route.
+func _plan_leader_detour() -> bool:
+	var origin := yordi.global_position
+	var forward := escape_route[escape_index]-origin
+	forward.y = 0.0
+	if forward.length_squared()<.01: return false
+	forward = forward.normalized()
+	var side := Vector3(-forward.z,0,forward.x)
+	var best := INF
+	var chosen := PackedVector3Array()
+	var resume := escape_index
+	for i in range(escape_index,mini(escape_route.size(),escape_index+6)):
+		var end := escape_route[i]
+		var gap := origin.distance_to(end)
+		if gap<1.3 or gap>9.0 or (end-origin).dot(forward)<.5: continue
+		if not world.pedestrian_space_clear(yordi,end,.65,false): continue
+		# Try a direct rejoin, then both sides with a fixed entry and exit.
+		if _leader_segment(origin,end):
+			var score := gap+float(i-escape_index)*.12
+			if score<best:
+				best = score
+				chosen = PackedVector3Array([end])
+				resume = i
+			continue
+		for sign_value in [1.0,-1.0]:
+			for width in [1.1,1.65,2.3]:
+				var offset := side*float(sign_value)*float(width)
+				var entry := origin+forward*.25+offset
+				var exit_point := end+offset
+				var first := _ground(entry,false)
+				var second := _ground(exit_point,false)
+				if not first.is_finite() or not second.is_finite(): continue
+				if not _leader_segment(origin,first) or not _leader_segment(first,second) or not _leader_segment(second,end): continue
+				var score := origin.distance_to(first)+first.distance_to(second)+second.distance_to(end)+float(i-escape_index)*.12
+				if score<best:
+					best = score
+					chosen = PackedVector3Array([first,second,end])
+					resume = i
+	if chosen.is_empty(): return false
+	leader_detour = chosen
+	leader_detour_index = 0
+	leader_rejoin = resume
+	return true
 
 func _lead_escape(delta: float,player_at: Vector3) -> void:
 	if not is_instance_valid(yordi): return
-	# Consume reached samples without stopping between them. At a corner
-	# keep the next segment unless its shortcut is physically clear.
-	while escape_index<escape_route.size():
-		var near := yordi.global_position.distance_to(escape_route[escape_index])
-		if near>.65: break
-		if escape_index+1<escape_route.size() and near>.10:
-			var next_point := escape_route[escape_index+1]
-			var probe := yordi.global_position.move_toward(next_point,minf(1.0,yordi.global_position.distance_to(next_point)))
-			if not world.pedestrian_segment_clear(yordi.global_position,probe): break
-		escape_index += 1
+	leader_probe_clock = maxf(0.0,leader_probe_clock-delta)
+	leader_yield_clock = maxf(0.0,leader_yield_clock-delta)
+	if not leader_detour.is_empty():
+		while leader_detour_index<leader_detour.size() and yordi.global_position.distance_to(leader_detour[leader_detour_index])<.12:
+			leader_detour_index += 1
+		if leader_detour_index>=leader_detour.size():
+			escape_index = maxi(escape_index,leader_rejoin+1)
+			leader_detour.clear()
+	if leader_detour.is_empty():
+		while escape_index<escape_route.size() and yordi.global_position.distance_to(escape_route[escape_index])<.12:
+			escape_index += 1
 	if escape_index>=escape_route.size():
 		yordi.animate(delta,false)
 		_carry_pose()
 		return
 	var gap := yordi.global_position.distance_to(player_at)
-	# Player sprint is 8 m/s. Lead quickly when close, then ease the
-	# pace smoothly to let the player catch up; never wait mid-chase.
 	var pace := lerpf(8.7,5.8,smoothstep(5.0,23.0,gap))
-	var next := escape_route[escape_index]
-	var moving := _run_leader(next,delta,pace)
-	if moving: leader_retry = 0.0
-	else: leader_retry += delta
-	if leader_retry>=1.5:
-		var replacement: PackedVector3Array = game.monte_pedestrians.route_between(yordi.global_position,escape_goal)
-		if replacement.size()>1:
-			escape_route = replacement
-			escape_index = 1
+	var next := escape_route[escape_index] if leader_detour.is_empty() else leader_detour[leader_detour_index]
+	if _run_leader(next,delta,pace):
 		leader_retry = 0.0
+	else:
+		leader_retry += delta
+		if leader_yield_clock<=0.0:
+			leader_yield_clock = 1.0
+			game.monte_pedestrians.yield_to_runner(yordi,next)
+		if leader_probe_clock<=0.0:
+			leader_probe_clock = .65
+			# Keep an accepted bypass until it is actually obstructed.
+			leader_detour.clear()
+			if not _plan_leader_detour() and leader_retry>=2.5:
+				var replacement: PackedVector3Array = game.monte_pedestrians.route_between(yordi.global_position,escape_goal)
+				if replacement.size()>1:
+					escape_route = replacement
+					escape_index = 1
+				leader_retry = 0.0
 	leader_last = yordi.global_position
 	_carry_pose()
 
