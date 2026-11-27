@@ -5,6 +5,9 @@ const StreetGeometry = preload("res://street_geometry.gd")
 const TrafficBypass = preload("res://traffic_bypass.gd")
 const HavanaTextures = preload("res://havana_textures.gd")
 const RoadWear = preload("res://road_wear.gd")
+const RealFacades = preload("res://real_facades.gd")
+var real_facades := RealFacades.new()
+var real_facade_sites: Array = []
 const Latino = preload("res://latino_stadium.gd")
 const Parks = preload("res://city_parks.gd")
 var parks: Parks
@@ -141,6 +144,7 @@ func setup(builder: Builder) -> void:
 	parks = Parks.new()
 	add_child(parks)
 	parks.reserve(self)
+	real_facades.prepare(self)
 	_make_osm_streets()
 	_make_frontages()
 	if not stadium_reservation.is_empty():
@@ -738,7 +742,7 @@ func _street_clear(p: Vector3,padding: float,ignore: Dictionary = {}) -> bool:
 
 func _lot_clear(center: Vector3,front: Vector3,edge: Dictionary) -> bool:
 	var candidate := _lot_polygon({"center":center,"front":front})
-	if _market_reserved(candidate): return false
+	if _market_reserved(candidate) or real_facades.reserved(candidate): return false
 	if not street_geometry.clear(candidate):
 		return false
 	for existing in _lots_near(center):
@@ -2167,6 +2171,7 @@ const GEOGRAPHIC_CATALOG := [
 	["362658318","way","4ta Estación PNR Infanta","police",23.12240,-82.37411],
 	["360427237","way","La Esmeralda","marketplace",23.12133,-82.37481],
 	["391095691","way","Policlínico Girón","clinic",23.12088,-82.37469],
+	["437450994","way","Iglesia del Pilar","place_of_worship",23.12075,-82.37016],
 	["194910494","way","Museo del Ferrocarril de Cuba","museum",23.12290,-82.36493],
 	["290017021","way","Hospital La Dependiente","hospital",23.11411,-82.37001]
 ]
@@ -2174,7 +2179,7 @@ const GEOGRAPHIC_CATALOG := [
 func _place_kind(tags: Dictionary) -> String:
 	for field in ["shop","amenity","office","tourism","healthcare"]:
 		var value := String(tags.get(field,""))
-		if value in ["yes","no","parking","bench","toilets","place_of_worship","fuel","bus_station","shelter"]: continue
+		if value in ["yes","no","parking","bench","toilets","bus_station","shelter"]: continue
 		if not value.is_empty(): return value
 	return ""
 
@@ -2449,6 +2454,10 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		if market and not tags.has("height") and not tags.has("building:levels"):
 			h = 10.0
 		var edit: Dictionary = map_edits.get(String(fp.id),{})
+		if edit.is_empty() and not market and real_facades.build(fp,tile):
+			mapped_buildings += 1
+			kept_footprints.append(fp)
+			continue
 		var front := _front_edge(poly)
 		var monte_front := _front_edge(poly,true)
 		var extent: Vector3 = fp.high-fp.low

@@ -140,6 +140,8 @@ func _refresh_places() -> void:
 		_add_place("Estadio Latinoamericano · "+String(gate.label),gate.p)
 	for park in world.park_sites:
 		_add_place(String(park.name),park.p)
+	for site in world.real_facade_sites:
+		_add_place(String(site.name),site.p)
 	map.business_markers.clear()
 	for place in destinations:
 		var p: Vector3 = place.p
