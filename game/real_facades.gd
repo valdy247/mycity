@@ -3,12 +3,13 @@ extends RefCounted
 # No new renderer, high-resolution textures, terrain or animated objects.
 var city
 var selected: Dictionary = {}
-const NAMES := {"pilar":"Iglesia del Pilar","abel":"Policlínico Abel Santamaría","cristina":"Estación Cristina · Museo del Ferrocarril","dependiente":"Hospital La Dependiente","tejas":"Torres de Tejas"}
+const NAMES := {"pilar":"Iglesia del Pilar","abel":"Policlínico Abel Santamaría","cristina":"Estación Cristina · Museo del Ferrocarril","dependiente":"Hospital La Dependiente","tejas":"Torres de Tejas","cafe_tejas":"Cafetería Esquina de Tejas"}
 
 static func profile(id: String,label: String,kind: String) -> String:
 	if id=="437450994" or label.contains("iglesia del pilar") or label.contains("senora del pilar"): return "pilar"
 	if id=="194910494" or label.contains("museo del ferrocarril") or label.contains("estacion cristina"): return "cristina"
 	if id=="290017021" or label.contains("la dependiente"): return "dependiente"
+	if id=="360422640": return "cafe_tejas"
 	if id=="320464758" or label in ["tejas 1","tejas 2"]: return "tejas"
 	if label.contains("abel santamaria") and (label.contains("policlinico") or kind in ["clinic","hospital","doctors"]): return "abel"
 	return ""
@@ -280,6 +281,89 @@ func _tower(fp: Dictionary,h: float) -> void:
 			for divider in [-.22,0.0,.22]:
 				_box(mid+t*width*float(divider)+n*.09+Vector3.UP*y,n,.19,step*.40,.18,wall)
 
+# Two-storey historic corner café, based on the player's reference.
+# All columns, balusters and window trim use the city's batched boxes.
+func _tejas_cafe(fp: Dictionary,face: Dictionary,tile: Vector2i,h: float) -> bool:
+	var poly: PackedVector2Array = fp.poly
+	var cream := _mat("cafe_tejas_cream","#d1cbbb")
+	var blue := _mat("cafe_tejas_blue","#35657c")
+	var dark := _mat("cafe_tejas_dark","#35443f")
+	var green := _mat("cafe_tejas_green","#61766a")
+	var stone := _mat("cafe_tejas_stone","#b7b3a0")
+	var ground := h*.46
+	var depth := 2.0
+	var faces: Array = [face]
+	var first_normal: Vector3 = face.normal
+	var best_score := INF
+	var second: Dictionary = {}
+	for other in city._street_facing_walls(poly):
+		var normal: Vector3 = other.normal
+		if absf(normal.dot(first_normal))>.65: continue
+		var score: float = float(other.score)
+		if score<best_score:
+			best_score = score
+			second = other
+	if not second.is_empty(): faces.append(second)
+	# Clip both sides before extruding the solid lower floor, keeping the
+	# original mapped footprint for the upper storey and roof.
+	var lower := poly
+	var recessed: Array = []
+	for wall in faces:
+		var cut: PackedVector2Array = city._arcade_cut(lower,wall,depth)
+		if cut.size()>=3 and not Geometry2D.triangulate_polygon(cut).is_empty():
+			lower = cut
+			recessed.append(wall)
+	if not recessed.is_empty():
+		city._extrude(lower,0.0,ground,blue,tile)
+	if not city._extrude(poly,ground if not recessed.is_empty() else 0.0,h,cream,tile): return false
+	var columns: Array[Vector3] = []
+	for wall in faces:
+		var a: Vector3 = wall.a
+		var b: Vector3 = wall.b
+		var n: Vector3 = wall.normal
+		var tangent := (b-a).normalized()
+		var width := a.distance_to(b)
+		var mid := (a+b)*.5
+		var bay_count := clampi(roundi(width/3.7),2,12)
+		var bay := width/float(bay_count)
+		var open_portal := wall in recessed
+		# Deep blue fascia, pale stone balcony and roof cornice.
+		_box(mid+n*.07+Vector3.UP*(ground-.25),n,width,.58,.24,blue)
+		_box(mid+n*.16+Vector3.UP*(ground+.08),n,width,.20,.40,stone)
+		_box(mid+n*.12+Vector3.UP*(h-.17),n,width,.28,.32,stone)
+		_box(mid+n*.09+Vector3.UP*(h-.44),n,width,.12,.20,cream)
+		for i in range(bay_count):
+			var p := a+tangent*(float(i)+.5)*bay
+			var back := p-n*(depth-.07) if open_portal else p+n*.06
+			if city._wall_has_opening(lower,back,n):
+				_box(back+Vector3.UP*(ground*.48),n,bay*.77,ground*.77,.09,dark)
+				_box(back+n*.08+Vector3.UP*(ground*.48),n,.11,ground*.77,.14,green)
+			var sill := ground+.85
+			var arch_height := h-sill-.60
+			_arch(p+Vector3.UP*sill,n,tangent,minf(1.58,bay*.68),arch_height,green,dark)
+			_box(p+n*.105+Vector3.UP*(sill+arch_height*.40),n,.065,arch_height*.74,.08,green)
+			_box(p+n*.11+Vector3.UP*(sill-.07),n,minf(1.85,bay*.80),.12,.20,stone)
+		for i in range(bay_count+1):
+			var p := a+tangent*clampf(float(i)*bay,.26,width-.26)-n*.22
+			var duplicate := false
+			for old in columns:
+				if old.distance_to(p)<.72: duplicate = true
+			if duplicate or not _safe_front(p): continue
+			columns.append(p)
+			_box(p+Vector3.UP*(ground*.5),n,.40,ground,.40,blue,open_portal)
+			_box(p+Vector3.UP*.23,n,.57,.46,.57,stone)
+			_box(p+Vector3.UP*(ground-.16),n,.57,.28,.57,blue)
+		# Continuous balustrade across the visible upper façades.
+		_box(mid+n*.22+Vector3.UP*(ground+.66),n,width,.13,.26,stone)
+		var railing_count := clampi(roundi(width/.39),3,100)
+		for i in range(railing_count):
+			var p := a+tangent*(float(i)+.5)*width/float(railing_count)+n*.22
+			_box(p+Vector3.UP*(ground+.37),n,.12,.48,.16,stone)
+		var sign_at := mid+n*.22+Vector3.UP*(ground-.28)
+		_box(sign_at,n,minf(width*.65,8.0),.43,.12,blue)
+		_sign("Esquina de Tejas",sign_at+n*.075,n,minf(width*.60,7.7),Color("#f1dfc6"))
+	return true
+
 func build(fp: Dictionary,tile: Vector2i) -> bool:
 	var key := String(selected.get(String(fp.id),""))
 	if key.is_empty(): return false
@@ -299,6 +383,9 @@ func build(fp: Dictionary,tile: Vector2i) -> bool:
 		"dependiente":
 			h = 7.4
 			material = _mat("hospital_stone","#d3cdbd")
+		"cafe_tejas":
+			h = 8.1
+			material = _mat("cafe_tejas_cream","#d1cbbb")
 		"tejas":
 			h = 22.0*3.1
 			var levels := String(tags.get("building:levels",""))
@@ -307,6 +394,24 @@ func build(fp: Dictionary,tile: Vector2i) -> bool:
 	var raw := String(tags.get("height","")).trim_suffix("m").strip_edges()
 	if raw.is_valid_float() and key=="tejas" and float(raw)>35.0: h = clampf(float(raw),35.0,85.0)
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	if key=="cafe_tejas":
+		if not _tejas_cafe(fp,face,tile,h): return false
+	else:
+		if not _standard_landmark(fp,face,tile,h,material,key): return false
+	var name_value := String(NAMES[key])
+	if key=="tejas": name_value = String(tags.get("name","Torre de Tejas"))
+	var mid: Vector3 = face.mid
+	var n: Vector3 = face.normal
+	var at := mid+n*.85
+	city.editable_buildings[String(fp.id)] = {"poly":poly,"center":fp.center,"height":h,"name":name_value,"protected":true,"front":face,"height_source":"photo_estimate" if key=="cafe_tejas" else "landmark"}
+	city.real_facade_sites.append({"name":name_value,"p":at})
+	for place in city.geographic_by_building.get(String(fp.id),[]): city._geo_mark(place,at)
+	if key=="dependiente": city.incident_services["hospital"] = at
+	print("Fachada real: ",name_value," · OSM ",fp.id)
+	return true
+
+func _standard_landmark(fp: Dictionary,face: Dictionary,tile: Vector2i,h: float,material: StandardMaterial3D,key: String) -> bool:
+	var poly: PackedVector2Array = fp.poly
 	var lower := poly
 	var recess := false
 	if key=="cristina" or key=="abel":
@@ -325,14 +430,4 @@ func build(fp: Dictionary,tile: Vector2i) -> bool:
 			_hospital(face,h)
 			_roof(poly,fp.center,h,1.35,tile,_mat("hospital_tile","#90725c"))
 		"tejas": _tower(fp,h)
-	var name_value := String(NAMES[key])
-	if key=="tejas": name_value = String(tags.get("name","Torre de Tejas"))
-	var mid: Vector3 = face.mid
-	var n: Vector3 = face.normal
-	var at := mid+n*.85
-	city.editable_buildings[String(fp.id)] = {"poly":poly,"center":fp.center,"height":h,"name":name_value,"protected":true,"front":face}
-	city.real_facade_sites.append({"name":name_value,"p":at})
-	for place in city.geographic_by_building.get(String(fp.id),[]): city._geo_mark(place,at)
-	if key=="dependiente": city.incident_services["hospital"] = at
-	print("Fachada real: ",name_value," · OSM ",fp.id)
 	return true
