@@ -166,16 +166,17 @@ func setup(style: int,worker: bool = false,ambient: bool = false) -> void:
 		_part(self,"box",Vector3(0,1.14,.14),Vector3(.38,.075,.018),Color("#eee0a0"))
 		_part(self,"box",Vector3(0,1.14,-.14),Vector3(.38,.075,.018),Color("#eee0a0"))
 
-func animate(delta: float,moving: bool) -> void:
-	if moving: phase += delta*9.5*gait
+func animate(delta: float,moving: bool,run_speed: float = 0.0) -> void:
+	var sprint := clampf((run_speed-4.5)/4.0,0.0,1.0) if moving else 0.0
+	if moving: phase += delta*9.5*gait*(1.0+sprint*.55)
 	var use_phone := phone_idle and not moving and carried==null and not has_meta("incident_role")
 	if is_instance_valid(leisure_prop): leisure_prop.visible = use_phone
 	for i in range(limbs.size()):
 		var stride := sin(phase+float(i)*PI) if moving else 0.0
-		var swing := stride*.43
+		var swing := stride*lerpf(.43,.76,sprint)
 		var blend := minf(1.0,delta*15.0)
 		limbs[i].rotation.x = lerpf(limbs[i].rotation.x,swing,blend)
-		knees[i].rotation.x = lerpf(knees[i].rotation.x,maxf(0.0,-stride)*.48,blend)
+		knees[i].rotation.x = lerpf(knees[i].rotation.x,maxf(0.0,-stride)*lerpf(.48,1.02,sprint),blend)
 		var arm_pose := -swing*.72 if carried==null else -.85
 		if use_phone and i==1: arm_pose = -1.15
 		arms[i].rotation.x = lerpf(arms[i].rotation.x,arm_pose,blend)
