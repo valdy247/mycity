@@ -3,7 +3,7 @@ config_version=5
 
 [application]
 config/name="Valdy Jr TV - The Game"
-run/main_scene="res://main.tscn"
+run/main_scene="res://airport.tscn"
 config/features=PackedStringArray("4.3", "GL Compatibility")
 
 [display]
