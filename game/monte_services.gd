@@ -9,6 +9,13 @@ var anchor := Vector3.ZERO
 var avoid: Array = []
 var bus_berths: Array = []
 var sites: Array = []
+var corner_sites: Array = []
+var corner_jobs: Array = []
+var corner_cursor := 0
+var corner_clock := 0.0
+var corner_pending: Array = []
+var corner_unplaced := 0
+const CORNER_BATCH := 2
 var vehicles: Array = []
 var civilian_route: Array = []
 var collection_route: Array = []
@@ -193,7 +200,7 @@ func _fill(site: Dictionary) -> void:
 
 # Furniture joins the same collection queue as municipal refuse.
 func add_discarded_furniture(site: Dictionary,id: String,size_value: Vector3,color: Color) -> bool:
-	if site.is_empty() or not sites.has(site): return false
+	if site.is_empty() or (not sites.has(site) and not corner_sites.has(site)): return false
 	var root: Node3D = site.root
 	var object := Node3D.new()
 	root.add_child(object)
@@ -202,7 +209,141 @@ func add_discarded_furniture(site: Dictionary,id: String,size_value: Vector3,col
 	object.set_meta("discarded_furniture",id)
 	site.bags.append(object)
 	if float(site.refill)>0.0: site.refill = 0.0
+	_schedule_corner_cleanup(site)
 	return true
+
+func nearest_disposal_site(at: Vector3) -> Dictionary:
+	var best: Dictionary = {}
+	var distance := 3.0
+	for group in [sites,corner_sites]:
+		for site in group:
+			var p: Vector3 = site.curb
+			var gap := at.distance_to(p)
+			if gap<distance:
+				distance = gap
+				best = site
+	return best
+
+func add_household_waste(site: Dictionary,item: Dictionary) -> bool:
+	if site.is_empty() or (not sites.has(site) and not corner_sites.has(site)): return false
+	var bags: Array = site.bags
+	# Avoid unbounded visual growth if many deliveries arrive before pickup.
+	if bags.size()>=40:
+		notice = "Basurero lleno. Busca otro."
+		notice_time = 3.0
+		return false
+	var root: Node3D = site.root
+	var object := Node3D.new()
+	root.add_child(object)
+	var slot := bags.size()
+	object.position = Vector3(-.09,.88+float(slot%4)*.20,-.28+float(slot%3)*.23) if bool(site.get("corner",false)) else Vector3(-.04,1.15+float(slot%4)*.22,-.72+float(slot%4)*.40)
+	if String(item.get("kind",""))=="paint_can":
+		var can := CylinderMesh.new()
+		can.top_radius = .18
+		can.bottom_radius = .16
+		can.height = .33
+		can.radial_segments = 8
+		_part(object,Vector3.ZERO,Vector3.ONE,Color("#777f83"),can)
+	else:
+		_part(object,Vector3.ZERO,Vector3(.43,.39,.42),Color("#353935"),bag_mesh)
+	object.set_meta("household_waste",true)
+	bags.append(object)
+	site.refill = 0.0
+	_schedule_corner_cleanup(site)
+	return true
+
+func _schedule_corner_cleanup(site: Dictionary) -> void:
+	if not bool(site.get("corner",false)): return
+	if not corner_pending.has(site):
+		site.cleanup_at = Time.get_ticks_msec()+170000
+		corner_pending.append(site)
+
+func _corner_footprint(p: Vector3,d: Vector3) -> bool:
+	var side := Vector3(-d.z,0,d.x)
+	for x in [-.31,.31]:
+		for z in [-.42,.42]:
+			var at := p+side*float(x)+d*float(z)
+			if world.street_geometry.point_on_road(at): return false
+			var q := Vector2(at.x,at.z)
+			var probe := PackedVector2Array([q-Vector2(.02,.02),q+Vector2(.02,-.02),q+Vector2(.02,.02),q+Vector2(-.02,.02)])
+			var found := false
+			for poly in world.street_geometry.near(world.street_geometry.protected_index,probe):
+				if Geometry2D.is_point_in_polygon(q,poly):
+					found = true
+					break
+			if not found: return false
+	if not _free_box(p,d,Vector3(.65,.95,.86)): return false
+	for stop in bus_berths:
+		var berth: Vector3 = stop.position
+		if berth.distance_to(p)<7.0: return false
+	for entry in world.npc_doorways:
+		var door: Vector3 = entry.threshold
+		if door.distance_squared_to(p)>25.0: continue
+		var normal: Vector3 = entry.normal
+		var flat := Vector3(p.x,door.y,p.z)
+		var closest := Geometry3D.get_closest_point_to_segment(flat,door,door+normal*2.5)
+		if closest.distance_to(flat)<1.15: return false
+	return true
+
+func _place_corner_bin(id: String) -> bool:
+	var center: Vector3 = world.geography.points[id]
+	for group in [sites,corner_sites]:
+		for site in group:
+			var at: Vector3 = site.curb
+			if at.distance_to(center)<12.0: return true
+	for edge in world.geography.junctions[id]:
+		if not bool(edge.driveable): continue
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		var far := b if a.distance_squared_to(center)<b.distance_squared_to(center) else a
+		var d := (far-center).normalized()
+		var length := center.distance_to(far)
+		if length<6.0: continue
+		var side := Vector3(-d.z,0,d.x)
+		for meters in [5.5,7.5,10.0,13.0]:
+			if float(meters)>length-2.0: continue
+			for sign_value in [-1.0,1.0]:
+				for inset in [.42,.65,.85]:
+					var p := center+d*float(meters)+side*float(sign_value)*(float(edge.width)*.5+float(inset))
+					if not _corner_footprint(p,d): continue
+					var root := Node3D.new()
+					add_child(root)
+					root.position = p+Vector3.UP*.07
+					root.rotation.y = atan2(d.x,d.z)
+					_part(root,Vector3(0,.39,0),Vector3(.57,.74,.76),Color("#2f6389"))
+					_part(root,Vector3(0,.79,0),Vector3(.64,.08,.82),Color("#344d59"))
+					_part(root,Vector3(.04,.89,0),Vector3(.40,.32,.45),Color("#353935"),bag_mesh)
+					var site := {"root":root,"curb":root.global_position,"bags":[],"refill":0.0,"corner":true}
+					corner_sites.append(site)
+					return true
+	return false
+
+func _prepare_corner_jobs() -> void:
+	for id in world.geography.junctions:
+		var edges: Array = world.geography.junctions[id]
+		var arms: Dictionary = {}
+		for edge in edges:
+			if not bool(edge.driveable): continue
+			var other := String(edge.b_id) if String(edge.a_id)==String(id) else String(edge.a_id)
+			arms[other] = true
+		if arms.size()>=3: corner_jobs.append(String(id))
+
+func _tick_corner_bins(delta: float) -> void:
+	corner_clock += delta
+	if corner_clock<.25: return
+	corner_clock = 0.0
+	for i in range(CORNER_BATCH):
+		if corner_cursor>=corner_jobs.size(): break
+		if not _place_corner_bin(String(corner_jobs[corner_cursor])): corner_unplaced += 1
+		corner_cursor += 1
+		if corner_cursor==corner_jobs.size(): print("Basureros: ",corner_sites.size()," adicionales; ",corner_unplaced," cruces sin sitio seguro.")
+	for i in range(corner_pending.size()-1,-1,-1):
+		var site: Dictionary = corner_pending[i]
+		if Time.get_ticks_msec()<int(site.cleanup_at): continue
+		for bag in site.bags:
+			if is_instance_valid(bag): _remove_bag(bag)
+		site.bags.clear()
+		corner_pending.remove_at(i)
 
 func _remove_bag(bag: Node3D) -> void:
 	if bag is StaticBody3D:
@@ -961,8 +1102,10 @@ func tick(delta: float) -> void:
 	if not initialized:
 		initialized = true
 		_initialize()
+		_prepare_corner_jobs()
 	elif not civilian_route.is_empty():
 		_traffic_tick(delta)
+	if corner_cursor<corner_jobs.size() or not corner_pending.is_empty(): _tick_corner_bins(delta)
 	# If all berths were occupied at startup, retry without duplicating trucks.
 	truck_retry += delta
 	if truck_retry>=15.0 and not collection_route.is_empty() and not sites.is_empty():
