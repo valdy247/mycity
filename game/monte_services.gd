@@ -45,6 +45,7 @@ var notice_time := 0.0
 var mats: Dictionary = {}
 var mesh := BoxMesh.new()
 var bag_mesh := SphereMesh.new()
+var litter_material: StandardMaterial3D
 var wheel_mesh := CylinderMesh.new()
 
 func setup(city: World,home: Vector3,occupied: Array,actor: CharacterBody3D,view: Camera3D,stops: Array = []) -> void:
@@ -197,10 +198,11 @@ func _litter(root: Node3D,small: bool) -> void:
 			batch.set_instance_color(i,colors[i])
 		var visual := MultiMeshInstance3D.new()
 		visual.multimesh = batch
-		var mat := StandardMaterial3D.new()
-		mat.vertex_color_use_as_albedo = true
-		mat.roughness = .95
-		visual.material_override = mat
+		if litter_material==null:
+			litter_material = StandardMaterial3D.new()
+			litter_material.vertex_color_use_as_albedo = true
+			litter_material.roughness = .95
+		visual.material_override = litter_material
 		visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		visual.visibility_range_end = 65.0
 		litter.add_child(visual)
@@ -228,9 +230,13 @@ func _fill(site: Dictionary) -> void:
 				if world.street_geometry.point_on_road(root.to_global(p+Vector3(float(x),0,float(z)))):
 					safe = false
 		if not safe: continue
-		var bag := StaticBody3D.new()
-		bag.collision_layer = 1
-		bag.collision_mask = 0
+		var bag: Node3D
+		if i>=6 and i<14:
+			var solid := StaticBody3D.new()
+			solid.collision_layer = 1
+			solid.collision_mask = 0
+			bag = solid
+		else: bag = Node3D.new()
 		root.add_child(bag)
 		bag.position = p
 		bag.rotation.y = float(i)*.86
