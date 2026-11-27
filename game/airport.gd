@@ -68,6 +68,7 @@ var active_speaker := ""
 var speech_clock := 0.0
 var voice_meter: AudioEffectSpectrumAnalyzerInstance
 var fp_rig: Node3D
+var fp_body: Node3D
 var fp_arms: Array[Dictionary] = []
 var fp_clock := 0.0
 var fp_action_time := 0.0
@@ -172,11 +173,17 @@ func _make_first_person() -> void:
 	camera.add_child(fp_rig)
 	var skin := Color("#c28b66")
 	var sleeve := Color("#8b969c")
+	# Body-space shirt joins both shoulders. Looking down must reveal a
+	# continuous body, never the open end of a camera-mounted sleeve.
+	fp_body = Node3D.new()
+	fp_rig.add_child(fp_body)
+	_fp_rounded(fp_body,Vector3(0,.12,.045),Vector3(.45,.72,.30),sleeve)
+	_fp_rounded(fp_body,Vector3(0,.32,.018),Vector3(.49,.33,.32),sleeve)
 	for side in [-1.0,1.0]:
 		var hand := Node3D.new()
 		fp_rig.add_child(hand)
 		var upper := _fp_limb(skin,.40)
-		var cuff := _fp_limb(sleeve,.48)
+		var cuff := _fp_rounded(fp_rig,Vector3.ZERO,Vector3.ONE,sleeve)
 		var fore := _fp_limb(skin,.31)
 		var elbow := _fp_rounded(fp_rig,Vector3.ZERO,Vector3(.094,.105,.094),skin)
 		_fp_rounded(hand,Vector3(0,-.008,0),Vector3(.080,.085,.045),skin)
@@ -198,7 +205,7 @@ func _fp_segment(mesh: MeshInstance3D,a: Vector3,b: Vector3,width: float) -> voi
 func _carried_bag_transform() -> Transform3D:
 	# Carry beside the body, not directly in front of the camera. Pitching the
 	# view does not rotate the suitcase or stretch the arm.
-	return camera.global_transform.affine_inverse()*player.global_transform*Transform3D(Basis.IDENTITY,Vector3(.34,-.32,-.42))
+	return camera.global_transform.affine_inverse()*player.global_transform*Transform3D(Basis.IDENTITY,Vector3(.36,-.50,-.37))
 
 func _tick_first_person(delta: float,moving: bool) -> void:
 	if not is_instance_valid(fp_rig): return
@@ -213,12 +220,30 @@ func _tick_first_person(delta: float,moving: bool) -> void:
 	if is_instance_valid(carried_bag) and not (fp_prop_tween!=null and fp_prop_tween.is_running()):
 		carried_bag.transform = _carried_bag_transform()
 	var body_to_view := camera.global_transform.affine_inverse()*player.global_transform
+	var passport_held := step<=3 and passport.get_parent()==camera
+	var reaching := fp_action_time>0.0 and is_instance_valid(fp_action_prop)
+	var using_hands := progress.cart_attached or is_instance_valid(carried_bag) or passport_held or reaching
+	fp_body.transform = body_to_view
+	fp_body.visible = using_hands
 	for i in range(2):
 		var arm: Dictionary = fp_arms[i]
 		var side := -1.0 if i==0 else 1.0
 		var hand: Node3D = arm["hand"]
-		# Anatomical shoulder position in body space, independent of camera pitch.
-		var shoulder := Vector3(side*.205,.39,-.075)
+		var upper: MeshInstance3D = arm["upper"]
+		var cuff: MeshInstance3D = arm["cuff"]
+		var fore: MeshInstance3D = arm["fore"]
+		var joint: MeshInstance3D = arm["elbow"]
+		# The free hand stays outside the first-person view; never display
+		# a detached sleeve or idle fist beside the luggage.
+		var engaged := progress.cart_attached or (i==1 and using_hands)
+		hand.visible = engaged
+		upper.visible = engaged
+		cuff.visible = engaged
+		fore.visible = engaged
+		joint.visible = engaged
+		if not engaged: continue
+		# Anatomical shoulder position in body space, joined to the shirt.
+		var shoulder := Vector3(side*.19,.36,-.04)
 		var target := Vector3(side*.28,-.16+sin(fp_clock+float(i)*PI)*(.025 if moving else .006),-.23)
 		var angle := Vector3(.18,0,side*.15)
 		var gripping := false
@@ -260,18 +285,18 @@ func _tick_first_person(delta: float,moving: bool) -> void:
 		var fore_length := .33
 		var along := (upper_length*upper_length-fore_length*fore_length+distance*distance)/(2.0*distance)
 		var bend := sqrt(maxf(0.0,upper_length*upper_length-along*along))
-		var pole := Vector3(side*.80,.32 if holding_bag else -.85,.20)
+		var pole := Vector3(side*.65,-.85,.30 if holding_bag else .15)
 		var bend_axis := (pole-axis*pole.dot(axis)).normalized()
 		if bend_axis.length_squared()<.01: bend_axis = Vector3(side,0,0)
 		var elbow := shoulder+axis*along+bend_axis*bend
 		hand.transform = body_to_view*Transform3D(hand_basis,hand_at)
-		var upper: MeshInstance3D = arm["upper"]
-		var cuff: MeshInstance3D = arm["cuff"]
-		var fore: MeshInstance3D = arm["fore"]
-		var joint: MeshInstance3D = arm["elbow"]
-		_fp_segment(cuff,body_to_view*shoulder,body_to_view*shoulder.lerp(elbow,.48),.137)
-		_fp_segment(upper,body_to_view*shoulder.lerp(elbow,.43),body_to_view*elbow,.106)
-		_fp_segment(fore,body_to_view*elbow,body_to_view*wrist,.095)
+		# Rounded sleeves overlap the shirt and upper arm; the skin starts
+		# inside the fabric instead of leaving a visible gap or flat cap.
+		var sleeve_start := shoulder.lerp(Vector3(0,.32,.018),.23)
+		var sleeve_end := shoulder.lerp(elbow,.65)
+		_fp_segment(cuff,body_to_view*sleeve_start,body_to_view*sleeve_end,.135)
+		_fp_segment(upper,body_to_view*shoulder.lerp(elbow,.40),body_to_view*elbow,.105)
+		_fp_segment(fore,body_to_view*elbow,body_to_view*wrist,.085)
 		joint.position = body_to_view*elbow
 
 func _animate_prop_transfer(prop: Node3D,from: Transform3D) -> void:
