@@ -45,6 +45,26 @@ func prepare(world) -> void:
 				selected[String(matches[0].id)] = "abel"
 				candidates["abel"] = true
 				break
+	# Player-confirmed pin from the city editor. Accept only an unambiguous
+	# containing footprint, never snap to a nearby unrelated building.
+	if not candidates.has("abel"):
+		var pin: Vector3 = city.geography.project(23.1190534,-82.3687006)
+		var matches: Array = []
+		for fp in city.geography.footprints_near(pin,12.0):
+			if not Geometry2D.is_point_in_polygon(Vector2(pin.x,pin.z),fp.poly): continue
+			if city._market_reserved(fp.poly): continue
+			matches.append(fp)
+		if matches.size()==1:
+			var fp: Dictionary = matches[0]
+			var tags: Dictionary = fp.tags
+			var label: String = city.geography.normalized(String(tags.get("name","")))
+			var id := String(fp.id)
+			if not selected.has(id) and (label.is_empty() or profile(id,label,_kind(tags))=="abel"):
+				selected[id] = "abel"
+				candidates["abel"] = true
+				print("Abel Santamaría: huella OSM ",id," identificada mediante GPS del editor.")
+		if not candidates.has("abel"):
+			push_warning("Abel Santamaría: GPS sin huella inequívoca; no se sustituye un edificio vecino.")
 	for key in NAMES:
 		if not candidates.has(key): push_warning("Fachada real pendiente: "+String(NAMES[key])+" (sin huella identificada en OSM local)")
 
