@@ -276,6 +276,8 @@ func _spawn_bike(berth: Dictionary) -> void:
 	if is_instance_valid(bike): return
 	bike = Kit.body(self,"moto")
 	bike.name = "Moto_Yordi"
+	bike.set_meta("trip_dimensions",Vector3(.85,1.8,2.1))
+	bike.set_meta("traffic_priority",2.1)
 	bike.global_position = berth.p
 	var d: Vector3 = berth.d
 	bike.rotation.y = atan2(d.x,d.z)
@@ -898,7 +900,7 @@ func tick(delta: float) -> void:
 			if retry_clock>0.0: return
 			retry_clock = 3.0
 			if not is_instance_valid(bike):
-				var berth := _road_berth(home,45.0,120.0,1.9,4.8,1.8)
+				var berth := _road_berth(home,45.0,120.0,.85,2.1,1.8)
 				if berth.is_empty(): return
 				_spawn_bike(berth)
 			if _start_trip(bike,home,"Casa de mi hermano","visit",false): _driver()
