@@ -10,7 +10,6 @@ var phone_destination: Callable
 var notice_panel: PanelContainer
 var notice_title: Label
 var notice_body: Label
-var phone_tiles: Array[Button] = []
 var story_camera: StoryCamera
 var story_active := false
 var story_lines: Array = []
@@ -543,12 +542,12 @@ func close() -> void:
 	phone_balance = null
 	content = dialog_content
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	_refresh_notice()
 
 func _open(title: String,body: String = "") -> void:
 	_end_story()
 	content = phone_content if phone_mode else dialog_content
 	phone_balance = null
-	phone_tiles.clear()
 	for child in content.get_children():
 		content.remove_child(child)
 		child.queue_free()
@@ -573,6 +572,7 @@ func _open(title: String,body: String = "") -> void:
 		if phone_mode: description.add_theme_color_override("font_color",Color("#b3c4d6"))
 		content.add_child(description)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	_refresh_notice()
 
 # Story dialogues use the existing modal so mission ticks and controls
 # obey the same pause/resume rules as the original interactions.
@@ -974,7 +974,6 @@ func open_phone_home() -> void:
 func _phone_tile(root: Control,label_value: String,callback: Callable,key: String,color: Color,count: int = 0) -> void:
 	var tile := Button.new()
 	tile.custom_minimum_size = Vector2(0,82)
-	phone_tiles.append(tile)
 	tile.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	tile.add_theme_stylebox_override("normal",_phone_style(Color("#202c3d"),15,Color("#344558"),1,5))
 	tile.add_theme_stylebox_override("hover",_phone_style(Color("#2d3e52"),15,Color("#7494ac"),1,5))
@@ -1164,8 +1163,7 @@ func _resize_phone() -> void:
 	phone_panel.offset_right = -12.0
 	phone_panel.offset_top = -dimensions.y*.5
 	phone_panel.offset_bottom = dimensions.y*.5
-	# Reset stale minimum size after switching F6 resolution.
-	phone_panel.reset_size()
+	# Keep the explicit target size rather than shrinking to content minimum.
 
 func _update_phone_status() -> void:
 	if not phone_mode or not is_instance_valid(phone_clock): return
