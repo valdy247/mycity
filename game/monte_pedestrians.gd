@@ -555,6 +555,38 @@ func yield_to_bus(stop: Dictionary,bus: CharacterBody3D) -> void:
 				agent.yield_target = target
 				break
 
+# Only called by the story runner when his immediate path is blocked.
+# Idle/walking residents make room using their existing yield behaviour.
+func yield_to_runner(runner: Person,target: Vector3) -> void:
+	var origin := runner.global_position
+	var direction := target-origin
+	direction.y = 0.0
+	if direction.length_squared()<.01: return
+	direction = direction.normalized()
+	var side := Vector3(-direction.z,0,direction.x)
+	for agent in walkers:
+		var person: Person = agent.node
+		if not is_instance_valid(person) or person==runner or not person.is_visible_in_tree(): continue
+		if person.has_meta("incident_role") or bool(agent.get("indoors",false)) or agent.has("yield_target"): continue
+		var at := person.global_position
+		var offset := at-origin
+		if absf(offset.y)>1.0 or offset.dot(direction)<-.4 or offset.dot(direction)>3.5 or absf(offset.dot(side))>1.0: continue
+		var moved := false
+		for sign_value in [1.0,-1.0]:
+			for shift in [1.25,1.8,2.3]:
+				var candidate := at+side*float(sign_value)*float(shift)
+				if world.street_geometry.point_on_road(candidate): continue
+				var ground := _ground(candidate)
+				if ground.is_empty(): continue
+				var safe: Vector3 = ground.p
+				if not world.pedestrian_segment_clear(at,safe) or not world.pedestrian_space_clear(person,safe,.75,false): continue
+				person.remove_meta("conversation_until")
+				agent.pause = 0.0
+				agent.yield_target = safe
+				moved = true
+				break
+			if moved: break
+
 func tick(delta: float) -> void:
 	# Keep monotonic elapsed time, initialized from the saved city clock.
 	resident_clock += delta
