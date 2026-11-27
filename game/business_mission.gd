@@ -49,7 +49,18 @@ var buyer_normal := Vector3.ZERO
 var buyer_blocked := 0.0
 var phone_ring: AudioStreamPlayer
 var stock_display: Node3D
+var stall_sign: Label3D
+var stall_growth: Array[Node3D] = []
+var stock_visual_key := ""
+var pending_visual_key := ""
+var carry_visual_key := ""
+var cargo_visual_key := ""
+var carry_tween: Tween
+var buyer_product := ""
+var buyer_served := false
+var delivery_gesture := 0.0
 var cargo_views: Dictionary = {}
+const CARRY_REST := Vector3(.26,-.31,-.88)
 var hud: Label
 var hud_expanded := false
 var panel: PanelContainer
@@ -155,16 +166,134 @@ func _arrow(root: Node3D,p: Vector3,color: Color) -> Node3D:
 	shaft.material_override = material
 	return marker
 
+static func crate_band(key: String) -> Color:
+	match key:
+		"pollo": return Color("#ac5348")
+		"picadillo": return Color("#63825b")
+		"perrito": return Color("#487eaa")
+		"harina": return Color("#c6aa71")
+		"queso": return Color("#e0b34f")
+		"refresco": return Color("#398b91")
+		"aceite": return Color("#b77a40")
+		"tomate": return Color("#a05070")
+	return Color("#777b7e")
+
+static func stall_tier(sold_count: int) -> int:
+	return 2 if sold_count>=20 else (1 if sold_count>=5 else 0)
+
 func _crate(root: Node3D,p: Vector3,key: String) -> Node3D:
 	var node := Node3D.new()
 	root.add_child(node)
 	node.position = p
-	var color := Color("#b79a72")
-	_box(node,Vector3.ZERO,Vector3(.52,.34,.40),color)
+	var box := _box(node,Vector3.ZERO,Vector3(.52,.34,.40),Color("#b79a72"))
+	# Reuse existing cached materials and one unit cube; no new collision.
+	if world!=null:
+		var cardboard := box.material_override as StandardMaterial3D
+		if cardboard!=null: box.material_override = world.havana_textures.material(cardboard,"cardboard")
 	_box(node,Vector3(0,.174,0),Vector3(.085,.012,.40),Color("#ddd0a9"))
-	var band := Color("#ac5348") if key=="pollo" else (Color("#63825b") if key=="picadillo" else Color("#487eaa"))
+	var band := crate_band(key)
 	_box(node,Vector3(0,0,.204),Vector3(.46,.105,.012),band)
+	var tag := _label(node,_product_name(key).to_upper(),Vector3(0,0,.214),Color("#fff4d9"))
+	tag.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+	tag.font_size = 26
+	tag.pixel_size = .0013
+	tag.visibility_range_end = 9.0
+	tag.no_depth_test = false
 	return node
+
+# Batch small static decorations by color: one draw call per material.
+# These meshes are cosmetic and never change the existing path or collider.
+func _prop_batch(root: Node3D,items: Array) -> void:
+	var by_color: Dictionary = {}
+	for item in items:
+		var color: Color = item[2]
+		var key := color.to_html()
+		if not by_color.has(key): by_color[key] = {"color":color,"parts":[]}
+		by_color[key].parts.append(Transform3D(Basis.IDENTITY.scaled(item[1]),item[0]))
+	for entry in by_color.values():
+		var multi := MultiMesh.new()
+		multi.transform_format = MultiMesh.TRANSFORM_3D
+		multi.mesh = box_mesh
+		multi.instance_count = entry.parts.size()
+		for i in range(entry.parts.size()): multi.set_instance_transform(i,entry.parts[i])
+		var visual := MultiMeshInstance3D.new()
+		visual.multimesh = multi
+		visual.material_override = _mat(entry.color)
+		visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		visual.visibility_range_end = 42.0
+		visual.visibility_range_end_margin = 5.0
+		root.add_child(visual)
+
+func _make_stall_details() -> void:
+	var wood := Color("#8c7254")
+	var dark := Color("#554e42")
+	var cream := Color("#e3d4b0")
+	var green := Color("#638e77")
+	# Everything stays within the original table footprint.
+	_prop_batch(stand,[
+		[Vector3(0,.22,0),Vector3(1.30,.055,.52),wood],
+		[Vector3(0,.58,.27),Vector3(1.30,.24,.035),wood],
+		[Vector3(0,.45,-.25),Vector3(1.20,.055,.035),dark],
+		[Vector3(0,.59,.295),Vector3(1.08,.16,.014),cream]
+	])
+	stall_sign = _label(stand,"ALIMENTOS · ALBERTICO",Vector3(0,.59,.307),dark)
+	stall_sign.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+	stall_sign.pixel_size = .002
+	stall_sign.font_size = 30
+	stall_sign.visibility_range_end = 20.0
+	# Add business upgrades only as the existing sales counter grows.
+	for tier in [1,2]:
+		var group := Node3D.new()
+		stand.add_child(group)
+		stall_growth.append(group)
+		if tier==1:
+			_prop_batch(group,[
+				[Vector3(-.61,1.48,-.25),Vector3(.04,1.34,.04),dark],
+				[Vector3(.61,1.48,-.25),Vector3(.04,1.34,.04),dark],
+				[Vector3(0,2.18,0),Vector3(1.45,.045,.62),green],
+				[Vector3(0,2.11,.28),Vector3(1.45,.12,.025),green]
+			])
+		else:
+			_prop_batch(group,[
+				[Vector3(-.48,2.08,.30),Vector3(.24,.105,.015),cream],
+				[Vector3(0,2.08,.30),Vector3(.24,.105,.015),cream],
+				[Vector3(.48,2.08,.30),Vector3(.24,.105,.015),cream],
+				[Vector3(0,.59,.311),Vector3(.92,.13,.008),green]
+			])
+		group.hide()
+
+func _make_warehouse_details() -> void:
+	var root := Node3D.new()
+	add_child(root)
+	var center: Vector3 = world.food_factory.center
+	var basis: Basis = world.food_factory.basis
+	root.global_transform = Transform3D(basis,center)
+	var metal := Color("#626f72")
+	var shelf := Color("#88877c")
+	var carton := Color("#a98a62")
+	var items: Array = []
+	# At the rear wall, away from both counters, doors and clerk.
+	for x in [-2.55,2.55]:
+		for dx in [-.72,.72]:
+			items.append([Vector3(x+dx,1.05,-3.96),Vector3(.065,1.92,.10),metal])
+		for y in [.22,.86,1.50]:
+			items.append([Vector3(x,y,-3.86),Vector3(1.52,.055,.52),shelf])
+			for dx in [-.42,.20]:
+				items.append([Vector3(x+dx,y+.18,-3.86),Vector3(.44,.30,.36),carton])
+	_prop_batch(root,items)
+	var sign := _label(root,"ALMACÉN · MAYORISTA",Vector3(0,2.35,-4.13),Color("#e7e1cc"))
+	sign.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+	sign.pixel_size = .003
+	sign.visibility_range_end = 25.0
+	# Fixed visual-only pallet directly beneath the paid-crate area.
+	var pallet := Node3D.new()
+	add_child(pallet)
+	pallet.global_transform = crate_rack.global_transform
+	_prop_batch(pallet,[
+		[Vector3(0,-.06,0),Vector3(1.68,.08,.55),Color("#927656")],
+		[Vector3(-.65,-.12,0),Vector3(.11,.06,.49),Color("#6c5740")],
+		[Vector3(.65,-.12,0),Vector3(.11,.06,.49),Color("#6c5740")]
+	])
 
 func _selectable_crate(root: Node3D,p: Vector3,key: String,paid: bool,supplier: String = "primary") -> void:
 	var node := _crate(root,p,key)
@@ -278,7 +407,7 @@ func _make_scene() -> void:
 	for x in [-.61,.61]:
 		for z in [-.23,.23]:
 			_box(stand,Vector3(float(x),.39,float(z)),Vector3(.075,.78,.075),Color("#725f47"))
-	_label(stand,"VENTA DE ALIMENTOS",Vector3(0,1.33,0))
+	_make_stall_details()
 	stock_display = Node3D.new()
 	stand.add_child(stock_display)
 	buyer = Person.new()
@@ -315,9 +444,10 @@ func _make_scene() -> void:
 		var at := Vector3(-.70+float(i)*.70,.17,0)
 		_selectable_crate(purchase_rack,at,key,false)
 		_label(purchase_rack,"%s · %d CUP" % [product.name,product.cost],at+Vector3(0,.43,0))
+	_make_warehouse_details()
 	crate_view = Node3D.new()
 	camera.add_child(crate_view)
-	crate_view.position = Vector3(.26,-.31,-.88)
+	crate_view.position = CARRY_REST
 	crate_view.rotation_degrees = Vector3(-8,-12,0)
 
 func _make_ui() -> void:
@@ -679,6 +809,7 @@ func interact_albertico(at: Vector3) -> bool:
 		open_story(albertico,"Albertico",["Albertico: Asere, te tengo un bisne. Te voy a dar la luz: hay una gente que vende comida.","Albertico: Tú me la traes y yo la vendo. ¿Te sirve?"],"Sí, vamos arriba",_accept,"No, ahora no")
 	elif not ledger.carry.is_empty() and ledger.stage>=3:
 		if ledger.deliver():
+			delivery_gesture = .65
 			_notify("Caja entregada. "+_stock_text())
 			_sync_visuals()
 	elif ledger.stage==3 and ledger.total(ledger.stock)>0:
@@ -1054,30 +1185,58 @@ func _copy_phone_gps(value: String) -> void:
 	DisplayServer.clipboard_set(value)
 	_notify("Coordenadas copiadas.")
 
+func _clear_visual_children(root: Node3D) -> void:
+	for child in root.get_children():
+		root.remove_child(child)
+		child.queue_free()
+
 func _sync_visuals() -> void:
 	if arrow==null: return
 	arrow.visible = ledger.stage==0 or ledger.stage==3
 	factory_arrow.visible = ledger.stage in [1,2]
-	stand.visible = ledger.stage==4 or (ledger.stage==3 and ledger.total(ledger.stock)>0)
-	for root in [crate_rack,crate_view,stock_display]:
-		for child in root.get_children():
-			root.remove_child(child)
-			child.queue_free()
-	var slot := 0
-	for key in Ledger.PRODUCTS:
-		for i in range(mini(int(ledger.pending.get(key,0)),6)):
-			if slot>=9: break
-			_selectable_crate(crate_rack,Vector3(-.58+float(slot%3)*.58,.17+floorf(float(slot)/3.0)*.35,0),String(key),true)
-			slot += 1
-	var product_slot := 0
-	for key in Ledger.PRODUCTS:
-		if int(ledger.stock.get(key,0))>0:
-			_crate(stock_display,Vector3(-.48+float(product_slot)*.48,1.01,0),String(key))
+	stand.show()
+	var tier := stall_tier(ledger.sold) if ledger.stage==4 else 0
+	for i in range(stall_growth.size()): stall_growth[i].visible = tier>=i+1
+	if is_instance_valid(stall_sign):
+		stall_sign.text = "ALBERTICO · ABIERTO" if ledger.stage==4 else "ALIMENTOS · ALBERTICO"
+	# Refresh only what changed; sales must not recreate paid boxes, cargo or hands.
+	var pending_key := JSON.stringify(ledger.pending)
+	if pending_visual_key!=pending_key:
+		pending_visual_key = pending_key
+		_clear_visual_children(crate_rack)
+		var slot := 0
+		for key in Ledger.PRODUCTS:
+			for i in range(mini(int(ledger.pending.get(key,0)),6)):
+				if slot>=9: break
+				_selectable_crate(crate_rack,Vector3(-.58+float(slot%3)*.58,.17+floorf(float(slot)/3.0)*.35,0),String(key),true)
+				slot += 1
+	var stock_key := JSON.stringify(ledger.stock)
+	if stock_visual_key!=stock_key:
+		stock_visual_key = stock_key
+		_clear_visual_children(stock_display)
+		var product_slot := 0
+		# Three compact packages fit the original surface. The ledger retains all products.
+		for key in Ledger.PRODUCTS:
+			if int(ledger.stock.get(key,0))<=0 or product_slot>=3: continue
+			var visual := _crate(stock_display,Vector3(-.46+float(product_slot)*.46,.98,0),String(key))
+			visual.scale = Vector3.ONE*.78
 			product_slot += 1
-	if not ledger.carry.is_empty():
-		_crate(crate_view,Vector3.ZERO,ledger.carry)
+	if carry_visual_key!=ledger.carry:
+		carry_visual_key = ledger.carry
+		_clear_visual_children(crate_view)
+		if is_instance_valid(carry_tween): carry_tween.kill()
+		crate_view.position = CARRY_REST
+		if not ledger.carry.is_empty():
+			_crate(crate_view,Vector3.ZERO,ledger.carry)
+			# Quick lift into the player's view. The purchase is already committed.
+			crate_view.position = CARRY_REST+Vector3(0,-.23,.08)
+			carry_tween = create_tween()
+			carry_tween.tween_property(crate_view,"position",CARRY_REST,.24).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	crate_view.visible = not ledger.carry.is_empty()
-	_sync_cargo_views()
+	var cargo_key := JSON.stringify(ledger.cargo)
+	if cargo_visual_key!=cargo_key:
+		cargo_visual_key = cargo_key
+		_sync_cargo_views()
 	taxis.business_enabled = ledger.stage>=1
 
 func _sync_cargo_views() -> void:
@@ -1085,7 +1244,9 @@ func _sync_cargo_views() -> void:
 	# the imported vehicle mesh or whether its trunk can be animated.
 	for key in cargo_views:
 		var old: Label3D = cargo_views[key]
-		if is_instance_valid(old): old.queue_free()
+		if is_instance_valid(old):
+			old.hide()
+			old.queue_free()
 	cargo_views.clear()
 	for key in ledger.cargo:
 		var count := ledger.total(ledger.cargo[key])
@@ -1130,7 +1291,7 @@ func _update_hud() -> void:
 
 # Sales and stock remain independent of the visual customer. If no
 # verified doorway can reach the stall, do not fake a walk through a wall.
-func _start_buyer() -> void:
+func _start_buyer(product_key: String = "") -> void:
 	if buyer==null or not buyer_path.is_empty() or stand==null or world.pedestrian_router==null: return
 	var trip: Dictionary = world.pedestrian_router.call("customer_trip",stand.global_position,world.business_frontage.global_transform.basis)
 	if trip.is_empty(): return
@@ -1143,6 +1304,9 @@ func _start_buyer() -> void:
 	buyer_time = 0.0
 	buyer_returning = false
 	buyer_blocked = 0.0
+	buyer_product = product_key
+	buyer_served = false
+	buyer.set_bag(false)
 	buyer.global_position = buyer_path[0]
 	buyer.rotation.y = atan2(buyer_normal.x,buyer_normal.z)
 	buyer.show()
@@ -1152,7 +1316,17 @@ func _tick_buyer(delta: float) -> void:
 	if buyer.conversation_active(delta): return
 	if not buyer_returning and buyer_index>=buyer_path.size():
 		buyer.animate(delta,false)
+		var facing := stand.global_position-buyer.global_position
+		facing.y = 0.0
+		if facing.length_squared()>.01: buyer.rotation.y = lerp_angle(buyer.rotation.y,atan2(facing.x,facing.z),minf(delta*8.0,1.0))
 		buyer_time += delta
+		if buyer_time>=.5 and not buyer_served:
+			buyer_served = true
+			buyer.set_bag(true)
+			if is_instance_valid(buyer.carried):
+				_box(buyer.carried,Vector3(0,.025,.19),Vector3(.15,.10,.015),crate_band(buyer_product))
+		if is_instance_valid(albertico) and albertico is Person:
+			albertico.arms[1].rotation.x = lerpf(albertico.arms[1].rotation.x,-.85,minf(delta*8.0,1.0))
 		if buyer_time>=2.0:
 			buyer_returning = true
 			buyer_index = buyer_path.size()-2
@@ -1163,6 +1337,7 @@ func _tick_buyer(delta: float) -> void:
 		if buyer.global_position.distance_to(buyer_path[0])<.14:
 			buyer.rotation.y = atan2(-buyer_normal.x,-buyer_normal.z)
 			buyer.hide()
+			buyer.set_bag(false)
 			buyer_path = PackedVector3Array()
 		return
 	var target: Vector3 = buyer_path[buyer_index]
@@ -1189,6 +1364,9 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 		for merchant in get_tree().get_nodes_in_group("mission_merchant_visuals"):
 			if merchant is Person and merchant.global_position.distance_squared_to(camera.global_position)<625.0:
 				merchant.animate(delta,false)
+	delivery_gesture = maxf(0.0,delivery_gesture-delta)
+	if delivery_gesture>0.0 and is_instance_valid(albertico) and albertico is Person:
+		for arm in albertico.arms: arm.rotation.x = lerpf(arm.rotation.x,-.9,minf(delta*10.0,1.0))
 	toast_time = maxf(0.0,toast_time-delta)
 	hud.visible = not editor
 	if crate_view!=null: crate_view.visible = not in_vehicle and not editor and not ledger.carry.is_empty()
@@ -1206,7 +1384,7 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 				if ledger.unread>before:
 					_notify("Albertico te llama · P para leer su mensaje")
 					phone_ring.play()
-				_start_buyer()
+				_start_buyer(String(sale.product))
 				_sync_visuals()
 	if not editor: _tick_buyer(delta)
 	refresh += delta

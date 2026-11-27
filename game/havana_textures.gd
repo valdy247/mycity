@@ -119,6 +119,10 @@ func _texture(kind: String) -> ImageTexture:
 				tone = (.94 if checker else .49)*(.87+.12*f)
 				if joint: tone = .45
 				pixel = Color(tone,tone,tone)
+			elif kind=="cardboard":
+				var fiber := .5+.5*sin(float(y)*1.9+s*4.0)
+				tone = .82+.08*f+.05*c+.025*fiber
+				pixel = Color(tone,tone*.985,tone*.95)
 			elif kind=="wood":
 				var plank: int = posmod(x,64)
 				var grain: float = .5+.5*sin(float(x)*.73+s*4.0)
