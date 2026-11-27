@@ -51,7 +51,11 @@ var voice_id := ""
 var bag_arrows: Array[Label3D] = []
 var other_bags: Array[Node3D] = []
 var driver_opening := false
-var driver_clock := 0.0
+var driver_route_index := 0
+var driver_return_index := 0
+var driver_ready := false
+var waiting_people: Array[Person] = []
+var ambient_clock := 0.0
 var dialogue: Label
 
 func _ready() -> void:
@@ -347,15 +351,56 @@ func _make_people() -> void:
 		person.rotation.y = PI*.5
 		if i%3==1: person.set_bag(true)
 		if i in [2,6]:
-			walkers.append({"node":person,"origin":person.position,"phase":float(i)})
-	# The assigned driver waits beside the front of the taxi.
+			walkers.append({"node":person,"origin":person.position,"side":1.0,"pause":float(i)*.45})
+		else:
+			waiting_people.append(person)
+	# The driver stays outside the car footprint and walks along the curb side.
 	driver = Person.new()
 	add_child(driver)
 	driver.setup(414)
-	driver.position = Vector3(10.1,.03,11.0)
+	driver.position = taxi.to_global(Vector3(1.65,0,2.15))
 	driver.rotation.y = PI
-	if progress.stage>=11 and progress.stage<Progress.COMPLETE:
-		driver.position = taxi.to_global(Vector3(-1.35,0,-2.25))
+	if progress.stage>=11 and progress.stage<16:
+		driver.position = taxi.to_global(Vector3(.85,0,-2.90))
+	elif progress.stage==16:
+		driver.position = taxi.to_global(Vector3(-1.65,0,.30))
+		driver_ready = true
+
+func _idle_person(person: Person,delta: float,offset: float) -> void:
+	person.animate(delta,false)
+	var t := ambient_clock+offset
+	person.rotation.z = lerpf(person.rotation.z,sin(t*.83)*.021,minf(delta*3.0,1.0))
+	for i in range(person.arms.size()):
+		var arm: Node3D = person.arms[i]
+		arm.rotation.x = lerpf(arm.rotation.x,sin(t*.72+float(i)*1.7)*.065,minf(delta*3.0,1.0))
+		arm.rotation.z = sin(t*.57+float(i)*2.0)*.025
+	for i in range(person.knees.size()):
+		person.knees[i].rotation.x = maxf(0.0,sin(t*.83+float(i)*PI)*.045)
+
+func _tick_ambient_people(delta: float) -> void:
+	ambient_clock = fposmod(ambient_clock+delta,600.0)
+	for person in waiting_people:
+		_idle_person(person,delta,float(person.style_id)*.31)
+	for item in walkers:
+		var person: Person = item.node
+		var origin: Vector3 = item.origin
+		if float(item.pause)>0.0:
+			item.pause = maxf(0.0,float(item.pause)-delta)
+			_idle_person(person,delta,float(person.style_id)*.31)
+			continue
+		var goal := origin+Vector3(float(item.side)*2.2,0,0)
+		person.rotation.z = lerpf(person.rotation.z,0.0,minf(delta*5.0,1.0))
+		for arm in person.arms: arm.rotation.z = lerpf(arm.rotation.z,0.0,minf(delta*5.0,1.0))
+		if person.walk_to(goal,delta,1.05):
+			item.side = -float(item.side)
+			item.pause = 2.2+float(posmod(person.style_id,4))*.7
+
+func _driver_walk_route(points: Array[Vector3],index: int,delta: float) -> int:
+	if index>=points.size(): return index
+	var at := taxi.to_global(points[index])
+	driver.rotation.z = lerpf(driver.rotation.z,0.0,minf(delta*5.0,1.0))
+	if driver.walk_to(at,delta,1.55): return index+1
+	return index
 
 func _make_player() -> void:
 	player = CharacterBody3D.new()
@@ -640,6 +685,9 @@ func _interact() -> void:
 	if not _near(_target(),1.60):
 		_notice("Acércate al objetivo marcado.")
 		return
+	if step==16 and not driver_ready:
+		_notice("Espera a que el chofer llegue a su puerta.")
+		return
 	if step==2 and not spoken_welcome:
 		_notice("La agente está revisando tu pasaporte.")
 		return
@@ -760,7 +808,7 @@ func _make_hud() -> void:
 		root.add_child(controls)
 		controls.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
 		controls.offset_top = -65
-		for item in [["←","left"],["↑","forward"],["↓","back"],["→","right"]]:
+		for item in [["←","left"],["↑","forward"],["↓","back"],["→","right"],["Correr","run"]]:
 			var button := Button.new()
 			button.text = item[0]
 			button.custom_minimum_size = Vector2(52,52)
@@ -820,19 +868,15 @@ func _physics_process(delta: float) -> void:
 		note_time -= delta
 		if note_time<=0: message.text = ""
 	if menu_open: return
-	for item in walkers:
-		var person: Person = item.node
-		item.phase = float(item.phase)+delta*.30
-		var origin: Vector3 = item.origin
-		person.position.x = origin.x+sin(float(item.phase))*2.0
-		person.rotation.y = PI*.5 if cos(float(item.phase))>0 else -PI*.5
-		person.animate(delta,true,1.2)
+	_tick_ambient_people(delta)
 	if progress.stage==Progress.COMPLETE: return
 	_update_belt(delta)
 	stage_time += delta
 	var axis := Vector2(float(_pressed(KEY_D,"right"))-float(_pressed(KEY_A,"left")),float(_pressed(KEY_S,"back"))-float(_pressed(KEY_W,"forward"))).limit_length(1.0)
 	var direction := player.transform.basis*Vector3(axis.x,0,axis.y)
-	var speed := 2.8 if progress.cart_attached else (3.1 if progress.stage in [6,8,12,14] else 3.8)
+	var running := _pressed(KEY_SHIFT,"run")
+	var carrying := progress.stage in [6,8,12,14]
+	var speed := (3.3 if running else 2.8) if progress.cart_attached else ((4.2 if running else 3.1) if carrying else (7.2 if running else 3.8))
 	player.velocity.x = direction.x*speed
 	player.velocity.z = direction.z*speed
 	player.velocity.y -= 9.8*delta
@@ -866,11 +910,10 @@ func _physics_process(delta: float) -> void:
 		10:
 			if _near(_trunk_point(),2.0) and not driver_opening:
 				driver_opening = true
-				driver_clock = 0.0
 			if driver_opening:
-				driver_clock += delta
-				var at := taxi.to_global(Vector3(-1.35,0,-2.25))
-				if (driver.walk_to(at,delta,2.0) or driver_clock>8.0) and _near(_trunk_point(),2.0):
+				var route: Array[Vector3] = [Vector3(1.65,0,-2.90),Vector3(.85,0,-2.90)]
+				driver_route_index = _driver_walk_route(route,driver_route_index,delta)
+				if driver_route_index>=route.size() and _near(_trunk_point(),2.0):
 					var old := lid.rotation.x
 					if _advance("driver_open"):
 						lid.rotation.x = old
@@ -888,6 +931,13 @@ func _physics_process(delta: float) -> void:
 					lid_tween.tween_property(lid,"rotation:x",0.0,.55)
 					_notice("El chofer cerró el maletero.")
 					driver.arms[1].rotation.x = 0.0
+		16:
+			if not driver_ready:
+				var return_route: Array[Vector3] = [Vector3(-1.65,0,-2.90),Vector3(-1.65,0,.30)]
+				driver_return_index = _driver_walk_route(return_route,driver_return_index,delta)
+				driver_ready = driver_return_index>=return_route.size()
+	if progress.stage<10 or (progress.stage==10 and not driver_opening) or progress.stage in [11,12,13,14] or (progress.stage==16 and driver_ready):
+		_idle_person(driver,delta,4.0)
 	if progress.stage==Progress.COMPLETE: return
 	if marker.visible: _position_marker()
 	var near := _near(_target(),1.60)
@@ -904,6 +954,9 @@ func _physics_process(delta: float) -> void:
 	if progress.stage==10:
 		prompt.text = "Lleva el carrito hasta la parte trasera del taxi."
 		return
+	if progress.stage==16 and not driver_ready:
+		prompt.text = "Espera al chofer."
+		return
 	if progress.stage==2 and not spoken_welcome: action = ""
-	prompt.text = ("[E] "+action) if near and not action.is_empty() else "WASD · Caminar / Sigue el objetivo"
+	prompt.text = ("[E] "+action) if near and not action.is_empty() else "WASD · Caminar  /  Shift · Correr"
 
