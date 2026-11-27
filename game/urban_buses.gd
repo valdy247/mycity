@@ -39,7 +39,7 @@ func setup(map_data: MapData,street_geometry: StreetGeometry,anchor: Vector3,avo
 		if route.is_empty():
 			push_warning("Guagua: no hay circuito vial seguro para "+line)
 			continue
-		var itinerary := _make_itinerary(route,line)
+		var itinerary := _round_bus_corners(_make_itinerary(route,line))
 		if itinerary.size()<4: continue
 		var start_index := -1
 		for i in range(itinerary.size()):
@@ -127,6 +127,49 @@ func _walker_clearance(body: CharacterBody3D,d: Vector3,reach: float) -> float:
 		if absf(offset.dot(side))>BUS_WIDTH*.5+.32: continue
 		free = minf(free,maxf(0.0,along-BUS_LENGTH*.5-.35))
 	return free
+
+# Round steering transitions once when the circuit is created. A bus
+# cannot pivot like a taxi. Keep every boarding stop exactly in place.
+func _round_bus_corners(raw: Array) -> Array:
+	if raw.size()<4: return raw
+	var result: Array = []
+	for i in range(raw.size()):
+		var item: Dictionary = raw[i]
+		if item.has("stop"):
+			result.append(item)
+			continue
+		var corner: Vector3 = item.p
+		var before: Vector3 = raw[posmod(i-1,raw.size())].p
+		var after: Vector3 = raw[(i+1)%raw.size()].p
+		var incoming := corner-before
+		var outgoing := after-corner
+		var short := minf(incoming.length(),outgoing.length())
+		if short<1.0 or incoming.normalized().dot(outgoing.normalized())>.975:
+			result.append(item)
+			continue
+		var a := incoming.normalized()
+		var b := outgoing.normalized()
+		var rounded: Array = []
+		for factor in [.46,.35,.25]:
+			var trim := minf(9.0,short*float(factor))
+			var entry := corner-a*trim
+			var exit_point := corner+b*trim
+			var count := maxi(5,ceili(trim*2.0/.7))
+			rounded.clear()
+			var valid := true
+			for k in range(count+1):
+				var t := float(k)/float(count)
+				var p := entry.lerp(corner,t).lerp(corner.lerp(exit_point,t),t)
+				var direction := (corner-entry).lerp(exit_point-corner,t).normalized()
+				if direction.length_squared()<.5 or not TrafficBypass._on_road(streets,p,direction,BUS_WIDTH,BUS_LENGTH):
+					valid = false
+					break
+				rounded.append({"p":p,"node":""})
+			if valid: break
+			rounded.clear()
+		if rounded.is_empty(): result.append(item)
+		else: result.append_array(rounded)
+	return result
 
 func _make_itinerary(route: Array[String],line: String) -> Array:
 	var result: Array = []
@@ -844,7 +887,7 @@ func tick(delta: float,boost_requested: bool = false) -> void:
 			continue
 		var original: Array = bus.route
 		var watch_index := int(bus.get("resume_index",0)) if not bus.get("detour",[]).is_empty() else int(bus.index)
-		var restored := TrafficBypass.watchdog(bus,body,streets,original,watch_index,BUS_WIDTH,BUS_LENGTH,2.96,delta)
+		var restored := TrafficBypass.watchdog(bus,body,streets,original,watch_index,BUS_WIDTH,BUS_LENGTH,2.96,delta,true,18.0)
 		if restored>=0:
 			bus.index = restored
 			bus.detour = []
@@ -980,6 +1023,8 @@ func tick(delta: float,boost_requested: bool = false) -> void:
 		if stalled>4.0 and not detouring and distance>.30 and float(bus.get("retreat_remaining",0.0))<=0.0 and Time.get_ticks_msec()>=int(bus.get("route_recovery_after",0)):
 			bus.route_recovery_after = Time.get_ticks_msec()+4000
 			var repair := _recover_bus_route(body,original,index)
+			if repair.is_empty() and blocked and walker_free>=reach-.05:
+				repair = TrafficBypass.requested_left_pass(body,original,index,streets,BUS_WIDTH,BUS_LENGTH,data.signal_nodes,2.96)
 			if not repair.is_empty():
 				bus.detour = repair.path
 				bus.detour_index = 0
