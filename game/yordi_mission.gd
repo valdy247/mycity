@@ -56,8 +56,17 @@ var location_reported := false
 var cinematic := ""
 var stone: Node3D
 var stone_clock := 0.0
-var stone_from := Vector3.ZERO
-var stone_to := Vector3.ZERO
+var stone_velocity := Vector3.ZERO
+var robbery_phase := ""
+var robbery_clock := 0.0
+var escape_route := PackedVector3Array()
+var escape_index := 0
+var escape_goal := Vector3.INF
+var leader_retry := 0.0
+var leader_last := Vector3.ZERO
+var distracted_foe := -1
+var stone_camera_previous := true
+var stone_camera_changed := false
 
 func setup(controller) -> void:
 	game = controller
@@ -149,8 +158,8 @@ func objective() -> String:
 		4: return "Sal de casa con Yordi." if game.garage.inside else "Sube a la moto de Yordi."
 		5: return "Vuelve a subir a la moto de Yordi para continuar." if not paused_trip.is_empty() else "Yordi conduce hacia Infanta · Esquina de Tejas."
 		6: return "Ve con Yordi a buscar el PS5."
-		7: return "Regresa con Yordi a la moto."
-		8: return "¡Corre! Mantén Shift hasta perderlos."
+		7: return _robbery_objective()
+		8: return "¡Sigue a Yordi! Mantén Shift · %d m al refugio" % roundi(game.player.global_position.distance_to(escape_goal)) if escape_goal.is_finite() else "¡Sigue a Yordi! Mantén Shift."
 		9: return "Yordi llamó un taxi. Espera en un lugar seguro."
 		10: return "Sube al taxi que llamó Yordi."
 		11: return "Vuelve a subir al taxi de Yordi para continuar." if not paused_trip.is_empty() else "Regresen a casa."
@@ -689,6 +698,9 @@ func _aim(actor: Node3D,center: Vector3,extent: Vector3,reach: float = 3.0) -> b
 
 func action_text() -> String:
 	if _busy(): return ""
+	if _stage()==7 and not robbery_phase.is_empty():
+		if robbery_phase=="pickup" and _aim(stone,Vector3.ZERO,Vector3(.22,.16,.22),3.0): return "[E] Recoger piedra"
+		return _robbery_objective()
 	if not paused_trip.is_empty():
 		var vehicle: CharacterBody3D = paused_trip.body
 		if paused_role=="bike_out" and _aim(vehicle,Vector3(0,.7,0),Vector3(.65,.8,1.2),3.6): return "[E] Volver a subir a la moto de Yordi"
@@ -702,6 +714,9 @@ func action_text() -> String:
 
 func interact() -> bool:
 	if _stage()==8: return true
+	if _stage()==7 and not robbery_phase.is_empty():
+		if robbery_phase=="pickup" and _aim(stone,Vector3.ZERO,Vector3(.22,.16,.22),3.0): _pickup_stone()
+		return true
 	var action := action_text()
 	if action.is_empty(): return false
 	if not paused_trip.is_empty():
@@ -793,61 +808,258 @@ func _clear_foes() -> void:
 	foes.clear()
 	if is_instance_valid(stone): stone.queue_free()
 	stone = null
+	robbery_phase = ""
+	robbery_clock = 0.0
+	escape_route = PackedVector3Array()
+	escape_index = 0
+	escape_goal = Vector3.INF
+	if stone_camera_changed:
+		game.first_person = stone_camera_previous
+		game._apply_camera_mode()
+		stone_camera_changed = false
+
+func _robbery_objective() -> String:
+	match robbery_phase:
+		"approach": return "Un grupo se está acercando..."
+		"pickup": return "Mira la piedra en el suelo y pulsa E."
+		"held": return "Apunta y pulsa clic izquierdo para lanzar la piedra."
+	return "Regresa con Yordi a la moto."
+
+func robbery_active() -> bool:
+	return _stage()==7 and not robbery_phase.is_empty()
+
+# Choose a reachable public sidewalk checkpoint once, rather than
+# making the player run an arbitrary distance in an unknown direction.
+func _plan_escape(from: Vector3) -> PackedVector3Array:
+	var pedestrians = game.monte_pedestrians
+	var start: int = pedestrians._nearest(from,7.0)
+	if start<0: return PackedVector3Array()
+	var candidates: Array = []
+	for id in pedestrians._near_ids(from,95.0):
+		var point: Vector3 = pedestrians.graph.get_point_position(int(id))
+		var gap := from.distance_to(point)
+		if gap<42.0 or gap>90.0: continue
+		if pedestrians.graph.get_point_connections(int(id)).is_empty(): continue
+		candidates.append({"id":int(id),"score":absf(gap-65.0)})
+	candidates.sort_custom(func(a,b): return float(a.score)<float(b.score))
+	var fallback := PackedVector3Array()
+	for option in candidates.slice(0,24):
+		var middle: PackedVector3Array = pedestrians.graph.get_point_path(start,int(option.id))
+		if middle.size()<3: continue
+		var length := 0.0
+		var previous := from
+		for point in middle:
+			length += previous.distance_to(point)
+			previous = point
+		if length>145.0 or length<48.0: continue
+		var end := middle[middle.size()-1]
+		if not world.pedestrian_segment_clear(end,end): continue
+		var route := PackedVector3Array([from])
+		route.append_array(middle)
+		if fallback.is_empty(): fallback = route
+		if length>=60.0 and length<=115.0: return route
+	return fallback
 
 func _start_robbery() -> void:
-	if _stage()!=7 or not is_instance_valid(yordi): return
+	if _stage()!=7 or not robbery_phase.is_empty() or not is_instance_valid(yordi): return
 	if yordi.global_position.distance_to(game.player.global_position)>5.0:
 		business._notify("Espera a Yordi, que tiene el PS5.")
 		return
 	var at: Vector3 = game.player.global_position-Vector3.UP*.86
+	var path := _plan_escape(yordi.global_position)
+	if path.is_empty():
+		business._notify("Yordi: Ven conmigo a la acera.")
+		return
 	if not _spawn_foes(at):
 		business._notify("Espera un momento junto a la moto.")
 		return
+	escape_route = path
+	escape_index = 1
+	escape_goal = path[path.size()-1]
 	chase_origin = at
 	state.chase_start = _encode(at)
+	robbery_phase = "approach"
+	robbery_clock = 0.0
+	_clear_target()
 	_save()
-	_show_cinema("robbery",foes[0],"Asaltante: ¡Denme las llaves de la moto y el PS5!\nYordi sostiene la caja. Tú recoges una piedra del suelo.","Lanzar piedra y correr",_start_chase)
+	business._notify("Yordi: Mano, mira esa gente que viene para acá...")
+
+func _stone_model(parent: Node3D) -> Node3D:
+	var root := Node3D.new()
+	parent.add_child(root)
+	var mesh := SphereMesh.new()
+	mesh.radius = .075
+	mesh.height = .13
+	mesh.radial_segments = 6
+	mesh.rings = 3
+	var visual := MeshInstance3D.new()
+	visual.mesh = mesh
+	visual.scale = Vector3(1.0,.8,1.25)
+	visual.material_override = business._mat(Color("#79736c"))
+	root.add_child(visual)
+	return root
+
+func _place_stone() -> bool:
+	var cam: Camera3D = game.play_camera
+	var at: Vector3 = game.player.global_position-Vector3.UP*.86
+	var direction := -cam.global_basis.z
+	direction.y = 0.0
+	if direction.length_squared()<.01: direction = Vector3.FORWARD
+	direction = direction.normalized()
+	for distance in [1.25,1.75,2.25]:
+		for angle in [0.0,.65,-.65,1.3,-1.3,PI]:
+			var p := _ground(at+direction.rotated(Vector3.UP,float(angle))*float(distance),false)
+			if not p.is_finite() or not world.pedestrian_segment_clear(p,p): continue
+			if not world.pedestrian_space_clear(null,p,.24,false): continue
+			stone = _stone_model(self)
+			stone.global_position = p+Vector3.UP*.065
+			marker.global_position = p-Vector3.UP*1.2
+			marker.show()
+			return true
+	return false
+
+func _robbery_tick(delta: float) -> void:
+	robbery_clock += delta
+	var at: Vector3 = game.player.global_position-Vector3.UP*.86
+	for foe in foes:
+		if not is_instance_valid(foe): continue
+		if robbery_phase=="approach" and robbery_clock<2.8:
+			_walk(foe,at,delta,1.65,2.3)
+		else:
+			var facing := at-foe.global_position
+			if facing.length_squared()>.04: foe.rotation.y = lerp_angle(foe.rotation.y,atan2(facing.x,facing.z),minf(1.0,delta*6.0))
+			foe.animate(delta,false)
+			foe.arms[1].rotation.x = -.45+sin(robbery_clock*3.0)*.10
+	_carry_pose()
+	if robbery_phase=="approach" and robbery_clock>=2.8:
+		if not _place_stone():
+			robbery_clock = 2.3
+			return
+		robbery_phase = "pickup"
+		business._notify("Asaltante: ¡Denme las llaves de la moto y el PS5!  Yordi: Mano, la piedra.")
+	if robbery_phase=="held" and is_instance_valid(stone):
+		stone.rotation.z = sin(robbery_clock*2.0)*.04
+
+func _pickup_stone() -> void:
+	if robbery_phase!="pickup" or not is_instance_valid(stone): return
+	if not game.garage._free_hands():
+		business._notify("Necesitas las manos libres.")
+		return
+	stone_camera_previous = game.first_person
+	stone_camera_changed = true
+	game.first_person = true
+	game._apply_camera_mode()
+	stone.reparent(game.play_camera,false)
+	stone.position = Vector3(.26,-.24,-.63)
+	stone.rotation = Vector3.ZERO
+	robbery_phase = "held"
+	marker.hide()
+	business._notify("Clic izquierdo para lanzar. Después sigue a Yordi.")
+
+func throw_stone() -> bool:
+	if _stage()!=7 or robbery_phase!="held" or not is_instance_valid(stone): return false
+	var cam: Camera3D = game.play_camera
+	var direction := -cam.global_basis.z.normalized()
+	stone.reparent(self,true)
+	stone_velocity = direction*13.0
+	stone_clock = 0.0
+	distracted_foe = -1
+	_start_chase()
+	return true
+
+func _stone_tick(delta: float) -> void:
+	if not is_instance_valid(stone): return
+	stone_clock += delta
+	var from := stone.global_position
+	stone_velocity.y -= 9.8*delta
+	var to := from+stone_velocity*delta
+	var query := PhysicsRayQueryParameters3D.create(from,to,1|2|4|8|16|32)
+	query.exclude = [game.player.get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	var closest := from.distance_to(to)
+	var impact := false
+	if not hit.is_empty():
+		var point: Vector3 = hit.position
+		closest = from.distance_to(point)
+		to = point
+		impact = true
+	for i in range(foes.size()):
+		var foe := foes[i]
+		if not is_instance_valid(foe): continue
+		var bounds := AABB(Vector3(-.24,.12,-.22),Vector3(.48,1.65,.44))
+		var local_hit: Variant = bounds.intersects_segment(foe.to_local(from),foe.to_local(to))
+		if local_hit==null: continue
+		var point: Vector3 = foe.to_global(local_hit)
+		if from.distance_to(point)>closest: continue
+		closest = from.distance_to(point)
+		distracted_foe = i
+		to = point
+		impact = true
+	stone.global_position = to
+	stone.rotate_x(delta*8.0)
+	if impact or stone_clock>=2.0:
+		stone.queue_free()
+		stone = null
 
 func _start_chase() -> void:
-	_end_cinema()
-	if foes.size()!=5: return
+	if foes.size()!=5 or escape_route.is_empty(): return
+	robbery_phase = ""
 	_set_stage(8)
 	chase_clock = 0.0
 	run_clock = 0.0
 	chase_sample = 0.0
-	chase_grace = 2.0
+	chase_grace = 3.0
 	slow_clock = 0.0
 	key_line = false
 	last_player = game.player.global_position
-	stone = Node3D.new()
-	add_child(stone)
-	business._box(stone,Vector3.ZERO,Vector3(.09,.08,.09),Color("#77716b"))
-	stone_from = game.player.global_position+Vector3.UP*.2
-	stone_to = foes[0].global_position+Vector3.UP*1.2
-	stone.global_position = stone_from
-	stone_clock = 0.0
-	_clear_target()
-	business._notify("¡Corre con Shift! No te detengas.")
+	leader_last = yordi.global_position
+	leader_retry = 0.0
+	walkers.erase(yordi.get_instance_id())
+	_target(escape_goal,"Refugio · sigue a Yordi")
+	business._notify("Yordi: ¡Corre, sígueme! Yo sé por dónde.")
+
+func _lead_escape(delta: float,player_at: Vector3) -> void:
+	if not is_instance_valid(yordi): return
+	while escape_index<escape_route.size() and yordi.global_position.distance_to(escape_route[escape_index])<.7:
+		escape_index += 1
+	if escape_index>=escape_route.size():
+		yordi.animate(delta,false)
+		_carry_pose()
+		return
+	var gap := yordi.global_position.distance_to(player_at)
+	# Lead at a pace the player can follow, and wait briefly if separated.
+	var pace := 6.4 if gap<9.0 else (3.0 if gap<16.0 else 0.0)
+	var next := escape_route[escape_index]
+	if pace>0.0:
+		_walk(yordi,next,delta,pace,.45)
+	else: yordi.animate(delta,false)
+	leader_retry += delta
+	if leader_retry>=3.0:
+		if pace>0.0 and leader_last.distance_to(yordi.global_position)<.7:
+			var replacement: PackedVector3Array = game.monte_pedestrians.route_between(yordi.global_position,escape_goal)
+			if not replacement.is_empty():
+				escape_route = replacement
+				escape_index = 1
+				walkers.erase(yordi.get_instance_id())
+		leader_last = yordi.global_position
+		leader_retry = 0.0
+	_carry_pose()
 
 func _chase_tick(delta: float) -> void:
 	chase_clock += delta
 	chase_grace = maxf(0.0,chase_grace-delta)
 	var player_at: Vector3 = game.player.global_position
 	var target := player_at-Vector3.UP*.86
-	if is_instance_valid(stone):
-		stone_clock += delta
-		var t := clampf(stone_clock/.35,0.0,1.0)
-		stone.global_position = stone_from.lerp(stone_to,t)+Vector3.UP*sin(t*PI)*.35
-		if t>=1.0:
-			stone.queue_free()
-			stone = null
-	_walk(yordi,target,delta,8.2,1.8)
-	_carry_pose()
+	_stone_tick(delta)
+	_lead_escape(delta,target)
+	if is_instance_valid(yordi):
+		marker.global_position = yordi.global_position
+		marker.show()
 	var nearest := INF
 	for i in range(foes.size()):
 		var foe := foes[i]
 		if not is_instance_valid(foe): continue
-		if i==0 and chase_clock<2.0:
+		if chase_clock<1.1 or (i==distracted_foe and chase_clock<2.8):
 			foe.animate(delta,false)
 		else: _walk(foe,target,delta,RIVAL_SPEED,1.0)
 		nearest = minf(nearest,foe.global_position.distance_to(target))
@@ -863,15 +1075,9 @@ func _chase_tick(delta: float) -> void:
 		if moving>=5.5:
 			run_clock += elapsed
 			slow_clock = 0.0
-		else:
-			run_clock = maxf(0.0,run_clock-elapsed*1.8)
-			slow_clock += elapsed
-	if chase_grace<=0.0 and slow_clock>=1.25 and nearest<1.85:
-		_retry_chase()
-		return
-	if run_clock>=11.0 and player_at.distance_to(chase_origin)>=55.0 and nearest>=12.0:
-		var safe := _near_ground(target,yordi,8.0)
-		if not safe.is_finite(): return
+		else: slow_clock += elapsed
+	if escape_goal.is_finite() and target.distance_to(escape_goal)<5.0 and is_instance_valid(yordi) and yordi.global_position.distance_to(escape_goal)<5.0:
+		var safe := escape_goal
 		_clear_foes()
 		pickup_point = safe
 		state.pickup = _encode(safe)
@@ -880,6 +1086,9 @@ func _chase_tick(delta: float) -> void:
 		business._notify("Yordi: Ya los perdimos. Voy a llamar un taxi; yo lo pago.")
 		business.ledger.add_message("Yordi","Pedí un taxi para regresar a casa. Tengo el PS5 y la llave de la moto.")
 		_save()
+		return
+	if chase_grace<=0.0 and slow_clock>=1.25 and nearest<1.85:
+		_retry_chase()
 
 func _retry_chase() -> void:
 	_clear_foes()
@@ -1149,6 +1358,9 @@ func tick(delta: float) -> void:
 			if is_instance_valid(yordi):
 				_walk(yordi,player_at,delta,3.5,1.8)
 		7:
+			if not robbery_phase.is_empty():
+				_robbery_tick(delta)
+				return
 			if is_instance_valid(yordi):
 				_walk(yordi,player_at,delta,3.5,1.8)
 				_carry_pose()
