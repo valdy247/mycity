@@ -335,6 +335,10 @@ func aimed_text(at: Vector3) -> String:
 	if target==null: return ""
 	var key := String(target.get_meta("mipyme_key"))
 	if bool(target.get_meta("paid")): return "[E] Recoger caja de "+_product_name(key)
+	if first_story!=null and first_story.active() and first_story._phase()=="shopping" and key in first_story.REQUIRED:
+		if first_story.state.bought.has(key): return "Caja ya comprada"
+		var owner := "Tú" if first_story.player_box(key) else "Albertico"
+		return "[E] Comprar "+_product_name(key)+" · %d CUP · Carga: %s" % [int(Ledger.PRODUCTS[key].cost),owner]
 	return "[E] Comprar y recoger "+_product_name(key)+" · %d CUP" % int(Ledger.PRODUCTS[key].cost)
 
 func take_aimed(at: Vector3) -> bool:

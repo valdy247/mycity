@@ -8,6 +8,14 @@ var exit_retry := false
 var exit_retry_clock := 0.0
 var handshake_camera := false
 const REQUIRED := ["huevos","perrito","pollo","picadillo"]
+const PLAYER_BOXES := ["huevos","pollo"]
+const HELPER_BOXES := ["perrito","picadillo"]
+var load_route := PackedVector3Array()
+var load_index := 0
+var load_retry := 0.0
+var returning_to_shop := false
+var load_still := 0.0
+var cargo_marker: Node3D
 const ROOM := Vector3(60,110,0)
 const FRIDGE := Vector3(-5.8,110,3.6)
 var game
@@ -73,7 +81,15 @@ func setup(controller) -> void:
 	banner.hide()
 	marker = business._arrow(self,Vector3.ZERO,Color("#e9cb70"))
 	marker.hide()
+	cargo_marker = business._arrow(self,Vector3.ZERO,Color("#e9cb70"))
+	cargo_marker.hide()
 	business._sync_visuals()
+
+static func ready_to_return(bought: Dictionary,loaded: Dictionary,carrying: String) -> bool:
+	return carrying.is_empty() and all_four(bought) and all_four(loaded)
+
+static func player_box(key: String) -> bool:
+	return key in PLAYER_BOXES
 
 func _phase() -> String:
 	return String(state.get("phase",""))
@@ -144,7 +160,8 @@ func begin() -> bool:
 
 func _ensure_cab(near: Vector3) -> bool:
 	if not cab.is_empty() and is_instance_valid(cab.get("body")): return true
-	var berth: Dictionary = game.yordi_mission._road_berth(near,4.0,36.0,1.9,4.8,1.55)
+	var berth: Dictionary = game.yordi_mission._road_berth(near,4.0,18.0,1.9,4.8,1.55)
+	if berth.is_empty(): berth = game.yordi_mission._road_berth(near,4.0,36.0,1.9,4.8,1.55)
 	if berth.is_empty(): return false
 	var body: CharacterBody3D = game.taxis._make_taxi(game.taxis.taxis.size())
 	body.global_position = berth.p
@@ -161,6 +178,7 @@ func owns_trip() -> bool:
 
 func _start_trip() -> bool:
 	if cab.is_empty() or not game.taxis.passenger.is_empty() or not game.garage._free_hands(): return false
+	if _phase()=="return" and not ready_to_return(state.bought,state.taxi_boxes,ledger.carry): return false
 	var body: CharacterBody3D = cab.body
 	var goal: Vector3 = game.cuba_world.food_factory.road if _phase()=="outbound" else _home_road()
 	var result: Dictionary = game.taxis.router.resolve_point(goal,String(cab.next_node))
@@ -206,6 +224,8 @@ func _separate_exit(actor: Person) -> Vector3:
 
 func ride_ended(reached: bool) -> void:
 	rider_trip = false
+	initialized = true
+	game.yordi_mission.walkers.erase(business.albertico.get_instance_id())
 	if is_instance_valid(taxi_companion): taxi_companion.queue_free()
 	taxi_companion = null
 	var actor: Person = business.albertico as Person
@@ -221,8 +241,8 @@ func ride_ended(reached: bool) -> void:
 		return
 	if _phase()=="outbound":
 		ledger.stage = 2
-		_set_phase("return" if all_four(state.bought) else "shopping")
-		business._notify("Compra una caja de huevos, perritos, pollo y picadillo. Albertico las carga.")
+		_set_phase("return" if ready_to_return(state.bought,state.taxi_boxes,ledger.carry) else "shopping")
+		business._notify("Tú cargas huevos y pollo. Albertico lleva perritos y picadillo. Una caja a la vez.")
 	elif _phase()=="return":
 		ledger.stage = 3
 		_set_phase("cold")
@@ -232,11 +252,11 @@ func buy(key: String,supplier: String,paid: bool) -> void:
 	if _phase()!="shopping" or supplier!="primary" or paid or not key in REQUIRED:
 		business._notify(objective())
 		return
-	if not loading.is_empty():
-		business._notify("Espera a que Albertico cargue la caja.")
-		return
 	if state.bought.has(key):
 		business._notify("Ya compraste esa caja. Falta otra variedad.")
+		return
+	if player_box(key) and not ledger.carry.is_empty():
+		business._notify("Carga primero la caja que llevas con G.")
 		return
 	if not _ensure_cab(game.cuba_world.food_factory.road):
 		business._notify("Esperando una parada segura para el taxi.")
@@ -245,31 +265,181 @@ func buy(key: String,supplier: String,paid: bool) -> void:
 	if ledger.cash<cost or not business.life.reserve_crate("primary",key):
 		business._notify("No hay dinero o mercancía suficiente.")
 		return
-	# Paid merchandise is safe in the story manifest even if the game closes
-	# while the cosmetic helper animation is playing.
+	# Purchase and delivery are distinct; persist the paid manifest first.
 	ledger.cash -= cost
 	ledger.expenses += cost
 	state.bought[key] = 1
-	state.taxi_boxes[key] = 1
+	if player_box(key):
+		ledger.carry = key
+		business._notify("Lleva la caja de "+business._product_name(key)+" al taxi y pulsa G.")
+	else:
+		business._notify("Albertico: Yo llevo la caja de "+business._product_name(key)+".")
 	_save()
 	business.life.refresh_primary()
+	business._sync_visuals()
+
+func _shop_wait() -> Vector3:
+	var factory: Dictionary = game.cuba_world.food_factory
+	var center: Vector3 = factory.center
+	var basis: Basis = factory.basis
+	return center+basis*Vector3(.1,.10,3.25)
+
+static func local_path_valid(path: PackedVector3Array,from: Vector3,to: Vector3) -> bool:
+	if path.is_empty(): return false
+	var direct := from.distance_to(to)
+	var maximum := minf(85.0,maxf(14.0,direct*1.7+7.0))
+	var previous := from
+	var total := 0.0
+	for point in path:
+		total += previous.distance_to(point)
+		if total>maximum or point.distance_to(from)>maximum: return false
+		previous = point
+	return previous.distance_to(to)<1.5
+
+func _local_path(from: Vector3,to: Vector3) -> PackedVector3Array:
+	var world = game.cuba_world
+	if world.pedestrian_segment_clear(from,to): return PackedVector3Array([to])
+	var factory: Dictionary = world.food_factory
+	var center: Vector3 = factory.center
+	var basis: Basis = factory.basis
+	# Use the wide open central entrance, rather than routing around the block.
+	for p in [center+basis*Vector3(0,.10,3.25),center+basis*Vector3(0,.10,4.85),center+basis*Vector3(0,.10,5.65)]:
+		if world.pedestrian_segment_clear(from,p) and world.pedestrian_segment_clear(p,to):
+			return PackedVector3Array([p,to])
+	var path: PackedVector3Array = game.monte_pedestrians.route_between(from,to)
+	return path if local_path_valid(path,from,to) else PackedVector3Array()
+
+func _taxi_load_route(actor: Person) -> PackedVector3Array:
+	if cab.is_empty() or not is_instance_valid(cab.body): return PackedVector3Array()
+	var body: CharacterBody3D = cab.body
+	var best := PackedVector3Array()
+	var best_length := INF
+	# Only test positions immediately next to the reserved taxi's trunk.
+	for side in [1.0,-1.0]:
+		for x in [1.55,2.25,3.1,4.2]:
+			var p := body.to_global(Vector3(float(side)*float(x),0,-2.15))
+			var target: Vector3 = game.yordi_mission._ground(p,false)
+			if not target.is_finite() or target.distance_to(body.global_position)>5.0: continue
+			var path := _local_path(actor.global_position,target)
+			if not local_path_valid(path,actor.global_position,target): continue
+			var length := 0.0
+			var previous := actor.global_position
+			for point in path:
+				length += previous.distance_to(point)
+				previous = point
+			if length<best_length:
+				best_length = length
+				best = path
+		if not best.is_empty(): break
+	return best
+
+func _begin_helper(actor: Person,key: String) -> void:
 	loading = key
-	loading_clock = 0.0
-	var actor: Person = business.albertico as Person
+	returning_to_shop = false
+	load_route = PackedVector3Array()
+	load_index = 0
+	load_retry = 0.0
+	load_still = 0.0
+	if is_instance_valid(helper_box): helper_box.queue_free()
 	helper_box = business._crate(actor,Vector3(0,1.05,.30),key)
-	business._notify("Albertico lleva la caja de "+business._product_name(key)+" al taxi.")
+
+func _try_finish_shopping() -> void:
+	if _phase()=="shopping" and ready_to_return(state.bought,state.taxi_boxes,ledger.carry):
+		returning_to_shop = false
+		load_route = PackedVector3Array()
+		_set_phase("return")
+		business._notify("¡Listo! Dos cajas cada uno. Las cuatro están en el taxi. Volvamos a casa.")
 
 func _finish_load() -> void:
+	if loading.is_empty() or cab.is_empty(): return
+	var actor: Person = business.albertico as Person
+	if actor.global_position.distance_to(cab.body.global_position)>5.2: return
+	state.taxi_boxes[loading] = 1
 	if is_instance_valid(helper_box): helper_box.queue_free()
 	helper_box = null
+	var key := loading
 	loading = ""
-	if all_four(state.bought):
-		_set_phase("return")
-		business._notify("¡Cuatro cajas listas! Sube al mismo taxi con Albertico.")
+	_save()
+	business._notify("Albertico cargó "+business._product_name(key)+".")
+	load_route = PackedVector3Array()
+	load_index = 0
+	load_retry = 0.0
+	load_still = 0.0
+	returning_to_shop = true
+	_try_finish_shopping()
+
+func _advance_load_route(actor: Person,delta: float,carrying: bool) -> bool:
+	if load_index>=load_route.size(): return false
+	var target := load_route[load_index]
+	if actor.global_position.distance_to(target)<.20:
+		load_index += 1
+		return load_index>=load_route.size()
+	var next := actor.global_position.move_toward(target,2.5*delta)
+	if game.cuba_world.pedestrian_segment_clear(actor.global_position,next) and game.cuba_world.pedestrian_space_clear(actor,next,.58):
+		actor.walk_to(target,delta,2.5)
+		load_still = 0.0
+	else:
+		actor.animate(delta,false)
+		load_still += delta
+	if carrying:
+		for arm in actor.arms: arm.rotation.x = -.85
+	if load_still>2.0:
+		load_route = PackedVector3Array()
+		load_index = 0
+		load_still = 0.0
+		load_retry = 1.0
+	return false
+
+func _shopping_helper(actor: Person,delta: float) -> void:
+	_try_finish_shopping()
+	if _phase()!="shopping": return
+	if not returning_to_shop and loading.is_empty():
+		for key in HELPER_BOXES:
+			if state.bought.has(key) and int(state.taxi_boxes.get(key,0))==0:
+				# Collect the next box at the warehouse, not at a remote waypoint.
+				if actor.global_position.distance_to(_shop_wait())>2.0:
+					returning_to_shop = true
+					load_route = PackedVector3Array()
+					load_index = 0
+				else: _begin_helper(actor,key)
+				break
+	if loading.is_empty() and not returning_to_shop:
+		actor.animate(delta,false)
+		return
+	load_retry = maxf(0.0,load_retry-delta)
+	if load_route.is_empty():
+		if load_retry>0.0: return
+		load_retry = 1.5
+		load_index = 0
+		load_route = _local_path(actor.global_position,_shop_wait()) if returning_to_shop else _taxi_load_route(actor)
+		if load_route.is_empty():
+			actor.animate(delta,false)
+			return
+	if _advance_load_route(actor,delta,not returning_to_shop):
+		load_route = PackedVector3Array()
+		load_index = 0
+		if returning_to_shop: returning_to_shop = false
+		else: _finish_load()
 
 func cargo_action() -> bool:
-	if _phase()!="cold" or cab.is_empty() or game.player.global_position.distance_to(cab.body.global_position+Vector3.UP*.8)>5.0:
+	var phase := _phase()
+	if not phase in ["shopping","cold"] or cab.is_empty() or not is_instance_valid(cab.body) or game.player.global_position.distance_to(cab.body.global_position+Vector3.UP*.8)>5.0:
 		business._notify(objective())
+		return true
+	if phase=="shopping":
+		if ledger.carry.is_empty():
+			business._notify("Compra y recoge tus cajas de huevos y pollo en la MIPYME.")
+			return true
+		var key := ledger.carry
+		if not player_box(key) or not state.bought.has(key) or int(state.taxi_boxes.get(key,0))>0:
+			business._notify("Esa caja no pertenece a esta entrega.")
+			return true
+		state.taxi_boxes[key] = 1
+		ledger.carry = ""
+		_save()
+		business._sync_visuals()
+		business._notify("Cargaste la caja de "+business._product_name(key)+".")
+		_try_finish_shopping()
 		return true
 	if not ledger.carry.is_empty():
 		var key := ledger.carry
@@ -520,10 +690,16 @@ func objective() -> String:
 	match _phase():
 		"outbound": return "Albertico · Sube al taxi para ir a la MIPYME."
 		"shopping":
+			var mine := 0
+			var his := 0
+			for key in PLAYER_BOXES: mine += int(state.taxi_boxes.get(key,0))
+			for key in HELPER_BOXES: his += int(state.taxi_boxes.get(key,0))
+			var progress := "Tú %d/2 · Albertico %d/2" % [mine,his]
+			if not ledger.carry.is_empty(): return progress+" · G: cargar tu caja en el taxi."
 			var missing := PackedStringArray()
 			for key in REQUIRED:
 				if not state.bought.has(key): missing.append(business._product_name(key))
-			return "Compra 1 caja de cada: "+", ".join(missing) if not missing.is_empty() else "Albertico está cargando las cajas."
+			return progress+" · Compra: "+", ".join(missing) if not missing.is_empty() else progress+" · Espera a Albertico."
 		"return": return "Sube al taxi con Albertico y vuelve a casa."
 		"cold": return "G: descarga las cajas. E: guárdalas en el frío (%d/4)." % ledger.total(state.cold)
 		"table": return "Cruza la calle y entra a casa de Albertico."
@@ -538,7 +714,9 @@ func destination() -> Dictionary:
 	match _phase():
 		"outbound","return": 
 			if not cab.is_empty(): return {"p":cab.body.global_position,"label":"Taxi con Albertico"}
-		"shopping": return {"p":game.cuba_world.food_factory.counter,"label":"MIPYME"}
+		"shopping":
+			if not ledger.carry.is_empty() and not cab.is_empty(): return {"p":cab.body.global_position,"label":"Taxi · cargar tu caja"}
+			return {"p":game.cuba_world.food_factory.counter,"label":"MIPYME"}
 		"cold":
 			if ledger.carry.is_empty() and not cab.is_empty(): return {"p":cab.body.global_position,"label":"Taxi · descargar cajas"}
 			return {"p":_home_door(),"label":"Mi casa · refrigerador"}
@@ -563,6 +741,10 @@ func reset_checkpoint() -> bool:
 	cab = {}
 	if is_instance_valid(helper_box): helper_box.queue_free()
 	loading = ""
+	returning_to_shop = false
+	load_route = PackedVector3Array()
+	load_index = 0
+	exit_retry = false
 	initialized = false
 	return true
 
@@ -591,14 +773,18 @@ func tick(delta: float) -> void:
 		initialized = true
 		neighbor = _find_neighbor()
 		if _phase() in ["room","room_carry","street_carry","handshake"]: _set_phase("table")
-		if _phase()=="shopping" and all_four(state.bought): _set_phase("return")
+		if _phase()=="shopping" and ready_to_return(state.bought,state.taxi_boxes,ledger.carry): _set_phase("return")
 		if _phase() in ["shopping","return"]:
 			var factory: Dictionary = game.cuba_world.food_factory
 			_teleport(factory.center+factory.basis*Vector3(0,.96,3.55),factory.basis.get_euler().y)
 		elif _phase() in ["outbound","cold","table"]:
 			var start: Vector3 = game.yordi_mission._near_ground(_home_door()+home.basis.z*.9,business.albertico,6.0)
 			if start.is_finite(): _teleport(start+Vector3.UP*.86,original_angle)
-		business.albertico.global_position = original_actor
+		var actor: Person = business.albertico as Person
+		if _phase() in ["shopping","return"]:
+			actor.global_position = _shop_wait()
+		else: actor.global_position = original_actor
+		game.yordi_mission.walkers.erase(actor.get_instance_id())
 		business.albertico.show()
 	next_retry -= delta
 	if _phase() in ["outbound","shopping","return","cold"] and next_retry<=0.0:
@@ -615,19 +801,13 @@ func tick(delta: float) -> void:
 				actor.show()
 				exit_retry = false
 		if exit_retry: return
-	if not loading.is_empty():
-		loading_clock += delta
-		if cab.is_empty() and loading_clock>12.0:
-			_finish_load()
-			return
-		if not cab.is_empty():
-			var at: Vector3 = game.yordi_mission._near_ground(cab.body.global_position,actor,8.0) if loading_clock<.2 else Vector3.INF
-			if at.is_finite(): actor.set_meta("albertico_load_target",at)
-			var target: Vector3 = actor.get_meta("albertico_load_target",actor.global_position)
-			if game.yordi_mission._walk(actor,target,delta,2.8,1.0) or loading_clock>12.0: _finish_load()
-			else:
-				for arm in actor.arms: arm.rotation.x = -.85
+	if _phase()=="shopping":
+		_shopping_helper(actor,delta)
+		cargo_marker.visible = not cab.is_empty() and is_instance_valid(cab.body) and not ledger.carry.is_empty()
+		if cargo_marker.visible: cargo_marker.global_position = cab.body.global_position+Vector3.UP*2.2
+		marker.hide()
 		return
+	cargo_marker.hide()
 	if carrying_table():
 		var forward: Vector3 = -game.pivot.global_basis.z
 		forward.y = 0.0
@@ -642,7 +822,7 @@ func tick(delta: float) -> void:
 		if _phase()=="room_carry" and game.player.global_position.distance_to(ROOM+Vector3(0,.86,2.0))<1.05: _leave_room()
 		elif _phase()=="street_carry": _put_table()
 	else:
-		if _phase() in ["outbound","shopping","return","table"] and not game.garage.inside:
+		if _phase() in ["outbound","return","table"] and not game.garage.inside:
 			var ground: Vector3 = game.player.global_position-Vector3.UP*.86
 			if actor.global_position.distance_to(ground)>2.3:
 				game.yordi_mission._walk(actor,ground,delta,2.4,2.0)
