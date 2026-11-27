@@ -88,13 +88,19 @@ func setup(controller) -> void:
 	add_child(marker)
 	business._arrow(marker,Vector3.UP*2.2,Color("#ffd85c"))
 	marker.hide()
-	# Never persist scene-node references. Resume a paid purchase at its
-	# street checkpoint; earlier phases restart the visit, with no debit.
+	# Loading a save never moves the player or starts a story scene.
+	# A paid purchase can be restored only after explicit phone consent.
 	var stage := _stage()
 	if stage in [2,3,4,5,6]: state.stage = 2
-	if stage in [7,8,9,10,11]:
-		state.stage = 7
-		restore_pending = true
+	if stage in [7,8,9,10,11]: state.stage = 7
+	if stage>=2 and stage<=12:
+		state.resume_required = true
+		restore_pending = false
+		var label_value: String = game.garage.waypoint_label.to_lower()
+		if label_value.contains("yordi") or label_value.contains("ps5") or label_value.contains("tejas") or label_value.contains("infanta") or label_value.contains("refugio") or label_value.contains("punto de recogida del taxi"):
+			_clear_target()
+			game.garage.waypoint_label = ""
+			if is_instance_valid(game.garage.waypoint): game.garage.waypoint.hide()
 	if stage==13: state.sale_left = maxf(0.0,float(state.get("sale_left",SALE_DELAY)))
 	_save()
 
@@ -157,6 +163,8 @@ func _clear_target() -> void:
 	service.set_garage_destination(Vector3.ZERO,"")
 
 func objective() -> String:
+	if bool(state.get("resume_required",false)): return "Misión de Yordi en pausa · P: retomar cuando quieras."
+	if restore_pending: return "Restaurando el punto de control de Yordi."
 	match _stage():
 		1: return "Yordi te llama · P: teléfono"
 		2: return "Espera a Yordi en tu casa."
@@ -617,7 +625,50 @@ func _restart_now() -> void:
 	business._notify("Misión de Yordi reiniciada. Entra en casa con las manos libres para recibir su llamada.")
 	game._update_hud()
 
+func _checkpoint_safe() -> bool:
+	# Both the logical room flag and physical elevation must agree.
+	if _busy() or game.garage.inside or game.player.global_position.y>50.0: return false
+	if game.carlos_mission!=null and game.carlos_mission.inside: return false
+	if not game.garage._free_hands(): return false
+	if game.street_market!=null and not game.street_market.active.is_empty(): return false
+	if not service.passenger.is_empty() or service.dialog.visible: return false
+	return true
+
+func _pause_restore() -> void:
+	restore_pending = false
+	state.resume_required = true
+	_save()
+	business._notify("Misión en pausa. Retómala desde el teléfono cuando quieras.")
+
+func _resume_saved_mission() -> void:
+	if not bool(state.get("resume_required",false)): return
+	if _stage()==7:
+		if not _checkpoint_safe():
+			business._notify("Sal de casa y deja las manos libres antes de volver al punto de control.")
+			return
+		restore_pending = true
+		retry_clock = 0.0
+	elif _busy() or not game.garage._free_hands() or (game.carlos_mission!=null and game.carlos_mission.inside):
+		business._notify("Termina lo que estás haciendo y deja las manos libres.")
+		return
+	elif _stage()==2:
+		_target(_home(),"Mi casa · visita de Yordi")
+	elif _stage()==12:
+		_target(_home(),"Mi casa · PS5")
+	state.resume_required = false
+	_save()
+	business.close()
+	business._notify("Misión retomada. Volviendo al punto de control." if restore_pending else "Misión retomada.")
+
 func open_call() -> void:
+	if bool(state.get("resume_required",false)):
+		var detail := "La misión está guardada. Puedes seguir con tus actividades o retomarla cuando quieras."
+		if _stage()==7: detail += "\nRetomar te llevará al punto de control de Tejas. Primero sal de casa y deja las manos libres."
+		business._open("Yordi · Misión en pausa",detail)
+		business._button("Retomar misión",_resume_saved_mission)
+		business._button("Reiniciar misión",_confirm_restart,not _can_restart())
+		business._button("Cerrar",business.close)
+		return
 	match _stage():
 		1:
 			business._open("Llamada entrante · Yordi","Mano, ¿estás en casa? Quiero pasar a verte.")
@@ -789,7 +840,8 @@ func _aim(actor: Node3D,center: Vector3,extent: Vector3,reach: float = 3.0) -> b
 	return get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
 
 func action_text() -> String:
-	if _busy(): return ""
+	if bool(state.get("resume_required",false)) or restore_pending or _busy(): return ""
+	if game.garage.inside and _stage() not in [3,4]: return ""
 	if _stage()==7 and not robbery_phase.is_empty():
 		if robbery_phase=="pickup" and _aim(stone,Vector3.ZERO,Vector3(.22,.16,.22),3.0): return "[E] Recoger piedra"
 		return _robbery_objective()
@@ -805,10 +857,14 @@ func action_text() -> String:
 	return ""
 
 func interact() -> bool:
-	if _stage()==8: return true
+	if bool(state.get("resume_required",false)) or restore_pending or game.garage.has_home_tool(): return false
+	if game.garage.inside and _stage() not in [3,4]: return false
+	if _stage()==8: return false
 	if _stage()==7 and not robbery_phase.is_empty():
-		if robbery_phase=="pickup" and _aim(stone,Vector3.ZERO,Vector3(.22,.16,.22),3.0): _pickup_stone()
-		return true
+		if robbery_phase=="pickup" and _aim(stone,Vector3.ZERO,Vector3(.22,.16,.22),3.0):
+			_pickup_stone()
+			return true
+		return false
 	var action := action_text()
 	if action.is_empty(): return false
 	if not paused_trip.is_empty():
@@ -1290,11 +1346,12 @@ func _retry_chase() -> void:
 	business._notify("Te alcanzaron. Volviendo al punto de control antes de la huida.")
 
 func checkpoint_reset() -> bool:
-	if _stage() not in [7,8]: return false
+	if _stage() not in [7,8] or bool(state.get("resume_required",false)) or not _checkpoint_safe(): return false
 	_retry_chase()
 	return true
 
 func _restore_checkpoint() -> bool:
+	if not _checkpoint_safe() or bool(state.get("resume_required",false)): return false
 	var checkpoint: Dictionary = state.get("checkpoint",{})
 	var p := _decode(checkpoint.get("seller",{}))
 	var park := _decode(checkpoint.get("bike",{}))
@@ -1473,6 +1530,7 @@ func tick(delta: float) -> void:
 	if restart_requested:
 		_restart_now()
 		return
+	if bool(state.get("resume_required",false)): return
 	if cinematic!="" and not business.modal_open():
 		cinematic = ""
 		game.play_camera.current = true
@@ -1497,6 +1555,9 @@ func tick(delta: float) -> void:
 		if float(state.sale_left)<=0.0: _complete_sale()
 		return
 	if restore_pending:
+		if not _checkpoint_safe():
+			_pause_restore()
+			return
 		retry_clock -= delta
 		if retry_clock<=0.0:
 			retry_clock = 2.0
@@ -1513,6 +1574,8 @@ func tick(delta: float) -> void:
 		return
 	if stage==5 or stage==11: return
 	if _busy(): return
+	if game.garage.inside and stage in [6,7,8,9,10]: return
+	if game.garage.has_home_tool(): return
 	var player_at: Vector3 = game.player.global_position-Vector3.UP*.86
 	retry_clock -= delta
 	match stage:
