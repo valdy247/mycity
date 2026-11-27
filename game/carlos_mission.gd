@@ -308,12 +308,18 @@ func _accept() -> void:
 
 func objective() -> String:
 	match _stage():
-		1: return "Carlos te llama · P: teléfono"
-		2: return "Busca a Carlos en Flores y Estévez."
-		3: return "Ve con Carlos a casa del cliente."
-		4: return "Paredes azules · puerta amarilla · %d%% correcto" % roundi(100.0*float(correct_tiles)/float(TOTAL))
+		1: return "Abre el teléfono (P) y responde a Carlos."
+		2: return "Busca a Carlos en Flores y Estévez. Habla con él (E)."
+		3: return "Ve con Carlos a casa del cliente y entra por la puerta (E)."
+		4:
+			if not inside: return "Regresa a casa del cliente. Entra con E."
+			if _finished(): return "Pintura terminada. Habla con el cliente (E) para cobrar."
+			if not bool(state.brush): return "Recoge la brocha del suelo (E)."
+			var progress := "%d%% correcto" % roundi(100.0*float(correct_tiles)/float(TOTAL))
+			if int(state.charge)<=0: return "Moja la brocha en una lata (E). "+progress
+			return "Clic izquierdo: paredes azules y puerta amarilla. "+progress
 		5:
-			if String(game.garage.state.part)=="bicicleta:wheel_a": return "Misión cumplida · instala la goma en tu garaje."
+			if String(game.garage.state.part)=="bicicleta:wheel_a": return "Lleva la goma a tu garaje e instálala en la bicicleta."
 			return ""
 	return ""
 

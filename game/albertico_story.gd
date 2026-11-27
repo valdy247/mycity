@@ -688,7 +688,7 @@ func interact() -> bool:
 
 func objective() -> String:
 	match _phase():
-		"outbound": return "Albertico · Sube al taxi para ir a la MIPYME."
+		"outbound": return "Viaja con Albertico. Baja con E al llegar a la MIPYME." if rider_trip else "Sube al taxi reservado con Albertico (E)."
 		"shopping":
 			var mine := 0
 			var his := 0
@@ -700,10 +700,14 @@ func objective() -> String:
 			for key in REQUIRED:
 				if not state.bought.has(key): missing.append(business._product_name(key))
 			return progress+" · Compra: "+", ".join(missing) if not missing.is_empty() else progress+" · Espera a Albertico."
-		"return": return "Sube al taxi con Albertico y vuelve a casa."
-		"cold": return "G: descarga las cajas. E: guárdalas en el frío (%d/4)." % ledger.total(state.cold)
-		"table": return "Cruza la calle y entra a casa de Albertico."
-		"room": return "Levanta la mesa con Albertico."
+		"return": return "Vuelve a casa en el taxi. Baja con E al llegar." if rider_trip else "Sube al taxi con Albertico (E) y vuelve a casa."
+		"cold":
+			var progress := " (%d/4)" % ledger.total(state.cold)
+			if ledger.carry.is_empty(): return "Acércate al taxi y descarga una caja (G)."+progress
+			if not game.garage.inside: return "Entra en tu casa (E) con la caja."+progress
+			return "Acércate al refrigerador y guarda la caja (E)."+progress
+		"table": return "Sal de tu casa y cruza la calle. Entra a casa de Albertico (E)."
+		"room": return "Acércate a la mesa y levántala con Albertico (E)."
 		"room_carry": return "Caminen hasta la puerta."
 		"street_carry": return "Cruza la calle y lleva la mesa a la flecha."
 		"handshake": return "Cerrando el trato con Albertico."

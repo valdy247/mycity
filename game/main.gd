@@ -621,8 +621,15 @@ func _update_vehicle_lights() -> void:
 	road_headlight.look_at(at+body.global_basis.z*10.0-Vector3.UP*1.5,Vector3.UP)
 	road_headlight.show()
 
+var mission_tracker_clock := 0.0
+
 func _process(delta: float) -> void:
 	_update_vehicle_lights()
+	mission_tracker_clock += delta
+	if mission_tracker_clock>=.15:
+		mission_tracker_clock = 0.0
+		if business!=null:
+			business.refresh_mission_tracker(building_mode,city_navigation!=null and city_navigation.active,diagnostics_panel!=null and diagnostics_panel.visible)
 	fps_time += delta
 	if fps_time>=.5:
 		fps_time = 0.0

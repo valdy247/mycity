@@ -11,6 +11,10 @@ var phone_destination: Callable
 var notice_panel: PanelContainer
 var notice_title: Label
 var notice_body: Label
+var mission_panel: PanelContainer
+var mission_heading: Label
+var mission_next: Label
+var mission_left := false
 var story_camera: StoryCamera
 var story_active := false
 var story_lines: Array = []
@@ -513,6 +517,7 @@ func _make_ui() -> void:
 	notice_body.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	notice_stack.add_child(notice_body)
 	notice_panel.hide()
+	_make_mission_tracker()
 	panel = PanelContainer.new()
 	layer.add_child(panel)
 	panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
@@ -546,6 +551,85 @@ func _make_ui() -> void:
 	audio.data = samples
 	phone_ring.stream = audio
 	phone_ring.volume_db = -7.0
+
+# Persistent, passive HUD: never captures mouse or blocks walking.
+func _make_mission_tracker() -> void:
+	mission_panel = PanelContainer.new()
+	layer.add_child(mission_panel)
+	mission_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	mission_panel.add_theme_stylebox_override("panel",_phone_style(Color("#101b28f0"),9,Color("#a88a50"),1,10))
+	var stack := VBoxContainer.new()
+	stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stack.add_theme_constant_override("separation",4)
+	mission_panel.add_child(stack)
+	var caption := Label.new()
+	caption.text = "OBJETIVO ACTUAL"
+	caption.add_theme_font_size_override("font_size",12)
+	caption.add_theme_color_override("font_color",Color("#edcd8c"))
+	caption.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stack.add_child(caption)
+	mission_heading = Label.new()
+	mission_heading.add_theme_font_size_override("font_size",16)
+	mission_heading.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stack.add_child(mission_heading)
+	mission_next = Label.new()
+	mission_next.custom_minimum_size.x = 290
+	mission_next.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	mission_next.add_theme_font_size_override("font_size",14)
+	mission_next.add_theme_color_override("font_color",Color("#e0e8ef"))
+	mission_next.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stack.add_child(mission_next)
+	_position_mission_tracker(false)
+	mission_panel.hide()
+
+func _position_mission_tracker(left: bool) -> void:
+	mission_left = left
+	if left:
+		mission_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
+		mission_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
+		mission_panel.offset_left = 12
+		mission_panel.offset_right = 334
+		mission_panel.offset_top = -150
+		mission_panel.offset_bottom = -150
+	else:
+		mission_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+		mission_panel.grow_vertical = Control.GROW_DIRECTION_END
+		mission_panel.offset_left = -334
+		mission_panel.offset_right = -12
+		mission_panel.offset_top = 42
+		mission_panel.offset_bottom = 42
+
+func mission_objectives() -> Array[String]:
+	var entries: Array[String] = []
+	if ledger.stage<4:
+		var first := _objective()
+		if not first.is_empty(): entries.append("01 · Albertico\n"+first)
+	if carlos_objective.is_valid():
+		var job := String(carlos_objective.call())
+		if not job.is_empty(): entries.append("02 · Carlos\n"+job)
+	if yordi_objective.is_valid():
+		var job := String(yordi_objective.call())
+		if not job.is_empty(): entries.append("03 · Yordi\n"+job)
+	return entries
+
+func refresh_mission_tracker(editor: bool = false,full_map: bool = false,diagnostics: bool = false) -> void:
+	if not is_instance_valid(mission_panel): return
+	var entries := mission_objectives()
+	# A full-screen map or editor has its own interface; the tracker returns
+	# immediately on exit. Phone/diagnostics use the opposite corner.
+	var should_show := not editor and not full_map and not entries.is_empty()
+	if mission_panel.visible!=should_show: mission_panel.visible = should_show
+	if not should_show: return
+	var left := diagnostics or (is_instance_valid(phone_panel) and phone_panel.visible)
+	if mission_left!=left: _position_mission_tracker(left)
+	var primary := entries[entries.size()-1]
+	var split := primary.find("\n")
+	var heading := primary.left(split)
+	var next := primary.substr(split+1)
+	if entries.size()>1:
+		for i in range(entries.size()-1): next += "\n\n"+entries[i]
+	if mission_heading.text!=heading: mission_heading.text = heading
+	if mission_next.text!=next: mission_next.text = next
 
 func modal_open() -> bool:
 	return (panel!=null and panel.visible) or (phone_panel!=null and phone_panel.visible)
@@ -1392,17 +1476,9 @@ func _update_hud() -> void:
 	var carrying := " | Caja: "+_product_name(ledger.carry) if not ledger.carry.is_empty() else ""
 	var phone := "P: teléfono"
 	if ledger.unread>0: phone += " (%d nuevos)" % ledger.unread
-	if hud_expanded:
-		hud.text = "%d CUP%s\n%s\n%s | G: cargar / descargar" % [ledger.cash,carrying,_objective(),phone]
-	else:
-		hud.text = "%d CUP%s | %s" % [ledger.cash,carrying,phone]
-		if first_story!=null and first_story.active(): hud.text += "\n"+first_story.objective()
-	if carlos_objective.is_valid():
-		var job: String = carlos_objective.call()
-		if not job.is_empty(): hud.text += "\n"+job
-	if yordi_objective.is_valid():
-		var yordi_job: String = yordi_objective.call()
-		if not yordi_job.is_empty(): hud.text += "\n"+yordi_job
+	var value := "%d CUP%s | %s" % [ledger.cash,carrying,phone]
+	if hud_expanded: value += "\nG: cargar / descargar"
+	if hud.text!=value: hud.text = value
 	_refresh_notice()
 
 # Sales and stock remain independent of the visual customer. If no
