@@ -86,6 +86,13 @@ func setup(style: int,worker: bool = false,ambient: bool = false) -> void:
 	var shirt: Color = Color("#d48a3c") if worker else shirts[posmod(variant+style,shirts.size())]
 	var pants: Color = Color("#526456") if worker else trousers[posmod(variant,trousers.size())]
 	var outfit := posmod(variant,5)
+	var everyday := ambient and not worker and not story_character
+	if everyday:
+		# Independent palette selections reduce identical-looking neighbors.
+		var ambient_skin: Array[Color] = [Color("#9b694b"),Color("#cc9b75"),Color("#70482f"),Color("#e1b797"),Color("#ac7a52"),Color("#845b43"),Color("#bf8967")]
+		var ambient_shirts: Array[Color] = [Color("#d6cfb6"),Color("#667e99"),Color("#9c6a68"),Color("#72918a"),Color("#e1e0da"),Color("#8d856c"),Color("#d85624"),Color("#922e42"),Color("#282e33"),Color("#c39b39"),Color("#577d5a"),Color("#9a795d"),Color("#a5b4c4"),Color("#b8a0b7")]
+		skin = ambient_skin[posmod(style*7+variant,ambient_skin.size())]
+		shirt = ambient_shirts[posmod(style*11+variant*3,ambient_shirts.size())]
 	var shorts := not worker and (outfit==1 or outfit==3)
 	if female and outfit==1:
 		shirt = Color("#d85624")
@@ -146,9 +153,15 @@ func setup(style: int,worker: bool = false,ambient: bool = false) -> void:
 		for side in [-1.0,1.0]:
 			_part(self,"head",Vector3(float(side)*.106,1.60,.045),Vector3(.055,.125,.14),Color("#514036"),true)
 		_part(self,"head",Vector3(0,1.612,.145),Vector3(.108,.026,.028),Color("#514036"),true)
+	elif everyday and not female:
+		_ambient_hair(variant,hair)
 	else:
 		_part(self,"head",Vector3(0,1.77,-.028),Vector3(.29,.17,.29),hair)
-	_part(self,"head",Vector3(0,1.65,.155),Vector3(.055,.067,.048),skin,true)
+	var nose_size := Vector3(.055,.067,.048)
+	if everyday:
+		nose_size.x += float(posmod(variant,3)-1)*.008
+		nose_size.y += float(posmod(style,3)-1)*.007
+	_part(self,"head",Vector3(0,1.65,.155),nose_size,skin,true)
 	for side in [-1.0,1.0]:
 		var eye := _part(self,"box",Vector3(float(side)*.060,1.69,.146),Vector3(.045,.022,.014),Color("#d9d3c9"),true)
 		var pupil := _part(self,"box",Vector3(float(side)*.060,1.69,.156),Vector3(.017,.019,.008),Color("#302823"),true)
@@ -217,6 +230,9 @@ func setup(style: int,worker: bool = false,ambient: bool = false) -> void:
 			var bag := Color("#16734f") if outfit==1 else Color("#343637")
 			_part(self,"box",Vector3(.25,1.02,-.10),Vector3(.25,.34,.13),bag,true)
 			_part(self,"box",Vector3(.22,1.29,-.11),Vector3(.045,.31,.035),bag,true)
+	if everyday:
+		_ambient_clothing(variant,shirt,torso_width,depth)
+		_ambient_face(variant,hair)
 	if ambient and age_group=="adulto" and posmod(variant,5)==0:
 		leisure_prop = Node3D.new()
 		arms[1].add_child(leisure_prop)
@@ -227,6 +243,55 @@ func setup(style: int,worker: bool = false,ambient: bool = false) -> void:
 		social_context = "worker"
 		_part(self,"box",Vector3(0,1.14,.14),Vector3(.38,.075,.018),Color("#eee0a0"))
 		_part(self,"box",Vector3(0,1.14,-.14),Vector3(.38,.075,.018),Color("#eee0a0"))
+
+# Ambient pedestrians only. Keep story characters and municipal uniforms intact.
+# Hair silhouettes use the existing shared sphere; tiny decorations use the
+# existing 38-metre visibility range and never change the articulated rig.
+func _ambient_hair(variant: int,hair: Color) -> void:
+	var choice := posmod(variant,5)
+	match choice:
+		0:
+			_part(self,"head",Vector3(0,1.755,-.020),Vector3(.278,.112,.279),hair).name = "AmbientHairCropped"
+		1:
+			_part(self,"head",Vector3(0,1.785,-.027),Vector3(.304,.198,.30),hair).name = "AmbientHairCurly"
+			_part(self,"head",Vector3(-.065,1.824,-.015),Vector3(.143,.135,.16),hair)
+			_part(self,"head",Vector3(.063,1.824,-.025),Vector3(.145,.135,.16),hair)
+		2:
+			var caps: Array[Color] = [Color("#393e45"),Color("#7d5143"),Color("#727b61")]
+			var cap: Color = caps[posmod(style_id,caps.size())]
+			_part(self,"head",Vector3(0,1.78,-.014),Vector3(.310,.153,.305),cap).name = "AmbientCap"
+			_part(self,"head",Vector3(0,1.748,.133),Vector3(.255,.035,.19),cap)
+		3:
+			_part(self,"head",Vector3(0,1.774,-.071),Vector3(.283,.143,.234),hair).name = "AmbientHairReceding"
+		_:
+			_part(self,"head",Vector3(0,1.779,-.04),Vector3(.29,.174,.28),hair).name = "AmbientHairSwept"
+			var fringe := _part(self,"head",Vector3(.061,1.794,.075),Vector3(.18,.08,.16),hair)
+			fringe.rotation.z = -.24
+
+func _ambient_clothing(variant: int,shirt: Color,width: float,depth: float) -> void:
+	# One simple pattern per pedestrian, not extra animated limbs or textures.
+	var front := depth*.51
+	var contrast := shirt.darkened(.24) if shirt.get_luminance()>.35 else shirt.lightened(.25)
+	match posmod(variant+style_id,4):
+		0:
+			_part(self,"box",Vector3(0,1.28,front),Vector3(width*.76,.06,.016),contrast,true).name = "AmbientShirtStripe"
+		1:
+			_part(self,"box",Vector3(-width*.20,1.26,front),Vector3(.072,.078,.014),contrast,true).name = "AmbientShirtPocket"
+		2:
+			_part(self,"box",Vector3(0,1.38,front),Vector3(.049,.14,.017),contrast,true).name = "AmbientShirtPlacket"
+		_:
+			pass
+
+func _ambient_face(variant: int,hair: Color) -> void:
+	# Sparse eyewear or facial hair, at close range only.
+	if age_group!="menor" and posmod(variant+style_id,7)==0:
+		var frame := Color("#393536")
+		for side in [-1.0,1.0]:
+			_part(self,"box",Vector3(float(side)*.060,1.69,.166),Vector3(.065,.009,.015),frame,true)
+			_part(self,"box",Vector3(float(side)*.060,1.71,.166),Vector3(.065,.009,.015),frame,true)
+		_part(self,"box",Vector3(0,1.70,.171),Vector3(.058,.009,.013),frame,true).name = "AmbientGlasses"
+	elif not female and age_group!="menor" and posmod(variant,6)==0:
+		_part(self,"head",Vector3(0,1.612,.15),Vector3(.100,.024,.024),hair,true).name = "AmbientMoustache"
 
 func animate(delta: float,moving: bool,run_speed: float = 0.0) -> void:
 	var sprint := clampf((run_speed-4.5)/4.0,0.0,1.0) if moving else 0.0
