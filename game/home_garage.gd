@@ -460,6 +460,7 @@ func _exit() -> void:
 	_stop_home_paint()
 	game.player.global_position = destination
 	game.player.velocity = Vector3.ZERO
+	if game.yordi_mission!=null: game.yordi_mission.on_home_exit()
 	game.yaw = atan2(basis.z.x,basis.z.z)+PI
 	game.pitch = -.12
 	game.pivot.rotation = Vector3(game.pitch,game.yaw,0)
@@ -1301,7 +1302,7 @@ func _build_house_tools() -> void:
 	resting_broom = Node3D.new()
 	paint_station.add_child(resting_broom)
 	resting_broom.position = BROOM_POS
-	resting_broom.rotation.x = -.15
+	resting_broom.rotation = Vector3(.10,0,0)
 	_make_broom_model(resting_broom)
 	floor_image = Image.create(FLOOR_COLS*3,FLOOR_ROWS*3,false,Image.FORMAT_RGBA8)
 	floor_image.fill(Color(0,0,0,0))
@@ -1481,8 +1482,8 @@ func _take_home_tool(tool: String) -> void:
 	if tool=="broom" and not is_instance_valid(held_broom):
 		held_broom = Node3D.new()
 		game.play_camera.add_child(held_broom)
-		held_broom.position = Vector3(.46,-.68,-1.05)
-		held_broom.rotation.x = -.65
+		held_broom.position = Vector3(.42,-.62,-1.18)
+		held_broom.rotation = Vector3(.95,0,0)
 		_make_broom_model(held_broom)
 	_refresh_tools()
 	_save()
