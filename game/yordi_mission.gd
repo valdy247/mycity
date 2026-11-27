@@ -21,6 +21,7 @@ var bike_driver: Node3D
 var bike_passenger: Node3D
 var paused_trip: Dictionary = {}
 var paused_role := ""
+var restart_requested := false
 var console_box: Node3D
 var marker: Node3D
 var cut_camera: Camera3D
@@ -527,6 +528,90 @@ func _spawn_seller() -> void:
 	seller.show()
 	_target(p,"Infanta · vendedor del PS5")
 
+func _can_restart() -> bool:
+	if _stage()==0: return false
+	return not game.driving and not game.bus_riding and not game.garage.riding and (not game.taxi_riding or owns_passenger_trip())
+
+func _confirm_restart() -> void:
+	if not _can_restart(): return
+	business._open("Reiniciar misión de Yordi","Volverás a la llamada inicial. Se eliminarán los personajes, vehículos y objetos temporales de esta misión. Tu dinero, casa y otras misiones se conservarán. Si ya cobraste los 1,000 CUP, no se volverán a pagar.")
+	business._button("Sí, reiniciar misión",_request_restart)
+	business._button("Cancelar",open_call)
+
+func _request_restart() -> void:
+	if not _can_restart(): return
+	business.close()
+	restart_requested = true
+
+func _restart_now() -> void:
+	restart_requested = false
+	if not _can_restart(): return
+	var old_stage := _stage()
+	var paid := bool(state.get("reward_paid",false)) or bool(state.get("previous_reward_paid",false)) or old_stage>=14
+	var saved_seller: Dictionary = state.get("seller",{}).duplicate(true)
+	# Detach the player's camera before freeing a mission vehicle.
+	# Emergency exit restores the player at the normal home spawn.
+	if owns_passenger_trip():
+		trip_role = ""
+		game._leave_taxi(true)
+	if not service.passenger.is_empty():
+		var active_body: CharacterBody3D = service.passenger.body
+		if active_body==bike or active_body==cab: service.finish_trip()
+	if not service.selected.is_empty():
+		var selected_body: CharacterBody3D = service.selected.get("body")
+		if selected_body==bike or selected_body==cab: service.close_dialog()
+	cinematic = ""
+	game.play_camera.current = true
+	_clear_foes()
+	# Hide and retire only mission-owned objects, never ordinary city traffic.
+	for actor in [console_box,yordi,seller]:
+		if is_instance_valid(actor):
+			actor.hide()
+			actor.queue_free()
+	console_box = null
+	yordi = null
+	seller = null
+	_discard_bike()
+	_discard_cab()
+	walkers.clear()
+	paused_trip = {}
+	paused_role = ""
+	trip_body = null
+	trip_role = ""
+	restore_pending = false
+	pickup_point = Vector3.INF
+	chase_origin = Vector3.INF
+	bike_wait_point = Vector3.INF
+	seller_point = _decode(saved_seller)
+	call_clock = 0.0
+	retry_clock = 0.0
+	visit_elapsed = 0.0
+	visit_retry = 0.0
+	visit_notice = false
+	visit_foot_elapsed = 0.0
+	exit_elapsed = 0.0
+	exit_retry_clock = 0.0
+	bike_walk_elapsed = 0.0
+	rendezvous_clock = 0.0
+	trip_elapsed = 0.0
+	arrival_wait = 0.0
+	chase_clock = 0.0
+	run_clock = 0.0
+	slow_clock = 0.0
+	key_line = false
+	var gps_label: String = game.garage.waypoint_label.to_lower()
+	if marker.visible or gps_label.contains("yordi") or gps_label.contains("ps5") or gps_label.contains("tejas") or gps_label.contains("refugio") or gps_label.contains("punto de recogida del taxi"):
+		_clear_target()
+		game.garage.waypoint_label = ""
+		if is_instance_valid(game.garage.waypoint): game.garage.waypoint.hide()
+	else: marker.hide()
+	state.clear()
+	state.merge({"stage":0,"reward_paid":false,"police":false,"delivered":false,"replay_ready":true,"previous_reward_paid":paid})
+	if not saved_seller.is_empty(): state.seller = saved_seller
+	_save()
+	business._notify("Misión de Yordi reiniciada. Entra en casa con las manos libres para recibir su llamada.")
+	game._update_hud()
+
 func open_call() -> void:
 	match _stage():
 		1:
@@ -546,6 +631,8 @@ func open_call() -> void:
 		_:
 			business._open("Yordi",objective() if _stage()<14 else "Gracias, mano. Ya cobraste tus mil pesos.")
 			business._button("Cerrar",business.close)
+	if _stage()>0:
+		business._button("Reiniciar misión",_confirm_restart,not _can_restart())
 
 func _confirm_seller() -> void:
 	if _stage()!=4 or not game.garage.waypoint_active: return
@@ -1281,6 +1368,9 @@ func _arrival_tick(delta: float) -> void:
 		_target(body.global_position,"Taxi de Yordi")
 
 func tick(delta: float) -> void:
+	if restart_requested:
+		_restart_now()
+		return
 	if cinematic!="" and not business.modal_open():
 		cinematic = ""
 		game.play_camera.current = true
