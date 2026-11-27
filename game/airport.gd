@@ -1271,14 +1271,20 @@ func _migration_line(key: String) -> void:
 	dialogue.text = String(line[0])+": "+String(line[1])
 	var path := "res://audio/migration/"+key+".mp3"
 	migration_remaining = float(line[2])+.20
-	if ResourceLoader.exists(path):
-		var stream := load(path) as AudioStream
-		if stream!=null:
-			migration_voice.stream = stream
-			migration_voice.volume_db = 0.0 if key=="next" else -3.0
-			migration_voice.play()
-			migration_remaining = stream.get_length()+.20
-			return
+	# Prefer the actual local MP3 so replacement clips work without editor import
+	# and never accidentally play a stale imported version.
+	var stream: AudioStream
+	if FileAccess.file_exists(path):
+		stream = AudioStreamMP3.load_from_file(path)
+	elif ResourceLoader.exists(path):
+		stream = load(path) as AudioStream
+	if stream!=null and stream.get_length()>0.0:
+		migration_voice.stream = stream
+		migration_voice.volume_db = 0.0 if key=="next" else -3.0
+		migration_voice.play()
+		migration_remaining = stream.get_length()+.20
+		return
+	push_warning("Migration audio unavailable: "+path)
 	# A missing clip must not block progression. Local speech is only a fallback.
 	var fallback := protagonist_voice_id if String(line[0])=="Tú" else voice_id
 	if fallback.is_empty(): fallback = voice_id
