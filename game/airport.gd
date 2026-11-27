@@ -9,7 +9,7 @@ const GATE := Vector3(0,0,-20)
 const CART_START := Vector3(-5,.03,-16)
 const EXIT := Vector3(0,0,1)
 const BELT := Vector3(4,.72,-11)
-const TASKS := ["Espera tu turno en migración.","Acércate a la agente y entrega el pasaporte.","Espera la revisión y recoge el pasaporte.","Cruza el pasador verde.","Recoge un carrito de equipaje.","Recoge tu primera maleta de la cinta.","Coloca la primera maleta en el carrito.","Recoge tu segunda maleta de la cinta.","Coloca la segunda maleta en el carrito.","Sal del aeropuerto con tus maletas.","Acércate al taxi con el carrito.","Recoge la primera maleta del carrito.","Coloca la primera maleta en el maletero.","Recoge la segunda maleta del carrito.","Coloca la segunda maleta en el maletero.","Espera a que el chofer cierre el maletero.","Sube al taxi por la puerta del pasajero.","Fase 1 completada. Viaje pendiente."]
+const TASKS := ["Espera tu turno en migración.","Acércate a la agente y entrega el pasaporte.","Espera la revisión y recoge el pasaporte.","Cruza el pasador verde.","Recoge un carrito de equipaje.","Recoge tu primera maleta de la cinta.","Coloca la primera maleta en el carrito.","Recoge tu segunda maleta de la cinta.","Coloca la segunda maleta en el carrito.","Sal del aeropuerto con tus maletas.","Acércate al taxi con el carrito.","Recoge la primera maleta del carrito.","Coloca la primera maleta en el maletero.","Recoge la segunda maleta del carrito.","Coloca la segunda maleta en el maletero.","Espera a que el chofer cierre el maletero.","Sube al taxi por cualquiera de las puertas traseras.","Fase 1 completada. Viaje pendiente."]
 var progress := Progress.new()
 var mats: Dictionary = {}
 var unit_box := BoxMesh.new()
@@ -18,6 +18,7 @@ var camera: Camera3D
 var taxi: Node3D
 var lid: Node3D
 var door: Node3D
+var opposite_door: Node3D
 var driver: Person
 var bags: Array[Node3D] = []
 var walkers: Array = []
@@ -315,11 +316,7 @@ func _car_shell(root: Node3D,paint: Color,interactive: bool) -> void:
 		if interactive:
 			for z in [-1.01,.02,.87]:
 				_box(root,Vector3(x*.77,1.35,float(z)),Vector3(.065,.57,.065),paint)
-			if x>0.0:
-				_box(root,Vector3(x*.78,.82,-.06),Vector3(.10,.46,1.80),paint)
-				_cabin_glass(root,Vector3(x*.78,1.35,-.52),Vector3(.028,.51,.92))
-			else:
-				_box(root,Vector3(x*.78,.82,.45),Vector3(.10,.46,.84),paint)
+			_box(root,Vector3(x*.78,.82,.45),Vector3(.10,.46,.84),paint,true)
 			_cabin_glass(root,Vector3(x*.78,1.35,.45),Vector3(.028,.51,.80))
 		else:
 			_box(root,Vector3(x*.78,1.20,-.40),Vector3(.06,.48,1.2),glass)
@@ -335,17 +332,22 @@ func _car_shell(root: Node3D,paint: Color,interactive: bool) -> void:
 		root.add_child(lid)
 		lid.position = Vector3(0,1.00,-1.07)
 		_box(lid,Vector3(0,0,-.60),Vector3(1.72,.09,1.20),paint)
-		door = Node3D.new()
-		root.add_child(door)
-		door.position = Vector3(-.78,.83,.02)
-		_box(door,Vector3(0,0,-.50),Vector3(.09,.46,.98),paint)
-		_cabin_glass(door,Vector3(0,.52,-.50),Vector3(.027,.51,.94))
-		_box(door,Vector3(0,.79,-.50),Vector3(.055,.055,1.0),paint)
-		_box(door,Vector3(0,.52,-.97),Vector3(.055,.56,.045),paint)
-		_box(door,Vector3(-.06,.13,-.79),Vector3(.025,.04,.15),chrome)
+		door = _make_rear_door(root,-1.0,paint,chrome)
+		opposite_door = _make_rear_door(root,1.0,paint,chrome)
 		_make_taxi_interior(root,door)
 	else:
 		_box(root,Vector3(0,1.0,-1.65),Vector3(1.72,.09,1.2),paint)
+
+func _make_rear_door(root: Node3D,side: float,paint: Color,chrome: Color) -> Node3D:
+	var panel := Node3D.new()
+	root.add_child(panel)
+	panel.position = Vector3(side*.78,.83,.02)
+	_box(panel,Vector3(0,0,-.50),Vector3(.09,.46,.98),paint,true)
+	_cabin_glass(panel,Vector3(0,.52,-.50),Vector3(.027,.51,.94))
+	_box(panel,Vector3(0,.79,-.50),Vector3(.055,.055,1.0),paint)
+	_box(panel,Vector3(0,.52,-.97),Vector3(.055,.56,.045),paint)
+	_box(panel,Vector3(side*.06,.13,-.79),Vector3(.025,.04,.15),chrome)
+	return panel
 
 func _cabin_glass(root: Node3D,at: Vector3,dims: Vector3) -> void:
 	var pane := _box(root,at,dims,Color("#92b9cb"))
@@ -433,13 +435,14 @@ func _make_taxi_interior(root: Node3D,rear_door: Node3D) -> void:
 			_box(root,Vector3(float(x),.817,seat_z),Vector3(.008,.007,.39),cream)
 			_box(root,Vector3(float(x),.95,seat_z-.305),Vector3(.008,.35,.006),cream)
 	for x in [-.72,.72]:
-		if x>0.0: _box(root,Vector3(float(x),.84,-.06),Vector3(.035,.40,1.80),vinyl)
-		else: _box(root,Vector3(float(x),.84,.45),Vector3(.035,.40,.82),vinyl)
+		_box(root,Vector3(float(x),.84,.45),Vector3(.035,.40,.82),vinyl)
 		_box(root,Vector3(float(x),1.055,.45),Vector3(.045,.045,.82),cream)
 		_box(root,Vector3(float(x),.95,.38),Vector3(.065,.045,.27),cream)
-	_box(rear_door,Vector3(.052,0,-.50),Vector3(.025,.37,.92),vinyl)
-	_box(rear_door,Vector3(.07,.21,-.50),Vector3(.05,.045,.92),cream)
-	_box(rear_door,Vector3(.075,.07,-.50),Vector3(.06,.045,.28),cream)
+	for panel in [rear_door,opposite_door]:
+		var inward := 1.0 if panel==rear_door else -1.0
+		_box(panel,Vector3(inward*.052,0,-.50),Vector3(.025,.37,.92),vinyl)
+		_box(panel,Vector3(inward*.07,.21,-.50),Vector3(.05,.045,.92),cream)
+		_box(panel,Vector3(inward*.075,.07,-.50),Vector3(.06,.045,.28),cream)
 	# Rear-view mirror, sun strip, and small taxi sign on the dashboard.
 	_box(root,Vector3(0,1.53,.77),Vector3(.035,.15,.035),black)
 	_box(root,Vector3(0,1.46,.72),Vector3(.30,.10,.042),black)
@@ -652,8 +655,16 @@ func _say(words: String) -> void:
 func _trunk_point() -> Vector3:
 	return taxi.to_global(Vector3(0,0,-2.9))
 
+func _boarding_side() -> float:
+	return -1.0 if taxi.to_local(player.global_position).x<0.0 else 1.0
+
 func _door_point() -> Vector3:
-	return taxi.to_global(Vector3(-1.35,0,-.50))
+	return taxi.to_global(Vector3(_boarding_side()*1.35,0,-.50))
+
+func _can_board() -> bool:
+	# Either rear door; use the car's local coordinates instead of a single point.
+	var local := taxi.to_local(player.global_position)
+	return absf(local.x)>=.65 and absf(local.x)<=2.65 and local.z>=-1.45 and local.z<=.50
 
 func _nearest_belt_bag() -> int:
 	var best := 0
@@ -874,8 +885,8 @@ func _interact() -> void:
 			if _near(cart.global_position,1.60): _toggle_cart(true)
 			else: _notice("Acércate al carrito.")
 		return
-	if not _near(_target(),1.60):
-		_notice("Acércate al objetivo marcado.")
+	if (step==16 and not _can_board()) or (step!=16 and not _near(_target(),1.60)):
+		_notice("Acércate a una de las puertas traseras." if step==16 else "Acércate al objetivo marcado.")
 		return
 	if step==16 and not driver_ready:
 		_notice("Espera a que el chofer llegue a su puerta.")
@@ -902,6 +913,8 @@ func _interact() -> void:
 			sliding.tween_callback(exit_visual.hide)
 
 func _seat_player() -> void:
+	var side := _boarding_side()
+	var boarding_door := door if side<0.0 else opposite_door
 	player.velocity = Vector3.ZERO
 	player.set_physics_process(false)
 	player.hide()
@@ -914,15 +927,15 @@ func _seat_player() -> void:
 		for knee in driver.knees: knee.rotation.x = 1.35
 		for arm in driver.arms: arm.rotation.x = -1.15
 	camera.reparent(taxi,false)
-	# Right rear seat, facing the windshield over the front bench.
-	camera.position = Vector3(-.24,1.42,-.77)
+	# Rear passenger seat on the side used for boarding.
+	camera.position = Vector3(side*.24,1.42,-.77)
 	camera.rotation = Vector3(-.06,PI,0)
 	cabin_look = Vector2.ZERO
 	camera.fov = 82.0
 	camera.make_current()
-	door.rotation.y = .90
+	boarding_door.rotation.y = -side*.90
 	var boarding := create_tween()
-	boarding.tween_property(door,"rotation:y",0.0,.45)
+	boarding.tween_property(boarding_door,"rotation:y",0.0,.45)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if mobile else Input.MOUSE_MODE_CAPTURED
 	_notice("Maletas guardadas. Listo para comenzar el viaje.")
 
@@ -1143,7 +1156,7 @@ func _physics_process(delta: float) -> void:
 		_idle_person(driver,delta,4.0)
 	if progress.stage==Progress.COMPLETE: return
 	if marker.visible: _position_marker()
-	var near := _near(_target(),1.60)
+	var near := _can_board() if progress.stage==16 else _near(_target(),1.60)
 	var actions := ["","Entregar pasaporte","Recoger pasaporte","","Recoger maleta","Recoger primera maleta","Cargar maleta en carrito","Recoger segunda maleta","Cargar maleta en carrito","","","Tomar primera maleta","Guardar en maletero","Tomar segunda maleta","Guardar en maletero","","Subir al taxi"]
 	var action: String = actions[progress.stage]
 	if progress.stage==4:
