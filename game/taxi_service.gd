@@ -483,7 +483,7 @@ func resume_mission_trip(saved: Dictionary) -> bool:
 	if not is_instance_valid(body) or index<0 or index>=path.size(): return false
 	passenger = saved.duplicate(true)
 	TrafficBypass.reset_watchdog(passenger)
-	for key in ["junction_id","junction_token","junction_wait","junction_retry","junction_path"]:
+	for key in ["junction_claim","junction_entered","junction_signal_id","junction_signal_wait","junction_retry"]:
 		passenger.erase(key)
 	passenger.speed = 0.0
 	passenger.traffic_stall = 0.0
@@ -507,7 +507,7 @@ func resume_mission_trip(saved: Dictionary) -> bool:
 func request_stop() -> void:
 	if passenger.is_empty(): return
 	stop_requested = true
-	ride_status = "Deteniendo el taxi para que puedas bajar..."
+	ride_status = "Deteniendo el vehículo para que puedas bajar..."
 
 func ready_to_exit() -> bool:
 	if passenger.is_empty(): return false
