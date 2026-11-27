@@ -63,6 +63,7 @@ var migration_part := 0
 var migration_remaining := 0.0
 var migration_thanked := false
 var migration_voice: AudioStreamPlayer
+var migration_played: Dictionary = {}
 var protagonist_voice_id := ""
 const MIGRATION_LINES := {"next":["Agente","¡Próximooo!",1.52],"greeting":["Agente","Buenas tardes, su pasaporte, por favor.",2.64],"handover":["Tú","Buenas tardes. Aquí tiene.",2.24],"question":["Agente","¿Hace mucho tiempo que no viene a Cuba?",2.24],"answer":["Tú","Sí, hace varios años.",3.52],"welcome":["Agente","Todo está en orden. Puede pasar a recoger su equipaje. Bienvenido a la patria.",4.64],"thanks":["Tú","Muchas gracias.",1.44]}
 var voice_id := ""
@@ -106,6 +107,7 @@ func _ready() -> void:
 	if not voices.is_empty(): voice_id = voices[0]
 	_make_airport_audio()
 	migration_voice = AudioStreamPlayer.new()
+	migration_voice.max_polyphony = 1
 	add_child(migration_voice)
 	var male_voices := DisplayServer.tts_get_voices_for_language("es")
 	if male_voices.size()>1: protagonist_voice_id = male_voices[1]
@@ -1267,6 +1269,11 @@ func _tick_airport_audio(delta: float,moving: bool=false) -> void:
 		DisplayServer.tts_speak(words,voice_id,35,1.0,.95,0,false)
 
 func _migration_line(key: String) -> void:
+	# A dialogue line is triggered only once per airport scene.
+	if migration_played.has(key): return
+	migration_played[key] = true
+	migration_voice.stop()
+	if not voice_id.is_empty() or not protagonist_voice_id.is_empty(): DisplayServer.tts_stop()
 	var line: Array = MIGRATION_LINES[key]
 	dialogue.text = String(line[0])+": "+String(line[1])
 	var path := "res://audio/migration/"+key+".mp3"
@@ -1279,6 +1286,7 @@ func _migration_line(key: String) -> void:
 	elif ResourceLoader.exists(path):
 		stream = load(path) as AudioStream
 	if stream!=null and stream.get_length()>0.0:
+		if stream is AudioStreamMP3: (stream as AudioStreamMP3).loop = false
 		migration_voice.stream = stream
 		migration_voice.volume_db = 0.0 if key=="next" else -3.0
 		migration_voice.play()
@@ -1292,8 +1300,10 @@ func _migration_line(key: String) -> void:
 		DisplayServer.tts_speak(String(line[1]),fallback,100 if key=="next" else 90,1.0,.96,0,true)
 
 func _tick_migration_dialogue(delta: float) -> void:
+	var was_speaking := migration_remaining>0.0
 	migration_remaining = maxf(0.0,migration_remaining-delta)
 	if migration_remaining>0.0: return
+	if was_speaking and migration_voice.playing: migration_voice.stop()
 	if progress.stage==1 and not migration_greeted and _near(DESK,1.75):
 		migration_greeted = true
 		_migration_line("greeting")
