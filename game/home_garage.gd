@@ -1043,9 +1043,10 @@ func drive(delta: float,movement: Vector2) -> void:
 	var body: CharacterBody3D = owned[ride_kind]
 	var spec: Dictionary = Kit.KITS[ride_kind]
 	var speed := float(spec.speed)*(1.0+.08*float(state.upgrades.get(ride_kind,0)))
-	var target := -movement.y*(speed if movement.y<=0 else speed*.28)
+	var boost := Input.is_physical_key_pressed(KEY_SHIFT) and movement.y<0.0 and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED
+	var target := -movement.y*(speed*(2.0 if boost else 1.0) if movement.y<=0 else speed*.28)
 	var brake := Input.is_physical_key_pressed(KEY_SPACE)
-	ride_speed = move_toward(ride_speed,0.0 if brake else target,delta*(12.0 if brake else 4.0))
+	ride_speed = move_toward(ride_speed,0.0 if brake else target,delta*(12.0 if brake else (7.0 if boost else 4.0)))
 	var old := body.global_transform
 	var impact_speed := ride_speed
 	if absf(ride_speed)>.1: body.rotation.y -= movement.x*signf(ride_speed)*delta*1.65*minf(absf(ride_speed)/2.0,1.0)
