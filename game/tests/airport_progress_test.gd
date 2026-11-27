@@ -44,6 +44,15 @@ func _initialize() -> void:
 				return
 			for step in range(9,Progress.COMPLETE):
 				var action := Progress.expected_action(step)
+				if step==10:
+					if not state.cart_attached or state.advance(action,at) or not state.set_cart_attached(false):
+						printerr("FAIL: park trolley before opening taxi trunk")
+						quit(1)
+						return
+					if Progress.bag_location(step,0,first)!="cart" or Progress.bag_location(step,1,first)!="cart":
+						printerr("FAIL: parked trolley must retain both bags")
+						quit(1)
+						return
 				if not state.advance(action,at) or state.advance(action,at):
 					printerr("FAIL: exit/taxi step ",step)
 					quit(1)

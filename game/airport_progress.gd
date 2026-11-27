@@ -30,7 +30,7 @@ static func bag_location(step: int,id: int,first: int=0) -> String:
 func set_cart_attached(value: bool) -> bool:
 	if value==cart_attached: return false
 	if value and stage not in [5,7,9]: return false
-	if not value and stage not in [5,7]: return false
+	if not value and stage not in [5,7,10]: return false
 	cart_attached = value
 	return true
 
@@ -45,13 +45,13 @@ func advance(action: String,at: Vector3,bag_id: int=-1) -> bool:
 		return true
 	if action!=expected_action(stage): return false
 	if stage in [5,6,7,8] and cart_attached: return false
-	if stage in [9,10] and not cart_attached: return false
+	if stage==9 and not cart_attached: return false
+	if stage==10 and cart_attached: return false
 	if stage==5:
 		if bag_id not in [0,1]: return false
 		first_bag = bag_id
 	if stage==7 and bag_id!=1-first_bag: return false
 	if stage==4: cart_attached = true
-	if stage==10: cart_attached = false
 	stage += 1
 	checkpoint = at
 	return true
@@ -80,7 +80,6 @@ func load_game() -> bool:
 	# Existing v2 checkpoints remain usable, even if the cart was previously glued to the player.
 	cart_attached = bool(data.get("cart_attached",step in [5,7,10]))
 	if step<5 or step in [6,8] or step>=11: cart_attached = false
-	if step==10: cart_attached = true
 	# Saves from the short-lived direct-to-taxi route restart only baggage collection.
 	# Migration remains completed; no legacy city data is touched.
 	if bool(data.get("direct_mode",false)):

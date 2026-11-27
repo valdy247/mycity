@@ -753,14 +753,25 @@ func _refresh_objective() -> void:
 		task = "Lleva la maleta al carrito y pulsa E para cargarla."
 	elif step==9 and not progress.cart_attached:
 		task = "Vuelve al carrito y pulsa E para llevar tus maletas a la salida."
+	elif step==10:
+		task = "Estaciona el carrito junto al taxi y pulsa E." if progress.cart_attached else "Espera a que el chofer abra el maletero."
 	marker.visible = step not in [0,4,15,Progress.COMPLETE] and (step not in [5,7] or progress.cart_attached)
 	objective.text = "CAPÍTULO 1 · DE REGRESO A CUBA\n"+task+"   (%d/%d)" % [step,Progress.COMPLETE]
 
 func _cart_can_park() -> bool:
 	var at := cart.global_position
-	# The trolley can stay anywhere in the baggage hall, including its rack.
-	if at.z>=-2.5 or at.z<=-19.5: return false
+	# Exterior parking must be clear and within reach of the assigned taxi's trunk.
+	if progress.stage==10:
+		if not _cart_at_taxi(): return false
+	else:
+		# The trolley can stay anywhere in the baggage hall, including its rack.
+		if at.z>=-2.5 or at.z<=-19.5: return false
 	return _cart_space_clear(at,cart.global_transform.basis)
+
+func _cart_at_taxi() -> bool:
+	var at := cart.global_position
+	var trunk := _trunk_point()
+	return Vector2(at.x,at.z).distance_to(Vector2(trunk.x,trunk.z))<=3.5
 
 func _cart_space_clear(at: Vector3,orientation: Basis) -> bool:
 	# Test the whole loaded platform, not only a ray through its centre.
@@ -801,7 +812,9 @@ func _toggle_cart(value: bool) -> void:
 		_notice("No se pudo guardar. Intenta de nuevo.")
 		return
 	_refresh_objective()
-	_notice("Carrito recogido." if value else "Carrito estacionado. Recoge las maletas.")
+	if value: _notice("Carrito recogido.")
+	elif progress.stage==10: _notice("Carrito estacionado. El chofer abrirá el maletero.")
+	else: _notice("Carrito estacionado. Recoge las maletas.")
 
 func _advance(action: String,bag_id: int=-1) -> bool:
 	var old := progress.stage
@@ -829,7 +842,13 @@ func _advance(action: String,bag_id: int=-1) -> bool:
 
 func _interact() -> void:
 	var step := progress.stage
-	if menu_open or step in [0,3,10,15,Progress.COMPLETE]: return
+	if menu_open or step in [0,3,15,Progress.COMPLETE]: return
+	if step==10:
+		if progress.cart_attached:
+			if _cart_can_park(): _toggle_cart(false)
+			else: _notice("Busca un espacio libre junto a la parte trasera del taxi.")
+		else: _notice("Espera a que el chofer abra el maletero.")
+		return
 	if step==4:
 		var bag_id := _nearest_belt_bag()
 		if _near(bags[bag_id].global_position,1.60):
@@ -1092,12 +1111,12 @@ func _physics_process(delta: float) -> void:
 		9:
 			if progress.cart_attached and player.global_position.z>.25 and absf(player.global_position.x)<4.0: _advance("exit")
 		10:
-			if _near(_trunk_point(),2.0) and not driver_opening:
+			if not progress.cart_attached and _cart_at_taxi() and not driver_opening:
 				driver_opening = true
 			if driver_opening:
 				var route: Array[Vector3] = [Vector3(1.65,0,-2.90),Vector3(.85,0,-2.90)]
 				driver_route_index = _driver_walk_route(route,driver_route_index,delta)
-				if driver_route_index>=route.size() and _near(_trunk_point(),2.0):
+				if driver_route_index>=route.size() and not progress.cart_attached and _cart_at_taxi():
 					var old := lid.rotation.x
 					if _advance("driver_open"):
 						lid.rotation.x = old
@@ -1146,7 +1165,10 @@ func _physics_process(delta: float) -> void:
 			prompt.text = "Empuja el carrito hacia la SALIDA · Sigue la flecha"
 			return
 	if progress.stage==10:
-		prompt.text = "Lleva el carrito hasta la parte trasera del taxi."
+		if progress.cart_attached:
+			prompt.text = "[E] Soltar carrito junto al taxi" if _cart_can_park() else "Lleva el carrito a un espacio libre junto al maletero."
+		else:
+			prompt.text = "Espera a que el chofer abra el maletero."
 		return
 	if progress.stage==16 and not driver_ready:
 		prompt.text = "Espera al chofer."
