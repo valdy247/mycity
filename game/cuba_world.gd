@@ -102,7 +102,11 @@ var utility_lamps: Array[OmniLight3D] = []
 var utility_lens: StandardMaterial3D
 var utility_light_clock := 0.0
 var utility_night := false
-var service_names: Array[String] = ["BODEGA","CUPET","HOSPITAL • LA DEPENDIENTE","PNR","ESCUELA PRIMARIA","TALLER MECÁNICO","AGROMERCADO","FARMACIA","CORREOS DE CUBA","PARADA DE GUAGUA","CUERPO DE BOMBEROS"]
+# Only gameplay-critical fallback services may occupy an unmapped lot.
+# Real businesses are imported independently from OSM.
+var service_names: Array[String] = ["HOSPITAL • LA DEPENDIENTE","PNR"]
+var height_sources := {"height":0,"levels":0,"estimated":0}
+const MappedHeight = preload("res://mapped_height.gd")
 
 func load_map() -> bool:
 	return geography.load_map()
@@ -1315,19 +1319,10 @@ func _make_frontages() -> void:
 		service_count += 1
 	_reserve_commerce(proposals)
 	_reserve_garage_sites(proposals)
-	# Geographic footprints are authoritative; procedural infill is secondary.
+	# OSM footprints are authoritative. Unmapped land stays open: do not
+	# invent houses between buildings or fill the avenue with fake blocks.
 	_make_mapped_buildings(legacy_anchor)
-	proposals.sort_custom(func(a,b): return a.center.length_squared()<b.center.length_squared())
-	for lot in proposals:
-		if slots.size()>=1400:
-			break
-		if not _lot_clear(lot.center,lot.front,lot.edge) or _overlaps_footprint(lot):
-			continue
-		if _market_reserved(_lot_polygon(lot)):
-			continue
-		_add_lot(lot)
-		_facade(lot,slots.size(),"")
-	_fill_monte_frontage_gaps()
+	print("Alturas OSM: ",height_sources.height," medidas, ",height_sources.levels," por plantas, ",height_sources.estimated," estimadas.")
 	_report_geographic_places()
 	_place_temporary_business()
 	_link_original_house()
@@ -1910,14 +1905,28 @@ func _clip_inward(poly: PackedVector2Array,front: Dictionary,depth: float) -> Pa
 			output.append(a.lerp(b,da/(da-db)))
 	return output
 
-func _building_height(tags: Dictionary,index: int) -> float:
-	var raw := String(tags.get("height","")).strip_edges().trim_suffix("m").strip_edges()
-	if raw.is_valid_float():
-		return clampf(float(raw),2.8,80.0)
-	var levels := String(tags.get("building:levels",""))
-	if levels.is_valid_float():
-		return clampf(float(levels)*3.25,3.0,80.0)
-	return float(1+index%3)*3.25
+func _building_height(fp: Dictionary) -> Dictionary:
+	var tags: Dictionary = fp.tags
+	var exact := MappedHeight.resolve(tags)
+	if not exact.is_empty(): return exact
+	# Estimate only when the map lacks height AND levels. Match nearby
+	# buildings of similar use and footprint, not random building IDs.
+	var center: Vector3 = fp.center
+	var extent: Vector3 = fp.high-fp.low
+	var size := maxf(1.0,extent.x*extent.z)
+	var kind := String(tags.get("building","yes"))
+	var samples: Array[float] = []
+	var nearby: Array = geography.footprints_near(center,65.0)
+	for other in nearby:
+		if String(other.id)==String(fp.id) or center.distance_to(other.center)>65.0: continue
+		var other_tags: Dictionary = other.tags
+		if not MappedHeight.compatible(kind,String(other_tags.get("building","yes"))): continue
+		var span: Vector3 = other.high-other.low
+		var ratio := span.x*span.z/size
+		if ratio<.40 or ratio>2.5: continue
+		var known := MappedHeight.resolve(other_tags)
+		if not known.is_empty() and float(known.metres)<=16.0: samples.append(float(known.metres))
+	return {"metres":MappedHeight.estimate(kind,samples),"source":"estimated"}
 
 # Reserve the historic block before any fictional services or infill.
 # Its boundary is the four street centerlines; the building itself is
@@ -2450,8 +2459,10 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		var tags: Dictionary = fp.tags
 		var idx: int = abs(String(fp.id).hash())%7
 		var market: bool = String(fp.id)==market_poly_id
-		var h: float = _building_height(tags,idx)
-		if market and not tags.has("height") and not tags.has("building:levels"):
+		var measurement := _building_height(fp)
+		var h: float = measurement.metres
+		var height_source := String(measurement.source)
+		if market and height_source=="estimated":
 			h = 10.0
 		var edit: Dictionary = map_edits.get(String(fp.id),{})
 		if edit.is_empty() and not market and real_facades.build(fp,tile):
@@ -2533,8 +2544,9 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		if not ok:
 			continue
 		mapped_buildings += 1
+		height_sources[height_source] = int(height_sources.get(height_source,0))+1
 		kept_footprints.append(fp)
-		editable_buildings[String(fp.id)] = {"poly":poly,"center":center,"height":h,"name":String(tags.get("name","Edificio")),"protected":market or String(fp.id)==alborada_poly_id or geographic_by_building.has(String(fp.id)),"front":front}
+		editable_buildings[String(fp.id)] = {"poly":poly,"center":center,"height":h,"height_source":height_source,"name":String(tags.get("name","Edificio")),"protected":market or String(fp.id)==alborada_poly_id or geographic_by_building.has(String(fp.id)),"front":front}
 		if not front.is_empty():
 			_detail_front(front,h,idx,portal,market,monte,portal_depth,PackedVector2Array() if preserve_home or market or avenue_faces.is_empty() else lower)
 			if monte and portal:
@@ -3124,8 +3136,14 @@ func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool
 			_cube(col+Vector3.UP*1.65,Vector3(.34,3.30,.34),stone,angle,true)
 			_cube(col+Vector3.UP*.17,Vector3(.52,.32,.52),stone,angle)
 			_cube(col+Vector3.UP*3.20,Vector3(.52,.22,.52),stone,angle)
-		for level in range(1,mini(8,floori(h/3.25))):
-			var y := float(level)*3.25+1.55
+		var floors := clampi(roundi(h/3.25),1,32)
+		var floor_height := h/float(floors)
+		for level in range(1,floors):
+			var y := (float(level)+.5)*floor_height
+			if y+1.07>h-.12: continue
+			if level>=8:
+				_cube(p+n*.045+Vector3.UP*y,Vector3(minf(step*.54,1.35),minf(1.72,floor_height*.60),.10),dark,angle)
+				continue
 			var w := minf(step*.54,1.35)
 			_cube(p+n*.05+Vector3.UP*y,Vector3(w,1.88,.08),dark,angle)
 			_cube(p+n*.10+Vector3.UP*y,Vector3(.065,1.86,.10),door_mat,angle)
