@@ -70,6 +70,8 @@ var voice_id := ""
 var bag_arrows: Array[Label3D] = []
 var other_bags: Array[Node3D] = []
 var driver_opening := false
+var driver_exchange := 0
+const TAXI_GREETING_LINES := {"taxi_greeting":["Chofer","Buenas tardes, mi socio. Déjame abrirte el maletero.",3.5],"taxi_reply":["Tú","Sí, gracias por esperarme.",2.0]}
 var driver_route_index := 0
 var driver_return_index := 0
 var driver_ready := false
@@ -1274,9 +1276,10 @@ func _migration_line(key: String) -> void:
 	migration_played[key] = true
 	migration_voice.stop()
 	if not voice_id.is_empty() or not protagonist_voice_id.is_empty(): DisplayServer.tts_stop()
-	var line: Array = MIGRATION_LINES[key]
+	var is_taxi_line := TAXI_GREETING_LINES.has(key)
+	var line: Array = TAXI_GREETING_LINES[key] if is_taxi_line else MIGRATION_LINES[key]
 	dialogue.text = String(line[0])+": "+String(line[1])
-	var path := "res://audio/migration/"+key+".mp3"
+	var path := "res://audio/taxi/"+key+".mp3" if is_taxi_line else "res://audio/migration/"+key+".mp3"
 	migration_remaining = float(line[2])+.20
 	# Prefer the actual local MP3 so replacement clips work without editor import
 	# and never accidentally play a stale imported version.
@@ -1292,7 +1295,9 @@ func _migration_line(key: String) -> void:
 		migration_voice.play()
 		migration_remaining = stream.get_length()+.20
 		return
-	push_warning("Migration audio unavailable: "+path)
+	push_warning("Dialogue audio unavailable: "+path)
+	# Until the approved taxi recordings are installed, show subtitles only.
+	if is_taxi_line: return
 	# A missing clip must not block progression. Local speech is only a fallback.
 	var fallback := protagonist_voice_id if String(line[0])=="Tú" else voice_id
 	if fallback.is_empty(): fallback = voice_id
@@ -1553,7 +1558,7 @@ func _interact() -> void:
 		if progress.cart_attached:
 			if _cart_can_park(): _toggle_cart(false)
 			else: _notice("Busca un espacio libre junto a la parte trasera del taxi.")
-		else: _notice("Espera a que el chofer abra el maletero.")
+		else: _notice("Escucha al chofer." if driver_exchange in [1,2] else "Espera a que el chofer abra el maletero.")
 		return
 	if step==4:
 		var bag_id := _nearest_belt_bag()
@@ -1828,7 +1833,21 @@ func _physics_process(delta: float) -> void:
 		10:
 			if not progress.cart_attached and _cart_at_taxi() and not driver_opening:
 				driver_opening = true
-			if driver_opening:
+				driver_exchange = 1
+				# Greet the player before walking to the trunk.
+				_migration_line("taxi_greeting")
+			if driver_opening and driver_exchange in [1,2]:
+				var facing := player.global_position-driver.global_position
+				if Vector2(facing.x,facing.z).length()>.15:
+					driver.rotation.y = lerp_angle(driver.rotation.y,atan2(facing.x,facing.z),minf(delta*5.0,1.0))
+				if migration_remaining<=0.0:
+					if driver_exchange==1:
+						driver_exchange = 2
+						_migration_line("taxi_reply")
+					else:
+						driver_exchange = 3
+						dialogue.text = ""
+			if driver_opening and driver_exchange==3:
 				var route: Array[Vector3] = [Vector3(1.65,0,-2.90),Vector3(.85,0,-2.90)]
 				driver_route_index = _driver_walk_route(route,driver_route_index,delta)
 				if driver_route_index>=route.size() and not progress.cart_attached and _cart_at_taxi():
@@ -1883,7 +1902,7 @@ func _physics_process(delta: float) -> void:
 		if progress.cart_attached:
 			prompt.text = "[E] Soltar carrito junto al taxi" if _cart_can_park() else "Lleva el carrito a un espacio libre junto al maletero."
 		else:
-			prompt.text = "Espera a que el chofer abra el maletero."
+			prompt.text = "Conversando con el chofer…" if driver_exchange in [1,2] else "Espera a que el chofer abra el maletero."
 		return
 	if progress.stage==16 and not driver_ready:
 		prompt.text = "Espera al chofer."
