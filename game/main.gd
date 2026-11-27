@@ -661,7 +661,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.keycode == KEY_ESCAPE:
 			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		elif event.keycode == KEY_V and player != null and not driving:
-			if carlos_mission!=null and carlos_mission.inside: return
+			if (carlos_mission!=null and carlos_mission.inside) or (yordi_mission!=null and yordi_mission.robbery_active()): return
 			first_person = not first_person
 			_apply_camera_mode()
 		elif event.keycode == KEY_R and player != null:
@@ -669,10 +669,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.keycode == KEY_E and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 			interact_requested = true
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		if Input.mouse_mode==Input.MOUSE_MODE_CAPTURED and yordi_mission!=null and yordi_mission.throw_stone():
+			return
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and pivot != null:
 		yaw -= event.relative.x * 0.003
-		var down_limit := -1.48 if (garage!=null and garage.inside) or (carlos_mission!=null and carlos_mission.inside) else -1.05
+		var down_limit := -1.48 if (garage!=null and garage.inside) or (carlos_mission!=null and carlos_mission.inside) or (yordi_mission!=null and yordi_mission.robbery_active()) else -1.05
 		pitch = clampf(pitch - event.relative.y * 0.003, down_limit, 0.35)
 		pivot.rotation = Vector3(pitch, yaw, 0)
 
