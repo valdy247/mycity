@@ -64,6 +64,19 @@ var migration_remaining := 0.0
 var migration_thanked := false
 var migration_voice: AudioStreamPlayer
 var migration_played: Dictionary = {}
+var active_speaker := ""
+var speech_clock := 0.0
+var voice_meter: AudioEffectSpectrumAnalyzerInstance
+var fp_rig: Node3D
+var fp_arms: Array[Dictionary] = []
+var fp_clock := 0.0
+var fp_action_time := 0.0
+var fp_action_prop: Node3D
+var fp_prop_tween: Tween
+var actor_faces: Array[Dictionary] = []
+var mission_panel: PanelContainer
+var cinema_fade: ColorRect
+var boarding_transition := false
 var protagonist_voice_id := ""
 const MIGRATION_LINES := {"next":["Agente","¡Próximooo!",1.52],"greeting":["Agente","Buenas tardes, su pasaporte, por favor.",2.64],"handover":["Tú","Buenas tardes. Aquí tiene.",2.24],"question":["Agente","¿Hace mucho tiempo que no viene a Cuba?",2.24],"answer":["Tú","Sí, hace varios años.",3.52],"welcome":["Agente","Todo está en orden. Puede pasar a recoger su equipaje. Bienvenido a la patria.",4.64],"thanks":["Tú","Muchas gracias.",1.44]}
 var voice_id := ""
@@ -105,12 +118,16 @@ func _ready() -> void:
 	_make_terminal_people()
 	_update_belt(0.0)
 	_make_hud()
+	_make_first_person()
+	_prepare_dialogue_face(officer)
+	_prepare_dialogue_face(driver)
 	var voices := DisplayServer.tts_get_voices_for_language("es")
 	if not voices.is_empty(): voice_id = voices[0]
 	_make_airport_audio()
 	migration_voice = AudioStreamPlayer.new()
 	migration_voice.max_polyphony = 1
 	add_child(migration_voice)
+	_prepare_voice_meter()
 	var male_voices := DisplayServer.tts_get_voices_for_language("es")
 	if male_voices.size()>1: protagonist_voice_id = male_voices[1]
 	_sync()
@@ -118,6 +135,162 @@ func _ready() -> void:
 	elif progress.stage==3: _migration_line("thanks")
 	if progress.stage==Progress.COMPLETE: _seat_player()
 	else: Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if mobile else Input.MOUSE_MODE_CAPTURED
+
+# Local first-person rig: geometry is independent of the player collision body.
+func _fp_rounded(parent: Node3D,at: Vector3,dims: Vector3,color: Color) -> MeshInstance3D:
+	var part := MeshInstance3D.new()
+	var mesh := SphereMesh.new()
+	mesh.radius = .5
+	mesh.height = 1.0
+	mesh.radial_segments = 12
+	mesh.rings = 6
+	part.mesh = mesh
+	part.material_override = _mat(color)
+	part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	parent.add_child(part)
+	part.position = at
+	part.scale = dims
+	return part
+
+func _make_first_person() -> void:
+	fp_rig = Node3D.new()
+	camera.add_child(fp_rig)
+	var skin := Color("#c28b66")
+	var sleeve := Color("#8b969c")
+	for side in [-1.0,1.0]:
+		var hand := Node3D.new()
+		fp_rig.add_child(hand)
+		var upper := _fp_rounded(fp_rig,Vector3.ZERO,Vector3.ONE,sleeve)
+		var fore := _fp_rounded(fp_rig,Vector3.ZERO,Vector3.ONE,skin)
+		_fp_rounded(hand,Vector3.ZERO,Vector3(.088,.112,.053),skin)
+		for finger in range(4):
+			_fp_rounded(hand,Vector3(-.029+float(finger)*.019,.039,-.018),Vector3(.022,.060,.028),skin)
+		_fp_rounded(hand,Vector3(-float(side)*.043,-.005,-.013),Vector3(.036,.064,.038),skin)
+		fp_arms.append({"upper":upper,"fore":fore,"hand":hand,"target":Vector3(float(side)*.31,-.53,-.49)})
+	_tick_first_person(0.0,false)
+
+func _fp_segment(mesh: MeshInstance3D,a: Vector3,b: Vector3,width: float) -> void:
+	var d := b-a
+	mesh.position = (a+b)*.5
+	mesh.quaternion = Quaternion(Vector3.UP,d.normalized()) if d.length()>.0001 else Quaternion.IDENTITY
+	mesh.scale = Vector3(width,maxf(.01,d.length()+.035),width)
+
+func _tick_first_person(delta: float,moving: bool) -> void:
+	if not is_instance_valid(fp_rig): return
+	var step := progress.stage
+	fp_rig.visible = step!=Progress.COMPLETE
+	if not fp_rig.visible: return
+	fp_clock += delta*(8.5 if moving else 2.0)
+	fp_action_time = maxf(0.0,fp_action_time-delta)
+	var carried_bag: Node3D
+	for bag in bags:
+		if bag.get_parent()==camera: carried_bag = bag
+	for i in range(2):
+		var arm: Dictionary = fp_arms[i]
+		var side := -1.0 if i==0 else 1.0
+		var hand: Node3D = arm["hand"]
+		var shoulder := Vector3(side*.34,-.54,-.07)
+		var target := Vector3(side*.34,-.61+sin(fp_clock+float(i)*PI)*(.035 if moving else .009),-.40)
+		var angle := Vector3(.24,0,side*.18)
+		if progress.cart_attached:
+			target = camera.to_local(cart.to_global(Vector3(side*.31,.92,.49)))
+			angle = Vector3(-1.0,0,side*.10)
+		elif i==1 and is_instance_valid(carried_bag):
+			target = camera.to_local(carried_bag.to_global(Vector3(0,.503,0)))
+			angle = Vector3(-1.05,0,0)
+		elif i==1 and step<=3 and passport.get_parent()==camera:
+			target = passport.position+Vector3(.034,-.025,.029)
+			angle = Vector3(-.72,0,-.18)
+		if i==1 and fp_action_time>0.0:
+			var reach := Vector3(.25,-.37,-.88)
+			if is_instance_valid(fp_action_prop): reach = camera.to_local(fp_action_prop.global_position)+Vector3(.03,.035,.025)
+			target = reach
+			angle = Vector3(-.85,0,0)
+		target.x = clampf(target.x,-.82,.82)
+		target.y = clampf(target.y,-1.08,.12)
+		target.z = clampf(target.z,-1.15,-.23)
+		var old: Vector3 = arm["target"]
+		var hand_at := old.lerp(target,1.0 if delta==0.0 else minf(1.0,delta*13.0))
+		arm["target"] = hand_at
+		hand.position = hand_at
+		hand.rotation = angle
+		var elbow := shoulder.lerp(hand_at,.48)+Vector3(side*.09,-.11,.02)
+		_fp_segment(arm["upper"],shoulder,elbow,.133)
+		_fp_segment(arm["fore"],elbow,hand_at,.093)
+
+func _animate_prop_transfer(prop: Node3D,from: Transform3D) -> void:
+	if not is_instance_valid(prop): return
+	if fp_prop_tween!=null and fp_prop_tween.is_running(): fp_prop_tween.kill()
+	var destination := prop.transform
+	prop.global_transform = from
+	fp_action_prop = prop
+	fp_action_time = .48
+	fp_prop_tween = create_tween()
+	fp_prop_tween.tween_property(prop,"transform",destination,.38).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	fp_prop_tween.tween_callback(func(): fp_action_prop = null)
+
+# Airport actors only: retain the shared city rig and its original body poses.
+func _prepare_dialogue_face(person: Node3D) -> void:
+	var head := Node3D.new()
+	person.add_child(head)
+	head.position = Vector3(0,1.52,0)
+	var eyes: Array[MeshInstance3D] = []
+	var mouth: MeshInstance3D
+	for node in person.get_children():
+		if node is MeshInstance3D:
+			var part := node as MeshInstance3D
+			var at := part.position
+			if absf(at.y-1.59)<.001 and absf(at.z-.149)<.001: mouth = part
+			if absf(at.y-1.69)<.001 and at.z>.14: eyes.append(part)
+			if at.y>=1.52: part.reparent(head,true)
+	actor_faces.append({"actor":person,"head":head,"mouth":mouth,"eyes":eyes,"blink":2.8 if person==officer else 3.9,"closed":0.0})
+
+func _prepare_voice_meter() -> void:
+	var bus_name := "AirportDialogue"
+	var idx := AudioServer.get_bus_index(bus_name)
+	if idx<0:
+		AudioServer.add_bus()
+		idx = AudioServer.bus_count-1
+		AudioServer.set_bus_name(idx,bus_name)
+		var analyzer := AudioEffectSpectrumAnalyzer.new()
+		analyzer.buffer_length = .15
+		analyzer.fft_size = AudioEffectSpectrumAnalyzer.FFT_SIZE_512
+		AudioServer.add_bus_effect(idx,analyzer)
+	migration_voice.bus = bus_name
+	voice_meter = AudioServer.get_bus_effect_instance(idx,0) as AudioEffectSpectrumAnalyzerInstance
+
+func _tick_actor_faces(delta: float) -> void:
+	speech_clock += delta
+	var speaking := migration_remaining>.20 and not active_speaker.is_empty()
+	var strength := 0.0
+	if speaking:
+		if migration_voice.playing and is_instance_valid(voice_meter):
+			strength = clampf(voice_meter.get_magnitude_for_frequency_range(220.0,2800.0).length()*22.0,0.0,1.0)
+		elif not migration_voice.playing:
+			strength = maxf(0.0,sin(speech_clock*19.0))*.38
+	for face in actor_faces:
+		var actor: Node3D = face["actor"]
+		var head: Node3D = face["head"]
+		var mouth: MeshInstance3D = face["mouth"]
+		var talking := speaking and ((actor==officer and active_speaker=="Agente") or (actor==driver and active_speaker=="Chofer"))
+		if is_instance_valid(mouth):
+			mouth.scale.y = lerpf(mouth.scale.y,.012+(.034*strength if talking else 0.0),minf(delta*20.0,1.0))
+		var focus := (actor==officer and progress.stage in [0,1,2,3]) or (actor==driver and progress.stage==10 and driver_exchange in [1,2])
+		var target_yaw := 0.0
+		var target_pitch := 0.0
+		if focus:
+			var local := actor.to_local(camera.global_position)-Vector3(0,1.65,0)
+			target_yaw = clampf(atan2(local.x,local.z),-.48,.48)
+			target_pitch = clampf(-atan2(local.y,maxf(.15,Vector2(local.x,local.z).length())),-.16,.16)
+			if actor==officer and progress.stage==2 and not talking: target_pitch = .19
+		head.rotation.y = lerpf(head.rotation.y,target_yaw,minf(delta*5.0,1.0))
+		head.rotation.x = lerpf(head.rotation.x,target_pitch+(sin(speech_clock*4.5)*.028 if talking else 0.0),minf(delta*6.0,1.0))
+		face["blink"] = float(face["blink"])-delta
+		if float(face["blink"])<=0.0:
+			face["blink"] = 3.4+sin(speech_clock)*.7
+			face["closed"] = .12
+		face["closed"] = maxf(0.0,float(face["closed"])-delta)
+		for eye in face["eyes"]: eye.visible = float(face["closed"])<=0.0
 
 func _mat(color: Color) -> StandardMaterial3D:
 	var key := color.to_html()
@@ -1167,6 +1340,8 @@ func _airport_sample(kind: String,duration: float,looped: bool=false) -> AudioSt
 				value = (low*.75+mid*.22+sin(TAU*83.0*t)*.20)*exp(-t*13.0)
 			"latch":
 				value = (mid*.70+sin(TAU*190.0*t)*.22)*exp(-t*24.0)
+			"door_shut":
+				value = (low*.72+mid*.27+sin(TAU*58.0*t)*.16)*exp(-t*21.0)
 			"chime":
 				var hz := 660.0 if t<.20 else 880.0
 				var local_t := fposmod(t,.20)
@@ -1192,7 +1367,8 @@ func _airport_sample(kind: String,duration: float,looped: bool=false) -> AudioSt
 	return sample
 
 func _airport_loop(key: String,duration: float,at: Vector3,spatial: bool=false) -> void:
-	var stream := _airport_sample(key,duration,true)
+	var stream: AudioStream = _ambient_recording(key,true)
+	if stream==null: stream = _airport_sample(key,duration,true)
 	if spatial:
 		var sound := AudioStreamPlayer3D.new()
 		add_child(sound)
@@ -1211,14 +1387,25 @@ func _airport_loop(key: String,duration: float,at: Vector3,spatial: bool=false) 
 		airport_audio[key] = sound
 		sound.play()
 
+# Real recordings can be installed locally as MP3s without changing the scene.
+# Keep synthetic fallbacks so the airport remains playable offline.
+func _ambient_recording(key: String,looped: bool=false) -> AudioStreamMP3:
+	var path := "res://audio/airport_ambience/"+key+".mp3"
+	if not FileAccess.file_exists(path): return null
+	var stream := AudioStreamMP3.load_from_file(path)
+	if stream!=null: stream.loop = looped
+	return stream
+
 func _make_airport_audio() -> void:
 	_airport_loop("hall",4.0,Vector3.ZERO)
 	_airport_loop("outside",4.0,Vector3.ZERO)
 	_airport_loop("belt",2.0,Vector3(4,.75,-11),true)
 	_airport_loop("engine",2.0,taxi.global_position,true)
 	_airport_loop("wheels",2.0,Vector3.ZERO)
-	for key in ["step_a","step_b","bag","latch","chime"]:
-		airport_samples[key] = _airport_sample(key,.4 if key=="chime" else .30)
+	for key in ["step_a","step_b","bag","latch","chime","door_shut"]:
+		var recording := _ambient_recording(key)
+		if recording!=null: airport_samples[key] = recording
+		else: airport_samples[key] = _airport_sample(key,.4 if key=="chime" else .30)
 	for key in ["steps","effects"]:
 		var sound := AudioStreamPlayer.new()
 		add_child(sound)
@@ -1242,7 +1429,7 @@ func _tick_airport_audio(delta: float,moving: bool=false) -> void:
 	_airport_volume("hall",-28.0 if inside else -65.0,delta)
 	_airport_volume("outside",-31.0 if not inside and not seated else -48.0 if seated else -65.0,delta)
 	_airport_volume("belt",-28.0 if inside and progress.stage>=4 else -65.0,delta)
-	_airport_volume("engine",-30.0 if not inside else -65.0,delta)
+	_airport_volume("engine",-26.0 if seated else (-30.0 if not inside else -65.0),delta)
 	_airport_volume("wheels",-32.0 if moving and progress.cart_attached else -65.0,delta)
 	if moving and not seated:
 		footstep_time -= delta
@@ -1278,6 +1465,8 @@ func _migration_line(key: String) -> void:
 	if not voice_id.is_empty() or not protagonist_voice_id.is_empty(): DisplayServer.tts_stop()
 	var is_taxi_line := TAXI_GREETING_LINES.has(key)
 	var line: Array = TAXI_GREETING_LINES[key] if is_taxi_line else MIGRATION_LINES[key]
+	active_speaker = String(line[0])
+	speech_clock = 0.0
 	dialogue.text = String(line[0])+": "+String(line[1])
 	var path := "res://audio/taxi/"+key+".mp3" if is_taxi_line else "res://audio/migration/"+key+".mp3"
 	migration_remaining = float(line[2])+.20
@@ -1308,7 +1497,9 @@ func _tick_migration_dialogue(delta: float) -> void:
 	var was_speaking := migration_remaining>0.0
 	migration_remaining = maxf(0.0,migration_remaining-delta)
 	if migration_remaining>0.0: return
-	if was_speaking and migration_voice.playing: migration_voice.stop()
+	if was_speaking:
+		if migration_voice.playing: migration_voice.stop()
+		active_speaker = ""
 	if progress.stage==1 and not migration_greeted and _near(DESK,1.75):
 		migration_greeted = true
 		_migration_line("greeting")
@@ -1531,6 +1722,17 @@ func _advance(action: String,bag_id: int=-1) -> bool:
 	var old_attached := progress.cart_attached
 	var old_angle := progress.cart_angle
 	var old_first := progress.first_bag
+	var moving_prop: Node3D
+	if action in ["passport","return_passport"]: moving_prop = passport
+	elif action in ["pickup_first","pickup_second","cart_first","cart_second","take_first","take_second","load_first","load_second"]:
+		if bag_id>=0 and bag_id<bags.size(): moving_prop = bags[bag_id]
+		else:
+			for i in range(bags.size()):
+				var location := Progress.bag_location(old,i,old_first)
+				if location=="hand" or (action in ["take_first","take_second"] and location=="cart"):
+					moving_prop = bags[i]
+					break
+	var before_prop: Transform3D = moving_prop.global_transform if is_instance_valid(moving_prop) else Transform3D.IDENTITY
 	if not progress.advance(action,player.global_position,bag_id): return false
 	progress.cart_position = cart.global_position
 	progress.cart_angle = cart.rotation.y
@@ -1545,10 +1747,11 @@ func _advance(action: String,bag_id: int=-1) -> bool:
 		return false
 	stage_time = 0.0
 	_sync()
+	if is_instance_valid(moving_prop): _animate_prop_transfer(moving_prop,before_prop)
 	if action in ["passport","return_passport","cart_first","cart_second","load_first","load_second","pickup_first","pickup_second","take_first","take_second"]:
 		_airport_effect("bag",-16.0)
-	elif action in ["driver_open","driver_close","board"]: _airport_effect("latch",-12.0)
-	if progress.stage==Progress.COMPLETE: _seat_player()
+	elif action in ["driver_open","driver_close"]: _airport_effect("latch",-12.0)
+	if progress.stage==Progress.COMPLETE: _seat_player(true)
 	return true
 
 func _interact() -> void:
@@ -1611,7 +1814,7 @@ func _interact() -> void:
 			sliding.tween_property(exit_visual,"position:x",5.0,.65)
 			sliding.tween_callback(exit_visual.hide)
 
-func _seat_player() -> void:
+func _seat_player(animate_entry: bool=false) -> void:
 	var side := _boarding_side()
 	var boarding_door := door if side<0.0 else opposite_door
 	player.velocity = Vector3.ZERO
@@ -1632,11 +1835,30 @@ func _seat_player() -> void:
 	cabin_look = Vector2.ZERO
 	camera.fov = 82.0
 	camera.make_current()
-	boarding_door.rotation.y = -side*.90
-	var boarding := create_tween()
-	boarding.tween_property(boarding_door,"rotation:y",0.0,.45)
+	if is_instance_valid(fp_rig): fp_rig.hide()
+	mission_panel.hide()
+	prompt.hide()
+	message.hide()
+	dialogue.text = ""
+	marker.hide()
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if mobile else Input.MOUSE_MODE_CAPTURED
-	_notice("Maletas guardadas. Listo para comenzar el viaje.")
+	if animate_entry:
+		boarding_transition = true
+		cinema_fade.color = Color(0,0,0,1)
+		var final_seat := camera.position
+		camera.position += Vector3(side*.18,.10,-.06)
+		boarding_door.rotation.y = -side*.90
+		var boarding := create_tween().set_parallel(true)
+		boarding.tween_property(camera,"position",final_seat,.75).set_trans(Tween.TRANS_SINE)
+		boarding.tween_property(cinema_fade,"color:a",0.0,.65)
+		boarding.tween_property(boarding_door,"rotation:y",0.0,.62).set_delay(.18)
+		boarding.chain().tween_callback(func():
+			_airport_effect("door_shut",-13.0)
+			boarding_transition = false
+		)
+	else:
+		boarding_door.rotation.y = 0.0
+		cinema_fade.color = Color(0,0,0,0)
 
 func _notice(words: String) -> void:
 	message.text = words
@@ -1650,13 +1872,20 @@ func _make_hud() -> void:
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var panel := PanelContainer.new()
+	mission_panel = panel
 	root.add_child(panel)
-	panel.position = Vector2(20,20)
-	panel.custom_minimum_size.x = 380
+	panel.position = Vector2(18,18)
+	panel.custom_minimum_size.x = 340
+	var hud_style := StyleBoxFlat.new()
+	hud_style.bg_color = Color(0.035,.045,.05,.68)
+	hud_style.set_corner_radius_all(7)
+	hud_style.set_content_margin_all(12.0)
+	panel.add_theme_stylebox_override("panel",hud_style)
 	var col := VBoxContainer.new()
 	panel.add_child(col)
 	objective = Label.new()
-	objective.add_theme_font_size_override("font_size",19)
+	objective.add_theme_font_size_override("font_size",16)
+	objective.modulate = Color(1,1,1,.88)
 	col.add_child(objective)
 	var cash := Label.new()
 	cash.text = "0 CUP  ·  Aeropuerto José Martí"
@@ -1669,7 +1898,7 @@ func _make_hud() -> void:
 	prompt.offset_top = -68
 	prompt.offset_bottom = -30
 	prompt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	prompt.add_theme_font_size_override("font_size",20)
+	prompt.add_theme_font_size_override("font_size",17)
 	prompt.add_theme_color_override("font_shadow_color",Color.BLACK)
 	prompt.add_theme_constant_override("shadow_offset_y",2)
 	message = Label.new()
@@ -1685,15 +1914,23 @@ func _make_hud() -> void:
 	dialogue = Label.new()
 	root.add_child(dialogue)
 	dialogue.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
-	dialogue.offset_left = -360
-	dialogue.offset_right = 360
-	dialogue.offset_top = -140
-	dialogue.offset_bottom = -98
+	dialogue.offset_left = -410
+	dialogue.offset_right = 410
+	dialogue.offset_top = -132
+	dialogue.offset_bottom = -78
+	dialogue.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	dialogue.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	dialogue.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	dialogue.add_theme_font_size_override("font_size",21)
+	dialogue.add_theme_font_size_override("font_size",20)
+	dialogue.add_theme_color_override("font_outline_color",Color(0,0,0,.88))
+	dialogue.add_theme_constant_override("outline_size",5)
 	dialogue.add_theme_color_override("font_shadow_color",Color.BLACK)
 	dialogue.add_theme_constant_override("shadow_offset_y",2)
+	cinema_fade = ColorRect.new()
+	cinema_fade.color = Color(0,0,0,0)
+	cinema_fade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(cinema_fade)
+	cinema_fade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	menu = PanelContainer.new()
 	root.add_child(menu)
 	menu.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
@@ -1737,6 +1974,7 @@ func _button(parent: Control,words: String,action: Callable) -> void:
 func _toggle_menu() -> void:
 	menu_open = not menu_open
 	menu.visible = menu_open
+	if progress.stage==Progress.COMPLETE: prompt.visible = false
 	for sound in airport_audio.values(): sound.stream_paused = menu_open
 	if migration_voice!=null: migration_voice.stream_paused = menu_open
 	if menu_open and not voice_id.is_empty(): DisplayServer.tts_stop()
@@ -1769,6 +2007,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventScreenDrag and mobile: look = event.relative
 	if look!=Vector2.ZERO:
 		if progress.stage==Progress.COMPLETE:
+			if boarding_transition: return
 			cabin_look.x = clampf(cabin_look.x-look.x*.003,-1.15,1.15)
 			cabin_look.y = clampf(cabin_look.y-look.y*.003,-.50,.38)
 			camera.rotation = Vector3(cabin_look.y-.06,PI+cabin_look.x,0)
@@ -1788,6 +2027,7 @@ func _physics_process(delta: float) -> void:
 		if note_time<=0: message.text = ""
 	if menu_open: return
 	_tick_ambient_people(delta)
+	_tick_actor_faces(delta)
 	if progress.stage==Progress.COMPLETE:
 		_tick_airport_audio(delta)
 		return
@@ -1815,12 +2055,16 @@ func _physics_process(delta: float) -> void:
 	var actual_distance := Vector2(player.global_position.x-before_move.x,player.global_position.z-before_move.z).length()
 	_tick_airport_audio(delta,actual_distance>.002 and player.is_on_floor())
 	_tick_migration_dialogue(delta)
+	_tick_first_person(delta,actual_distance>.002)
+	mission_panel.modulate.a = lerpf(mission_panel.modulate.a,.22 if not active_speaker.is_empty() else 1.0,minf(delta*5.0,1.0))
 	# Keep the seated pose. Raise the document above the counter to inspect it,
 	# then hold it forward until the player collects it. The prop follows the palm.
 	var reach := -1.05
 	if progress.stage==2:
 		reach = -1.95 if spoken_welcome else -2.16+sin(stage_time*2.2)*.035
 	officer.arms[1].rotation.x = lerpf(officer.arms[1].rotation.x,reach,minf(1.0,delta*7.0))
+	var officer_talking := active_speaker=="Agente" and migration_remaining>.2
+	officer.arms[0].rotation.x = lerpf(officer.arms[0].rotation.x,-1.05-(.20+.11*sin(speech_clock*4.2) if officer_talking else 0.0),minf(delta*5.0,1.0))
 	match progress.stage:
 		0:
 			if stage_time>1.5 and previous.visible:
@@ -1837,6 +2081,9 @@ func _physics_process(delta: float) -> void:
 				# Greet the player before walking to the trunk.
 				_migration_line("taxi_greeting")
 			if driver_opening and driver_exchange in [1,2]:
+				var talking := active_speaker=="Chofer" and migration_remaining>.2
+				driver.arms[1].rotation.x = lerpf(driver.arms[1].rotation.x,-.42-.17*sin(speech_clock*5.0) if talking else 0.0,minf(delta*5.0,1.0))
+				driver.arms[1].rotation.z = lerpf(driver.arms[1].rotation.z,.20 if talking else 0.0,minf(delta*5.0,1.0))
 				var facing := player.global_position-driver.global_position
 				if Vector2(facing.x,facing.z).length()>.15:
 					driver.rotation.y = lerp_angle(driver.rotation.y,atan2(facing.x,facing.z),minf(delta*5.0,1.0))
@@ -1876,7 +2123,9 @@ func _physics_process(delta: float) -> void:
 	if progress.stage<10 or (progress.stage==10 and not driver_opening) or progress.stage in [11,12,13,14] or (progress.stage==16 and driver_ready):
 		_idle_person(driver,delta,4.0)
 	if progress.stage==Progress.COMPLETE: return
-	if marker.visible: _position_marker()
+	if marker.visible:
+		_position_marker()
+		marker_arrow.visible = not _near(_target(),1.60)
 	var near := _can_board() if progress.stage==16 else _near(_target(),1.60)
 	var actions := ["","Entregar pasaporte","Recoger pasaporte","","Recoger maleta","Recoger primera maleta","Cargar maleta en carrito","Recoger segunda maleta","Cargar maleta en carrito","","","Tomar primera maleta","Guardar en maletero","Tomar segunda maleta","Guardar en maletero","","Subir al taxi"]
 	var action: String = actions[progress.stage]
@@ -1913,5 +2162,5 @@ func _physics_process(delta: float) -> void:
 	if progress.stage==2 and not spoken_welcome:
 		prompt.text = "Espera a que termine la revisión."
 		return
-	prompt.text = ("[E] "+action) if near and not action.is_empty() else "WASD · Caminar  /  Shift · Correr"
+	prompt.text = ("[E] "+action) if near and not action.is_empty() else ""
 
