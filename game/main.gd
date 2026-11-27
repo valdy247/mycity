@@ -658,6 +658,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			message_time = 2.0
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_X and garage!=null and not driving and garage.return_home_tool():
+			_update_hud()
+			return
 		if event.keycode == KEY_ESCAPE:
 			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		elif event.keycode == KEY_V and player != null and not driving:
