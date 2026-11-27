@@ -170,7 +170,7 @@ func objective() -> String:
 		2: return "Espera a Yordi en tu casa."
 		3: return "Habla con Yordi."
 		4: return "Sal de casa con Yordi." if game.garage.inside else "Sube a la moto de Yordi."
-		5: return "Vuelve a subir a la moto de Yordi para continuar." if not paused_trip.is_empty() else "Yordi conduce hacia Infanta · Esquina de Tejas."
+		5: return "Conduce hasta Esquina de Tejas y estaciona cerca del vendedor · E: bajar."
 		6: return "Ve con Yordi a buscar el PS5."
 		7: return _robbery_objective()
 		8: return "¡Sigue a Yordi! Mantén Shift · %d m al refugio" % roundi(game.player.global_position.distance_to(escape_goal)) if escape_goal.is_finite() else "¡Sigue a Yordi! Mantén Shift."
@@ -543,7 +543,7 @@ func _spawn_seller() -> void:
 
 func _can_restart() -> bool:
 	if _stage()==0: return false
-	return not game.driving and not game.bus_riding and not game.garage.riding and (not game.taxi_riding or owns_passenger_trip())
+	return not game.driving and not game.bus_riding and (not game.garage.riding or game.garage.riding_borrowed()) and (not game.taxi_riding or owns_passenger_trip())
 
 func _confirm_restart() -> void:
 	if not _can_restart(): return
@@ -562,6 +562,9 @@ func _restart_now() -> void:
 	var old_stage := _stage()
 	var paid := bool(state.get("reward_paid",false)) or bool(state.get("previous_reward_paid",false)) or old_stage>=14
 	var saved_seller: Dictionary = state.get("seller",{}).duplicate(true)
+	if game.garage.riding_borrowed():
+		state.stage = 0
+		game.garage._dismount(true)
 	# Detach the player's camera before freeing a mission vehicle.
 	# Emergency exit restores the player at the normal home spawn.
 	if owns_passenger_trip():
@@ -850,7 +853,7 @@ func action_text() -> String:
 		if paused_role=="bike_out" and _aim(vehicle,Vector3(0,.7,0),Vector3(.65,.8,1.2),3.6): return "[E] Volver a subir a la moto de Yordi"
 		if paused_role=="taxi_home" and _aim(vehicle,Vector3(0,.9,0),Vector3(1.1,1.0,2.5),4.0): return "[E] Volver a subir al taxi de Yordi"
 	if _stage()==3 and _aim(yordi,Vector3.UP,Vector3(.5,1.0,.4)): return "[E] Hablar con Yordi"
-	if _stage()==4 and _aim(bike,Vector3(0,.7,0),Vector3(.65,.8,1.2),3.6): return "[E] Subir detrás de Yordi"
+	if _stage()==4 and _aim(bike,Vector3(0,.7,0),Vector3(.65,.8,1.2),3.6): return "[E] Conducir la moto de Yordi"
 	if _stage()==6 and _aim(seller,Vector3.UP,Vector3(.5,1.0,.4)): return "[E] Comprar PS5 con Yordi"
 	if _stage()==7 and _aim(bike,Vector3(0,.7,0),Vector3(.7,.8,1.2),5.0): return "[E] Volver a la moto"
 	if _stage()==10 and _aim(cab,Vector3(0,.9,0),Vector3(1.1,1.0,2.5),4.0): return "[E] Subir al taxi de Yordi"
@@ -883,12 +886,7 @@ func interact() -> bool:
 			if not is_instance_valid(yordi) or yordi.global_position.distance_to(bike.global_position)>6.0 or yordi.global_position.y>50.0:
 				business._notify("Espera a Yordi. Está caminando hacia la moto.")
 				return true
-			if _start_trip(bike,p,"Esquina de Tejas","bike_out",true):
-				_driver()
-				_rear_rider()
-				_set_stage(5)
-				_target(p,"Infanta · Esquina de Tejas")
-			else: business._notify("Yordi: No encuentro paso por esta calle. Intenta otra vez.")
+			_start_manual_bike(p)
 		6:
 			if not is_instance_valid(yordi) or yordi.global_position.distance_to(seller.global_position)>5.0:
 				business._notify("Espera a Yordi para pagar.")
@@ -905,6 +903,48 @@ func interact() -> bool:
 				_set_stage(11)
 			else: business._notify("El taxi no encuentra una ruta a casa. Intenta de nuevo.")
 	return true
+
+# The player now drives the borrowed motorcycle using ordinary manual
+# controls. The mission never inserts it into the player's owned vehicles.
+func _start_manual_bike(destination: Vector3) -> void:
+	if not game.garage.mount_borrowed_moto(bike): return
+	_remove_riders()
+	yordi.hide()
+	var passenger := Person.new()
+	bike.add_child(passenger)
+	passenger.setup(807)
+	passenger.remove_from_group("social_people")
+	passenger.remove_from_group("pedestrian_spacing")
+	passenger.position = Vector3(0,.37,-.78)
+	passenger.scale = Vector3(.80,.80,.80)
+	for leg in passenger.limbs: leg.rotation.x = -1.05
+	for knee in passenger.knees: knee.rotation.x = 1.28
+	for arm in passenger.arms: arm.rotation.x = -.55
+	bike_passenger = passenger
+	_set_stage(5)
+	_target(destination,"Infanta · Esquina de Tejas")
+	business._notify("Yordi: Maneja tú, mano. Vamos siguiendo el GPS.")
+
+func on_manual_bike_exit(force: bool = false) -> void:
+	_remove_riders()
+	if not is_instance_valid(bike): return
+	if restart_requested or _stage()!=5: return
+	var point := _near_ground(game.player.global_position,yordi,8.0)
+	if not point.is_finite():
+		point = game.player.global_position-Vector3.UP*.86
+	_ensure_yordi(point)
+	var destination := _seller_site()
+	if not force and destination.is_finite() and bike.global_position.distance_to(destination)<=22.0:
+		_spawn_seller()
+		_set_stage(6)
+		business._notify("Yordi: Llegamos, mano. Vamos a buscar el PS5.")
+	else:
+		bike_wait_point = Vector3.INF
+		rendezvous_clock = 0.0
+		bike_walk_elapsed = 0.0
+		_set_stage(4)
+		_target(bike.global_position,"Moto de Yordi · vuelve a subir")
+		business._notify("Yordi: Aquí te espero. Volvemos a montar cuando quieras.")
 
 func _purchase() -> void:
 	if _stage()!=6: return
