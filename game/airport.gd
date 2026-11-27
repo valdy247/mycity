@@ -72,6 +72,15 @@ var ambient_bag_slots: Dictionary = {}
 var ambient_trolley: Node3D
 var ambient_clock := 0.0
 var dialogue: Label
+var airport_audio: Dictionary = {}
+var airport_samples: Dictionary = {}
+var announcement_time := 11.0
+var announcement_index := 0
+var announcement_caption_time := 0.0
+var footstep_time := 0.0
+var footstep_variant := 0
+const AIRPORT_SAMPLE_RATE := 16000
+const AIRPORT_ANNOUNCEMENTS := ["Atención, pasajeros. Comprueben sus etiquetas antes de retirar el equipaje.","Bienvenidos al Aeropuerto Internacional José Martí. Mantengan despejadas las zonas de circulación.","Se recuerda a los pasajeros que deben mantener sus pertenencias consigo en todo momento."]
 
 func _ready() -> void:
 	mobile = OS.has_feature("android") or OS.has_feature("ios") or OS.get_cmdline_user_args().has("--touch-controls")
@@ -88,6 +97,7 @@ func _ready() -> void:
 	_make_hud()
 	var voices := DisplayServer.tts_get_voices_for_language("es")
 	if not voices.is_empty(): voice_id = voices[0]
+	_make_airport_audio()
 	_sync()
 	if progress.stage==Progress.COMPLETE: _seat_player()
 	else: Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if mobile else Input.MOUSE_MODE_CAPTURED
@@ -1077,6 +1087,139 @@ func _update_belt(delta: float) -> void:
 		if Progress.bag_location(progress.stage,i,progress.first_bag)=="belt":
 			_move_belt_bag(bags[i],i)
 
+# Generate small PCM samples once per scene; no external assets are needed.
+func _airport_sample(kind: String,duration: float,looped: bool=false) -> AudioStreamWAV:
+	var count := roundi(duration*AIRPORT_SAMPLE_RATE)
+	var data := PackedByteArray()
+	data.resize(count*2)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 1979+kind.hash()
+	var low := 0.0
+	var mid := 0.0
+	for i in range(count):
+		var t := float(i)/float(AIRPORT_SAMPLE_RATE)
+		var white := rng.randf_range(-1.0,1.0)
+		low = lerpf(low,white,.035)
+		mid = lerpf(mid,white,.23)
+		var value := 0.0
+		match kind:
+			"hall":
+				var swell := .6+.19*sin(TAU*1.5*t)+.15*sin(TAU*2.25*t+.7)
+				value = low*.50+mid*.23*swell+sin(TAU*60.0*t)*.026
+			"outside":
+				value = low*.76+mid*.10+sin(TAU*43.0*t)*.035
+			"belt":
+				value = low*.24+mid*.12+sin(TAU*74.0*t)*.085+sin(TAU*148.0*t)*.025
+				value += white*.037*pow(maxf(0.0,sin(TAU*8.0*t)),6.0)
+			"engine":
+				var pulse := .72+.28*sin(TAU*5.0*t)
+				value = (sin(TAU*32.0*t)*.22+sin(TAU*64.0*t)*.09+low*.30)*pulse
+			"wheels":
+				value = (mid*.25+white*.06+low*.30)*(.65+.35*sin(TAU*9.0*t))
+			"step_a","step_b":
+				var hz := 95.0 if kind=="step_a" else 120.0
+				value = (low*.65+mid*.42+sin(TAU*hz*t)*.25)*exp(-t*22.0)
+			"bag":
+				value = (low*.75+mid*.22+sin(TAU*83.0*t)*.20)*exp(-t*13.0)
+			"latch":
+				value = (mid*.70+sin(TAU*190.0*t)*.22)*exp(-t*24.0)
+			"chime":
+				var hz := 660.0 if t<.20 else 880.0
+				var local_t := fposmod(t,.20)
+				value = sin(TAU*hz*local_t)*.28*sin(PI*clampf(local_t/.20,0.0,1.0))
+		var ramp := .035 if looped else .008
+		var envelope := minf(1.0,minf(t/ramp,(duration-t)/ramp))
+		data.encode_s16(i*2,roundi(clampf(value*envelope,-1.0,1.0)*32767.0))
+	var sample := AudioStreamWAV.new()
+	sample.format = AudioStreamWAV.FORMAT_16_BITS
+	sample.mix_rate = AIRPORT_SAMPLE_RATE
+	sample.stereo = false
+	sample.data = data
+	if looped:
+		sample.loop_mode = AudioStreamWAV.LOOP_FORWARD
+		sample.loop_begin = 0
+		sample.loop_end = count
+	return sample
+
+func _airport_loop(key: String,duration: float,at: Vector3,spatial: bool=false) -> void:
+	var stream := _airport_sample(key,duration,true)
+	if spatial:
+		var sound := AudioStreamPlayer3D.new()
+		add_child(sound)
+		sound.position = at
+		sound.stream = stream
+		sound.unit_size = 3.0
+		sound.max_distance = 22.0
+		sound.volume_db = -65.0
+		airport_audio[key] = sound
+		sound.play()
+	else:
+		var sound := AudioStreamPlayer.new()
+		add_child(sound)
+		sound.stream = stream
+		sound.volume_db = -65.0
+		airport_audio[key] = sound
+		sound.play()
+
+func _make_airport_audio() -> void:
+	_airport_loop("hall",4.0,Vector3.ZERO)
+	_airport_loop("outside",4.0,Vector3.ZERO)
+	_airport_loop("belt",2.0,Vector3(4,.75,-11),true)
+	_airport_loop("engine",2.0,taxi.global_position,true)
+	_airport_loop("wheels",2.0,Vector3.ZERO)
+	for key in ["step_a","step_b","bag","latch","chime"]:
+		airport_samples[key] = _airport_sample(key,.4 if key=="chime" else .30)
+	for key in ["steps","effects"]:
+		var sound := AudioStreamPlayer.new()
+		add_child(sound)
+		airport_audio[key] = sound
+
+func _airport_effect(key: String,db: float=-12.0,channel: String="effects") -> void:
+	if not airport_audio.has(channel) or not airport_samples.has(key): return
+	var sound: AudioStreamPlayer = airport_audio[channel]
+	sound.stream = airport_samples[key]
+	sound.volume_db = db
+	sound.play()
+
+func _airport_volume(key: String,target: float,delta: float) -> void:
+	var sound: Node = airport_audio[key]
+	sound.set("volume_db",lerpf(float(sound.get("volume_db")),target,minf(1.0,delta*3.0)))
+
+func _tick_airport_audio(delta: float,moving: bool=false) -> void:
+	if airport_audio.is_empty(): return
+	var seated := progress.stage==Progress.COMPLETE
+	var inside := not seated and player.global_position.z<-2.0
+	_airport_volume("hall",-23.0 if inside else -65.0,delta)
+	_airport_volume("outside",-24.0 if not inside and not seated else -43.0 if seated else -65.0,delta)
+	_airport_volume("belt",-13.0 if inside and progress.stage>=4 else -65.0,delta)
+	_airport_volume("engine",-18.0 if not inside else -65.0,delta)
+	_airport_volume("wheels",-21.0 if moving and progress.cart_attached else -65.0,delta)
+	if moving and not seated:
+		footstep_time -= delta
+		if footstep_time<=0.0:
+			footstep_variant = 1-footstep_variant
+			_airport_effect("step_a" if footstep_variant==0 else "step_b",-14.0 if inside else -18.0,"steps")
+			var pace := Vector2(player.velocity.x,player.velocity.z).length()
+			footstep_time = clampf(1.55/maxf(pace,1.0),.25,.57)
+	else:
+		footstep_time = 0.0
+	if announcement_caption_time>0.0:
+		announcement_caption_time -= delta
+		if announcement_caption_time<=0.0 or not inside:
+			announcement_caption_time = 0.0
+			if dialogue.text.begins_with("Altavoz:"): dialogue.text = ""
+	if not inside or progress.stage<4 or progress.stage>=10: return
+	announcement_time -= delta
+	if announcement_time>0.0: return
+	announcement_time = 43.0
+	var words: String = AIRPORT_ANNOUNCEMENTS[announcement_index]
+	announcement_index = (announcement_index+1)%AIRPORT_ANNOUNCEMENTS.size()
+	_airport_effect("chime",-18.0)
+	dialogue.text = "Altavoz: "+words
+	announcement_caption_time = 7.0
+	if not voice_id.is_empty():
+		DisplayServer.tts_speak(words,voice_id,35,1.0,.95,0,false)
+
 func _say(words: String) -> void:
 	_notice("Agente: "+words)
 	if dialogue!=null:
@@ -1256,6 +1399,7 @@ func _toggle_cart(value: bool) -> void:
 		_notice("No se pudo guardar. Intenta de nuevo.")
 		return
 	_refresh_objective()
+	_airport_effect("latch",-19.0)
 	if value: _notice("Carrito recogido.")
 	elif progress.stage==10: _notice("Carrito estacionado. El chofer abrirá el maletero.")
 	else: _notice("Carrito estacionado. Recoge las maletas.")
@@ -1281,6 +1425,9 @@ func _advance(action: String,bag_id: int=-1) -> bool:
 		return false
 	stage_time = 0.0
 	_sync()
+	if action in ["passport","return_passport","cart_first","cart_second","load_first","load_second","pickup_first","pickup_second","take_first","take_second"]:
+		_airport_effect("bag",-16.0)
+	elif action in ["driver_open","driver_close","board"]: _airport_effect("latch",-12.0)
 	if progress.stage==Progress.COMPLETE: _seat_player()
 	return true
 
@@ -1424,7 +1571,8 @@ func _make_hud() -> void:
 	dialogue.offset_top = -140
 	dialogue.offset_bottom = -98
 	dialogue.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	dialogue.add_theme_font_size_override("font_size",23)
+	dialogue.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	dialogue.add_theme_font_size_override("font_size",21)
 	dialogue.add_theme_color_override("font_shadow_color",Color.BLACK)
 	dialogue.add_theme_constant_override("shadow_offset_y",2)
 	menu = PanelContainer.new()
@@ -1470,6 +1618,8 @@ func _button(parent: Control,words: String,action: Callable) -> void:
 func _toggle_menu() -> void:
 	menu_open = not menu_open
 	menu.visible = menu_open
+	for sound in airport_audio.values(): sound.stream_paused = menu_open
+	if menu_open and not voice_id.is_empty(): DisplayServer.tts_stop()
 	touch_keys.clear()
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if menu_open or mobile else Input.MOUSE_MODE_CAPTURED
 
@@ -1481,6 +1631,9 @@ func _restart() -> void:
 
 func _legacy() -> void:
 	get_tree().change_scene_to_file("res://main.tscn")
+
+func _exit_tree() -> void:
+	if not voice_id.is_empty(): DisplayServer.tts_stop()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -1515,7 +1668,9 @@ func _physics_process(delta: float) -> void:
 		if note_time<=0: message.text = ""
 	if menu_open: return
 	_tick_ambient_people(delta)
-	if progress.stage==Progress.COMPLETE: return
+	if progress.stage==Progress.COMPLETE:
+		_tick_airport_audio(delta)
+		return
 	_update_belt(delta)
 	stage_time += delta
 	var axis := Vector2(float(_pressed(KEY_D,"right"))-float(_pressed(KEY_A,"left")),float(_pressed(KEY_S,"back"))-float(_pressed(KEY_W,"forward"))).limit_length(1.0)
@@ -1537,6 +1692,8 @@ func _physics_process(delta: float) -> void:
 		player.global_position.z = before_move.z
 		player.velocity.x = 0.0
 		player.velocity.z = 0.0
+	var actual_distance := Vector2(player.global_position.x-before_move.x,player.global_position.z-before_move.z).length()
+	_tick_airport_audio(delta,actual_distance>.002 and player.is_on_floor())
 	# Keep the seated pose. Raise the document above the counter to inspect it,
 	# then hold it forward until the player collects it. The prop follows the palm.
 	var reach := -1.05
