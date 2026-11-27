@@ -828,17 +828,21 @@ func _robbery_objective() -> String:
 func robbery_active() -> bool:
 	return _stage()==7 and not robbery_phase.is_empty()
 
+func guided_escape_route() -> PackedVector3Array:
+	if _stage()!=8: return PackedVector3Array()
+	return escape_route
+
 # Choose a reachable public sidewalk checkpoint once, rather than
 # making the player run an arbitrary distance in an unknown direction.
 func _plan_escape(from: Vector3) -> PackedVector3Array:
 	var pedestrians = game.monte_pedestrians
-	var start: int = pedestrians._nearest(from,7.0)
+	var start: int = pedestrians._nearest(from,12.0)
 	if start<0: return PackedVector3Array()
 	var candidates: Array = []
 	for id in pedestrians._near_ids(from,95.0):
 		var point: Vector3 = pedestrians.graph.get_point_position(int(id))
 		var gap := from.distance_to(point)
-		if gap<42.0 or gap>90.0: continue
+		if gap<30.0 or gap>90.0: continue
 		if pedestrians.graph.get_point_connections(int(id)).is_empty(): continue
 		candidates.append({"id":int(id),"score":absf(gap-65.0)})
 	candidates.sort_custom(func(a,b): return float(a.score)<float(b.score))
@@ -851,7 +855,7 @@ func _plan_escape(from: Vector3) -> PackedVector3Array:
 		for point in middle:
 			length += previous.distance_to(point)
 			previous = point
-		if length>145.0 or length<48.0: continue
+		if length>145.0 or length<35.0: continue
 		var end := middle[middle.size()-1]
 		if not world.pedestrian_segment_clear(end,end): continue
 		var route := PackedVector3Array([from])
@@ -880,6 +884,10 @@ func _start_robbery() -> void:
 	state.chase_start = _encode(at)
 	robbery_phase = "approach"
 	robbery_clock = 0.0
+	stone_camera_previous = game.first_person
+	stone_camera_changed = true
+	game.first_person = true
+	game._apply_camera_mode()
 	_clear_target()
 	_save()
 	business._notify("Yordi: Mano, mira esa gente que viene para acá...")
@@ -945,10 +953,6 @@ func _pickup_stone() -> void:
 	if not game.garage._free_hands():
 		business._notify("Necesitas las manos libres.")
 		return
-	stone_camera_previous = game.first_person
-	stone_camera_changed = true
-	game.first_person = true
-	game._apply_camera_mode()
 	stone.reparent(game.play_camera,false)
 	stone.position = Vector3(.26,-.24,-.63)
 	stone.rotation = Vector3.ZERO
