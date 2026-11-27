@@ -69,6 +69,7 @@ var leader_detour_index := 0
 var leader_rejoin := 0
 var leader_probe_clock := 0.0
 var leader_yield_clock := 0.0
+var leader_stall_clock := 0.0
 var leader_last := Vector3.ZERO
 var distracted_foe := -1
 var stone_camera_previous := true
@@ -173,10 +174,10 @@ func objective() -> String:
 		5: return "Conduce hasta Esquina de Tejas y estaciona cerca del vendedor · E: bajar."
 		6: return "Ve con Yordi a buscar el PS5."
 		7: return _robbery_objective()
-		8: return "¡Sigue a Yordi! Mantén Shift · %d m al refugio" % roundi(game.player.global_position.distance_to(escape_goal)) if escape_goal.is_finite() else "¡Sigue a Yordi! Mantén Shift."
-		9: return "Yordi llamó un taxi. Espera en un lugar seguro."
-		10: return "Sube al taxi que llamó Yordi."
-		11: return "Vuelve a subir al taxi de Yordi para continuar." if not paused_trip.is_empty() else "Regresen a casa."
+		8: return "¡Sigue a Yordi! Mantén Shift · %d m hasta la moto" % roundi(game.player.global_position.distance_to(escape_goal)) if escape_goal.is_finite() else "¡Sigue a Yordi! Mantén Shift."
+		9: return "Sube a la moto de Yordi · E."
+		10: return "Sube a la moto de Yordi · E."
+		11: return "Conduce la moto hasta casa · estaciona y pulsa E."
 		12: return "Lleva el PS5 a casa y publícalo en Marketplace."
 		13: return "PS5 publicado · esperando comprador."
 	return ""
@@ -856,7 +857,7 @@ func action_text() -> String:
 	if _stage()==4 and _aim(bike,Vector3(0,.7,0),Vector3(.65,.8,1.2),3.6): return "[E] Conducir la moto de Yordi"
 	if _stage()==6 and _aim(seller,Vector3.UP,Vector3(.5,1.0,.4)): return "[E] Comprar PS5 con Yordi"
 	if _stage()==7 and _aim(bike,Vector3(0,.7,0),Vector3(.7,.8,1.2),5.0): return "[E] Volver a la moto"
-	if _stage()==10 and _aim(cab,Vector3(0,.9,0),Vector3(1.1,1.0,2.5),4.0): return "[E] Subir al taxi de Yordi"
+	if _stage() in [9,10] and _aim(bike,Vector3(0,.7,0),Vector3(.65,.8,1.2),3.6): return "[E] Conducir a casa con Yordi"
 	return ""
 
 func interact() -> bool:
@@ -894,20 +895,26 @@ func interact() -> bool:
 			business._open("Vendedor","Aquí está el PS5. Yordi paga el precio acordado con su propio dinero.")
 			business._button("Recibir el PS5",_purchase)
 		7: _start_robbery()
-		10:
-			if is_instance_valid(yordi) and yordi.global_position.distance_to(cab.global_position)>8.0:
-				business._notify("Espera a Yordi.")
+		9,10:
+			if not game.garage._free_hands():
+				business._notify("Deja tus manos libres antes de subir.")
 				return true
-			if _start_trip(cab,_home(),"Mi casa","taxi_home",true):
-				yordi.hide()
-				_set_stage(11)
-			else: business._notify("El taxi no encuentra una ruta a casa. Intenta de nuevo.")
+			if not is_instance_valid(yordi) or yordi.global_position.distance_to(bike.global_position)>6.0:
+				business._notify("Espera a Yordi junto a la moto.")
+				return true
+			var home := _home()
+			if not home.is_finite():
+				business._notify("No se encontró tu casa en el mapa.")
+				return true
+			_start_manual_bike(home,true)
 	return true
 
 # The player now drives the borrowed motorcycle using ordinary manual
 # controls. The mission never inserts it into the player's owned vehicles.
-func _start_manual_bike(destination: Vector3) -> void:
-	if not game.garage.mount_borrowed_moto(bike): return
+func _start_manual_bike(destination: Vector3, returning: bool = false) -> void:
+	if not game.garage.mount_borrowed_moto(bike):
+		business._notify("No puedes subir ahora. Deja tus manos libres e inténtalo de nuevo.")
+		return
 	_remove_riders()
 	yordi.hide()
 	var passenger := Person.new()
@@ -921,18 +928,50 @@ func _start_manual_bike(destination: Vector3) -> void:
 	for knee in passenger.knees: knee.rotation.x = 1.28
 	for arm in passenger.arms: arm.rotation.x = -.55
 	bike_passenger = passenger
-	_set_stage(5)
-	_target(destination,"Infanta · Esquina de Tejas")
-	business._notify("Yordi: Maneja tú, mano. Vamos siguiendo el GPS.")
+	if returning:
+		if is_instance_valid(console_box):
+			console_box.reparent(passenger,false)
+			console_box.position = Vector3(0,1.02,.35)
+			console_box.rotation = Vector3.ZERO
+		for arm in passenger.arms: arm.rotation.x = -1.15
+		_set_stage(11)
+		_target(destination,"Mi casa · PS5")
+		business._notify("Yordi: ¡Vamos a casa, mano! Tengo el PS5.")
+	else:
+		_set_stage(5)
+		_target(destination,"Infanta · Esquina de Tejas")
+		business._notify("Yordi: Maneja tú, mano. Vamos siguiendo el GPS.")
 
 func on_manual_bike_exit(force: bool = false) -> void:
+	var stage := _stage()
+	# Move the PS5 off the temporary passenger before freeing the rider.
+	if is_instance_valid(console_box) and is_instance_valid(yordi) and is_instance_valid(bike_passenger) and console_box.get_parent()==bike_passenger:
+		_carry_ps5()
 	_remove_riders()
-	if not is_instance_valid(bike): return
-	if restart_requested or _stage()!=5: return
+	if restart_requested or stage not in [5,11]: return
+	if not is_instance_valid(bike):
+		_set_stage(7 if stage==11 else 2)
+		restore_pending = stage==11
+		return
 	var point := _near_ground(game.player.global_position,yordi,8.0)
-	if not point.is_finite():
-		point = game.player.global_position-Vector3.UP*.86
+	if not point.is_finite(): point = game.player.global_position-Vector3.UP*.86
 	_ensure_yordi(point)
+	if stage==11:
+		_carry_ps5()
+		var home := _home()
+		if not force and home.is_finite() and bike.global_position.distance_to(home)<=22.0 and game.player.global_position.distance_to(home)<=25.0:
+			state.bike_returned = true
+			_set_stage(12)
+			_target(home,"Mi casa · PS5")
+			business._notify("Yordi: Llegamos. Vamos a entrar y publicar el PS5.")
+		else:
+			bike_wait_point = Vector3.INF
+			rendezvous_clock = 0.0
+			bike_walk_elapsed = 0.0
+			_set_stage(9)
+			_target(bike.global_position,"Moto de Yordi · vuelve a subir")
+			business._notify("Yordi: Te espero aquí. Vuelve a montar para regresar a casa.")
+		return
 	var destination := _seller_site()
 	if not force and destination.is_finite() and bike.global_position.distance_to(destination)<=22.0:
 		_spawn_seller()
@@ -1027,40 +1066,71 @@ func guided_escape_route() -> PackedVector3Array:
 # Choose a reachable public sidewalk checkpoint once, rather than
 # making the player run an arbitrary distance in an unknown direction.
 func _plan_escape(from: Vector3) -> PackedVector3Array:
+	if not is_instance_valid(bike): return PackedVector3Array()
 	var pedestrians = game.monte_pedestrians
+	var source: AStar3D = pedestrians.graph
 	var start: int = pedestrians._nearest(from,12.0)
-	if start<0: return PackedVector3Array()
+	var finish := _bike_wait_site()
+	if start<0 or not finish.is_finite(): return PackedVector3Array()
+	var finish_id: int = pedestrians._nearest(finish,7.0)
+	if finish_id<0: return PackedVector3Array()
+	var approach := source.get_point_path(start,finish_id)
+	if approach.is_empty(): return PackedVector3Array()
+	# Build a local copy; never disable points in the shared city graph.
+	var local := AStar3D.new()
+	var ids: Array = pedestrians._near_ids(from,105.0)
+	for value in ids:
+		var id := int(value)
+		local.add_point(id,source.get_point_position(id),source.get_point_weight_scale(id))
+	for id in local.get_point_ids():
+		for other in source.get_point_connections(id):
+			if other>id and local.has_point(other): local.connect_points(id,other,true)
+	if not local.has_point(start): return PackedVector3Array()
 	var candidates: Array = []
-	for id in pedestrians._near_ids(from,95.0):
-		var point: Vector3 = pedestrians.graph.get_point_position(int(id))
+	for id in local.get_point_ids():
+		var point := local.get_point_position(id)
 		var gap := from.distance_to(point)
-		if gap<30.0 or gap>90.0: continue
-		if pedestrians.graph.get_point_connections(int(id)).size()<2: continue
+		if gap<24.0 or gap>68.0: continue
+		if local.get_point_connections(id).size()<2: continue
 		if world.street_geometry.point_on_road(point): continue
-		if not world.pedestrian_space_clear(yordi,point,1.0,false): continue
-		candidates.append({"id":int(id),"score":absf(gap-65.0)})
+		candidates.append({"id":id,"score":absf(gap-43.0)})
 	candidates.sort_custom(func(a,b): return float(a.score)<float(b.score))
-	var fallback := PackedVector3Array()
-	for option in candidates.slice(0,24):
-		var middle: PackedVector3Array = pedestrians.graph.get_point_path(start,int(option.id))
-		if middle.size()<3: continue
+	var best := PackedVector3Array()
+	var best_score := -INF
+	for option in candidates.slice(0,48):
+		var outward := local.get_id_path(start,int(option.id))
+		if outward.size()<5: continue
+		# Force an independent way back instead of retracing the same street.
+		for i in range(1,outward.size()-1): local.set_point_disabled(outward[i],true)
+		var inward := local.get_id_path(int(option.id),start)
+		for i in range(1,outward.size()-1): local.set_point_disabled(outward[i],false)
+		if inward.size()<4: continue
+		var route := PackedVector3Array([from])
+		for id in outward: route.append(local.get_point_position(id))
+		for i in range(1,inward.size()): route.append(local.get_point_position(inward[i]))
+		var area := 0.0
+		for i in range(1,route.size()-1):
+			var a := route[i]-from
+			var b := route[i+1]-from
+			area += a.x*b.z-a.z*b.x
+		area = absf(area)*.5
+		if area<65.0: continue
+		for i in range(1,approach.size()): route.append(approach[i])
+		route.append(finish)
 		var length := 0.0
-		var previous := from
 		var valid := true
-		for point in middle:
-			if not world.pedestrian_segment_clear(previous,point):
+		for i in range(1,route.size()):
+			if not world.pedestrian_segment_clear(route[i-1],route[i]):
 				valid = false
 				break
-			length += previous.distance_to(point)
-			previous = point
-		if not valid or length>145.0 or length<35.0: continue
-		var end := middle[middle.size()-1]
-		if not world.pedestrian_segment_clear(end,end): continue
-		var route := PackedVector3Array([from])
-		route.append_array(middle)
-		if fallback.is_empty(): fallback = route
-		if length>=60.0 and length<=115.0: return route
-	return fallback
+			length += route[i-1].distance_to(route[i])
+		if not valid or length<55.0 or length>260.0: continue
+		var score := minf(area,800.0)-absf(length-130.0)*.5
+		if score>best_score:
+			best = route
+			best_score = score
+		if area>=220.0 and length>=75.0 and length<=180.0: return route
+	return best
 
 func _start_robbery() -> void:
 	if _stage()!=7 or not robbery_phase.is_empty() or not is_instance_valid(yordi): return
@@ -1070,7 +1140,7 @@ func _start_robbery() -> void:
 	var at: Vector3 = game.player.global_position-Vector3.UP*.86
 	var path := _plan_escape(yordi.global_position)
 	if path.is_empty():
-		business._notify("Yordi: Ven conmigo a la acera.")
+		business._notify("Yordi: No encuentro una vuelta libre a la moto. Acércate a la acera y vuelve a intentarlo.")
 		return
 	if not _spawn_foes(at):
 		business._notify("Espera un momento junto a la moto.")
@@ -1220,8 +1290,9 @@ func _start_chase() -> void:
 	leader_detour_index = 0
 	leader_probe_clock = 0.0
 	leader_yield_clock = 0.0
+	leader_stall_clock = 0.0
 	walkers.erase(yordi.get_instance_id())
-	_target(escape_goal,"Refugio · sigue a Yordi")
+	_target(escape_goal,"Moto de Yordi · sigue la ruta")
 	business._notify("Yordi: ¡Corre, sígueme! Yo sé por dónde.")
 
 # Follow the precomputed route directly. Calling the generic walking
@@ -1312,12 +1383,18 @@ func _lead_escape(delta: float,player_at: Vector3) -> void:
 		_carry_pose()
 		return
 	var gap := yordi.global_position.distance_to(player_at)
-	var pace := lerpf(8.7,5.8,smoothstep(5.0,23.0,gap))
+	if gap>18.0:
+		yordi.animate(delta,false)
+		_carry_pose()
+		return
+	var pace := lerpf(8.7,5.8,smoothstep(5.0,18.0,gap))
 	var next := escape_route[escape_index] if leader_detour.is_empty() else leader_detour[leader_detour_index]
 	if _run_leader(next,delta,pace):
 		leader_retry = 0.0
+		leader_stall_clock = 0.0
 	else:
 		leader_retry += delta
+		leader_stall_clock += delta
 		if leader_yield_clock<=0.0:
 			leader_yield_clock = 1.0
 			game.monte_pedestrians.yield_to_runner(yordi,next)
@@ -1326,10 +1403,12 @@ func _lead_escape(delta: float,player_at: Vector3) -> void:
 			# Keep an accepted bypass until it is actually obstructed.
 			leader_detour.clear()
 			if not _plan_leader_detour() and leader_retry>=2.5:
-				var replacement: PackedVector3Array = game.monte_pedestrians.route_between(yordi.global_position,escape_goal)
+				# Replan only to the next waypoint: never skip the block.
+				var replacement: PackedVector3Array = game.monte_pedestrians.route_between(yordi.global_position,escape_route[escape_index])
 				if replacement.size()>1:
-					escape_route = replacement
-					escape_index = 1
+					leader_detour = replacement
+					leader_detour_index = 1
+					leader_rejoin = escape_index
 				leader_retry = 0.0
 	leader_last = yordi.global_position
 	_carry_pose()
@@ -1365,16 +1444,18 @@ func _chase_tick(delta: float) -> void:
 			run_clock += elapsed
 			slow_clock = 0.0
 		else: slow_clock += elapsed
-	if escape_goal.is_finite() and target.distance_to(escape_goal)<5.0 and is_instance_valid(yordi) and yordi.global_position.distance_to(escape_goal)<5.0:
-		var safe := escape_goal
+	if escape_index>=escape_route.size() and escape_goal.is_finite() and target.distance_to(escape_goal)<5.0 and is_instance_valid(yordi) and is_instance_valid(bike) and yordi.global_position.distance_to(bike.global_position)<6.0:
 		_clear_foes()
-		pickup_point = safe
-		state.pickup = _encode(safe)
+		bike_wait_point = Vector3.INF
+		rendezvous_clock = 0.0
+		bike_walk_elapsed = 0.0
 		_set_stage(9)
-		_target(safe,"Punto de recogida del taxi")
-		business._notify("Yordi: Ya los perdimos. Voy a llamar un taxi; yo lo pago.")
-		business.ledger.add_message("Yordi","Pedí un taxi para regresar a casa. Tengo el PS5 y la llave de la moto.")
-		_save()
+		_target(bike.global_position,"Moto de Yordi · regreso a casa")
+		business._notify("Yordi: ¡Ya los perdimos! Sube a la moto; vamos a casa.")
+		return
+	if leader_stall_clock>=12.0 or not is_instance_valid(bike) or not is_instance_valid(yordi):
+		_retry_chase()
+		business._notify("La ruta quedó bloqueada. Recuperando el punto de control.")
 		return
 	if chase_grace<=0.0 and slow_clock>=1.25 and nearest<1.85:
 		_retry_chase()
@@ -1386,7 +1467,7 @@ func _retry_chase() -> void:
 	business._notify("Te alcanzaron. Volviendo al punto de control antes de la huida.")
 
 func checkpoint_reset() -> bool:
-	if _stage() not in [7,8] or bool(state.get("resume_required",false)) or not _checkpoint_safe(): return false
+	if _stage() not in [7,8,9,10] or bool(state.get("resume_required",false)) or not _checkpoint_safe(): return false
 	_retry_chase()
 	return true
 
@@ -1444,6 +1525,7 @@ func _complete_sale() -> void:
 	if is_instance_valid(console_box): console_box.queue_free()
 	console_box = null
 	if is_instance_valid(yordi): yordi.hide()
+	if bool(state.get("bike_returned",false)): _discard_bike()
 	_clear_target()
 	business._notify("MISIÓN CUMPLIDA · recompensa ya recibida" if bool(state.get("previous_reward_paid",false)) else "MISIÓN CUMPLIDA · +1,000 CUP")
 
@@ -1667,29 +1749,16 @@ func tick(delta: float) -> void:
 				retry_clock = 2.0
 				_start_robbery()
 		8: _chase_tick(delta)
-		9:
-			_walk(yordi,player_at,delta,3.0,1.8)
+		9,10:
+			if not is_instance_valid(bike) or not is_instance_valid(yordi):
+				_retry_chase()
+				return
+			_tick_departure(delta)
 			_carry_pose()
-			if retry_clock>0.0: return
-			retry_clock = 3.0
-			if not pickup_point.is_finite(): pickup_point = _decode(state.get("pickup",{}))
-			if not is_instance_valid(cab):
-				var berth := _road_berth(pickup_point,35.0,110.0,1.9,4.8,1.8)
-				if berth.is_empty(): return
-				cab = service._make_taxi(1)
-				cab.global_position = berth.p
-				var d: Vector3 = berth.d
-				cab.rotation.y = atan2(d.x,d.z)
-				cab.add_to_group("traffic_parked")
-			_start_trip(cab,pickup_point,"Recoger a Yordi","taxi_pickup",false)
-		10:
-			if is_instance_valid(yordi):
-				_walk(yordi,player_at,delta,3.5,1.8)
-				_carry_pose()
 		12:
 			if game.garage.inside:
 				if not bool(state.get("delivered",false)) or not is_instance_valid(console_box): _deliver_home()
-				if not bool(state.get("police",false)): _police_call()
+				if not bool(state.get("bike_returned",false)) and not bool(state.get("police",false)): _police_call()
 			elif is_instance_valid(yordi) and not bool(state.get("delivered",false)):
 				_walk(yordi,player_at,delta,3.5,1.8)
 				_carry_pose()
