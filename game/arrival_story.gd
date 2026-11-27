@@ -1,6 +1,7 @@
 extends Node3D
 # Chapter 1. Uses the normal Havana street graph and the airport taxi's cabin.
 const Person = preload("res://street_person.gd")
+const FARE_REVISION := 2
 const FARE_LINES := [
 	["Tú","Debo pagarle al taxista.",2.1],
 	["Tú","Eh, pero espera. ¿Dónde está mi billetera? Carajo, la perdí en el avión.",5.6],
@@ -43,6 +44,8 @@ var busy := false
 var trunk_open := false
 var fallback_voice := ""
 var fare_index := 0
+var fare_completed_lines := 0
+var fare_audio_missing: Array[String] = []
 var fare_clock := 0.0
 var fare_wait := .6
 var fare_active := false
@@ -79,11 +82,17 @@ func setup(controller) -> void:
 	if home.is_empty():
 		_fail("No se encontró la casa existente en el mapa.")
 		return
-	# Old builds ended at the last suitcase. Complete the newly added fare
-	# scene without deleting either suitcase or the separate campaign save.
-	if int(state.get("step",0))>=2 and not bool(state.get("fare_scene_done",false)) and state.get("cab",[]).size()==4:
-		state.step = 1
+	# Older completion flags did not certify the full farewell sequence.
+	# Preserve the bags and balance, but replay the pending fare on resume.
+	var replay_fare := OS.get_cmdline_user_args().has("--replay-fare")
+	var verified_fare := bool(state.get("fare_scene_done",false)) and int(state.get("fare_revision",0))==FARE_REVISION and int(state.get("fare_lines_completed",0))==FARE_LINES.size()
+	if int(state.get("step",0))>=2 and (not verified_fare or replay_fare):
 		dropped = [true,true]
+		state.step = 1 if state.get("cab",[]).size()==4 else 0
+		state.fare_scene_done = false
+		print("MyCity: restoring pending fare cinematic; both suitcases already delivered.")
+	elif int(state.get("step",0))<2:
+		state.fare_scene_done = false
 	if int(state.get("step",0))>=2:
 		phase = "done"
 		_make_bags_at_home()
@@ -263,7 +272,10 @@ func _play_fare_line(i: int) -> void:
 		voice.play()
 		fare_wait = stream.get_length()+.32
 	else:
-		push_warning("MyCity: missing dialogue "+path)
+		fare_audio_missing.append(path)
+		push_warning("MyCity: missing dialogue "+path+"; subtitle still required.")
+	# The timer follows the real MP3 length; each line is emitted once.
+	print("MyCity: fare dialogue ",i+1,"/",FARE_LINES.size()," | ",String(item[1]))
 	fare_active = true
 
 func _safe_approach_cut() -> void:
@@ -317,6 +329,9 @@ func _arrive() -> void:
 	state.exit = [exit.position.x,exit.position.y,exit.position.z]
 	_save()
 	_exit_cab(exit.position)
+	if dropped[0] and dropped[1]:
+		game.garage._enter()
+		_begin_fare()
 
 func _resume_arrival() -> void:
 	var saved: Array = state.get("cab",[])
@@ -422,13 +437,23 @@ func interact() -> void:
 		break
 
 func _begin_fare() -> void:
+	if phase!="unload" or not dropped[0] or not dropped[1]: return
 	phase = "wallet"
+	state.step = 1
+	state.fare_scene_done = false
+	state.fare_lines_completed = 0
+	_save()
 	fare_index = 0
-	fare_wait = .6
+	fare_completed_lines = 0
+	fare_audio_missing.clear()
+	fare_wait = .85
+	print("MyCity: both suitcases delivered; mandatory fare cinematic begins.")
 	fare_active = false
 	fare_clock = 0.0
 	game.player.velocity = Vector3.ZERO
 	game.business.layer.hide()
+	game.status.hide()
+	game.reticle.hide()
 	objective.text = ""
 	subtitle.text = ""
 	lid.rotation.x = 0.0
@@ -497,12 +522,14 @@ func _tick_fare(delta: float) -> void:
 		voice.stop()
 		subtitle.text = ""
 		fare_index += 1
+		fare_completed_lines = fare_index
 		fare_wait = .45
 		return
 	if phase=="wallet" and fare_index>=2:
 		phase = "wallet_exit"
 		return
 	if fare_index>=FARE_LINES.size():
+		if fare_completed_lines!=FARE_LINES.size(): return
 		phase = "driver_leave"
 		fare_clock = 0.0
 		departure_origin = cab.global_position
@@ -570,9 +597,15 @@ func _tick_driver_leave(delta: float) -> void:
 		_finish()
 
 func _finish() -> void:
+	# Free play is gated by the actual sequence, not just luggage or a timer.
+	if phase!="driver_leave" or fare_completed_lines!=FARE_LINES.size() or not dropped[0] or not dropped[1]: return
 	state.step = 2
 	state.fare_scene_done = true
+	state.fare_revision = FARE_REVISION
+	state.fare_lines_completed = fare_completed_lines
 	state.taxi_payment_pending = true
+	state.fare_audio_missing = fare_audio_missing.duplicate()
+	print("MyCity: fare cinematic complete; free play unlocked.")
 	_save()
 	phase = "done"
 	subtitle.text = ""
@@ -632,6 +665,11 @@ func tick(delta: float) -> void:
 		"wallet","wallet_exit","fare_talk": _tick_fare(delta)
 		"driver_leave": _tick_driver_leave(delta)
 		"unload":
+			# Recover a save interrupted immediately after the final bag.
+			if dropped[0] and dropped[1]:
+				if not game.garage.inside: game.garage._enter()
+				_begin_fare()
+				return
 			var direction: Vector2 = game._read_controls()
 			var move := Vector3(direction.x,0,direction.y).normalized().rotated(Vector3.UP,game.yaw)
 			var speed := 3.2 if carry>=0 else (7.0 if game.control_pressed(KEY_SHIFT) else 4.2)
