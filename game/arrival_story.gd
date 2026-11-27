@@ -2,13 +2,13 @@ extends Node3D
 # Chapter 1. Uses the normal Havana street graph and the airport taxi's cabin.
 const Person = preload("res://street_person.gd")
 const LINES := [
-	["Chofer","Cuéntame, ¿cómo fue el vuelo?",2.5],
-	["Tú","Sí, fue bastante bien.",1.8],
-	["Chofer","¿Y qué? ¿De visita?",1.8],
-	["Tú","Ya quisiera. Después de doce años, deportado. Y ahora... a comenzar de cero.",5.5],
-	["Chofer","Oh, qué mal, compadre. Al Cerro me dijiste, ¿verdad?",3.8],
-	["Tú","Sí, al Cerro.",1.2],
-	["Chofer","No te preocupes. Esto está duro, pero vas a estar bien.",4.0]
+	["Chofer","Cuéntame, ¿cómo fue el vuelo?",1.84],
+	["Tú","Sí, fue bastante bien.",2.72],
+	["Chofer","¿Y qué? ¿De visita?",1.76],
+	["Tú","Ya quisiera. Después de doce años, deportado. Y ahora... a comenzar de cero.",6.96],
+	["Chofer","Oh, qué mal, compadre. Al Cerro me dijiste, ¿verdad?",4.08],
+	["Tú","Sí, al Cerro.",2.32],
+	["Chofer","No te preocupes. Esto está duro, pero vas a estar bien.",3.52]
 ]
 var game
 var service
@@ -184,7 +184,10 @@ func _begin_ride() -> void:
 	if not is_instance_valid(cab):
 		_fail("No se pudo calcular una parada segura junto a la casa.")
 		return
-	# The story taxi is the exact yellow taxi and red interior from the airport.
+	# Reserve this cab exclusively for the story. TaxiService.tick still drives
+	# its passenger route, while the ordinary fare/parking list cannot move it.
+	for i in range(service.taxis.size()-1,-1,-1):
+		if service.taxis[i].body==cab: service.taxis.remove_at(i)
 	_build_story_cab()
 	game.player_shape.set_deferred("disabled",true)
 	game.player.global_position = cab.global_position+Vector3.UP
@@ -257,6 +260,7 @@ func _tick_ride(delta: float) -> void:
 	game.player.global_position = cab.global_position+Vector3.UP
 	fade.color.a = move_toward(fade.color.a,0.0,delta*1.8)
 	if cinematic_clock<1.2: return
+	if line_index==0 and not line_active and cinematic_clock<5.0 and cab.velocity.length()<.5: return
 	line_left -= delta
 	if line_left>0.0: return
 	if line_active:
@@ -327,9 +331,7 @@ func _arrive() -> void:
 		exit = {"position":Vector3(home.door)+basis.z*1.4+Vector3.UP*.9}
 	var angle := cab.rotation.y
 	var at := cab.global_position
-	var record: Dictionary = service.passenger
 	service.finish_trip()
-	service.taxis.erase(record)
 	cab.remove_from_group("traffic_parked")
 	cab.set_meta("traffic_servicing",true)
 	state.step = 1
