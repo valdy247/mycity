@@ -38,6 +38,7 @@ var lid_tween: Tween
 var officer: Person
 var previous: Person
 var passport: Node3D
+var officer_grip: Node3D
 var cart: Node3D
 var gate_visual: MeshInstance3D
 var gate_light: MeshInstance3D
@@ -562,6 +563,12 @@ func _make_arrivals_props() -> void:
 	for leg in officer.limbs: leg.rotation.x = -PI*.5
 	for knee in officer.knees: knee.rotation.x = PI*.5
 	for arm in officer.arms: arm.rotation.x = -1.05
+	# The hand mesh is centred at local (0,-.49,0) in StreetPerson's arm.
+	# Place the grip at the palm, so the document follows every arm movement.
+	officer_grip = Node3D.new()
+	officer.arms[1].add_child(officer_grip)
+	officer_grip.position = Vector3(0,-.51,.045)
+	officer_grip.rotation.x = 1.85
 	previous = Person.new()
 	add_child(previous)
 	previous.setup(343)
@@ -686,9 +693,9 @@ func _sync() -> void:
 	exit_visual.visible = step<9
 	if step==2:
 		passport.show()
-		if passport.get_parent()!=officer: passport.reparent(officer,false)
-		passport.position = Vector3(.15,1.49,.83)
-		passport.rotation = Vector3.ZERO
+		if passport.get_parent()!=officer_grip: passport.reparent(officer_grip,false)
+		passport.position = Vector3(0,.009,-.018)
+		passport.rotation = Vector3(0,0,-.08)
 	elif step<=3:
 		passport.show()
 		if passport.get_parent()!=camera: passport.reparent(camera,false)
@@ -1027,8 +1034,11 @@ func _physics_process(delta: float) -> void:
 		player.global_position.z = before_move.z
 		player.velocity.x = 0.0
 		player.velocity.z = 0.0
-	# Keep the seated pose: the ordinary walking animation would straighten her legs.
-	var reach := -1.35 if progress.stage==2 else -1.05
+	# Keep the seated pose. Raise the document above the counter to inspect it,
+	# then hold it forward until the player collects it. The prop follows the palm.
+	var reach := -1.05
+	if progress.stage==2:
+		reach = -1.95 if spoken_welcome else -2.16+sin(stage_time*2.2)*.035
 	officer.arms[1].rotation.x = lerpf(officer.arms[1].rotation.x,reach,minf(1.0,delta*7.0))
 	match progress.stage:
 		0:
