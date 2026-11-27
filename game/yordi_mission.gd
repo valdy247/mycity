@@ -18,7 +18,9 @@ var seller: Person
 var bike: CharacterBody3D
 var cab: CharacterBody3D
 var bike_driver: Node3D
-var bike_passenger: Person
+var bike_passenger: Node3D
+var paused_trip: Dictionary = {}
+var paused_role := ""
 var console_box: Node3D
 var marker: Node3D
 var cut_camera: Camera3D
@@ -84,13 +86,14 @@ func setup(controller) -> void:
 # One-time replay for saves stranded during the original visit.
 # Never debit the player or reset the other missions.
 func _restart_visit_once(life: Dictionary) -> void:
-	if int(life.get("yordi_replay_version",0))>=1: return
-	life.yordi_replay_version = 1
+	if int(life.get("yordi_replay_version",0))>=2: return
+	life.yordi_replay_version = 2
 	var previous_stage := _stage()
-	if previous_stage==0 or previous_stage>=14 or bool(state.get("reward_paid",false)): return
+	if previous_stage==0: return
+	var already_paid := bool(state.get("reward_paid",false)) or previous_stage>=14
 	var saved_seller: Dictionary = state.get("seller",{}).duplicate(true)
 	state.clear()
-	state.merge({"stage":0,"reward_paid":false,"police":false,"delivered":false,"replay_ready":true})
+	state.merge({"stage":0,"reward_paid":false,"police":false,"delivered":false,"replay_ready":true,"previous_reward_paid":already_paid})
 	if not saved_seller.is_empty(): state.seller = saved_seller
 	var label_value: String = game.garage.waypoint_label.to_lower()
 	if label_value.contains("yordi") or label_value.contains("ps5") or label_value.contains("tejas") or label_value.contains("infanta") or label_value.contains("punto de recogida del taxi"):
@@ -144,13 +147,13 @@ func objective() -> String:
 		2: return "Espera a Yordi en tu casa."
 		3: return "Habla con Yordi."
 		4: return "Sal de casa con Yordi." if game.garage.inside else "Sube a la moto de Yordi."
-		5: return "Yordi conduce hacia Infanta · Esquina de Tejas."
+		5: return "Vuelve a subir a la moto de Yordi para continuar." if not paused_trip.is_empty() else "Yordi conduce hacia Infanta · Esquina de Tejas."
 		6: return "Ve con Yordi a buscar el PS5."
 		7: return "Regresa con Yordi a la moto."
 		8: return "¡Corre! Mantén Shift hasta perderlos."
 		9: return "Yordi llamó un taxi. Espera en un lugar seguro."
 		10: return "Sube al taxi que llamó Yordi."
-		11: return "Regresen a casa."
+		11: return "Vuelve a subir al taxi de Yordi para continuar." if not paused_trip.is_empty() else "Regresen a casa."
 		12: return "Lleva el PS5 a casa y publícalo en Marketplace."
 		13: return "PS5 publicado · esperando comprador."
 	return ""
@@ -372,11 +375,29 @@ func _start_trip(body: CharacterBody3D,goal: Vector3,label_value: String,role: S
 func owns_passenger_trip() -> bool:
 	return is_instance_valid(trip_body) and not service.passenger.is_empty() and service.passenger.body==trip_body and game.taxi_riding
 
-func on_ride_end(emergency: bool) -> void:
+# Capture the pending route before the common taxi controller clears it.
+func remember_interrupted_ride() -> void:
+	paused_trip = service.passenger.duplicate(true)
+	paused_role = trip_role
+
+func on_ride_end(emergency: bool,interrupted: bool = false) -> void:
 	if trip_role not in ["bike_out","taxi_home"]: return
 	var role := trip_role
 	trip_role = ""
 	trip_body = null
+	if interrupted and not emergency and not paused_trip.is_empty():
+		var vehicle: CharacterBody3D = paused_trip.body
+		if is_instance_valid(vehicle):
+			vehicle.set_meta("traffic_servicing",true)
+			if is_instance_valid(bike_passenger):
+				bike_passenger.hide()
+				bike_passenger.queue_free()
+				bike_passenger = null
+			_target(vehicle.global_position,"Moto de Yordi · vuelve a subir" if role=="bike_out" else "Taxi de Yordi · vuelve a subir")
+			business._notify("Yordi: Te espero aquí, mano. Vuelve a subir para continuar.")
+			return
+	paused_trip = {}
+	paused_role = ""
 	if role=="bike_out":
 		_remove_riders()
 		if emergency:
@@ -414,16 +435,38 @@ func _driver() -> void:
 
 func _rear_rider() -> void:
 	if is_instance_valid(bike_passenger): return
-	bike_passenger = Person.new()
+	# Use the real player appearance, not a random civilian style.
+	var source: Node3D = game.avatar
+	bike_passenger = source.duplicate(0) as Node3D
 	bike.add_child(bike_passenger)
-	bike_passenger.setup(691)
-	bike_passenger.remove_from_group("social_people")
-	bike_passenger.remove_from_group("pedestrian_spacing")
-	bike_passenger.scale = Vector3(.78,.78,.78)
-	bike_passenger.position = Vector3(0,.32,-.73)
-	for leg in bike_passenger.limbs: leg.rotation.x = -.85
-	for knee in bike_passenger.knees: knee.rotation.x = 1.35
-	for arm in bike_passenger.arms: arm.rotation.x = -.75
+	bike_passenger.position = Vector3(0,1.18,-.73)
+	bike_passenger.rotation = Vector3.ZERO
+	bike_passenger.scale = Vector3(.85,.85,.85)
+	bike_passenger.show()
+	for limb in game.limb_legs:
+		var leg := bike_passenger.get_node_or_null(source.get_path_to(limb)) as Node3D
+		if leg!=null: leg.rotation = Vector3(-1.05,0,0)
+	for limb in game.limb_arms:
+		var arm := bike_passenger.get_node_or_null(source.get_path_to(limb)) as Node3D
+		if arm!=null: arm.rotation = Vector3(-.75,0,0)
+
+func _resume_passenger() -> bool:
+	if paused_trip.is_empty() or not game.garage._free_hands(): return false
+	var vehicle: CharacterBody3D = paused_trip.body
+	if not is_instance_valid(vehicle): return false
+	if not service.resume_mission_trip(paused_trip): return false
+	trip_body = vehicle
+	trip_role = paused_role
+	paused_trip = {}
+	paused_role = ""
+	game._start_taxi_ride()
+	if vehicle==bike:
+		game.pivot.position = Vector3(0,1.40,-.72)
+		game.arm.spring_length = 3.8
+		_rear_rider()
+		_target(_seller_site(),"Infanta · Esquina de Tejas")
+	else: _target(_home(),"Mi casa")
+	return true
 
 func _discard_bike() -> void:
 	_remove_riders()
@@ -646,6 +689,10 @@ func _aim(actor: Node3D,center: Vector3,extent: Vector3,reach: float = 3.0) -> b
 
 func action_text() -> String:
 	if _busy(): return ""
+	if not paused_trip.is_empty():
+		var vehicle: CharacterBody3D = paused_trip.body
+		if paused_role=="bike_out" and _aim(vehicle,Vector3(0,.7,0),Vector3(.65,.8,1.2),3.6): return "[E] Volver a subir a la moto de Yordi"
+		if paused_role=="taxi_home" and _aim(vehicle,Vector3(0,.9,0),Vector3(1.1,1.0,2.5),4.0): return "[E] Volver a subir al taxi de Yordi"
 	if _stage()==3 and _aim(yordi,Vector3.UP,Vector3(.5,1.0,.4)): return "[E] Hablar con Yordi"
 	if _stage()==4 and _aim(bike,Vector3(0,.7,0),Vector3(.65,.8,1.2),3.6): return "[E] Subir detrás de Yordi"
 	if _stage()==6 and _aim(seller,Vector3.UP,Vector3(.5,1.0,.4)): return "[E] Comprar PS5 con Yordi"
@@ -657,6 +704,9 @@ func interact() -> bool:
 	if _stage()==8: return true
 	var action := action_text()
 	if action.is_empty(): return false
+	if not paused_trip.is_empty():
+		if not _resume_passenger(): business._notify("Deja tus manos libres y vuelve a intentar subir.")
+		return true
 	match _stage():
 		3: _visit_scene()
 		4:
@@ -885,7 +935,7 @@ static func settle_sale(mission: Dictionary,ledger) -> bool:
 	if int(mission.get("stage",0))!=13 or bool(mission.get("reward_paid",false)) or not bool(mission.get("delivered",false)): return false
 	mission.reward_paid = true
 	mission.stage = 14
-	ledger.cash += REWARD
+	if not bool(mission.get("previous_reward_paid",false)): ledger.cash += REWARD
 	ledger.add_message("Yordi","Ya vendimos el PS5. Aquí tienes tus mil pesos, como te prometí.")
 	return true
 
