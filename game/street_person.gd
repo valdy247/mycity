@@ -247,6 +247,7 @@ func animate(delta: float,moving: bool,run_speed: float = 0.0) -> void:
 		if story_character and not moving and carried==null and not has_meta("incident_role"):
 			arm_pose += sin(idle_phase+float(i)*.7)*.035
 		if use_phone and i==1: arm_pose = -1.15
+		if has_meta("story_handshake") and i==1: arm_pose = -1.10
 		arms[i].rotation.x = lerpf(arms[i].rotation.x,arm_pose,blend)
 
 func conversation_active(delta: float) -> bool:

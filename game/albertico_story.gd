@@ -2,6 +2,9 @@ extends Node3D
 # The first mission retains ledger stages 0..4 for all downstream unlocks.
 # The story substage and paid boxes are persisted independently of taxi IDs.
 const Ledger = preload("res://business_ledger.gd")
+const Person = preload("res://street_person.gd")
+var taxi_companion: Person
+var handshake_camera := false
 const REQUIRED := ["huevos","perrito","pollo","picadillo"]
 const ROOM := Vector3(60,110,0)
 const FRIDGE := Vector3(-5.8,110,3.6)
@@ -130,7 +133,7 @@ func begin() -> bool:
 		return false
 	state = {"phase":"outbound","bought":{},"taxi_boxes":{},"cold":{}}
 	ledger.life_data.albertico_story = state
-	_save()
+	# accept() writes both the ledger stage and story in the same save.
 	prepare_meeting()
 	return true
 
@@ -149,7 +152,7 @@ func _ensure_cab(near: Vector3) -> bool:
 	return true
 
 func owns_trip() -> bool:
-	return rider_trip and game.taxi_riding
+	return rider_trip
 
 func _start_trip() -> bool:
 	if cab.is_empty() or not game.taxis.passenger.is_empty() or not game.garage._free_hands(): return false
@@ -169,12 +172,23 @@ func _start_trip() -> bool:
 		return false
 	rider_trip = true
 	business.albertico.hide()
+	taxi_companion = Person.new()
+	body.add_child(taxi_companion)
+	taxi_companion.setup(810)
+	taxi_companion.remove_from_group("social_people")
+	taxi_companion.remove_from_group("pedestrian_spacing")
+	taxi_companion.position = Vector3(-.39,.55,-.65)
+	taxi_companion.scale = Vector3.ONE*.75
+	for limb in taxi_companion.limbs: limb.rotation.x = -1.0
+	for knee in taxi_companion.knees: knee.rotation.x = 1.0
 	game._start_taxi_ride()
 	return true
 
 func ride_ended(reached: bool) -> void:
 	rider_trip = false
-	var actor: Node3D = business.albertico
+	if is_instance_valid(taxi_companion): taxi_companion.queue_free()
+	taxi_companion = null
+	var actor: Person = business.albertico as Person
 	var at: Vector3 = game.yordi_mission._near_ground(game.player.global_position,actor,6.0)
 	actor.global_position = at if at.is_finite() else original_actor
 	actor.show()
@@ -200,6 +214,9 @@ func buy(key: String,supplier: String,paid: bool) -> void:
 	if state.bought.has(key):
 		business._notify("Ya compraste esa caja. Falta otra variedad.")
 		return
+	if not _ensure_cab(game.cuba_world.food_factory.road):
+		business._notify("Esperando una parada segura para el taxi.")
+		return
 	var cost := int(Ledger.PRODUCTS[key].cost)
 	if ledger.cash<cost or not business.life.reserve_crate("primary",key):
 		business._notify("No hay dinero o mercancía suficiente.")
@@ -214,7 +231,7 @@ func buy(key: String,supplier: String,paid: bool) -> void:
 	business.life.refresh_primary()
 	loading = key
 	loading_clock = 0.0
-	var actor: Node3D = business.albertico
+	var actor: Person = business.albertico as Person
 	helper_box = business._crate(actor,Vector3(0,1.05,.30),key)
 	business._notify("Albertico lleva la caja de "+business._product_name(key)+" al taxi.")
 
@@ -261,7 +278,10 @@ func _store_cold() -> bool:
 	if active() and (_phase()!="cold" or not key in REQUIRED): return false
 	if state.is_empty():
 		# Old completed saves retain the standard direct stock path.
-		if ledger.stage==4: return ledger.deliver()
+		if ledger.stage==4 and ledger.deliver():
+			business._sync_visuals()
+			business._notify("Caja guardada. Albertico ya dispone de ella.")
+			return true
 		return false
 	var cold: Dictionary = state.cold
 	cold[key] = int(cold.get(key,0))+1
@@ -344,19 +364,35 @@ func _put_table() -> void:
 	table = null
 	business.albertico.global_position = original_actor
 	business.albertico.rotation.y = original_angle
-	# The business becomes active once, only at the permanent stand position.
+	_set_phase("handshake")
+	marker.hide()
+	handshake_clock = 1.6
+	banner_clock = 0.0
+	var actor: Person = business.albertico as Person
+	var face: Vector3 = game.player.global_position-actor.global_position
+	face.y = 0.0
+	if face.length_squared()>.02:
+		actor.rotation.y = atan2(face.x,face.z)
+		game.avatar.rotation.y = atan2(-face.x,-face.z)
+	actor.set_meta("story_handshake",true)
+	handshake_camera = business.story_camera.begin(actor,game.player,game.play_camera)
+	if handshake_camera: game.avatar.show()
+
+func handshake_active() -> bool:
+	return handshake_clock>0.0
+
+func _finish_handshake() -> void:
+	business.story_camera.finish()
+	business.albertico.remove_meta("story_handshake")
+	business.albertico.rotation.y = original_angle
+	game.first_person = old_first
+	game._apply_camera_mode()
+	# Activate sales and downstream missions only after the handshake.
 	ledger.stage = 4
 	state.phase = "done"
 	ledger.add_message("Albertico","¡Ya estamos montados! Puedes darme mercancía afuera o dejarla en tu refrigerador. Mi comisión es el 15% de cada venta.")
 	_save()
 	business._sync_visuals()
-	marker.hide()
-	handshake_clock = 1.25
-	banner_clock = 0.0
-	game.first_person = old_first
-	game._apply_camera_mode()
-
-func _finish_handshake() -> void:
 	banner.text = "MISIÓN CUMPLIDA\nTe tengo un bisne"
 	banner.show()
 	banner_clock = 4.5
@@ -369,7 +405,7 @@ func _fetch_stock(delta: float) -> void:
 	var total := ledger.total(cold)
 	if total<=0: return
 	fetch_clock += delta
-	var actor: Node3D = business.albertico
+	var actor: Person = business.albertico as Person
 	if fetch_clock<2.5:
 		var target: Vector3 = _home_door()+home.basis.z*.8
 		game.yordi_mission._walk(actor,target,delta,2.2,.8)
@@ -435,6 +471,7 @@ func objective() -> String:
 		"room": return "Levanta la mesa con Albertico."
 		"room_carry": return "Caminen hasta la puerta."
 		"street_carry": return "Cruza la calle y lleva la mesa a la flecha."
+		"handshake": return "Cerrando el trato con Albertico."
 	return ""
 
 func destination() -> Dictionary:
@@ -458,7 +495,7 @@ func reset_checkpoint() -> bool:
 	room = null
 	table_in_room = false
 	game.garage.inside = false
-	if _phase() in ["room","room_carry","street_carry"]: _set_phase("table")
+	if _phase() in ["room","room_carry","street_carry","handshake"]: _set_phase("table")
 	if not cab.is_empty() and is_instance_valid(cab.body):
 		game.taxis.taxis.erase(cab)
 		cab.body.queue_free()
@@ -475,8 +512,9 @@ func tick(delta: float) -> void:
 		if banner_clock<=0.0: banner.hide()
 	if handshake_clock>0.0:
 		handshake_clock -= delta
-		business.albertico.arms[1].rotation.x = -.85
-		if game.limb_arms.size()>1: game.limb_arms[1].rotation.x = -.85
+		var pose := -1.10+sin(handshake_clock*13.0)*.13
+		business.albertico.arms[1].rotation.x = pose
+		if game.limb_arms.size()>1: game.limb_arms[1].rotation.x = pose
 		if handshake_clock<=0.0: _finish_handshake()
 		return
 	if not active():
@@ -491,12 +529,12 @@ func tick(delta: float) -> void:
 	if not initialized:
 		initialized = true
 		neighbor = _find_neighbor()
-		if _phase() in ["room","room_carry","street_carry"]: _set_phase("table")
+		if _phase() in ["room","room_carry","street_carry","handshake"]: _set_phase("table")
 		if _phase()=="shopping" and all_four(state.bought): _set_phase("return")
 		if _phase() in ["shopping","return"]:
 			var factory: Dictionary = game.cuba_world.food_factory
 			_teleport(factory.center+factory.basis*Vector3(0,.96,3.55),factory.basis.get_euler().y)
-		elif _phase() in ["cold","table"]:
+		elif _phase() in ["outbound","cold","table"]:
 			var start: Vector3 = game.yordi_mission._near_ground(_home_door()+home.basis.z*.9,business.albertico,6.0)
 			if start.is_finite(): _teleport(start+Vector3.UP*.86,original_angle)
 		business.albertico.global_position = original_actor
@@ -505,9 +543,12 @@ func tick(delta: float) -> void:
 	if _phase() in ["outbound","shopping","return","cold"] and next_retry<=0.0:
 		next_retry = 3.0
 		_ensure_cab(game.cuba_world.food_factory.road if _phase() in ["shopping","return"] else _home_road())
-	var actor: Node3D = business.albertico
+	var actor: Person = business.albertico as Person
 	if not loading.is_empty():
 		loading_clock += delta
+		if cab.is_empty() and loading_clock>12.0:
+			_finish_load()
+			return
 		if not cab.is_empty():
 			var at: Vector3 = game.yordi_mission._near_ground(cab.body.global_position,actor,8.0) if loading_clock<.2 else Vector3.INF
 			if at.is_finite(): actor.set_meta("albertico_load_target",at)
@@ -517,7 +558,7 @@ func tick(delta: float) -> void:
 				for arm in actor.arms: arm.rotation.x = -.85
 		return
 	if carrying_table():
-		var forward := -game.pivot.global_basis.z
+		var forward: Vector3 = -game.pivot.global_basis.z
 		forward.y = 0.0
 		forward = forward.normalized()
 		if is_instance_valid(table):

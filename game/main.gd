@@ -1503,6 +1503,13 @@ func _physics_process(delta: float) -> void:
 		return
 	if business!=null and business.first_story!=null and not building_mode:
 		business.first_story.tick(delta)
+		if business.first_story.handshake_active():
+			player.velocity = Vector3.ZERO
+			interact_requested = false
+			cargo_requested = false
+			context_requested = false
+			reset_requested = false
+			return
 	if _hold_story_input(): return
 	if carlos_mission!=null and not building_mode: carlos_mission.tick(delta)
 	if _hold_story_input(): return

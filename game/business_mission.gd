@@ -6,7 +6,7 @@ const Person = preload("res://street_person.gd")
 const CityLife = preload("res://city_life.gd")
 const StoryCamera = preload("res://story_camera.gd")
 const Interface = preload("res://interface_style.gd")
-var first_story: Node
+var first_story
 var phone_destination: Callable
 var notice_panel: PanelContainer
 var notice_title: Label
@@ -865,7 +865,7 @@ func interact(at: Vector3) -> bool:
 func interact_albertico(at: Vector3) -> bool:
 	if aimed_albertico_text(at).is_empty(): return false
 	if ledger.stage==0:
-		open_story(albertico,"Albertico",["Albertico: Asere, te tengo un bisne. Te voy a dar la luz: hay una gente que vende comida.","Albertico: Tú me la traes y yo la vendo. ¿Te sirve?"],"Sí, vamos arriba",_accept,"No, ahora no")
+		open_story(albertico,"Albertico",["Albertico: Asere, te tengo un bisne. Hay una gente que vende comida por cajas.","Albertico: Vamos juntos a la MIPYME. Ya hay un taxi cerca. Compramos huevos, perritos, pollo y picadillo.","Albertico: Yo te ayudo a cargar las cajas y luego montamos el puesto. Mi parte es el 15% de cada venta. ¿Te sirve?"],"Sí, vamos arriba",_accept,"No, ahora no")
 	elif first_story!=null and first_story.active():
 		first_story.talk()
 	elif not ledger.carry.is_empty() and ledger.stage>=3:
@@ -1301,7 +1301,7 @@ func _sync_visuals() -> void:
 	albertico.visible = ledger.albertico_visible()
 	arrow.visible = ledger.albertico_visible() and (ledger.stage==0 or (ledger.stage==3 and (first_story==null or not first_story.active())))
 	factory_arrow.visible = ledger.stage in [1,2]
-	stand.visible = ledger.stage==4 or (first_story==null and ledger.stage>=1 and not ledger.life_data.has("albertico_story")) or (first_story!=null and not first_story.active() and not ledger.life_data.has("albertico_story") and ledger.stage>=1)
+	stand.visible = ledger.stage==4 or (first_story!=null and first_story._phase()=="handshake") or (ledger.stage>=1 and not ledger.life_data.has("albertico_story"))
 	var tier := stall_tier(ledger.sold) if ledger.stage==4 else 0
 	for i in range(stall_growth.size()): stall_growth[i].visible = tier>=i+1
 	if is_instance_valid(stall_sign):

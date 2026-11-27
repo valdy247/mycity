@@ -127,7 +127,7 @@ func meet_albertico() -> bool:
 func accept() -> void:
 	if stage!=0: return
 	stage = 1
-	add_message("Albertico","Asere, coge un taxi pa' la MIPYME. Allí venden pollo, picadillo y perrito por cajas.")
+	add_message("Albertico","Asere, vamos juntos a la MIPYME. Compramos una caja de huevos, perritos, pollo y picadillo. Yo te ayudo a cargarlas." if life_data.has("albertico_story") else "Asere, coge un taxi pa' la MIPYME. Allí venden pollo, picadillo y perrito por cajas.")
 	save_game()
 
 func factory_arrival() -> void:
