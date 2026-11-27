@@ -1726,10 +1726,11 @@ func _advance(action: String,bag_id: int=-1) -> bool:
 	if action in ["passport","return_passport"]: moving_prop = passport
 	elif action in ["pickup_first","pickup_second","cart_first","cart_second","take_first","take_second","load_first","load_second"]:
 		if bag_id>=0 and bag_id<bags.size(): moving_prop = bags[bag_id]
+		elif action=="take_first": moving_prop = bags[old_first]
+		elif action=="take_second": moving_prop = bags[1-old_first]
 		else:
 			for i in range(bags.size()):
-				var location := Progress.bag_location(old,i,old_first)
-				if location=="hand" or (action in ["take_first","take_second"] and location=="cart"):
+				if Progress.bag_location(old,i,old_first)=="hand":
 					moving_prop = bags[i]
 					break
 	var before_prop: Transform3D = moving_prop.global_transform if is_instance_valid(moving_prop) else Transform3D.IDENTITY
@@ -1757,6 +1758,8 @@ func _advance(action: String,bag_id: int=-1) -> bool:
 func _interact() -> void:
 	var step := progress.stage
 	if menu_open or step in [0,3,15,Progress.COMPLETE]: return
+	# Avoid interrupting a transfer while the visible prop is moving into place.
+	if fp_prop_tween!=null and fp_prop_tween.is_running(): return
 	if step==10:
 		if progress.cart_attached:
 			if _cart_can_park(): _toggle_cart(false)
