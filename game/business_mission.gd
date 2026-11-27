@@ -218,17 +218,50 @@ func take_aimed(at: Vector3) -> bool:
 		_sync_visuals()
 	return true
 
+# Move the entire stall sideways, leaving an open approach to nearby doors.
+# Keep the original map frontage and use the existing sidewalk geometry.
+func _albertico_side_offset(home: Node3D) -> float:
+	var best_offset := 0.0
+	var best_clearance := -INF
+	for value in [2.3,-2.3,3.1,-3.1,4.0,-4.0,1.8,-1.8,0.0]:
+		var shift := float(value)
+		var person: Vector3 = home.to_global(Vector3(-2.55+shift,.105,2.85))
+		var table: Vector3 = home.to_global(Vector3(-2.55+shift,.105,3.66))
+		var points: Array[Vector3] = [person,table,table+home.global_basis.x*.78,table-home.global_basis.x*.78]
+		var valid := true
+		for p in points:
+			if world.street_geometry.point_on_road(p) or not world.pedestrian_segment_clear(p,p):
+				valid = false
+				break
+		if not valid: continue
+		var clearance := INF
+		for entry in world.npc_doorways:
+			var door: Vector3 = entry.threshold
+			var normal: Vector3 = entry.normal
+			if door.distance_to(person)>8.0: continue
+			var end: Vector3 = door+normal*2.8
+			for p in points:
+				var flat := Vector3(p.x,door.y,p.z)
+				var nearest := Geometry3D.get_closest_point_to_segment(flat,door,end)
+				clearance = minf(clearance,flat.distance_to(nearest))
+		if absf(shift)>=1.8 and clearance>=1.15: return shift
+		if clearance>best_clearance:
+			best_clearance = clearance
+			best_offset = shift
+	return best_offset
+
 func _make_scene() -> void:
 	if world.business_frontage==null or world.food_factory.is_empty(): return
 	var home := world.business_frontage
+	var side_offset := _albertico_side_offset(home)
 	albertico = _person(self,Color("#638e77"))
-	albertico.position = home.to_global(Vector3(-2.55,.105,2.85))
+	albertico.position = home.to_global(Vector3(-2.55+side_offset,.105,2.85))
 	albertico.rotation.y = home.rotation.y
 	_label(albertico,"Albertico",Vector3(0,2.03,0))
 	arrow = _arrow(albertico,Vector3(0,2.68,0),Color("#49ff72"))
 	stand = Node3D.new()
 	add_child(stand)
-	stand.position = home.to_global(Vector3(-2.55,.105,3.66))
+	stand.position = home.to_global(Vector3(-2.55+side_offset,.105,3.66))
 	stand.rotation.y = home.rotation.y
 	_box(stand,Vector3(0,.79,0),Vector3(1.45,.09,.62),Color("#a88b64"))
 	for x in [-.61,.61]:
