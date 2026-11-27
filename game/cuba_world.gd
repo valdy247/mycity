@@ -30,6 +30,7 @@ var home_defaults: Dictionary = {}
 var home_building := false
 var home_cutaway: Array = []
 const INVENTORY_PATH := "user://pilar_atares_inventory.json"
+var inventory_path := INVENTORY_PATH
 var geography := MapData.new()
 var home_root: Node3D
 var business_frontage: Node3D
@@ -3731,9 +3732,9 @@ func reset_interaction(avatar: Node3D,legs: Array) -> void:
 	avatar.position.y = 0.0
 
 func _load_inventory() -> void:
-	if not FileAccess.file_exists(INVENTORY_PATH):
+	if not FileAccess.file_exists(inventory_path):
 		return
-	var file := FileAccess.open(INVENTORY_PATH,FileAccess.READ)
+	var file := FileAccess.open(inventory_path,FileAccess.READ)
 	if file==null:
 		return
 	var data: Variant = JSON.parse_string(file.get_as_text())
@@ -3785,7 +3786,7 @@ func inspect_product(camera: Camera3D,player: CharacterBody3D) -> bool:
 		inventory[id] = String(item.get_meta("product"))
 		item.queue_free()
 		prompt = "Recogiste: "+String(inventory[id])+" | Inventario: "+str(inventory.size())
-		var file := FileAccess.open(INVENTORY_PATH,FileAccess.WRITE)
+		var file := FileAccess.open(inventory_path,FileAccess.WRITE)
 		if file!=null:
 			file.store_string(JSON.stringify(inventory))
 	else:

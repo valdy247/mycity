@@ -124,7 +124,9 @@ func setup(controller) -> void:
 	for id in FURNITURE:
 		if not state.furniture.has(id): state.furniture[id] = {"p":FURNITURE[id].p.duplicate(),"removed":false}
 	# Existing GPS residence belongs to the player; no purchase or exterior sign.
-	if not world.garage_home_site.is_empty(): state.house = true
+	if not world.garage_home_site.is_empty():
+		state.house = true
+		if game.adaptation_mode: state.rented = true
 	for site in world.parts_sites:
 		var person := Person.new()
 		add_child(person)
@@ -603,7 +605,7 @@ func action_text(at: Vector3) -> String:
 		if not _nearest_bin(at).is_empty(): return "[E] Tirar basura"
 		if not _aimed_home(at): return "Lleva la basura a un basurero de la calle"
 	if not String(state.held_furniture).is_empty() and not _nearest_bin(at).is_empty(): return "[E] Desechar mueble"
-	if _aimed_home(at): return "[E] Entrar a mi casa"
+	if _aimed_home(at): return "[E] Entrar a la casa alquilada" if game.adaptation_mode else "[E] Entrar a mi casa"
 	if not _vendor_at(at).is_empty(): return "[E] Comprar repuestos"
 	for kind in owned:
 		var body: CharacterBody3D = owned[kind]

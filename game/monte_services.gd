@@ -19,6 +19,9 @@ var corner_unplaced := 0
 const CORNER_BATCH := 2
 var vehicles: Array = []
 var civilian_route: Array = []
+var story_van: CharacterBody3D
+var story_van_registered := false
+var story_van_retry := 0.0
 var collection_route: Array = []
 var truck_retry := 0.0
 const MAX_GARBAGE_SITES := 9
@@ -1036,9 +1039,49 @@ func _local_recovery(body: CharacterBody3D,target: Vector3,width: float,length: 
 			if valid and not points.is_empty(): return points
 	return []
 
+func _register_story_van() -> void:
+	# Reuse the exported white van as autonomous city traffic, not a player asset.
+	if civilian_route.size()<5: return
+	var ids := planner.plan("MONTE",anchor)
+	var route: Array = []
+	for i in range(ids.size()-1):
+		var edge: Dictionary = planner.edges.get(String(ids[i])+":"+String(ids[i+1]),{})
+		if edge.is_empty(): continue
+		var a: Vector3 = world.geography.points[ids[i]]
+		var b: Vector3 = world.geography.points[ids[i+1]]
+		var d := (b-a).normalized()
+		var offset := Vector3(-d.z,0,d.x)*world.geography.lane_distance(edge,2.18)
+		if a.distance_to(b)>8.0: route.append({"p":a+d*3.0+offset})
+		route.append({"p":b+offset})
+	route = _civilian_route(route)
+	if route.size()<5: return
+	for j in range(route.size()):
+		var i := (floori(float(route.size())*.5)+j)%route.size()
+		var p: Vector3 = route[i].p
+		var next: Vector3 = route[(i+1)%route.size()].p
+		var d := (next-p).normalized()
+		if d.length_squared()<.1 or p.distance_to(player.global_position)<25.0: continue
+		if not world.street_geometry.intersection_clear_for_stop(p,5.12,2.18): continue
+		if not Bypass._on_road(world.street_geometry,p,d,2.18,5.12): continue
+		if not _free_box(p,d,Vector3(2.18,1.9,5.12)): continue
+		story_van.global_position = p+Vector3.UP*.055
+		story_van.rotation.y = atan2(d.x,d.z)
+		story_van.collision_layer = 4
+		story_van.collision_mask = 1|4|8|32
+		story_van.add_to_group("autonomous_traffic")
+		story_van.set_meta("driver_style",1)
+		story_van.show()
+		vehicles.append({"body":story_van,"route":route,"index":(i+1)%route.size(),"speed":0.0,"truck":false,"crew":[],"site":{},"blocked":0.0,"cooldown":0.0,"detour":[],"detour_index":0,"resume":0,"traffic_kind":"avenue","story_van":true})
+		story_van_registered = true
+		return
+
 func _drive(vehicle: Dictionary,delta: float) -> void:
 	var body: CharacterBody3D = vehicle.body
-	body.set_meta("traffic_priority",6.2 if bool(vehicle.truck) else 4.25)
+	var is_story_van := bool(vehicle.get("story_van",false))
+	var width := 2.18 if is_story_van else (2.3 if bool(vehicle.truck) else 1.83)
+	var half := 2.56 if is_story_van else (3.1 if bool(vehicle.truck) else 2.125)
+	var height := 1.9 if is_story_van else (2.8 if bool(vehicle.truck) else 1.65)
+	body.set_meta("traffic_priority",half*2.0)
 	body.set_meta("traffic_servicing",not vehicle.site.is_empty())
 	if not vehicle.site.is_empty():
 		Bypass.reset_watchdog(vehicle)
@@ -1046,7 +1089,7 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 		return
 	var original: Array = vehicle.route
 	var watch_index := int(vehicle.resume) if not vehicle.detour.is_empty() else int(vehicle.index)
-	var restored := Bypass.watchdog(vehicle,body,world.street_geometry,original,watch_index,2.3 if bool(vehicle.truck) else 1.83,6.2 if bool(vehicle.truck) else 4.25,2.8 if bool(vehicle.truck) else 1.65,delta)
+	var restored := Bypass.watchdog(vehicle,body,world.street_geometry,original,watch_index,width,half*2.0,height,delta)
 	if restored>=0:
 		vehicle.index = restored
 		vehicle.detour = []
@@ -1089,9 +1132,6 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 	var next_dir := (next-target).normalized()
 	if direction.dot(next_dir)<.85: speed = minf(speed,maxf(1.0,distance*1.0))
 	if active: speed = minf(speed,3.4)
-	var half := 3.1 if bool(vehicle.truck) else 2.125
-	var width := 2.3 if bool(vehicle.truck) else 1.83
-	var height := 2.8 if bool(vehicle.truck) else 1.65
 	# A car needs room to steer around a stationary vehicle, not just brake.
 	# On straight multi-lane sections, look past intermediate waypoints.
 	var gap := .65
@@ -1208,6 +1248,11 @@ func _update_indicators(delta: float) -> void:
 
 func tick(delta: float) -> void:
 	_update_indicators(delta)
+	if is_instance_valid(story_van) and not story_van_registered and initialized:
+		story_van_retry -= delta
+		if story_van_retry<=0.0:
+			story_van_retry = 2.0
+			_register_story_van()
 	notice_time = maxf(0.0,notice_time-delta)
 	if not initialized:
 		initialized = true

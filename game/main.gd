@@ -18,6 +18,9 @@ const UrbanBuses = preload("res://urban_buses.gd")
 const BusinessMission = preload("res://business_mission.gd")
 const FirstStory = preload("res://albertico_story.gd")
 const HomeGarage = preload("res://home_garage.gd")
+const ArrivalStory = preload("res://arrival_story.gd")
+var adaptation_mode := false
+var arrival_story: ArrivalStory
 var garage: HomeGarage
 const CarlosMission = preload("res://carlos_mission.gd")
 var carlos_mission: CarlosMission
@@ -130,6 +133,7 @@ func _web_map_error() -> void:
 	label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 func _ready() -> void:
+	adaptation_mode = bool(get_tree().get_meta("mycity_adaptation",false))
 	var args := OS.get_cmdline_user_args()
 	mobile_mode = OS.has_feature("android") or OS.has_feature("ios") or args.has("--touch-controls")
 	if OS.has_feature("web"):
@@ -144,13 +148,14 @@ func _ready() -> void:
 	if native_city and not args.has("--classic-city") and (OS.has_feature("web") or FileAccess.file_exists("res://pilar_atares_v2.osm") or FileAccess.file_exists("res://pilar_atares.osm")):
 		var candidate := CubaWorld.new()
 		var map_started := Time.get_ticks_msec()
+		if adaptation_mode: candidate.inventory_path = "user://mycity_adaptation_inventory_v1.json"
 		if candidate.load_map():
 			print("MyCity carga (ms): mapa OSM=",Time.get_ticks_msec()-map_started)
 			cuba_world = candidate
 		else:
 			candidate.free()
 			push_warning("Mapa OSM no disponible o inválido.")
-	if OS.has_feature("web") and cuba_world==null:
+	if (OS.has_feature("web") or adaptation_mode) and cuba_world==null:
 		_web_map_error()
 		return
 	builder = CityBuilder.new()
@@ -206,6 +211,7 @@ func _ready() -> void:
 		urban_buses.setup(cuba_world.geography,cuba_world.street_geometry,cuba_world.home_spawn,avoid,cuba_world)
 		business = BusinessMission.new()
 		add_child(business)
+		business.adaptation_mode = adaptation_mode
 		business.setup(cuba_world,taxis,player,van,play_camera)
 		business.phone_position = func() -> Vector3:
 			if driving: return van.global_position
@@ -276,7 +282,17 @@ func _ready() -> void:
 		game_menu = GameMenu.new()
 		add_child(game_menu)
 		game_menu.setup(self)
-		game_menu.open_menu(true)
+		if adaptation_mode:
+			van.hide()
+			van.collision_layer = 0
+			van.collision_mask = 0
+			van_ground_initialized = true
+			monte_services.story_van = van
+			arrival_story = ArrivalStory.new()
+			add_child(arrival_story)
+			arrival_story.setup(self)
+		else:
+			game_menu.open_menu(true)
 
 func open_game_menu() -> void:
 	if is_instance_valid(game_menu) and not touch_blocked(): game_menu.open_menu(false)
@@ -298,6 +314,7 @@ func _enable_mobile_controls() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 func touch_blocked() -> bool:
+	if arrival_story!=null and arrival_story.cinematic(): return true
 	return (is_instance_valid(game_menu) and game_menu.menu_open) or building_mode or (business!=null and (business.modal_open() or business.story_active)) or (taxis!=null and taxis.dialog.visible) or (city_navigation!=null and city_navigation.active) or (street_market!=null and not street_market.active.is_empty())
 
 func gameplay_input() -> bool:
@@ -312,6 +329,9 @@ func primary_held() -> bool:
 	return Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
 
 func touch_action(key: Key) -> void:
+	if arrival_story!=null and arrival_story.active():
+		if key==KEY_E: arrival_story.interact()
+		return
 	if touch_blocked(): return
 	var event := InputEventKey.new()
 	event.keycode = key
@@ -322,6 +342,9 @@ func touch_action(key: Key) -> void:
 		_unhandled_input(event)
 
 func touch_look(relative: Vector2) -> void:
+	if arrival_story!=null and arrival_story.active():
+		arrival_story.handle_look(relative)
+		return
 	if touch_blocked() or pivot==null: return
 	yaw -= relative.x*.005
 	var limit := -1.05
@@ -726,6 +749,13 @@ var mission_tracker_clock := 0.0
 
 func _process(delta: float) -> void:
 	if is_instance_valid(mobile_controls): mobile_controls.sync()
+	if arrival_story!=null and arrival_story.active():
+		_update_vehicle_lights()
+		fps_time += delta
+		if fps_time>=.5:
+			fps_time = 0.0
+			_update_visual_lighting()
+		return
 	_update_vehicle_lights()
 	mission_tracker_clock += delta
 	if mission_tracker_clock>=.15:
@@ -770,6 +800,10 @@ func _open_city_map() -> void:
 	city_navigation.open()
 
 func _input(event: InputEvent) -> void:
+	if arrival_story!=null and arrival_story.active() and event is InputEventKey:
+		if event.pressed and not event.echo and event.keycode==KEY_E: arrival_story.interact()
+		get_viewport().set_input_as_handled()
+		return
 	if player!=null and (event is InputEventScreenTouch or event is InputEventScreenDrag):
 		if not mobile_mode and event is InputEventScreenTouch and event.pressed: _enable_mobile_controls()
 		if is_instance_valid(mobile_controls) and mobile_controls.handle_touch(event):
@@ -795,6 +829,9 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 func _unhandled_input(event: InputEvent) -> void:
+	if arrival_story!=null and arrival_story.active():
+		if event is InputEventMouseMotion: arrival_story.handle_look(event.relative)
+		return
 	# Touch gestures own the camera; emulated mouse clicks still reach GUI
 	# controls first, but must not trigger gameplay or browser pointer lock.
 	if mobile_mode and (event is InputEventMouseButton or event is InputEventMouseMotion): return
@@ -1162,6 +1199,7 @@ func _animate_avatar(delta: float, speed: float) -> void:
 	avatar.position.y = lerpf(avatar.position.y,bob+sin(avatar_idle_phase)*.003,minf(delta*12.0,1.0))
 
 func _near_van() -> bool:
+	if adaptation_mode: return false
 	if van == null or player == null:
 		return false
 	var local := van.to_local(player.global_position)
@@ -1621,6 +1659,14 @@ func _hold_story_input() -> bool:
 func _physics_process(delta: float) -> void:
 	if player == null:
 		return
+	if arrival_story!=null and arrival_story.active():
+		cuba_world.tick(delta)
+		urban_buses.tick(delta)
+		taxis.tick(delta,cuba_world.cuba_clock)
+		monte_services.tick(delta)
+		monte_pedestrians.tick(delta)
+		arrival_story.tick(delta)
+		return
 	if _hold_story_input(): return
 	if city_navigation!=null and city_navigation.active:
 		player.velocity = Vector3.ZERO
@@ -1635,11 +1681,11 @@ func _physics_process(delta: float) -> void:
 			reset_requested = false
 			return
 	if _hold_story_input(): return
-	if carlos_mission!=null and not building_mode: carlos_mission.tick(delta)
+	if not adaptation_mode and carlos_mission!=null and not building_mode: carlos_mission.tick(delta)
 	if _hold_story_input(): return
-	if yordi_mission!=null and not building_mode: yordi_mission.tick(delta)
+	if not adaptation_mode and yordi_mission!=null and not building_mode: yordi_mission.tick(delta)
 	if _hold_story_input(): return
-	if incidents!=null and not building_mode and not business.modal_open(): incidents.tick(delta)
+	if not adaptation_mode and incidents!=null and not building_mode and not business.modal_open(): incidents.tick(delta)
 	if backpack!=null and not building_mode: backpack.tick(delta)
 	if street_market!=null:
 		if not building_mode: street_market.tick(delta)
@@ -1809,11 +1855,11 @@ func _physics_process(delta: float) -> void:
 			return
 		elif business!=null and business.first_story!=null and business.first_story.carrying_table():
 			return
-		elif yordi_mission!=null and yordi_mission.interact():
+		elif not adaptation_mode and yordi_mission!=null and yordi_mission.interact():
 			player.velocity = Vector3.ZERO
 			_update_hud()
 			return
-		elif carlos_mission!=null and carlos_mission.interact():
+		elif not adaptation_mode and carlos_mission!=null and carlos_mission.interact():
 			player.velocity = Vector3.ZERO
 			_update_hud()
 			return
@@ -1898,7 +1944,7 @@ func _physics_process(delta: float) -> void:
 		if player.global_position.y < -15 or absf(player.global_position.x) > (1255.0 if cuba_world != null else (258.0 if native_city else 90.0)) or absf(player.global_position.z) > (1255.0 if cuba_world != null else (258.0 if native_city else 120.0)):
 			_reset_player()
 		# Parked vehicle stays grounded; no dynamic vertical collision recovery.
-		if van != null and (cuba_world == null or not van_ground_initialized):
+		if not adaptation_mode and van != null and (cuba_world == null or not van_ground_initialized):
 			_support_van()
 	message_time = maxf(0.0, message_time - delta)
 	hud_time += delta

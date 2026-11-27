@@ -45,6 +45,7 @@ var van: CharacterBody3D
 var camera: Camera3D
 var albertico: Node3D
 var albertico_intro_clock := 0.0
+var adaptation_mode := false
 const ALBERTICO_INVITE_DELAY := 15.0
 var arrow: Node3D
 var stand: Node3D
@@ -118,6 +119,9 @@ func setup(city: World,taxi_service: Taxi,actor: CharacterBody3D,vehicle: Charac
 	player = actor
 	van = vehicle
 	camera = view
+	if adaptation_mode:
+		ledger.save_path = "user://mycity_adaptation_v1.json"
+		ledger.cash = 0
 	ledger.load_game()
 	box_mesh.size = Vector3.ONE
 	_make_ui()
@@ -614,6 +618,7 @@ func _position_mission_tracker(left: bool) -> void:
 
 func mission_objectives() -> Array[String]:
 	var entries: Array[String] = []
+	if adaptation_mode: return entries
 	if ledger.stage<4:
 		var first := _objective()
 		if not first.is_empty(): entries.append("01 · Albertico\n"+first)
@@ -866,7 +871,7 @@ func _stock_text() -> String:
 	return " | ".join(lines)
 
 func _cargo_vehicle(id: String) -> CharacterBody3D:
-	if id=="van": return van if is_instance_valid(van) else null
+	if id=="van": return van if is_instance_valid(van) and not adaptation_mode else null
 	if id=="carro" and first_story!=null and first_story.game.garage!=null:
 		var car: CharacterBody3D = first_story.game.garage.owned.get("carro")
 		return car if is_instance_valid(car) else null
@@ -1433,10 +1438,10 @@ func _clear_visual_children(root: Node3D) -> void:
 
 func _sync_visuals() -> void:
 	if arrow==null: return
-	albertico.visible = ledger.albertico_visible() and (first_story==null or (not first_story.rider_trip and not first_story.exit_retry and first_story.fetch_phase!="inside"))
-	arrow.visible = ledger.albertico_visible() and (ledger.stage==0 or (ledger.stage==3 and (first_story==null or not first_story.active())))
-	factory_arrow.visible = ledger.stage in [1,2]
-	stand.visible = ledger.stage==4 or (first_story!=null and first_story._phase()=="handshake") or (ledger.stage>=1 and not ledger.life_data.has("albertico_story"))
+	albertico.visible = not adaptation_mode and ledger.albertico_visible() and (first_story==null or (not first_story.rider_trip and not first_story.exit_retry and first_story.fetch_phase!="inside"))
+	arrow.visible = not adaptation_mode and ledger.albertico_visible() and (ledger.stage==0 or (ledger.stage==3 and (first_story==null or not first_story.active())))
+	factory_arrow.visible = not adaptation_mode and ledger.stage in [1,2]
+	stand.visible = not adaptation_mode and (ledger.stage==4 or (first_story!=null and first_story._phase()=="handshake") or (ledger.stage>=1 and not ledger.life_data.has("albertico_story")))
 	var tier := stall_tier(ledger.sold) if ledger.stage==4 else 0
 	for i in range(stall_growth.size()): stall_growth[i].visible = tier>=i+1
 	if is_instance_valid(stall_sign):
@@ -1498,6 +1503,7 @@ func _sync_cargo_views() -> void:
 		cargo_views[key] = _label(body,"%d cajas · G" % count,Vector3(0,2.65,0),Color("#ffe19a"))
 
 func _objective() -> String:
+	if adaptation_mode: return ""
 	if first_story!=null and first_story.active(): return first_story.objective()
 	if albertico==null: return "Misión no disponible: falta la MIPYME o el puesto."
 	match ledger.stage:
@@ -1596,7 +1602,7 @@ func _tick_buyer(delta: float) -> void:
 
 func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	if life!=null: life.tick(delta,in_vehicle,editor)
-	if ledger.stage==0 and not ledger.albertico_visible() and not bool(ledger.life_data.get("albertico_invited",false)) and not editor and not in_vehicle and not modal_open() and is_instance_valid(albertico):
+	if not adaptation_mode and ledger.stage==0 and not ledger.albertico_visible() and not bool(ledger.life_data.get("albertico_invited",false)) and not editor and not in_vehicle and not modal_open() and is_instance_valid(albertico):
 		albertico_intro_clock += delta
 		if albertico_intro_clock>=ALBERTICO_INVITE_DELAY and ledger.invite_albertico():
 			phone_ring.play()

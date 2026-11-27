@@ -1,6 +1,7 @@
 extends CanvasLayer
 const Ledger = preload("res://business_ledger.gd")
 const SAVE_FILES := [Ledger.SAVE_PATH,"user://pilar_atares_inventory.json"]
+const ADAPTATION_FILES := ["user://mycity_adaptation_v1.json","user://mycity_adaptation_inventory_v1.json","user://mycity_chapter1_v2.json"]
 var game
 var menu_open := false
 var root: ColorRect
@@ -82,7 +83,8 @@ func _recover() -> void:
 func _new_game() -> void:
 	var suffix := "."+str(Time.get_unix_time_from_system()).replace(".","_")+".bak"
 	var copied: Array[String] = []
-	for path in SAVE_FILES:
+	var files: Array = ADAPTATION_FILES if game.adaptation_mode else SAVE_FILES
+	for path in files:
 		if not FileAccess.file_exists(path): continue
 		if DirAccess.copy_absolute(path,path+suffix)!=OK:
 			info.text = "No se pudo crear el respaldo. La partida sigue intacta."
@@ -99,7 +101,12 @@ func _new_game() -> void:
 
 func _reload() -> void:
 	var tree := get_tree()
-	var error := tree.reload_current_scene()
+	var error: Error
+	if game.adaptation_mode:
+		tree.remove_meta("mycity_adaptation")
+		error = tree.change_scene_to_file("res://airport.tscn")
+	else:
+		error = tree.reload_current_scene()
 	tree.paused = false
 	if error!=OK:
 		if game.business!=null: game.business.ledger.persistence_enabled = true

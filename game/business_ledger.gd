@@ -14,6 +14,7 @@ const PRODUCTS := {
 const COMMISSION_PERCENT := 15
 const VEHICLE_CAPACITY := 8
 const SAVE_PATH := "user://pilar_business_v1.json"
+var save_path := SAVE_PATH
 var persistence_enabled := true
 var cash := 10000
 var stage := 0
@@ -33,8 +34,8 @@ var life_data: Dictionary = {}
 
 func load_game() -> void:
 	if not persistence_enabled: return
-	if not FileAccess.file_exists(SAVE_PATH): return
-	var f := FileAccess.open(SAVE_PATH,FileAccess.READ)
+	if not FileAccess.file_exists(save_path): return
+	var f := FileAccess.open(save_path,FileAccess.READ)
 	if f==null: return
 	var value: Variant = JSON.parse_string(f.get_as_text())
 	f.close()
@@ -83,7 +84,7 @@ func save_game() -> void:
 	if not persistence_enabled: return
 	var data := {"cash":cash,"stage":stage,"pending":pending,"carry":carry,"cargo":cargo,"stock":stock,"sold":sold,"revenue":revenue,"wages":wages,"expenses":expenses,"messages":messages,"unread":unread,"low_alert":low_alert,"city_life":life_data}
 	# Write beside the live save, then replace it only after a complete write.
-	var temp := SAVE_PATH+".tmp"
+	var temp := save_path+".tmp"
 	var f := FileAccess.open(temp,FileAccess.WRITE)
 	if f==null:
 		push_warning("MyCity: no se pudo abrir guardado temporal.")
@@ -95,7 +96,7 @@ func save_game() -> void:
 	if error!=OK:
 		push_warning("MyCity: escritura de partida incompleta; se conserva la anterior.")
 		return
-	if DirAccess.rename_absolute(temp,SAVE_PATH)!=OK:
+	if DirAccess.rename_absolute(temp,save_path)!=OK:
 		push_warning("MyCity: no se pudo reemplazar la partida; se conserva el archivo temporal.")
 
 # City purchases share the same wallet and save transaction as missions.

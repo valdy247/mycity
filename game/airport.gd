@@ -77,6 +77,7 @@ var actor_faces: Array[Dictionary] = []
 var mission_panel: PanelContainer
 var cinema_fade: ColorRect
 var boarding_transition := false
+var entering_adaptation := false
 var protagonist_voice_id := ""
 const MIGRATION_LINES := {"next":["Agente","¡Próximooo!",1.52],"greeting":["Agente","Buenas tardes, su pasaporte, por favor.",2.64],"handover":["Tú","Buenas tardes. Aquí tiene.",2.24],"question":["Agente","¿Hace mucho tiempo que no viene a Cuba?",2.24],"answer":["Tú","Sí, hace varios años.",3.52],"welcome":["Agente","Todo está en orden. Puede pasar a recoger su equipaje. Bienvenido a la patria.",4.64],"thanks":["Tú","Muchas gracias.",1.44]}
 var voice_id := ""
@@ -2030,6 +2031,7 @@ func _button(parent: Control,words: String,action: Callable) -> void:
 	b.pressed.connect(action)
 
 func _toggle_menu() -> void:
+	if progress.stage==Progress.COMPLETE: return
 	menu_open = not menu_open
 	menu.visible = menu_open
 	if progress.stage==Progress.COMPLETE: prompt.visible = false
@@ -2046,6 +2048,7 @@ func _restart() -> void:
 	else: _notice("No se pudo reiniciar la misión.")
 
 func _legacy() -> void:
+	get_tree().remove_meta("mycity_adaptation")
 	get_tree().change_scene_to_file("res://main.tscn")
 
 func _exit_tree() -> void:
@@ -2089,6 +2092,11 @@ func _physics_process(delta: float) -> void:
 	_tick_actor_faces(delta)
 	if progress.stage==Progress.COMPLETE:
 		_tick_airport_audio(delta)
+		if not boarding_transition and not entering_adaptation:
+			entering_adaptation = true
+			cinema_fade.color = Color.BLACK
+			get_tree().set_meta("mycity_adaptation",true)
+			get_tree().change_scene_to_file.call_deferred("res://main.tscn")
 		return
 	_update_belt(delta)
 	stage_time += delta
