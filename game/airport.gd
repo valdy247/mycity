@@ -78,6 +78,7 @@ func _ready() -> void:
 	_make_player()
 	_make_arrivals_props()
 	_make_bags()
+	_update_belt(0.0)
 	_make_hud()
 	var voices := DisplayServer.tts_get_voices_for_language("es")
 	if not voices.is_empty(): voice_id = voices[0]
@@ -283,20 +284,20 @@ func _make_baggage_carousel(metal: Color,cream: Color) -> void:
 	var drum := CylinderMesh.new()
 	drum.top_radius = 1.95
 	drum.bottom_radius = 1.95
-	drum.height = .60
+	drum.height = .58
 	drum.radial_segments = 32
 	drum.rings = 0
 	cap.mesh = drum
 	cap.material_override = _mat(metal)
 	cap.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(cap)
-	cap.position = Vector3(BELT_LEFT,.30,-11)
+	cap.position = Vector3(BELT_LEFT,.29,-11)
 	var body := StaticBody3D.new()
 	add_child(body)
 	body.position = cap.position
 	var shape := CylinderShape3D.new()
 	shape.radius = 1.95
-	shape.height = .60
+	shape.height = .58
 	var col := CollisionShape3D.new()
 	col.shape = shape
 	body.add_child(col)
@@ -316,8 +317,8 @@ func _make_baggage_carousel(metal: Color,cream: Color) -> void:
 		var slat := _box(self,Vector3.ZERO,Vector3(.89,.012,.027),Color("#3c4244"))
 		baggage_slats.append(slat)
 	# Wall panels leave openings at z=-12.5 and -9.5, with black rubber curtains.
-	_box(self,Vector3(BELT_WALL,2,-16.7),Vector3(.22,4,6.2),cream,true)
-	_box(self,Vector3(BELT_WALL,2,-5.65),Vector3(.22,4,7.3),cream,true)
+	_box(self,Vector3(BELT_WALL,2,-16.47),Vector3(.22,4,6.66),cream,true)
+	_box(self,Vector3(BELT_WALL,2,-5.43),Vector3(.22,4,6.86),cream,true)
 	_box(self,Vector3(BELT_WALL,2,-11),Vector3(.22,4,1.72),cream,true)
 	for z in [-12.5,-9.5]:
 		var zz := float(z)
