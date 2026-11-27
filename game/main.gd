@@ -1424,14 +1424,27 @@ func _bus_priority_notice(stop: Dictionary,bus: CharacterBody3D) -> void:
 		exit_message = "La guagua está pidiendo paso. Deja libre la parada."
 		message_time = 3.0
 
+func _hold_story_input() -> bool:
+	if business==null or not business.story_active: return false
+	# Modal choices are the only active interactions during a story.
+	player.velocity = Vector3.ZERO
+	interact_requested = false
+	context_requested = false
+	cargo_requested = false
+	reset_requested = false
+	return true
+
 func _physics_process(delta: float) -> void:
 	if player == null:
 		return
+	if _hold_story_input(): return
 	if city_navigation!=null and city_navigation.active:
 		player.velocity = Vector3.ZERO
 		return
 	if carlos_mission!=null and not building_mode: carlos_mission.tick(delta)
+	if _hold_story_input(): return
 	if yordi_mission!=null and not building_mode: yordi_mission.tick(delta)
+	if _hold_story_input(): return
 	if incidents!=null and not building_mode and not business.modal_open(): incidents.tick(delta)
 	if backpack!=null and not building_mode: backpack.tick(delta)
 	if street_market!=null:

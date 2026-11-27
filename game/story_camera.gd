@@ -1,4 +1,5 @@
 extends Node3D
+const Person = preload("res://street_person.gd")
 # One reusable camera, same viewport, no postprocessing or extra render pass.
 var shot_camera: Camera3D
 var previous_camera: Camera3D
@@ -79,6 +80,8 @@ func _physics_process(delta: float) -> void:
 	if not is_instance_valid(subject) or not is_instance_valid(previous_camera) or not subject.is_visible_in_tree():
 		finish()
 		return
+	# The ordinary mission tick is paused; keep just the visible actor alive.
+	if subject is Person: subject.animate(delta,false)
 	elapsed = minf(elapsed+delta,3.0)
 	var focus := subject.global_position+Vector3.UP*1.43
 	var next := shot_origin.lerp(shot_end,smoothstep(0.0,3.0,elapsed))
