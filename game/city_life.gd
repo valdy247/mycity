@@ -194,8 +194,16 @@ func _refresh_rack(id: String,root: Node3D,primary: bool) -> void:
 		var p := Vector3(-.72+float(col)*.72,.17+float(row)*.62,0) if primary else Vector3(-1.02+float(col)*1.02,1.24+float(row)*.48,-.15)
 		if int(inventory.get(key,0))>0:
 			business._selectable_crate(root,p,key,false,id)
-		var caption := String(Ledger.PRODUCTS[key].name)+" · "+str(int(inventory.get(key,0)))+" cajas" if int(inventory.get(key,0))>0 else String(Ledger.PRODUCTS[key].name)+" · AGOTADO"
-		business._label(root,caption,p+Vector3(0,.28,0),Color("#f4ecd8"))
+		var amount := int(inventory.get(key,0))
+		var caption := str(amount)+" cajas" if amount>0 else "AGOTADO"
+		if amount<=0: caption = String(Ledger.PRODUCTS[key].name).split(" (")[0]+" · AGOTADO"
+		var tag: Label3D = business._label(root,caption,p+Vector3(0,.24,.22),Color("#f4ecd8"))
+		tag.font_size = 26
+		tag.pixel_size = .0016
+		tag.outline_size = 1
+		tag.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+		tag.visibility_range_end = 8.0
+		tag.no_depth_test = false
 
 func refresh_primary() -> void:
 	if business.purchase_rack!=null:

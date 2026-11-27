@@ -1,6 +1,7 @@
 extends Node3D
 # First playable local prototype. Static world, third-person movement.
 const CITY_PATH = "res://city.glb"
+const Shoe = preload("res://character_shoe.gd")
 const CityBuilder = preload("res://city_builder.gd")
 const CityWorld = preload("res://city_world.gd")
 const CubaWorld = preload("res://cuba_world.gd")
@@ -970,9 +971,9 @@ func _make_cartoon_avatar() -> void:
 		_sphere(avatar, "Brow",Vector3(side*.096,.623,.193),Vector3(.087,.018,.019),hair)
 		var shoulder := Node3D.new()
 		avatar.add_child(shoulder)
-		shoulder.position = Vector3(side * 0.32, 0.21, 0)
+		shoulder.position = Vector3(side * 0.255, 0.21, 0)
 		limb_arms.append(shoulder)
-		_sphere(shoulder, "Sleeve", Vector3(0, -0.10, 0), Vector3(0.20, 0.24, 0.22), shirt)
+		_sphere(shoulder, "Sleeve", Vector3(side*.015, -0.065, 0), Vector3(0.19, 0.28, 0.21), shirt)
 		_sphere(shoulder, "Arm", Vector3(0, -0.30, 0), Vector3(0.13, 0.33, 0.15), skin)
 		_sphere(shoulder, "Hand", Vector3(0, -0.46, 0), Vector3(0.17, 0.18, 0.16), skin)
 		var hip := Node3D.new()
@@ -980,7 +981,9 @@ func _make_cartoon_avatar() -> void:
 		hip.position = Vector3(side * 0.13, -0.23, 0)
 		limb_legs.append(hip)
 		_sphere(hip, "Leg", Vector3(0, -0.23, 0), Vector3(0.22, 0.48, 0.23), jeans)
-		_sphere(hip, "Shoe", Vector3(0, -0.46, 0.075), Vector3(0.24, 0.18, 0.36), shoes)
+		var footwear := _sphere(hip, "Shoe", Vector3(0, -0.46, 0.075), Vector3(0.22, 0.16, 0.35), shoes)
+		footwear.mesh = Shoe.mesh()
+		footwear.material_override = Shoe.material(shoes)
 	_sphere(avatar, "Nose", Vector3(0, 0.51, 0.218), Vector3(0.065, 0.085, 0.065), skin)
 	_sphere(avatar, "Mouth", Vector3(0,.43,.204),Vector3(.085,.022,.015),_material(Color("#925b49")))
 

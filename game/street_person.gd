@@ -1,4 +1,5 @@
 extends Node3D
+const Shoe = preload("res://character_shoe.gd")
 # A shared low-poly articulated human for sidewalk life and municipal crews.
 # All limbs reuse a small set of primitive meshes and materials.
 static var meshes: Dictionary = {}
@@ -175,13 +176,16 @@ func setup(style: int,worker: bool = false,ambient: bool = false) -> void:
 		knee.position = Vector3(0,-.42,0)
 		knees.append(knee)
 		_part(knee,"limb",Vector3(0,-.17,0),Vector3(.13,.36,.14),skin if shorts else pants)
-		_part(knee,"box",Vector3(0,-.38,.05),Vector3(.16,.12,.27),shoe)
+		var footwear := _part(knee,"box",Vector3(0,-.38,.055),Vector3(.165,.12,.28),shoe)
+		footwear.mesh = Shoe.mesh()
+		footwear.material_override = Shoe.material(footwear.material_override as StandardMaterial3D)
 		var arm := Node3D.new()
 		add_child(arm)
 		# Preserve shoulder/leg pivots used by the rescue choreography.
-		arm.position = Vector3(x*.25,1.38,0)
+		arm.position = Vector3(x*(torso_width*.42+.012),1.37,0)
 		arms.append(arm)
-		_part(arm,"limb",Vector3(0,-.12,0),Vector3(.14,.26,.15),shirt if worker or outfit!=3 else skin)
+		# Rounded shoulder overlaps the chest instead of leaving a cylinder cap.
+		_part(arm,"head",Vector3(x*.012,-.085,0),Vector3(.175,.31,.18),shirt if worker or outfit!=3 or story_character else skin)
 		_part(arm,"limb",Vector3(0,-.34,0),Vector3(.105,.22,.11),skin)
 		_part(arm,"head",Vector3(0,-.49,0),Vector3(.105,.13,.11),skin)
 	if female:

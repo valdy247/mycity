@@ -2235,6 +2235,7 @@ func _place_geographic_shops(proposals: Array) -> void:
 	# a few metres of the source pin, on the same side of the road.
 	var home := geography.project(23.1223007,-82.3668138)
 	for place in geographic_places:
+		if _geo_key(String(place.name)).contains("alborada"): continue
 		if place.has("building") or String(place.type)!="node": continue
 		var pin: Vector3 = place.p
 		var chosen: Dictionary = {}
@@ -2303,13 +2304,96 @@ func _report_geographic_places() -> void:
 		if bool(place.catalog) and not geographic_rendered.has(String(place.id)):
 			print("Lugar real sin fachada compatible en el mapa local: ",place.name)
 
+# Select the actual residential frontage, then the adjacent building to
+# its right as seen from the street. Never move a footprint or collision.
+func _corrected_alborada_pair(pin: Vector3) -> Dictionary:
+	var home: Dictionary = {}
+	var best := INF
+	for fp in geography.footprints_near(pin,22.0):
+		var front := _front_edge(fp.poly,true)
+		if front.is_empty(): front = _front_edge(fp.poly)
+		if front.is_empty(): continue
+		var q := Geometry3D.get_closest_point_to_segment(pin,front.a,front.b)
+		var distance := q.distance_to(pin)
+		if distance<best:
+			best = distance
+			home = {"id":String(fp.id),"front":front}
+	if home.is_empty() or best>12.0: return {}
+	var face: Dictionary = home.front
+	var normal: Vector3 = face.normal
+	var right := Vector3(normal.z,0,-normal.x)
+	var center: Vector3 = face.mid
+	var home_edge := maxf((face.a-center).dot(right),(face.b-center).dot(right))
+	var shop: Dictionary = {}
+	var shop_score := INF
+	for fp in geography.footprints_near(center,30.0):
+		if String(fp.id)==String(home.id): continue
+		var next := _front_edge(fp.poly,true)
+		if next.is_empty(): next = _front_edge(fp.poly)
+		if next.is_empty(): continue
+		var n: Vector3 = next.normal
+		if n.dot(normal)<.85: continue
+		var offset: Vector3 = next.mid-center
+		if offset.dot(right)<=.5 or absf(offset.dot(normal))>4.0: continue
+		var left_edge := minf((next.a-center).dot(right),(next.b-center).dot(right))
+		var gap := left_edge-home_edge
+		if gap< -2.0 or gap>7.0: continue
+		var rank := absf(gap)+absf(offset.dot(normal))*2.0
+		if rank<shop_score:
+			shop_score = rank
+			shop = {"id":String(fp.id),"front":next}
+	return {"home":home,"shop":shop}
+
+func _landmark_bay(front: Dictionary,portal: bool,depth: float,lower: PackedVector2Array,pin: Vector3) -> Dictionary:
+	var a: Vector3 = front.a
+	var b: Vector3 = front.b
+	var n: Vector3 = front.normal
+	var t := (b-a).normalized()
+	var count := clampi(roundi(a.distance_to(b)/2.9),1,48)
+	var step := a.distance_to(b)/float(count)
+	var best := INF
+	var found: Dictionary = {}
+	for i in range(count):
+		var q := a+t*(float(i)+.5)*step+n*(-depth+.07 if portal else .045)
+		if not _wall_has_opening(lower,q,n): continue
+		var rank := q.distance_squared_to(pin)
+		if rank<best:
+			best = rank
+			found = {"p":q,"width":minf(step*.58,1.5),"step":step}
+	return found
+
+func _residential_gate(at: Vector3,normal: Vector3,width: float) -> void:
+	var angle := atan2(normal.x,normal.z)
+	var basis := Basis(Vector3.UP,angle)
+	var black := _mat("home_gate_black",Color("#202326"))
+	var glass := _mat("home_gate_gray_glass",Color("#81898e"))
+	var metal := _mat("home_gate_handle",Color("#b9bfc3"))
+	var w := minf(width,1.20)
+	# Overlay the existing door only; opaque grey glass avoids transparency cost.
+	_local_cube(at,basis,Vector3(0,1.17,.09),Vector3(w,2.16,.055),black)
+	_local_cube(at,basis,Vector3(0,1.17,.124),Vector3(w-.10,2.04,.026),glass)
+	for x in [-1.0,0.0,1.0]:
+		_local_cube(at,basis,Vector3(float(x)*(w*.5-.045),1.17,.145),Vector3(.045,2.12,.035),black)
+	for y in [.12,.80,1.58,2.22]:
+		_local_cube(at,basis,Vector3(0,float(y),.145),Vector3(w,.055,.035),black)
+	_local_cube(at,basis,Vector3(w*.34,1.10,.173),Vector3(.10,.035,.045),metal)
+
+func _corrected_shop_sign(at: Vector3,normal: Vector3,width: float) -> void:
+	var angle := atan2(normal.x,normal.z)
+	var w := clampf(width,1.45,3.10)
+	var p := at+normal*.12+Vector3.UP*2.84
+	_cube(p,Vector3(w,.37,.07),_mat("alborada_sign_board",Color("#203b58")),angle)
+	var text := _label("ALBORADA",p+normal*.047,minf(.008,w/235.0),angle,Color("#f1eee6"))
+	text.outline_size = 0
+
 func _make_mapped_buildings(public_anchor: Vector3) -> void:
 	var palette: Array[Color] = [Color("#a5b2a5"),Color("#c3b49b"),Color("#a2b8ba"),Color("#b19a88"),Color("#c3bc9d"),Color("#a4a29a"),Color("#b8ad99")]
 	var market_pos: Vector3 = geography.project(23.1234716,-82.3659728)
 	var market_poly_id := ""
 	var home_pin := geography.project(23.1223007,-82.3668138)
-	var alborada_poly_id := ""
-	var best: float = INF
+	var corrected := _corrected_alborada_pair(home_pin)
+	var house_id := String(corrected.get("home",{}).get("id",""))
+	var alborada_poly_id := String(corrected.get("shop",{}).get("id",""))
 	if not market_block.is_empty():
 		_make_market_landmark(market_block,market_pos)
 	else:
@@ -2320,15 +2404,6 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 			if n.contains("cuatro caminos") or n.contains("mercado unico"):
 				market_poly_id = String(fp.id)
 				break
-	for fp in geography.footprints_near(public_anchor,20.0):
-		var front := _front_edge(fp.poly)
-		if front.is_empty():
-			continue
-		var q: Vector3 = Geometry3D.get_closest_point_to_segment(public_anchor,front.a,front.b)
-		var dist := q.distance_to(public_anchor)
-		if dist<best and dist<22.0:
-			best = dist
-			alborada_poly_id = String(fp.id)
 	for fp in geography.footprints:
 		if _overlaps_game_lot(fp):
 			continue
@@ -2441,6 +2516,7 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 			var known: Array = geographic_by_building.get(String(fp.id),[])
 			var used: Array = []
 			for place in known:
+				if _geo_key(String(place.name)).contains("alborada"): continue
 				var choices: Array = [{"face":front,"portal":portal,"depth":portal_depth}]
 				for entry in extra: choices.append(entry)
 				var pin: Vector3 = place.p
@@ -2452,10 +2528,15 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 			if market:
 				name_value = "PLAZA DE CUATRO CAMINOS"
 				market_drawn = true
-			elif String(fp.id)==alborada_poly_id and known.is_empty():
-				name_value = "" if home_relocated else "LA ALBORADA"
-			if home_relocated and geography.normalized(name_value).contains("alborada"):
-				name_value = ""
+			if geography.normalized(name_value).contains("alborada"): name_value = ""
+			if String(fp.id)==house_id:
+				var gate := _landmark_bay(front,portal,portal_depth,lower,home_pin)
+				if not gate.is_empty(): _residential_gate(gate.p,front.normal,float(gate.width))
+			if String(fp.id)==alborada_poly_id:
+				var shop := _landmark_bay(front,portal,portal_depth,lower,front.mid)
+				if not shop.is_empty():
+					_corrected_shop_sign(shop.p,front.normal,float(shop.step)*.90)
+					geographic_rendered["5233654525"] = true
 			if not name_value.is_empty() and (market or String(fp.id)==alborada_poly_id or tags.has("amenity") or tags.has("shop")):
 				var m: Vector3 = front.mid
 				var n: Vector3 = front.normal
@@ -2463,15 +2544,8 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 				_label(name_value.to_upper(),m+n*z+Vector3.UP*2.85,.010,atan2(n.x,n.z),Color("#f5ead0"))
 	if not market_drawn:
 		print("Cuatro Caminos: no verified market footprint or four safe corners in this OSM extract.")
-	if alborada_poly_id.is_empty() and not home_relocated and not geographic_rendered.has("5233654525"):
-		var closest := _nearest_street(public_anchor)
-		if not closest.is_empty():
-			var a: Vector3 = closest.a
-			var b: Vector3 = closest.b
-			var q := Geometry3D.get_closest_point_to_segment(public_anchor,a,b)
-			var n := (q-public_anchor).normalized()
-			_label("LA ALBORADA",public_anchor+Vector3.UP*2.85,.010,atan2(n.x,n.z),Color("#f5ead0"))
-		print("La Alborada: named geographic point; building footprint unavailable.")
+	if not geographic_rendered.has("5233654525"):
+		push_warning("Alborada: no se verificó la fachada derecha; no se coloca un cartel en la vivienda.")
 
 # Cuatro Caminos: repeated bays, pilasters and upper windows on each
 # long street-facing edge. Keep all decoration inside the legal footprint.

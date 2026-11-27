@@ -295,9 +295,7 @@ func _make_warehouse_details() -> void:
 	add_child(pallet)
 	pallet.global_transform = crate_rack.global_transform
 	_prop_batch(pallet,[
-		[Vector3(0,-.06,0),Vector3(1.68,.08,.55),Color("#927656")],
-		[Vector3(-.65,-.12,0),Vector3(.11,.06,.49),Color("#6c5740")],
-		[Vector3(.65,-.12,0),Vector3(.11,.06,.49),Color("#6c5740")]
+		[Vector3(0,.018,0),Vector3(1.68,.036,.55),Color("#927656")]
 	])
 
 func _selectable_crate(root: Node3D,p: Vector3,key: String,paid: bool,supplier: String = "primary") -> void:
@@ -436,11 +434,13 @@ func _make_scene() -> void:
 	factory_arrow = _arrow(sign,Vector3(0,1.9,0),Color("#49ff72"))
 	crate_rack = Node3D.new()
 	add_child(crate_rack)
-	crate_rack.position = pickup+basis*Vector3(0,-.10,-1.3)
+	# Pickup counter top: .43+.78/2=.82; place the pallet and crates on it.
+	crate_rack.position = pickup+basis*Vector3(0,-.14,-1.35)
 	crate_rack.rotation.y = basis.get_euler().y
 	purchase_rack = Node3D.new()
 	add_child(purchase_rack)
-	purchase_rack.position = counter+basis*Vector3(0,-.10,.05)
+	# Counter top: .56+1.02/2=1.07; not the interaction point in the aisle.
+	purchase_rack.position = counter+basis*Vector3(0,.11,-1.37)
 	purchase_rack.rotation.y = basis.get_euler().y
 	var primary_products := ["pollo","picadillo","perrito"]
 	for i in range(primary_products.size()):
@@ -448,7 +448,12 @@ func _make_scene() -> void:
 		var product: Dictionary = Ledger.PRODUCTS[key]
 		var at := Vector3(-.70+float(i)*.70,.17,0)
 		_selectable_crate(purchase_rack,at,key,false)
-		_label(purchase_rack,"%s · %d CUP" % [product.name,product.cost],at+Vector3(0,.43,0))
+		var tag := _label(purchase_rack,"%d CUP" % int(product.cost),at+Vector3(0,.24,.21),Color("#f4ecd8"))
+		tag.pixel_size = .0016
+		tag.font_size = 26
+		tag.outline_size = 1
+		tag.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+		tag.visibility_range_end = 8.0
 	_make_warehouse_details()
 	crate_view = Node3D.new()
 	camera.add_child(crate_view)
@@ -1282,7 +1287,7 @@ func _sync_visuals() -> void:
 		for key in Ledger.PRODUCTS:
 			for i in range(mini(int(ledger.pending.get(key,0)),6)):
 				if slot>=9: break
-				_selectable_crate(crate_rack,Vector3(-.58+float(slot%3)*.58,.17+floorf(float(slot)/3.0)*.35,0),String(key),true)
+				_selectable_crate(crate_rack,Vector3(-.55+float(slot%3)*.55,.206+floorf(float(slot)/3.0)*.34,0),String(key),true)
 				slot += 1
 	var stock_key := JSON.stringify(ledger.stock)
 	if stock_visual_key!=stock_key:
