@@ -15,6 +15,9 @@ var load_index := 0
 var load_retry := 0.0
 var returning_to_shop := false
 var load_still := 0.0
+var helper_job := ""
+var helper_elapsed := 0.0
+var helper_recovered := false
 var cargo_marker: Node3D
 const ROOM := Vector3(60,110,0)
 const FRIDGE := Vector3(-5.8,110,3.6)
@@ -350,17 +353,22 @@ func _try_finish_shopping() -> void:
 		_set_phase("return")
 		business._notify("¡Listo! Dos cajas cada uno. Las cuatro están en el taxi. Volvamos a casa.")
 
-func _finish_load() -> void:
-	if loading.is_empty() or cab.is_empty(): return
+func _finish_load(assisted: bool = false) -> void:
+	if loading.is_empty() or cab.is_empty() or not is_instance_valid(cab.get("body")): return
 	var actor: Person = business.albertico as Person
-	if actor.global_position.distance_to(cab.body.global_position)>5.2: return
+	if not assisted and actor.global_position.distance_to(cab.body.global_position)>5.2: return
+	if not loading in HELPER_BOXES or not state.bought.has(loading) or int(state.taxi_boxes.get(loading,0))!=0: return
 	state.taxi_boxes[loading] = 1
 	if is_instance_valid(helper_box): helper_box.queue_free()
 	helper_box = null
 	var key := loading
 	loading = ""
 	_save()
-	business._notify("Albertico cargó "+business._product_name(key)+".")
+	business._sync_visuals()
+	business._notify(("Personal de la MIPYME ayudó a Albertico a cargar " if assisted else "Albertico cargó ")+business._product_name(key)+".")
+	helper_job = ""
+	helper_elapsed = 0.0
+	helper_recovered = false
 	load_route = PackedVector3Array()
 	load_index = 0
 	load_retry = 0.0
@@ -376,8 +384,11 @@ func _advance_load_route(actor: Person,delta: float,carrying: bool) -> bool:
 		return load_index>=load_route.size()
 	var next := actor.global_position.move_toward(target,2.5*delta)
 	if game.cuba_world.pedestrian_segment_clear(actor.global_position,next) and game.cuba_world.pedestrian_space_clear(actor,next,.58):
+		actor.remove_meta("conversation_until")
+		var previous := actor.global_position
 		actor.walk_to(target,delta,2.5)
-		load_still = 0.0
+		if actor.global_position.distance_to(previous)>.001: load_still = 0.0
+		else: load_still += delta
 	else:
 		actor.animate(delta,false)
 		load_still += delta
@@ -390,9 +401,69 @@ func _advance_load_route(actor: Person,delta: float,carrying: bool) -> bool:
 		load_retry = 1.0
 	return false
 
+func _safe_shop_wait(actor: Person) -> Vector3:
+	var world = game.cuba_world
+	var factory: Dictionary = world.food_factory
+	var center: Vector3 = factory.center
+	var basis: Basis = factory.basis
+	for offset in [Vector3(0,.10,3.25),Vector3(0,.10,4.85),Vector3(0,.10,5.65),Vector3(-1.1,.10,4.85),Vector3(1.1,.10,4.85)]:
+		var point: Vector3 = game.yordi_mission._ground(center+basis*offset,false)
+		if point.is_finite() and world.pedestrian_space_clear(actor,point,.75,false): return point
+	return Vector3.INF
+
+func _helper_recovery(actor: Person) -> void:
+	# Recover only to verified free ground, never through a wall or into a taxi.
+	var target := _safe_shop_wait(actor)
+	if target.is_finite() and (returning_to_shop or loading.is_empty()):
+		actor.global_position = target
+		actor.show()
+		exit_retry = false
+		_begin_helper(actor,helper_job)
+		return
+	if loading.is_empty(): return
+	if cab.is_empty() or not is_instance_valid(cab.get("body")): return
+	var body: CharacterBody3D = cab.body
+	for side in [1.0,-1.0]:
+		for distance in [1.8,2.5,3.3,4.0]:
+			var point: Vector3 = game.yordi_mission._ground(body.to_global(Vector3(float(side)*float(distance),0,-2.15)),false)
+			if not point.is_finite() or point.distance_to(body.global_position)>5.0: continue
+			if not game.cuba_world.pedestrian_space_clear(actor,point,.75,false): continue
+			actor.global_position = point
+			actor.show()
+			exit_retry = false
+			_finish_load()
+			return
+
 func _shopping_helper(actor: Person,delta: float) -> void:
 	_try_finish_shopping()
 	if _phase()!="shopping": return
+	var pending := ""
+	for key in HELPER_BOXES:
+		if state.bought.has(key) and int(state.taxi_boxes.get(key,0))==0:
+			pending = key
+			break
+	if pending.is_empty():
+		helper_job = ""
+		helper_elapsed = 0.0
+		helper_recovered = false
+		actor.animate(delta,false)
+		return
+	if helper_job!=pending:
+		helper_job = pending
+		helper_elapsed = 0.0
+		helper_recovered = false
+	helper_elapsed += delta
+	# Normal visible pickup and walking remain the first choice.
+	# A blocked shop or occupied sidewalk must not lock the paid mission.
+	if helper_elapsed>=14.0 and not helper_recovered:
+		helper_recovered = true
+		_helper_recovery(actor)
+		if helper_job.is_empty(): return
+	if helper_elapsed>=35.0 and not cab.is_empty() and is_instance_valid(cab.get("body")):
+		if loading.is_empty(): _begin_helper(actor,pending)
+		_finish_load(true)
+		return
+	if exit_retry: return
 	if not returning_to_shop and loading.is_empty():
 		for key in HELPER_BOXES:
 			if state.bought.has(key) and int(state.taxi_boxes.get(key,0))==0:
@@ -411,14 +482,20 @@ func _shopping_helper(actor: Person,delta: float) -> void:
 		if load_retry>0.0: return
 		load_retry = 1.5
 		load_index = 0
-		load_route = _local_path(actor.global_position,_shop_wait()) if returning_to_shop else _taxi_load_route(actor)
+		if returning_to_shop:
+			var wait_at := _safe_shop_wait(actor)
+			load_route = _local_path(actor.global_position,wait_at) if wait_at.is_finite() else PackedVector3Array()
+		else:
+			load_route = _taxi_load_route(actor)
 		if load_route.is_empty():
 			actor.animate(delta,false)
 			return
 	if _advance_load_route(actor,delta,not returning_to_shop):
 		load_route = PackedVector3Array()
 		load_index = 0
-		if returning_to_shop: returning_to_shop = false
+		if returning_to_shop:
+			returning_to_shop = false
+			if not helper_job.is_empty(): _begin_helper(actor,helper_job)
 		else: _finish_load()
 
 func cargo_action() -> bool:
@@ -746,6 +823,9 @@ func reset_checkpoint() -> bool:
 	cab = {}
 	if is_instance_valid(helper_box): helper_box.queue_free()
 	loading = ""
+	helper_job = ""
+	helper_elapsed = 0.0
+	helper_recovered = false
 	returning_to_shop = false
 	load_route = PackedVector3Array()
 	load_index = 0
@@ -805,7 +885,7 @@ func tick(delta: float) -> void:
 				actor.global_position = safe
 				actor.show()
 				exit_retry = false
-		if exit_retry: return
+		if exit_retry and _phase()!="shopping": return
 	if _phase()=="shopping":
 		_shopping_helper(actor,delta)
 		cargo_marker.visible = not cab.is_empty() and is_instance_valid(cab.body) and not ledger.carry.is_empty()
