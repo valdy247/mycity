@@ -1371,7 +1371,7 @@ func _refresh_paint_station() -> void:
 			shell.cap_top = false
 			var mesh := MeshInstance3D.new()
 			mesh.mesh = shell
-						var shell_mat := StandardMaterial3D.new()
+			var shell_mat := StandardMaterial3D.new()
 			shell_mat.albedo_color = Color("#737c80")
 			shell_mat.roughness = .76
 			# An open cylinder has no back-facing inner wall by default.
