@@ -152,7 +152,7 @@ func _church(fp: Dictionary,face: Dictionary,tile: Vector2i,h: float) -> void:
 		_box(tower+Vector3.UP*(h+1.65),n,tower_width,3.3,tower_width,plaster,true)
 		for out in [n,-n,t,-t]:
 			var axis := Vector3(-out.z,0,out.x)
-			var p := tower+out*(tower_width*.5+.025)+Vector3.UP*(h+.65)
+			var p: Vector3 = tower+out*(tower_width*.5+.025)+Vector3.UP*(h+.65)
 			for side in [-1.0,1.0]:
 				_arch(p+axis*float(side)*tower_width*.24,out,axis,tower_width*.32,1.95,stone,dark)
 		var dome := SphereMesh.new()
@@ -171,7 +171,7 @@ func _church(fp: Dictionary,face: Dictionary,tile: Vector2i,h: float) -> void:
 		_box(tower+Vector3.UP*(h+5.30),n,.78,.12,.12,dark)
 	_sign("IGLESIA DEL PILAR",mid+n*.10+Vector3.UP*4.12,n,width*.7,Color("#57584f"))
 
-func _clinic(face: Dictionary,h: float) -> void:
+func _clinic(face: Dictionary,h: float,recess: bool) -> void:
 	var mid: Vector3 = face.mid
 	var n: Vector3 = face.normal
 	var t: Vector3 = (Vector3(face.b)-Vector3(face.a)).normalized()
@@ -183,8 +183,8 @@ func _clinic(face: Dictionary,h: float) -> void:
 	var bay := width/float(count)
 	for i in range(count):
 		var p := mid+t*((float(i)+.5)*bay-width*.5)
-		_box(p+n*.05+Vector3.UP*1.6,n,bay*.79,3.0,.09,dark)
-		_box(p+t*bay*.48+n*.10+Vector3.UP*1.6,n,.28,3.2,.25,blue)
+		_box(p+n*(-1.55 if recess else .05)+Vector3.UP*1.6,n,bay*.79,3.0,.09,dark)
+		_box(p+t*bay*.48+n*.10+Vector3.UP*1.6,n,.28,3.2,.25,blue,recess)
 		for floor in [4.55,7.1]:
 			_box(p+n*.055+Vector3.UP*float(floor),n,bay*.84,1.40,.07,dark)
 			_box(p+n*.085+Vector3.UP*float(floor),n,bay*.80,1.24,.05,grille)
@@ -255,10 +255,10 @@ func _tower(fp: Dictionary,h: float) -> void:
 		# three vertical subdivisions, not a window mesh for each apartment.
 		for floor in range(1,levels):
 			var y := (float(floor)+.47)*step
-			_box(mid+n*.055+Vector3.UP*y,n,width*.86,step*.34,.08,glass)
+			_box(mid+n*.035+Vector3.UP*y,n,width*.86,step*.34,.17,glass)
 			_box(mid+n*.08+Vector3.UP*(y-step*.24),n,width*.98,.18,.16,wall)
 			for divider in [-.22,0.0,.22]:
-				_box(mid+t*width*float(divider)+n*.105+Vector3.UP*y,n,.16,step*.40,.09,wall)
+				_box(mid+t*width*float(divider)+n*.09+Vector3.UP*y,n,.19,step*.40,.18,wall)
 
 func build(fp: Dictionary,tile: Vector2i) -> bool:
 	var key := String(selected.get(String(fp.id),""))
@@ -289,16 +289,17 @@ func build(fp: Dictionary,tile: Vector2i) -> bool:
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	var lower := poly
 	var recess := false
-	if key=="cristina":
-		var clipped: PackedVector2Array = city._clip_inward(poly,face,1.8)
+	if key=="cristina" or key=="abel":
+		var clipped: PackedVector2Array = city._clip_inward(poly,face,1.8 if key=="cristina" else 1.65)
 		if clipped.size()>=3 and not Geometry2D.triangulate_polygon(clipped).is_empty():
 			lower = clipped
 			recess = true
-	if recess: city._extrude(lower,0.0,4.65,material,tile)
-	if not city._extrude(poly,4.65 if recess else 0.0,h,material,tile): return false
+	var portal_height := 3.3 if key=="abel" else 4.65
+	if recess: city._extrude(lower,0.0,portal_height,material,tile)
+	if not city._extrude(poly,portal_height if recess else 0.0,h,material,tile): return false
 	match key:
 		"pilar": _church(fp,face,tile,h)
-		"abel": _clinic(face,h)
+		"abel": _clinic(face,h,recess)
 		"cristina": _station(face,h,recess)
 		"dependiente":
 			_hospital(face,h)

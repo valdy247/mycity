@@ -2179,7 +2179,7 @@ const GEOGRAPHIC_CATALOG := [
 func _place_kind(tags: Dictionary) -> String:
 	for field in ["shop","amenity","office","tourism","healthcare"]:
 		var value := String(tags.get(field,""))
-		if value in ["yes","no","parking","bench","toilets","bus_station","shelter"]: continue
+		if value in ["yes","no","parking","bench","toilets","place_of_worship","fuel","bus_station","shelter"]: continue
 		if not value.is_empty(): return value
 	return ""
 
