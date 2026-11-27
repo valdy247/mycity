@@ -382,7 +382,9 @@ func _make_taxi_interior(root: Node3D,rear_door: Node3D) -> void:
 	var metal := Color("#bfc3bd")
 	var black := Color("#252627")
 	# Classic red painted dashboard and cream roof liner, based on the reference.
-	_box(root,Vector3(0,.59,-.04),Vector3(1.43,.04,1.84),black)
+	# The painted floor ends at y=.610; keep the carpet surface above it.
+	# Coplanar surfaces caused visible z-fighting on Intel GL Compatibility.
+	_box(root,Vector3(0,.622,-.04),Vector3(1.52,.024,1.84),black)
 	_box(root,Vector3(0,1.595,-.09),Vector3(1.46,.028,1.88),cream)
 	_box(root,Vector3(0,.97,.73),Vector3(1.45,.29,.32),red)
 	_box(root,Vector3(0,1.125,.72),Vector3(1.44,.048,.35),red)
