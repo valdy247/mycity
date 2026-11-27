@@ -50,8 +50,9 @@ var diagnostics_text: Label
 var gps_label: Label
 # 0: rendimiento, 1: equilibrado, 2: alto. Rendering remains GL Compatibility.
 const GRAPHICS_NAMES := ["Bajo","Medio","Alto"]
-var graphics_quality := 1
-var low_graphics := false
+# Intel UHD baseline: opt into expensive effects with F6.
+var graphics_quality := 0
+var low_graphics := true
 var visual_environment: Environment
 var visual_sun: DirectionalLight3D
 var visual_sky: ProceduralSkyMaterial
@@ -98,6 +99,7 @@ var message_time := 0.0
 func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
 	if args.has("--low-graphics"): graphics_quality = 0
+	elif args.has("--medium-graphics"): graphics_quality = 1
 	elif args.has("--high-graphics"): graphics_quality = 2
 	low_graphics = graphics_quality==0
 	_setup_visual_environment()
