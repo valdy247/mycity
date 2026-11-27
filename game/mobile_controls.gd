@@ -60,7 +60,7 @@ func _clear() -> void:
 	use_held = false
 
 func _notification(what: int) -> void:
-	if what==NOTIFICATION_APPLICATION_FOCUS_OUT:
+	if what==NOTIFICATION_APPLICATION_FOCUS_OUT or what==NOTIFICATION_APPLICATION_PAUSED:
 		_clear()
 		queue_redraw()
 

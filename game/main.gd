@@ -261,9 +261,9 @@ func _ready() -> void:
 		_face_cuba_home()
 		_apply_camera_mode()
 	_apply_performance_mode()
-	mobile_mode = OS.has_feature("mobile") or DisplayServer.is_touchscreen_available() or args.has("--touch-controls")
+	mobile_mode = OS.has_feature("android") or OS.has_feature("ios") or args.has("--touch-controls")
 	if OS.has_feature("web"):
-		var coarse = JavaScriptBridge.eval("window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0",true)
+		var coarse = JavaScriptBridge.eval("window.matchMedia('(pointer: coarse)').matches",true)
 		mobile_mode = mobile_mode or coarse==true
 	if mobile_mode:
 		_enable_mobile_controls()
