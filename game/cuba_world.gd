@@ -195,7 +195,7 @@ func _textured(base: StandardMaterial3D,at: Vector3) -> StandardMaterial3D:
 		if mats[key]!=base:
 			continue
 		var k := String(key)
-		if k.begins_with("mapped_wall") or k.begins_with("custom_wall") or k.begins_with("plaster") or k in ["home_old","alborada_wall","market_wall"]:
+		if k.begins_with("mapped_wall") or k.begins_with("custom_wall") or k.begins_with("monte_shaded_mapped_wall_monte_phase2_") or k.begins_with("phase2_avenue_bay_") or k.begins_with("plaster") or k in ["home_old","alborada_wall","market_wall"]:
 			kind = "plaster"
 		elif k in ["asphalt_cuba"]:
 			kind = "asphalt"
@@ -1832,7 +1832,7 @@ func _arcade_cut(poly: PackedVector2Array,front: Dictionary,depth: float) -> Pac
 
 # Visually break long continuous walls into house-width bays without
 # changing the mapped footprint, collision or roof silhouette.
-func _avenue_bays(front: Dictionary,h: float,ceiling: float,depth: float,lower: PackedVector2Array,idx: int,paint: Color,portal: bool) -> void:
+func _avenue_bays(front: Dictionary,h: float,ceiling: float,depth: float,lower: PackedVector2Array,idx: int,paint: Color,portal: bool,local_dressing: bool = false) -> void:
 	var a: Vector3 = front.a
 	var b: Vector3 = front.b
 	var n: Vector3 = front.normal
@@ -1846,7 +1846,7 @@ func _avenue_bays(front: Dictionary,h: float,ceiling: float,depth: float,lower: 
 	for i in range(count):
 		var p := a+t*(float(i)+.5)*step
 		var shade := paint.lerp(_monte_color(idx+i),.42)
-		var mat := _mat("avenue_bay_"+shade.to_html(false),shade)
+		var mat := _mat(("phase2_avenue_bay_" if local_dressing else "avenue_bay_")+shade.to_html(false),shade)
 		var bottom := ceiling if portal else minf(3.0,h)
 		if h-bottom>.18:
 			_cube(p+n*.016+Vector3.UP*((h+bottom)*.5),Vector3(step-.10,h-bottom-.06,.025),mat,angle)
@@ -2558,7 +2558,7 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 			if monte and portal:
 				_monte_portal(front,poly,portal_depth,portal_ceiling,idx,base_color)
 			if not preserve_home and not market and _avenue_edge(front.road):
-				_avenue_bays(front,h,portal_ceiling,portal_depth,lower,idx,base_color,portal)
+				_avenue_bays(front,h,portal_ceiling,portal_depth,lower,idx,base_color,portal,local_dressing)
 			for entry in extra:
 				var side_front: Dictionary = entry.face
 				var side_portal := bool(entry.portal)
@@ -2567,7 +2567,7 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 				_detail_front(side_front,h,idx,side_portal,false,side_arcade,side_depth,lower,local_dressing)
 				if side_portal:
 					_monte_portal(side_front,poly,side_depth,portal_ceiling,idx,base_color)
-				if _avenue_edge(side_front.road): _avenue_bays(side_front,h,portal_ceiling,side_depth,lower,idx,base_color,side_portal)
+				if _avenue_edge(side_front.road): _avenue_bays(side_front,h,portal_ceiling,side_depth,lower,idx,base_color,side_portal,local_dressing)
 			if market:
 				_market_side_details(poly,front,h)
 			var known: Array = geographic_by_building.get(String(fp.id),[])
@@ -3132,6 +3132,9 @@ func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool
 		if not market:
 			_register_npc_door(q+n*.04,n,"home",door_width)
 		_cube(q+Vector3.UP*2.71,Vector3(minf(step*.74,1.85),.17,.12),stone,angle)
+		if local_dressing and h>=2.90 and door_width>=.85:
+			# Keep the original door and NPC entry. Add only thin decorative panels.
+			_havana_door_detail(q,t,n,door_width,angle,idx,i,door_mat,iron)
 		if monte:
 			var opening := minf(step*.58,1.5)
 			for side in [-1.0,1.0]:
@@ -3155,12 +3158,18 @@ func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool
 			_cube(p+n*.10+Vector3.UP*y,Vector3(.065,1.86,.10),door_mat,angle)
 			_cube(p+n*.11+Vector3.UP*(y+.99),Vector3(w+.25,.13,.19),stone,angle)
 			_cube(p+n*.11+Vector3.UP*(y-.99),Vector3(w+.25,.13,.19),stone,angle)
+			if local_dressing and level<=3 and w>=.72 and posmod(idx+i+level,4)==0:
+				# A horizontal transom creates older tall wooden window proportions.
+				_cube(p+n*.105+Vector3.UP*(y+.50),Vector3(w,.055,.09),door_mat,angle)
 			if market or idx%3!=0:
 				_cube(p+n*.28+Vector3.UP*(y-.98),Vector3(w+.50,.15,.57),stone,angle)
-				_cube(p+n*.56+Vector3.UP*(y-.45),Vector3(w+.46,.045,.07),iron,angle)
-				for k in range(5):
-					var pos := p+t*(float(k)/4.0-.5)*(w+.4)+n*.56
-					_cube(pos+Vector3.UP*(y-.70),Vector3(.04,.50,.04),iron,angle)
+				if local_dressing and level<=3:
+					_havana_balcony_rail(p,t,n,y,w,angle,idx,stone,iron)
+				else:
+					_cube(p+n*.56+Vector3.UP*(y-.45),Vector3(w+.46,.045,.07),iron,angle)
+					for k in range(5):
+						var pos := p+t*(float(k)/4.0-.5)*(w+.4)+n*.56
+						_cube(pos+Vector3.UP*(y-.70),Vector3(.04,.50,.04),iron,angle)
 				# Small, sparse laundry on existing upper-floor railings, never the market.
 				if not market and level<=2 and posmod(idx*7+i*3+level,7)==0 and _havana_detail_near(p):
 					_balcony_laundry(p,t,n,y,w,angle,idx+i+level)
@@ -3186,6 +3195,50 @@ func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool
 # detail distance; no collision, individual NPC, texture download or physics.
 func _havana_detail_near(p: Vector3) -> bool:
 	return p.distance_squared_to(texture_anchor)<=62500.0 or p.distance_squared_to(texture_market)<=32400.0
+
+func _havana_door_detail(q: Vector3,t: Vector3,n: Vector3,w: float,angle: float,idx: int,bay: int,wood: StandardMaterial3D,iron: StandardMaterial3D) -> void:
+	var style := posmod(idx+bay,3)
+	var trim := _mat("havana_door_inset_"+str(idx%3),[Color("#37534d"),Color("#4d5b53"),Color("#605043")][idx%3])
+	if style==0:
+		# Double wooden leaf with a recessed panel on each side.
+		for side in [-1.0,1.0]:
+			var p := q+t*w*.24*float(side)+n*.043
+			_cube(p+Vector3.UP*.76,Vector3(w*.34,.76,.025),trim,angle)
+			_cube(p+Vector3.UP*1.85,Vector3(w*.34,.84,.025),trim,angle)
+		_cube(q+n*.056+Vector3.UP*1.38,Vector3(.045,2.42,.045),wood,angle)
+	elif style==1:
+		# Glazed upper door with metal divisions, no transparent materials.
+		var glass := _mat("havana_door_glass",Color("#435551"))
+		_cube(q+n*.043+Vector3.UP*1.94,Vector3(w*.66,.78,.026),glass,angle)
+		_cube(q+n*.062+Vector3.UP*1.94,Vector3(.04,.78,.035),iron,angle)
+		_cube(q+n*.062+Vector3.UP*1.94,Vector3(w*.66,.045,.035),iron,angle)
+	else:
+		# Narrow wooden slats across the upper half.
+		for k in range(5):
+			_cube(q+n*.048+Vector3.UP*(1.52+float(k)*.16),Vector3(w*.70,.035,.032),trim,angle)
+	_cube(q+t*w*.30+n*.062+Vector3.UP*1.14,Vector3(.06,.11,.045),iron,angle)
+
+func _havana_balcony_rail(p: Vector3,t: Vector3,n: Vector3,y: float,w: float,angle: float,idx: int,stone: StandardMaterial3D,iron: StandardMaterial3D) -> void:
+	# Three silhouettes, identical balcony footprint and railing height.
+	# Same spatial batches and no collisions; the detailed pieces use the existing LOD.
+	var style := posmod(idx,3)
+	var top := stone if style==1 else iron
+	_cube(p+n*.56+Vector3.UP*(y-.45),Vector3(w+.46,.07 if style==1 else .045,.10 if style==1 else .07),top,angle)
+	for k in range(5):
+		var at := p+t*(float(k)/4.0-.5)*(w+.4)+n*.56
+		if style==1:
+			_cube(at+Vector3.UP*(y-.70),Vector3(.09,.50,.10),stone,angle)
+			_cube(at+Vector3.UP*(y-.69),Vector3(.14,.20,.14),stone,angle)
+		else:
+			_cube(at+Vector3.UP*(y-.70),Vector3(.04,.50,.04),iron,angle)
+			if style==2 and k>0 and k<4:
+				# Stylized square ornaments with no separate mesh nodes.
+				_cube(at+Vector3.UP*(y-.70),Vector3(.10,.10,.04),iron,angle)
+	# Short side returns close the ends without expanding past the existing slab.
+	for side in [-1.0,1.0]:
+		var at := p+t*float(side)*(w+.4)*.5+n*.32
+		_cube(at+Vector3.UP*(y-.45),Vector3(.05,.045,.48),top,angle)
+		_cube(at+Vector3.UP*(y-.70),Vector3(.04,.50,.04),top,angle)
 
 func _havana_roof_cistern(poly: PackedVector2Array,center: Vector3,h: float) -> void:
 	# Rectangular rooftop water storage. Refuse narrow or concave edges;
