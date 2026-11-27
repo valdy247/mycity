@@ -75,13 +75,23 @@ func _initialize() -> void:
 	garage.state.paint_active = ""
 	garage.state.paint_charge = 0
 	garage.state.paint_stock = {"azul":Garage.CAN_CAPACITY}
-	for i in range(10):
+	garage.state.empty_paint = {}
+	for i in range(30):
 		garage._dip_home_brush("azul")
 		_check(int(garage.state.paint_charge)==Garage.BRUSH_LOAD,"dip loads physical brush")
 		garage.state.paint_charge = 0
-	_check(int(garage.state.paint_stock.azul)==0,"one can covers exactly 100 fresh paint strokes")
+	_check(int(garage.state.paint_stock.azul)==0,"one can covers exactly 300 fresh paint strokes")
 	garage._dip_home_brush("azul")
 	_check(int(garage.state.paint_charge)==0,"empty can cannot refill")
+	_check(int(garage.state.empty_paint.azul)==1,"empty paint can remains as waste")
+	garage.state.waste_items = []
+	garage.state.waste_overflow = []
+	for i in range(3):
+		_check(garage.add_house_waste("paint_can",3,"azul"),"can fits in household bag")
+	_check(garage.add_house_waste("scrap",1),"last space can be filled")
+	_check(Garage.waste_volume(garage.state.waste_items)==Garage.WASTE_CAPACITY,"bag at full capacity")
+	_check(not garage.add_house_waste("scrap",1),"full bag refuses more waste")
+	_check(garage.state.waste_overflow.size()==1,"overflow remains recoverable on floor")
 	garage.state.floor_marks = {}
 	var spot := Garage.ROOM+Vector3(2,0,2)
 	garage._floor_mark(spot,"azul")
