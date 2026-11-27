@@ -58,6 +58,13 @@ var exit_body: StaticBody3D
 var belt_time := 0.0
 var stage_time := 0.0
 var spoken_welcome := false
+var migration_greeted := false
+var migration_part := 0
+var migration_remaining := 0.0
+var migration_thanked := false
+var migration_voice: AudioStreamPlayer
+var protagonist_voice_id := ""
+const MIGRATION_LINES := {"next":["Agente","¡Próximooo!",1.52],"greeting":["Agente","Buenas tardes, su pasaporte, por favor.",2.64],"handover":["Tú","Buenas tardes. Aquí tiene.",2.24],"question":["Agente","¿Hace mucho tiempo que no viene a Cuba?",2.24],"answer":["Tú","Sí, hace varios años.",3.52],"welcome":["Agente","Todo está en orden. Puede pasar a recoger su equipaje. Bienvenido a la patria.",4.64],"thanks":["Tú","Muchas gracias.",1.44]}
 var voice_id := ""
 var bag_arrows: Array[Label3D] = []
 var other_bags: Array[Node3D] = []
@@ -98,7 +105,13 @@ func _ready() -> void:
 	var voices := DisplayServer.tts_get_voices_for_language("es")
 	if not voices.is_empty(): voice_id = voices[0]
 	_make_airport_audio()
+	migration_voice = AudioStreamPlayer.new()
+	add_child(migration_voice)
+	var male_voices := DisplayServer.tts_get_voices_for_language("es")
+	if male_voices.size()>1: protagonist_voice_id = male_voices[1]
 	_sync()
+	if progress.stage==2: _migration_line("handover")
+	elif progress.stage==3: _migration_line("thanks")
 	if progress.stage==Progress.COMPLETE: _seat_player()
 	else: Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if mobile else Input.MOUSE_MODE_CAPTURED
 
@@ -1253,11 +1266,64 @@ func _tick_airport_audio(delta: float,moving: bool=false) -> void:
 	if not voice_id.is_empty():
 		DisplayServer.tts_speak(words,voice_id,35,1.0,.95,0,false)
 
-func _say(words: String) -> void:
-	_notice("Agente: "+words)
-	if dialogue!=null:
-		dialogue.text = "Agente: "+words
-	if not voice_id.is_empty(): DisplayServer.tts_speak(words,voice_id,90,1.0,.92,0,true)
+func _migration_line(key: String) -> void:
+	var line: Array = MIGRATION_LINES[key]
+	dialogue.text = String(line[0])+": "+String(line[1])
+	var path := "res://audio/migration/"+key+".mp3"
+	migration_remaining = float(line[2])+.20
+	if ResourceLoader.exists(path):
+		var stream := load(path) as AudioStream
+		if stream!=null:
+			migration_voice.stream = stream
+			migration_voice.volume_db = 0.0 if key=="next" else -3.0
+			migration_voice.play()
+			migration_remaining = stream.get_length()+.20
+			return
+	# A missing clip must not block progression. Local speech is only a fallback.
+	var fallback := protagonist_voice_id if String(line[0])=="Tú" else voice_id
+	if fallback.is_empty(): fallback = voice_id
+	if not fallback.is_empty():
+		DisplayServer.tts_speak(String(line[1]),fallback,100 if key=="next" else 90,1.0,.96,0,true)
+
+func _tick_migration_dialogue(delta: float) -> void:
+	migration_remaining = maxf(0.0,migration_remaining-delta)
+	if migration_remaining>0.0: return
+	if progress.stage==1 and not migration_greeted and _near(DESK,1.75):
+		migration_greeted = true
+		_migration_line("greeting")
+	elif progress.stage==2 and not spoken_welcome:
+		match migration_part:
+			0:
+				migration_part = 1
+				migration_remaining = 1.5
+				dialogue.text = ""
+			1:
+				migration_part = 2
+				_migration_line("question")
+			2:
+				migration_part = 3
+				_migration_line("answer")
+			3:
+				migration_part = 4
+				migration_remaining = .8
+				dialogue.text = ""
+			4:
+				migration_part = 5
+				_migration_line("welcome")
+			5:
+				spoken_welcome = true
+				dialogue.text = ""
+	elif progress.stage==3 and not migration_thanked:
+		migration_thanked = true
+		dialogue.text = ""
+		_sync()
+		gate_visual.show()
+		var opening := create_tween()
+		opening.tween_property(gate_visual,"position:y",1.6,.55)
+		opening.tween_callback(gate_visual.hide)
+		_notice("Pasaporte recuperado. Continúa por el paso verde.")
+	elif progress.stage==1 and migration_greeted:
+		dialogue.text = ""
 
 func _trunk_point() -> Vector3:
 	return taxi.to_global(Vector3(0,0,-2.9))
@@ -1319,7 +1385,7 @@ func _near(at: Vector3,radius: float=1.45) -> bool:
 func _sync() -> void:
 	var step := progress.stage
 	if previous!=null: previous.visible = step==0
-	var cleared := step>=3
+	var cleared := step>=4 or (step==3 and migration_thanked)
 	gate_body.get_child(0).set_deferred("disabled",cleared)
 	gate_visual.visible = not cleared
 	gate_light.material_override = _mat(Color("#38b86a") if cleared else Color("#b92b2e"))
@@ -1504,21 +1570,20 @@ func _interact() -> void:
 	if step==16 and not driver_ready:
 		_notice("Espera a que el chofer llegue a su puerta.")
 		return
+	if step==1 and (not migration_greeted or migration_remaining>0.0):
+		_notice("Espera a que la agente termine de hablar.")
+		return
 	if step==2 and not spoken_welcome:
 		_notice("La agente está revisando tu pasaporte.")
 		return
 	if _advance(Progress.expected_action(step)):
 		if step==1:
-			dialogue.text = ""
 			spoken_welcome = false
-			_notice("La agente revisa tu pasaporte.")
+			migration_part = 0
+			_migration_line("handover")
 		if step==2:
-			dialogue.text = ""
-			gate_visual.show()
-			var opening := create_tween()
-			opening.tween_property(gate_visual,"position:y",1.6,.55)
-			opening.tween_callback(gate_visual.hide)
-			_notice("Pasaporte recuperado. Continúa por el paso verde.")
+			migration_thanked = false
+			_migration_line("thanks")
 		if step==8:
 			exit_visual.show()
 			var sliding := create_tween()
@@ -1652,6 +1717,7 @@ func _toggle_menu() -> void:
 	menu_open = not menu_open
 	menu.visible = menu_open
 	for sound in airport_audio.values(): sound.stream_paused = menu_open
+	if migration_voice!=null: migration_voice.stream_paused = menu_open
 	if menu_open and not voice_id.is_empty(): DisplayServer.tts_stop()
 	touch_keys.clear()
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if menu_open or mobile else Input.MOUSE_MODE_CAPTURED
@@ -1727,6 +1793,7 @@ func _physics_process(delta: float) -> void:
 		player.velocity.z = 0.0
 	var actual_distance := Vector2(player.global_position.x-before_move.x,player.global_position.z-before_move.z).length()
 	_tick_airport_audio(delta,actual_distance>.002 and player.is_on_floor())
+	_tick_migration_dialogue(delta)
 	# Keep the seated pose. Raise the document above the counter to inspect it,
 	# then hold it forward until the player collects it. The prop follows the palm.
 	var reach := -1.05
@@ -1737,13 +1804,9 @@ func _physics_process(delta: float) -> void:
 		0:
 			if stage_time>1.5 and previous.visible:
 				if previous.walk_to(Vector3(5.2,.03,-24),delta,1.8) or stage_time>7.0:
-					if _advance("next"): _say("Siguiente.")
-		2:
-			if stage_time>=1.8 and not spoken_welcome:
-				spoken_welcome = true
-				_say("Bienvenido a la patria.")
+					if _advance("next"): _migration_line("next")
 		3:
-			if player.global_position.z>-19.25 and absf(player.global_position.x)<2.3: _advance("pass_gate")
+			if migration_thanked and player.global_position.z>-19.25 and absf(player.global_position.x)<2.3: _advance("pass_gate")
 		9:
 			if progress.cart_attached and player.global_position.z>.25 and absf(player.global_position.x)<4.0: _advance("exit")
 		10:
@@ -1809,6 +1872,11 @@ func _physics_process(delta: float) -> void:
 	if progress.stage==16 and not driver_ready:
 		prompt.text = "Espera al chofer."
 		return
-	if progress.stage==2 and not spoken_welcome: action = ""
+	if progress.stage==1 and (not migration_greeted or migration_remaining>0.0):
+		prompt.text = "Acércate a la agente." if not near else "Escucha a la agente."
+		return
+	if progress.stage==2 and not spoken_welcome:
+		prompt.text = "Espera a que termine la revisión."
+		return
 	prompt.text = ("[E] "+action) if near and not action.is_empty() else "WASD · Caminar  /  Shift · Correr"
 
