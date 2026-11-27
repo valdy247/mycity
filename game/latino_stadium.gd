@@ -3,7 +3,7 @@ extends Node3D
 # All large surfaces are batched by material; stairs/ramps share one
 # static walkable collision mesh. No seat-per-node or real-time lights.
 const OUTLINE := [Vector2(-.18,-1.0),Vector2(.18,-1.0),Vector2(.53,-.83),Vector2(.90,-.43),Vector2(1.0,-.12),Vector2(.95,.35),Vector2(.66,.82),Vector2(.35,1.0),Vector2(-.35,1.0),Vector2(-.66,.82),Vector2(-.95,.35),Vector2(-1.0,-.12),Vector2(-.90,-.43),Vector2(-.53,-.83)]
-const GATE_EDGES := [1,3,5,7,9,11,13]
+const GATE_EDGES := [0,1,3,5,7,9,11,13]
 const ROWS := 24
 var gates: Array = []
 var ring := PackedVector2Array()
@@ -34,8 +34,11 @@ static func make_ring(at: Vector3,rotation: Basis,hx: float,hz: float) -> Packed
 func _safe_site(poly: PackedVector2Array,anchor: Vector3) -> bool:
 	var boundary: PackedVector2Array = world.geography.stadium_boundary
 	if not boundary.is_empty():
-		for point in poly:
-			if not Geometry2D.is_point_in_polygon(point,boundary): return false
+		for i in range(poly.size()):
+			var a := poly[i]
+			var b := poly[(i+1)%poly.size()]
+			for t in [0.0,.25,.5,.75]:
+				if not Geometry2D.is_point_in_polygon(a.lerp(b,float(t)),boundary): return false
 	# Preserve every motor road, its curb and sidewalk. Internal pedestrian
 	# footpaths in the stadium parcel may become the new concourse.
 	for edge in world.geography.roads_near(anchor,155.0):
@@ -181,10 +184,14 @@ func _field() -> void:
 		circle.append(home+Vector2(0,dz*.96)+Vector2(cos(angle)*2.7/half_x,sin(angle)*2.7/half_z))
 	_poly(circle,.116,dirt)
 	_box(mound+Vector3.UP*.04,Vector3(.62,.035,.15),atan2(basis.z.x,basis.z.z),paint)
-	# Foul lines, batter's boxes and the two yellow foul poles.
+	# Foul lines follow the exact 45-degree diamond axes in world metres.
 	var h := _point(home,.125)
 	for side in [-1.0,1.0]:
-		var end := _point(Vector2(float(side)*.61,.21),.125)
+		var end := h
+		for metres in range(1,130):
+			var q := home+Vector2(float(side)*float(metres)/sqrt(2.0)/half_x,float(metres)/sqrt(2.0)/half_z)
+			if not Geometry2D.is_point_in_polygon(q,field): break
+			end = _point(q,.125)
 		var d := (end-h).normalized()
 		var cross := Vector3(-d.z,0,d.x)*.055
 		_quad(h-cross,end-cross,end+cross,h+cross,paint)
@@ -238,17 +245,21 @@ func _sector(i: int) -> void:
 	var right := .5+gap*.5
 	var wall_height := 13.0 if covered else 10.8
 	if gap>0.0:
-		_wall(start,_point(a.lerp(b,left)),0,wall_height,blue)
-		_wall(_point(a.lerp(b,right)),finish,0,wall_height,blue)
-		_wall(_point(a.lerp(b,left)),_point(a.lerp(b,right)),4.6,wall_height-4.6,blue)
+		_wall(start,_point(a.lerp(b,left)),0,4.25,_mat("base_facade",Color("#73a4c2")))
+		_wall(_point(a.lerp(b,right)),finish,0,4.25,_mat("base_facade",Color("#73a4c2")))
+		_wall(_point(a.lerp(b,left)),_point(a.lerp(b,right)),4.6,.75,blue)
 		var door := _point(mid)
 		var outward := (door-center).normalized()
 		var p := door+outward*1.2
-		var label_value := "Acceso "+str(gates.size()+1)
+		var label_value := "Entrada principal" if i==0 else "Acceso "+str(gates.size()+1)
 		gates.append({"label":label_value,"p":p,"inside":_point(mid*.69,.1),"sector":i})
 		var sign: Label3D = world._label(label_value.to_upper(),door+outward*.30+Vector3.UP*5.35,.032,atan2(outward.x,outward.z),Color("#edf2ef"))
 		sign.visibility_range_end = 115.0
-	else: _wall(start,finish,0,wall_height,blue)
+	else: _wall(start,finish,0,4.25,_mat("base_facade",Color("#73a4c2")))
+	# The tall upper grandstand has a blue perimeter beam and an open
+	# structural middle, rather than a continuous generic building wall.
+	_wall(start,finish,wall_height-2.5,2.5,blue)
+	_wall(start,finish,5.45,.55,blue,false)
 	# Gate corridors remain completely open at ground level. The adjacent
 	# aisles rise to the seating rows and perimeter landing.
 	for segment in [[0.0,left],[right,1.0]] if gap>0.0 else [[0.0,1.0]]:
@@ -270,7 +281,10 @@ func _sector(i: int) -> void:
 		var q := a.lerp(b,u)
 		var pier := _point(q*.997)
 		var n := (pier-center).normalized()
-		_box(pier+Vector3.UP*(wall_height*.5),Vector3(.75,wall_height,.78),atan2(n.x,n.z),light_concrete,true)
+		_box(pier+Vector3.UP*(wall_height*.5),Vector3(.75,wall_height,.78),atan2(n.x,n.z),blue,true)
+		# Raked concrete supports read clearly from the surrounding streets.
+		_beam(_point(q*.985,4.4),_point(q*.78,7.5),.48,light_concrete)
+		_beam(_point(q*.985,wall_height-1.5),_point(q*.86,wall_height-4.1),.52,blue)
 	if covered:
 		# Broad blue metal canopy, open in front of the spectators.
 		var outer_a := _point(a*.998,17.2)
@@ -361,6 +375,7 @@ func build(city) -> void:
 	add_child(body)
 	body.global_position = center
 	var shape := ConcavePolygonShape3D.new()
+	shape.backface_collision = true
 	shape.set_faces(floor_faces)
 	var collision := CollisionShape3D.new()
 	collision.shape = shape
