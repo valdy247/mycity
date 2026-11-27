@@ -66,6 +66,7 @@ func setup(controller) -> void:
 	if not life.has("yordi_ps5"):
 		life.yordi_ps5 = {"stage":0,"reward_paid":false,"police":false,"delivered":false}
 	state = life.yordi_ps5
+	_restart_visit_once(life)
 	marker = Node3D.new()
 	add_child(marker)
 	business._arrow(marker,Vector3.UP*2.2,Color("#ffd85c"))
@@ -79,6 +80,26 @@ func setup(controller) -> void:
 		restore_pending = true
 	if stage==13: state.sale_left = maxf(0.0,float(state.get("sale_left",SALE_DELAY)))
 	_save()
+
+# One-time replay for saves stranded during the original visit.
+# Never debit the player or reset the other missions.
+func _restart_visit_once(life: Dictionary) -> void:
+	if int(life.get("yordi_replay_version",0))>=1: return
+	life.yordi_replay_version = 1
+	var previous_stage := _stage()
+	if previous_stage==0 or previous_stage>=14 or bool(state.get("reward_paid",false)): return
+	var saved_seller: Dictionary = state.get("seller",{}).duplicate(true)
+	state.clear()
+	state.merge({"stage":0,"reward_paid":false,"police":false,"delivered":false,"replay_ready":true})
+	if not saved_seller.is_empty(): state.seller = saved_seller
+	var label_value: String = game.garage.waypoint_label.to_lower()
+	if label_value.contains("yordi") or label_value.contains("ps5") or label_value.contains("tejas") or label_value.contains("infanta") or label_value.contains("punto de recogida del taxi"):
+		game.garage.waypoint_active = false
+		game.garage.waypoint_label = ""
+		game.garage.state.gps = {}
+		if is_instance_valid(game.garage.waypoint): game.garage.waypoint.hide()
+		service.set_garage_destination(Vector3.ZERO,"")
+	print("MyCity: misión de Yordi reiniciada; espera su llamada en casa.")
 
 func _stage() -> int:
 	return int(state.get("stage",0))
@@ -1004,7 +1025,7 @@ func tick(delta: float) -> void:
 	if business.modal_open() or game.building_mode or (game.city_navigation!=null and game.city_navigation.active): return
 	var stage := _stage()
 	if stage==0:
-		if not bool(game.garage.state.get("wheel_tutorial",false)) or game.carlos_mission._stage()!=5: return
+		if not bool(state.get("replay_ready",false)) and (not bool(game.garage.state.get("wheel_tutorial",false)) or game.carlos_mission._stage()!=5): return
 		if _busy() or not game.garage.inside or not game.garage._free_hands(): return
 		call_clock += delta
 		if call_clock<8.0: return
