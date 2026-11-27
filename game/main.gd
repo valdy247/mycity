@@ -576,6 +576,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event is InputEventKey and event.pressed and not event.echo:
 			if event.keycode==KEY_E: interact_requested = true
 			elif event.keycode==KEY_R: reset_requested = true
+			elif event.keycode==KEY_P and garage.riding_borrowed():
+				if absf(garage.ride_speed)<.6: business.open_phone()
+				else: business._notify("Detén la moto antes de usar el teléfono.")
 		if event is InputEventMouseMotion and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED:
 			yaw -= event.relative.x*.003
 			pitch = clampf(pitch-event.relative.y*.003,-.95,.30)
@@ -1020,11 +1023,11 @@ func _read_controls() -> Vector2:
 
 func _drive(delta: float, movement: Vector2) -> void:
 	var boost := Input.is_physical_key_pressed(KEY_SHIFT) and movement.y<0.0 and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED
-	var target := -movement.y * ((26.0 if boost else 13.0) if movement.y <= 0 else 4.0)
+	var target := -movement.y * ((39.0 if boost else 13.0) if movement.y <= 0 else 4.0)
 	var brake := Input.is_physical_key_pressed(KEY_SPACE) or Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
 	if brake:
 		target = 0.0
-	drive_speed = move_toward(drive_speed, target, delta * (14.0 if brake else (8.5 if boost else 5.0)))
+	drive_speed = move_toward(drive_speed, target, delta * (18.0 if brake else (15.0 if boost else 5.0)))
 	if absf(drive_speed) > 0.15:
 		van.rotation.y -= movement.x * signf(drive_speed) * delta * 1.35 * minf(absf(drive_speed) / 3.0, 1.0)
 	var prior := van.global_transform
@@ -1059,7 +1062,8 @@ func _update_hud() -> void:
 		_update_compact_hud()
 		return
 	if garage!=null and garage.riding:
-		status.text = "Vehículo · %d km/h\nW/S: acelerar y retroceder | Shift: turbo | A/D: girar\nEspacio: frenar | E: bajar | H: ocultar controles" % roundi(absf(garage.ride_speed)*3.6)
+		var ride_name := "Moto de Yordi · tú conduces" if garage.riding_borrowed() else "Vehículo"
+		status.text = ride_name+" · %d km/h\nW/S: acelerar y retroceder | Shift: turbo | A/D: girar\nEspacio: frenar | E: bajar | H: ocultar controles" % roundi(absf(garage.ride_speed)*3.6)
 		return
 	if bus_riding:
 		var bus: Dictionary = urban_buses.player_bus
@@ -1130,7 +1134,9 @@ func _update_hud() -> void:
 func _update_compact_hud() -> void:
 	var lines: Array[String] = ["[H] Controles · [M] Mapa · [F11] Pantalla completa" if city_navigation!=null else "[H] Controles · [F11] Pantalla completa"]
 	if garage!=null and garage.riding:
-		lines.append("%d km/h · [Shift] Turbo · [E] Bajar detenido" % roundi(absf(garage.ride_speed)*3.6))
+		var ride_name := "Moto de Yordi · " if garage.riding_borrowed() else ""
+		lines.append(ride_name+("%d km/h · [Shift] Turbo · [E] Bajar" % roundi(absf(garage.ride_speed)*3.6)))
+		if garage.ride_exit_requested: lines.append("Frenando para bajar...")
 	elif bus_riding:
 		var bus: Dictionary = urban_buses.player_bus
 		lines.append("Guagua "+String(bus.get("line",""))+" · "+("Bajada solicitada" if urban_buses.player_exit_requested else "[E] Bajar en próxima parada")+" · [Shift] Acelerar")
@@ -1375,6 +1381,9 @@ func _physics_process(delta: float) -> void:
 	if garage!=null and not building_mode and not business.modal_open() and not (taxis!=null and taxis.dialog.visible):
 		garage.tick(delta)
 	if garage!=null and garage.riding:
+		if business!=null and business.modal_open():
+			player.velocity = Vector3.ZERO
+			return
 		if reset_requested:
 			reset_requested = false
 			_reset_player()
