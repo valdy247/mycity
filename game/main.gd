@@ -672,7 +672,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and pivot != null:
 		yaw -= event.relative.x * 0.003
-		pitch = clampf(pitch - event.relative.y * 0.003, -1.05, 0.35)
+		var down_limit := -1.48 if (garage!=null and garage.inside) or (carlos_mission!=null and carlos_mission.inside) else -1.05
+		pitch = clampf(pitch - event.relative.y * 0.003, down_limit, 0.35)
 		pivot.rotation = Vector3(pitch, yaw, 0)
 
 # Reuse the exact exported van hierarchy when present.
