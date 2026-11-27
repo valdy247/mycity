@@ -1,6 +1,10 @@
 extends Node3D
 # Mission 2. Only two NPCs, one temporary room and four tiny wall textures.
 const Person = preload("res://street_person.gd")
+const PaintVisual = preload("res://paint_visual.gd")
+const HAND_REST := Vector3(.28,-.30,-.72)
+var hand_tween: Tween
+var paint_progress: Label3D
 const ROOM := Vector3(30,110,0)
 # Exact reference copied from the in-game editor by the player.
 const CARLOS_LAT := 23.1219468
@@ -371,11 +375,13 @@ func interact() -> bool:
 			state.brush = true
 			brush_item.hide()
 			_refresh_hand()
+			_animate_hand(Vector3(0,-.18,.05),-.28,.24)
 			_save()
 		elif action.contains("Mojar"):
 			state.color = "blue" if action.contains("Azul") else "yellow"
 			state.charge = 12
 			_refresh_hand()
+			_animate_hand(Vector3(0,-.17,-.05),-.55,.26)
 			_save()
 		elif action.contains("Salir"): _exit()
 		return true
@@ -431,7 +437,17 @@ func _make_room() -> void:
 	room.add_child(light)
 	light.position = Vector3(0,2.65,0)
 	light.omni_range = 10.0
-	light.light_energy = 1.5
+	light.light_energy = 1.35
+	light.light_color = Color("#fff0da")
+	light.omni_attenuation = 1.05
+	light.shadow_enabled = false
+	# Ceiling fixture and floor protection are outside all paintable wall cells.
+	business._box(room,Vector3(0,2.76,0),Vector3(.76,.06,.25),Color("#736f66"))
+	business._box(room,Vector3(0,2.71,0),Vector3(.64,.05,.18),Color("#f5e8cb"))
+	business._box(room,Vector3(-.23,.012,0),Vector3(1.60,.012,.85),Color("#c7baa1"))
+	paint_progress = business._label(room,"",Vector3(0,2.55,2.87),Color("#f0e6c9"))
+	paint_progress.rotation.y = PI
+	_update_paint_progress()
 	buckets.clear()
 	for i in range(2):
 		var can_root := Node3D.new()
@@ -446,8 +462,32 @@ func _make_room() -> void:
 		mesh.mesh = can
 		mesh.material_override = business._mat(Color("#537c86"))
 		can_root.add_child(mesh)
-		business._box(can_root,Vector3(0,.22,0),Vector3(.29,.03,.29),BLUE if i==0 else YELLOW)
-		business._label(can_root,"AZUL" if i==0 else "AMARILLO",Vector3(0,.42,0))
+		var fill := MeshInstance3D.new()
+		var disc := CylinderMesh.new()
+		disc.top_radius = .196
+		disc.bottom_radius = .196
+		disc.height = .012
+		disc.radial_segments = 12
+		fill.mesh = disc
+		fill.material_override = business._mat(BLUE if i==0 else YELLOW)
+		fill.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		can_root.add_child(fill)
+		fill.position.y = .219
+		var rim := MeshInstance3D.new()
+		var ring := TorusMesh.new()
+		ring.inner_radius = .198
+		ring.outer_radius = .228
+		ring.rings = 12
+		ring.ring_segments = 6
+		rim.mesh = ring
+		rim.material_override = business._mat(Color("#9d9b8d"))
+		rim.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		can_root.add_child(rim)
+		rim.position.y = .222
+		var tag: Label3D = business._label(can_root,"AZUL" if i==0 else "AMARILLO",Vector3(0,.0,.228))
+		tag.font_size = 28
+		tag.pixel_size = .002
+		tag.billboard = BaseMaterial3D.BILLBOARD_DISABLED
 		buckets.append(can_root)
 	bucket = buckets[0]
 	brush_item = Node3D.new()
@@ -457,7 +497,7 @@ func _make_room() -> void:
 	_make_brush(brush_item,Vector3(.25,0,.15))
 	brush_item.visible = not bool(state.brush)
 	# Exit marker lies on the entrance wall; paint behind it is still possible.
-	business._label(room,"SALIR · E",Vector3(0,2.55,2.87)).rotation.y = PI
+	# The progress/exit label above the door is cosmetic, never a collider.
 	_spawn_carlos(ROOM+Vector3(-2.8,0,-1.9))
 	carlos.rotation.y = -PI*.5
 	worker_brush = Node3D.new()
@@ -473,18 +513,45 @@ func _make_room() -> void:
 	_refresh_client()
 
 func _make_brush(root: Node3D,offset: Vector3 = Vector3.ZERO) -> MeshInstance3D:
-	business._box(root,offset+Vector3(0,0,.10),Vector3(.07,.06,.23),Color("#95633d"))
-	return business._box(root,offset+Vector3(0,0,-.08),Vector3(.16,.055,.15),Color("#cab99a"))
+	business._box(root,offset+Vector3(0,0,.105),Vector3(.065,.055,.23),Color("#95633d"))
+	business._box(root,offset+Vector3(0,0,-.015),Vector3(.155,.064,.065),Color("#a7a5a0"))
+	return business._box(root,offset+Vector3(0,0,-.108),Vector3(.153,.049,.128),Color("#cab99a"))
 
 func _refresh_hand() -> void:
 	if not is_instance_valid(hand):
 		hand = Node3D.new()
 		game.play_camera.add_child(hand)
-		hand.position = Vector3(.28,-.30,-.72)
+		hand.position = HAND_REST
 		hand.rotation.x = -.5
 		hand_tip = _make_brush(hand)
+		# One shared sphere for the glove/hand, independent of brush collision.
+		var grip := MeshInstance3D.new()
+		var grip_mesh := SphereMesh.new()
+		grip_mesh.radius = .5
+		grip_mesh.height = 1.0
+		grip_mesh.radial_segments = 8
+		grip_mesh.rings = 4
+		grip.mesh = grip_mesh
+		grip.material_override = business._mat(Color("#b98762"))
+		grip.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		hand.add_child(grip)
+		grip.position = Vector3(.01,-.025,.14)
+		grip.scale = Vector3(.13,.105,.16)
 	hand.visible = inside and _stage()==4 and bool(state.brush) and not _finished()
 	if is_instance_valid(hand_tip): hand_tip.material_override = business._mat(_paint_color(String(state.get("color","blue"))) if int(state.charge)>0 else Color("#cab99a"))
+
+func _animate_hand(offset: Vector3,angle: float,duration: float) -> void:
+	if not is_instance_valid(hand) or not hand.visible: return
+	if is_instance_valid(hand_tween): hand_tween.kill()
+	hand.position = HAND_REST+offset
+	hand.rotation.x = -.5+angle
+	hand_tween = create_tween().set_parallel(true)
+	hand_tween.tween_property(hand,"position",HAND_REST,duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	hand_tween.tween_property(hand,"rotation:x",-.5,duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+
+func _update_paint_progress() -> void:
+	if not is_instance_valid(paint_progress): return
+	paint_progress.text = "SALIR · E    |    %d%% PINTADO" % roundi(100.0*float(correct_tiles)/float(TOTAL))
 
 func _enter() -> void:
 	inside = true
@@ -514,7 +581,12 @@ func _exit_aim() -> bool:
 	return absf(p.x)<.975 and p.y>.05 and p.y<2.10
 
 func _destroy_room() -> void:
-	if is_instance_valid(hand): hand.hide()
+	if is_instance_valid(hand_tween): hand_tween.kill()
+	if is_instance_valid(hand):
+		hand.hide()
+		hand.position = HAND_REST
+		hand.rotation.x = -.5
+	paint_progress = null
 	if is_instance_valid(worker_brush): worker_brush.queue_free()
 	worker_brush = null
 	if is_instance_valid(client): client.queue_free()
@@ -595,16 +667,12 @@ func _add_surface(wall: int,p: Vector3,dimensions: Vector2,angle: float) -> void
 	room.add_child(visual)
 	visual.position = p
 	visual.rotation.y = angle
-	var img := Image.create(_columns(wall),_rows(wall),false,Image.FORMAT_RGB8)
-	img.fill(Color("#79644e") if wall==DOOR_SURFACE else OLD_PAINT)
-	for y in range(_rows(wall)):
-		for x in range(_columns(wall)):
-			var color := String(state.painted.get(_cell_key(wall,x,y),""))
-			if color in ["blue","yellow"]: img.set_pixel(x,y,_paint_color(color))
+	var img := PaintVisual.new_surface(wall,_columns(wall),_rows(wall),state.painted,wall==DOOR_SURFACE)
 	var tex := ImageTexture.create_from_image(img)
 	var mat := StandardMaterial3D.new()
 	mat.albedo_texture = tex
-	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
+	mat.roughness = .82
 	visual.material_override = mat
 	visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	walls.append(visual)
@@ -620,8 +688,10 @@ func _paint_cell(wall: int,x: int,y: int,color: String) -> bool:
 	if color==_required(wall): correct_tiles += 1
 	state.painted[key] = color
 	paint_dirty = true
-	images[wall].set_pixel(x,y,_paint_color(color))
+	# Redraw only the changed cell and its neighbors; upload only this wall.
+	PaintVisual.redraw(images[wall],wall,_columns(wall),_rows(wall),state.painted,wall==DOOR_SURFACE,Vector2i(x,y))
 	textures[wall].update(images[wall])
+	_update_paint_progress()
 	return true
 
 func _paint() -> void:
@@ -641,8 +711,8 @@ func _paint() -> void:
 	var color := String(state.get("color","blue"))
 	if _paint_cell(wall,x,y,color):
 		state.charge = int(state.charge)-1
-		if is_instance_valid(hand): hand.rotation.x = -.5+sin(float(state.charge)*1.8)*.22
 		_refresh_hand()
+		_animate_hand(Vector3(0,.035,-.12),sin(float(state.charge)*1.8)*.22,.16)
 		if color!=_required(wall) and warning_clock<=0.0:
 			warning_clock = 6.0
 			business._notify("Carlos: ¡Ey, recuerda! Azul para la pared y amarillo para la puerta.")
