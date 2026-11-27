@@ -44,6 +44,10 @@ var visit_elapsed := 0.0
 var visit_retry := 0.0
 var visit_notice := false
 var visit_foot_elapsed := 0.0
+var exit_elapsed := 0.0
+var exit_retry_clock := 0.0
+var bike_walk_elapsed := 0.0
+var bike_wait_point := Vector3.INF
 var key_line := false
 var restore_pending := false
 var location_reported := false
@@ -118,7 +122,7 @@ func objective() -> String:
 		1: return "Yordi te llama · P: teléfono"
 		2: return "Espera a Yordi en tu casa."
 		3: return "Habla con Yordi."
-		4: return "Sube a la moto de Yordi."
+		4: return "Sal de casa con Yordi." if game.garage.inside else "Sube a la moto de Yordi."
 		5: return "Yordi conduce hacia Infanta · Esquina de Tejas."
 		6: return "Ve con Yordi a buscar el PS5."
 		7: return "Regresa con Yordi a la moto."
@@ -533,8 +537,77 @@ func _accept_job() -> void:
 	_end_cinema()
 	pickup_point = Vector3.INF
 	rendezvous_clock = 0.0
+	exit_elapsed = 0.0
+	exit_retry_clock = 0.0
+	bike_walk_elapsed = 0.0
+	bike_wait_point = Vector3.INF
+	if is_instance_valid(yordi): walkers.erase(yordi.get_instance_id())
 	_set_stage(4)
+	business._notify("Yordi: Dale, mano. Vamos para la moto.")
 	if is_instance_valid(bike): _target(bike.global_position,"Moto de Yordi")
+
+# Home and city are separate spaces; the NPC must cross the same logical
+# doorway as the player instead of trying to walk between elevations.
+func on_home_exit() -> void:
+	if _stage()!=4 or not is_instance_valid(yordi): return
+	exit_retry_clock = 0.0
+	rendezvous_clock = 0.0
+	if yordi.global_position.y>50.0: _leave_home_for_bike()
+
+func _leave_home_for_bike() -> bool:
+	var p := _home_door_point()
+	if not p.is_finite(): p = _near_ground(_home(),yordi,12.0)
+	if not p.is_finite(): return false
+	_ensure_yordi(p)
+	bike_wait_point = Vector3.INF
+	rendezvous_clock = 0.0
+	bike_walk_elapsed = 0.0
+	return true
+
+func _bike_wait_site() -> Vector3:
+	if not is_instance_valid(bike): return Vector3.INF
+	var at := bike.global_position
+	# Prefer a reachable sidewalk on either side, close enough for boarding.
+	for distance in [1.5,2.2,3.0,4.0,5.0]:
+		for side in [-1.0,1.0]:
+			for along in [0.0,1.5,-1.5]:
+				var p := _ground(at+bike.global_basis.x*float(side)*float(distance)+bike.global_basis.z*float(along))
+				if not p.is_finite() or p.distance_to(at)>5.8: continue
+				if not world.pedestrian_space_clear(yordi,p,.65,false): continue
+				if world.pedestrian_segment_clear(yordi.global_position,p): return p
+				var route: PackedVector3Array = game.monte_pedestrians.route_between(yordi.global_position,p)
+				if not route.is_empty(): return p
+	# A clear patch beside the parked bike is also usable when there is
+	# no mapped sidewalk close enough. Do not stand in the bike itself.
+	for side in [-1.0,1.0]:
+		var p := _ground(at+bike.global_basis.x*float(side)*1.5,false)
+		if p.is_finite() and world.pedestrian_space_clear(yordi,p,.65,false): return p
+	return Vector3.INF
+
+func _tick_departure(delta: float) -> void:
+	if not is_instance_valid(bike) or not is_instance_valid(yordi): return
+	if yordi.global_position.y>50.0:
+		exit_elapsed += delta
+		if game.garage.inside:
+			var exit_point: Vector3 = Garage.ROOM+Vector3(-.7,0,5.25)
+			var reached := _walk(yordi,exit_point,delta,2.5,.65)
+			if not reached and exit_elapsed<8.0: return
+		exit_retry_clock -= delta
+		if exit_retry_clock>0.0: return
+		exit_retry_clock = .75
+		if not _leave_home_for_bike(): return
+	if yordi.global_position.distance_to(bike.global_position)<=4.0:
+		yordi.animate(delta,false)
+		return
+	bike_walk_elapsed += delta
+	rendezvous_clock -= delta
+	if rendezvous_clock<=0.0:
+		rendezvous_clock = 3.0
+		if not bike_wait_point.is_finite() or bike_walk_elapsed>=12.0:
+			bike_wait_point = _bike_wait_site()
+			walkers.erase(yordi.get_instance_id())
+			bike_walk_elapsed = 0.0
+	if bike_wait_point.is_finite(): _walk(yordi,bike_wait_point,delta,2.8,.6)
 
 func _aim(actor: Node3D,center: Vector3,extent: Vector3,reach: float = 3.0) -> bool:
 	if not is_instance_valid(actor) or not actor.is_visible_in_tree(): return false
@@ -573,8 +646,8 @@ func interact() -> bool:
 			if not p.is_finite():
 				business._notify("No se encontró Esquina de Tejas en el mapa cargado.")
 				return true
-			if is_instance_valid(yordi) and yordi.global_position.distance_to(bike.global_position)>6.0:
-				business._notify("Espera a Yordi.")
+			if not is_instance_valid(yordi) or yordi.global_position.distance_to(bike.global_position)>6.0 or yordi.global_position.y>50.0:
+				business._notify("Espera a Yordi. Está caminando hacia la moto.")
 				return true
 			if _start_trip(bike,p,"Esquina de Tejas","bike_out",true):
 				_driver()
@@ -1000,19 +1073,7 @@ func tick(delta: float) -> void:
 					business._notify("Yordi: ¡Mano, ya llegué!")
 				if _walk(yordi,player_at,delta,2.0,2.1): _visit_scene()
 			elif _walk(yordi,player_at,delta,2.5,2.1): _visit_scene()
-		4:
-			if not is_instance_valid(bike) or not is_instance_valid(yordi): return
-			if game.garage.inside: return
-			if yordi.global_position.y>50.0:
-				var p := _near_ground(_home(),yordi,4.0)
-				if not p.is_finite(): return
-				_ensure_yordi(p)
-			rendezvous_clock -= delta
-			if rendezvous_clock<=0.0:
-				rendezvous_clock = 1.0
-				var target := _near_ground(bike.global_position,yordi,10.0)
-				if target.is_finite(): pickup_point = target
-			if pickup_point.is_finite(): _walk(yordi,pickup_point,delta,2.8,1.1)
+		4: _tick_departure(delta)
 		6:
 			if is_instance_valid(yordi):
 				_walk(yordi,player_at,delta,3.5,1.8)
