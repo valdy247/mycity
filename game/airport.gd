@@ -572,7 +572,12 @@ func _make_arrivals_props() -> void:
 	_box(passport,Vector3.ZERO,Vector3(.105,.012,.15),Color("#213d66"))
 	_box(passport,Vector3(0,.008,0),Vector3(.094,.008,.135),Color("#d9d1b7"))
 	_box(passport,Vector3(0,.015,0),Vector3(.105,.008,.15),Color("#213d66"))
-	_label3(passport,"PASAPORTE",Vector3(0,.021,0),.0012,Color("#d4bd70")).rotation.x = -PI*.5
+	# Fit the gold lettering within the 10.5 cm wide passport cover.
+	var cover_title := _label3(passport,"PASAPORTE",Vector3(0,.0205,-.037),.00040,Color("#d4bd70"))
+	cover_title.font_size = 24
+	cover_title.rotation.x = -PI*.5
+	cover_title.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+	cover_title.fixed_size = false
 	cart = Node3D.new()
 	add_child(cart)
 	cart.position = progress.cart_position
