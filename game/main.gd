@@ -48,7 +48,15 @@ var performance_label: Label
 var diagnostics_panel: PanelContainer
 var diagnostics_text: Label
 var gps_label: Label
-var low_graphics := true
+# 0: rendimiento, 1: equilibrado, 2: alto. Rendering remains GL Compatibility.
+const GRAPHICS_NAMES := ["Bajo","Medio","Alto"]
+var graphics_quality := 1
+var low_graphics := false
+var visual_environment: Environment
+var visual_sun: DirectionalLight3D
+var visual_sky: ProceduralSkyMaterial
+var sky_minute := -100
+var sky_indoor := false
 var hud_time := 0.0
 var fps_time := 0.0
 var city_world: CityWorld
@@ -88,21 +96,11 @@ var exit_message := ""
 var message_time := 0.0
 
 func _ready() -> void:
-	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.62, 0.81, 0.95)
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.78, 0.85, 0.95)
-	env.ambient_light_energy = 0.70
-	var world := WorldEnvironment.new()
-	world.environment = env
-	add_child(world)
-	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-55, -35, 0)
-	sun.light_energy = 1.1
-	sun.shadow_enabled = false
-	add_child(sun)
 	var args := OS.get_cmdline_user_args()
+	if args.has("--low-graphics"): graphics_quality = 0
+	elif args.has("--high-graphics"): graphics_quality = 2
+	low_graphics = graphics_quality==0
+	_setup_visual_environment()
 	native_city = not args.has("--legacy-city")
 	if native_city and not args.has("--classic-city") and (FileAccess.file_exists("res://pilar_atares_v2.osm") or FileAccess.file_exists("res://pilar_atares.osm")):
 		var candidate := CubaWorld.new()
@@ -121,6 +119,7 @@ func _ready() -> void:
 	if native_city:
 		city_world = cuba_world if cuba_world != null else CityWorld.new()
 		add_child(city_world)
+		if cuba_world!=null: cuba_world.havana_textures.set_quality(graphics_quality)
 		city_world.setup(builder)
 		spawn_position = cuba_world.home_spawn if cuba_world != null else CityWorld.HOME_OUT
 		_restore_original_vehicles()
@@ -215,7 +214,7 @@ func _ready() -> void:
 		first_person = true
 		_face_cuba_home()
 		_apply_camera_mode()
-		_apply_performance_mode()
+	_apply_performance_mode()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 # Recognize terrain even when GLB import renames its mesh node or wraps it
@@ -452,17 +451,82 @@ func _make_hud() -> void:
 	gps_label.offset_bottom = -27
 	_update_hud()
 
+func _setup_visual_environment() -> void:
+	visual_environment = Environment.new()
+	visual_environment.background_mode = Environment.BG_COLOR
+	visual_environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	visual_environment.ambient_light_sky_contribution = 0.0
+	visual_sky = ProceduralSkyMaterial.new()
+	visual_sky.sun_angle_max = 16.0
+	var sky := Sky.new()
+	sky.sky_material = visual_sky
+	sky.radiance_size = Sky.RADIANCE_SIZE_32
+	visual_environment.sky = sky
+	var world := WorldEnvironment.new()
+	world.environment = visual_environment
+	add_child(world)
+	visual_sun = DirectionalLight3D.new()
+	visual_sun.directional_shadow_blend_splits = true
+	visual_sun.shadow_enabled = false
+	add_child(visual_sun)
+	_update_visual_lighting(true)
+
+# Match the existing simulation clock; lighting never changes its speed.
+# Rooms at y=110 have their own lights and must not inherit the outdoor night.
+func _update_visual_lighting(force: bool = false) -> void:
+	if visual_environment==null or visual_sun==null: return
+	var minute := 480.0
+	if business!=null and business.life!=null:
+		minute = fposmod(float(business.life.state.get("minutes",480.0)),1440.0)
+	var indoors := is_instance_valid(player) and player.global_position.y>70.0
+	if garage!=null and garage.inside: indoors = true
+	if carlos_mission!=null and carlos_mission.inside: indoors = true
+	# Update the sky in small time buckets instead of rebuilding its radiance every frame.
+	var bucket := floori(minute/5.0)
+	if not force and bucket==sky_minute and indoors==sky_indoor: return
+	sky_minute = bucket
+	sky_indoor = indoors
+	var day := smoothstep(360.0,480.0,minute)*(1.0-smoothstep(1020.0,1140.0,minute))
+	var dusk := smoothstep(330.0,390.0,minute)*(1.0-smoothstep(410.0,510.0,minute))
+	dusk = maxf(dusk,smoothstep(990.0,1080.0,minute)*(1.0-smoothstep(1110.0,1170.0,minute)))
+	var horizon := Color("#252d48").lerp(Color("#b9d9ef"),day).lerp(Color("#e5a273"),dusk*.66)
+	var zenith := Color("#10182e").lerp(Color("#579bd5"),day).lerp(Color("#756c96"),dusk*.32)
+	visual_environment.background_mode = Environment.BG_COLOR if low_graphics or indoors else Environment.BG_SKY
+	visual_environment.background_color = horizon
+	if not low_graphics and not indoors:
+		visual_sky.sky_top_color = zenith
+		visual_sky.sky_horizon_color = horizon
+		visual_sky.ground_horizon_color = horizon
+		visual_sky.ground_bottom_color = Color("#353a43").lerp(Color("#96968d"),day)
+	visual_environment.ambient_light_color = Color("#93a6d0").lerp(Color("#d5e5fa"),day)
+	visual_environment.ambient_light_energy = lerpf(.37,.63,day)
+	visual_sun.light_color = Color("#fff1d9").lerp(Color("#ffc091"),dusk*.8)
+	var arc := clampf((minute-360.0)/780.0,0.0,1.0)
+	visual_sun.rotation_degrees = Vector3(-maxf(9.0,sin(arc*PI)*67.0),lerpf(-105.0,105.0,arc),0.0)
+	visual_sun.light_energy = day*1.15+dusk*.16
+	visual_sun.visible = not indoors and visual_sun.light_energy>.025
+	visual_sun.shadow_enabled = not low_graphics and not indoors and day>.22
+	if indoors:
+		visual_environment.ambient_light_color = Color("#e8e2d5")
+		visual_environment.ambient_light_energy = .70
+	visual_environment.fog_enabled = graphics_quality==2 and not indoors
+	visual_environment.fog_light_color = horizon
+	visual_environment.fog_density = lerpf(.0017,.0011,day)
+
 func _apply_performance_mode() -> void:
-	# Compatibility renderer: render the actual viewport at a smaller size,
-	# not Forward+ only FSR. The world keeps its geographic dimensions.
+	graphics_quality = clampi(graphics_quality,0,2)
+	low_graphics = graphics_quality==0
 	var window := get_window()
 	window.content_scale_mode = Window.CONTENT_SCALE_MODE_VIEWPORT
 	window.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
 	window.content_scale_size = Vector2i(960,540) if low_graphics else Vector2i(1280,720)
-	play_camera.far = 320.0 if low_graphics else 550.0
-	if cuba_world!=null: cuba_world.set_detail_quality(low_graphics)
+	play_camera.far = 320.0 if low_graphics else (550.0 if graphics_quality==1 else 720.0)
+	visual_sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS if graphics_quality==2 else DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+	visual_sun.directional_shadow_max_distance = 105.0 if graphics_quality==2 else 55.0
+	if cuba_world!=null: cuba_world.set_graphics_quality(graphics_quality)
 	if pilar_editor != null:
 		pilar_editor.camera.far = 1000.0 if low_graphics else 1800.0
+	_update_visual_lighting(true)
 
 func _refresh_diagnostics() -> void:
 	if diagnostics_text==null or cuba_world==null: return
@@ -506,9 +570,10 @@ func _process(delta: float) -> void:
 	fps_time += delta
 	if fps_time>=.5:
 		fps_time = 0.0
+		_update_visual_lighting()
 		if diagnostics_panel!=null and diagnostics_panel.visible: _refresh_diagnostics()
 		if performance_label != null and cuba_world != null and performance_label.visible:
-			performance_label.text = "%d FPS | %s | F6" % [Engine.get_frames_per_second(),"Rendimiento" if low_graphics else "Normal"]
+			performance_label.text = "%d FPS | %s | F6" % [Engine.get_frames_per_second(),GRAPHICS_NAMES[graphics_quality]]
 			if gps_label!=null and player!=null:
 				var at := van.global_position if driving and van!=null else player.global_position
 				var title := "Vehículo" if driving or taxi_riding else "Jugador"
@@ -629,7 +694,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			pivot.rotation = Vector3(pitch,yaw,0)
 		return
 	if cuba_world != null and event is InputEventKey and event.pressed and not event.echo and event.keycode==KEY_F6:
-		low_graphics = not low_graphics
+		graphics_quality = (graphics_quality+1)%GRAPHICS_NAMES.size()
 		_apply_performance_mode()
 		return
 	if pilar_editor != null and pilar_editor.active:

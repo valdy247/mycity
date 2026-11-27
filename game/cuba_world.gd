@@ -153,8 +153,6 @@ func _chunk_body(tile: Vector2i, layer_id: int) -> StaticBody3D:
 	return body
 
 func _textured(base: StandardMaterial3D,at: Vector3) -> StandardMaterial3D:
-	if at.distance_squared_to(texture_anchor)>62500.0 and at.distance_squared_to(texture_market)>32400.0:
-		return base
 	var material_id := base.get_instance_id()
 	if texture_kinds.has(material_id):
 		var cached: String = texture_kinds[material_id]
@@ -225,6 +223,7 @@ func _flush_city_boxes() -> void:
 		instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(instance)
 		instance.position = item.origin
+		if not bool(item.detail): instance.add_to_group("city_shadow_batches")
 		if bool(item.detail):
 			instance.add_to_group("city_detail_batches")
 			instance.visibility_range_end = 190.0
@@ -235,11 +234,17 @@ func _flush_city_boxes() -> void:
 	box_groups.clear()
 
 func set_detail_quality(low: bool) -> void:
-	# Change existing visual batch ranges only when graphics mode changes.
-	# Collision bodies and navigation remain available.
+	set_graphics_quality(0 if low else 1)
+
+func set_graphics_quality(quality: int) -> void:
+	# Rendering only: never hide physics or alter navigation.
+	havana_textures.set_quality(quality)
 	for item in get_tree().get_nodes_in_group("city_detail_batches"):
 		if item is MultiMeshInstance3D:
-			item.visibility_range_end = 105.0 if low else 190.0
+			item.visibility_range_end = 105.0 if quality==0 else (190.0 if quality==1 else 240.0)
+	for item in get_tree().get_nodes_in_group("city_shadow_batches"):
+		if item is GeometryInstance3D:
+			item.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF if quality==0 else GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 
 func _line(a: Vector3,b: Vector3,width: float,height: float,y: float,mat: StandardMaterial3D) -> void:
 	var v := b-a
@@ -1675,6 +1680,9 @@ func _flush_footprints() -> void:
 		instance.mesh = surface.commit()
 		instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(instance)
+		# Only vertical/structural mesh batches cast shadows; roads do not.
+		if instance.mesh!=null and instance.get_aabb().size.y>.40:
+			instance.add_to_group("city_shadow_batches")
 	for tile in map_collision:
 		var vertices: Array = map_collision[tile]
 		var body := _chunk_body(tile,1)
@@ -2936,6 +2944,7 @@ func _flush_monte_columns() -> void:
 		node.material_override = entry.material
 		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(node)
+		node.add_to_group("city_shadow_batches")
 		node.position = entry.origin
 	monte_columns.clear()
 

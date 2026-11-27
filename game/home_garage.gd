@@ -304,7 +304,13 @@ func _solid(root: Node3D,p: Vector3,size: Vector3,color: Color,layer: int = 1) -
 	body.collision_mask = 0
 	root.add_child(body)
 	body.position = p
-	business._box(body,Vector3.ZERO,size,color)
+	var visual: MeshInstance3D = business._box(body,Vector3.ZERO,size,color)
+	# Give the existing home and client's room real tiled floors without
+	# introducing any new meshes, collision shapes or paintable cells.
+	if layer==2 and size.x>=5.0 and size.z>=5.0 and game.cuba_world!=null:
+		var base := visual.material_override as StandardMaterial3D
+		if base!=null:
+			visual.material_override = game.cuba_world.havana_textures.material(base,"tile")
 	var col := CollisionShape3D.new()
 	var shape := BoxShape3D.new()
 	shape.size = size
@@ -337,6 +343,8 @@ func _build_interior() -> void:
 		light.position = Vector3(float(x),2.7,0)
 		light.omni_range = 10.0
 		light.light_energy = 1.6
+		light.light_color = Color("#fff0db")
+		light.omni_attenuation = 1.1
 	marker = Node3D.new()
 	interior.add_child(marker)
 	marker.position = BENCH+Vector3.UP*2.35
