@@ -793,6 +793,29 @@ func tick(delta: float,_clock: float,boost_requested: bool = false) -> void:
 	var should_stop := stop_requested and streets.intersection_clear_for_stop(body.global_position,dims.z,dims.x)
 	body.set_meta("traffic_priority",dims.z)
 	body.set_meta("traffic_servicing",stop_requested or float(passenger.signal_wait)>0.0)
+	# Shift requests a left pass before cooperative waiting or the ordinary
+	# bypass timer. Retain the crossing gate and the original destination.
+	passenger.shift_pass_retry = maxf(0.0,float(passenger.get("shift_pass_retry",0.0))-delta)
+	var wants_pass := boost_active and (blocked or (stalled>.65 and junction_limit>=0.0 and junction_limit<3.0))
+	if wants_pass and float(passenger.shift_pass_retry)<=0.0 and not bool(waypoints[index].get("requested_left",false)):
+		passenger.shift_pass_retry = 1.25
+		var base := index
+		while base<waypoints.size() and bool(waypoints[base].get("bypass",false)): base += 1
+		if base<waypoints.size():
+			var left_pass := TrafficBypass.requested_left_pass(body,waypoints,base,streets,dims.x,dims.z,geography.signal_nodes,dims.y)
+			if not left_pass.is_empty():
+				var changed: Array = waypoints.slice(0,index)
+				changed.append_array(left_pass.path)
+				changed.append_array(waypoints.slice(int(left_pass.resume)))
+				passenger.path = changed
+				passenger.traffic_stall = 0.0
+				passenger.retreat_remaining = 0.0
+				passenger.cooperative_path = []
+				passenger.cooperative_hold = 0
+				passenger.cooperative_rejoin = false
+				passenger.speed = minf(float(passenger.speed),2.0)
+				ride_status = "Adelantando por la izquierda · "+String(passenger.label)
+				return
 	if not bool(body.get_meta("traffic_servicing")) and TrafficBypass.cooperate(passenger,body,streets,dims.x,dims.z,dims.y,delta,stalled,target): return
 	if bool(passenger.get("cooperative_rejoin",false)):
 		passenger.cooperative_rejoin = false
