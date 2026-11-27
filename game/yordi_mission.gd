@@ -174,7 +174,7 @@ func objective() -> String:
 		5: return "Conduce hasta Esquina de Tejas y estaciona cerca del vendedor · E: bajar."
 		6: return "Ve con Yordi a buscar el PS5."
 		7: return _robbery_objective()
-		8: return "¡Sigue a Yordi! Mantén Shift · %d m hasta la moto" % roundi(game.player.global_position.distance_to(escape_goal)) if escape_goal.is_finite() else "¡Sigue a Yordi! Mantén Shift."
+		8: return "¡Sigue a Yordi! Mantén Shift · %d m de recorrido" % roundi(_escape_remaining())
 		9: return "Sube a la moto de Yordi · E."
 		10: return "Sube a la moto de Yordi · E."
 		11: return "Conduce la moto hasta casa · estaciona y pulsa E."
@@ -942,6 +942,9 @@ func _start_manual_bike(destination: Vector3, returning: bool = false) -> void:
 		_target(destination,"Infanta · Esquina de Tejas")
 		business._notify("Yordi: Maneja tú, mano. Vamos siguiendo el GPS.")
 
+static func return_arrived(force: bool,home: Vector3,parked: Vector3,player_at: Vector3) -> bool:
+	return not force and home.is_finite() and parked.is_finite() and player_at.is_finite() and parked.distance_to(home)<=22.0 and player_at.distance_to(home)<=25.0
+
 func on_manual_bike_exit(force: bool = false) -> void:
 	var stage := _stage()
 	# Move the PS5 off the temporary passenger before freeing the rider.
@@ -959,7 +962,7 @@ func on_manual_bike_exit(force: bool = false) -> void:
 	if stage==11:
 		_carry_ps5()
 		var home := _home()
-		if not force and home.is_finite() and bike.global_position.distance_to(home)<=22.0 and game.player.global_position.distance_to(home)<=25.0:
+		if return_arrived(force,home,bike.global_position,game.player.global_position):
 			state.bike_returned = true
 			_set_stage(12)
 			_target(home,"Mi casa · PS5")
@@ -1065,6 +1068,24 @@ func guided_escape_route() -> PackedVector3Array:
 
 # Choose a reachable public sidewalk checkpoint once, rather than
 # making the player run an arbitrary distance in an unknown direction.
+func _escape_remaining() -> float:
+	if not is_instance_valid(yordi) or escape_index>=escape_route.size(): return 0.0
+	var distance := yordi.global_position.distance_to(escape_route[escape_index])
+	for i in range(escape_index+1,escape_route.size()):
+		distance += escape_route[i-1].distance_to(escape_route[i])
+	return distance
+
+# The graph passed here is a private copy, not the shared pedestrian graph.
+static func loop_ids(graph: AStar3D,anchor: int,far: int) -> PackedInt64Array:
+	var outward := graph.get_id_path(anchor,far)
+	if outward.size()<3: return PackedInt64Array()
+	for i in range(1,outward.size()-1): graph.set_point_disabled(outward[i],true)
+	var inward := graph.get_id_path(far,anchor)
+	for i in range(1,outward.size()-1): graph.set_point_disabled(outward[i],false)
+	if inward.size()<3: return PackedInt64Array()
+	for i in range(1,inward.size()): outward.append(inward[i])
+	return outward
+
 func _plan_escape(from: Vector3) -> PackedVector3Array:
 	if not is_instance_valid(bike): return PackedVector3Array()
 	var pedestrians = game.monte_pedestrians
@@ -1086,50 +1107,72 @@ func _plan_escape(from: Vector3) -> PackedVector3Array:
 		for other in source.get_point_connections(id):
 			if other>id and local.has_point(other): local.connect_points(id,other,true)
 	if not local.has_point(start): return PackedVector3Array()
-	var candidates: Array = []
+	# Spread candidates by direction so that dense sidewalks on one street
+	# do not crowd every other side of the block out of the search.
+	var sectors: Dictionary = {}
+	var anchors: Array = []
 	for id in local.get_point_ids():
 		var point := local.get_point_position(id)
 		var gap := from.distance_to(point)
-		if gap<24.0 or gap>68.0: continue
+		if local.get_point_connections(id).size()>=3 and gap<=15.0:
+			anchors.append({"id":id,"score":gap})
+		if gap<24.0 or gap>75.0: continue
 		if local.get_point_connections(id).size()<2: continue
 		if world.street_geometry.point_on_road(point): continue
-		candidates.append({"id":id,"score":absf(gap-43.0)})
-	candidates.sort_custom(func(a,b): return float(a.score)<float(b.score))
+		var angle := atan2(point.z-from.z,point.x-from.x)
+		var sector := clampi(int(floor((angle+PI)/TAU*8.0)),0,7)
+		if not sectors.has(sector): sectors[sector] = []
+		sectors[sector].append({"id":id,"score":absf(gap-43.0)})
+	var candidates: Array = []
+	for sector in sectors:
+		var options: Array = sectors[sector]
+		options.sort_custom(func(a,b): return float(a.score)<float(b.score))
+		candidates.append_array(options.slice(0,6))
+	anchors.sort_custom(func(a,b): return float(a.score)<float(b.score))
+	var chosen_anchors: Array[int] = [start]
+	for option in anchors:
+		var id := int(option.id)
+		var separated := true
+		for old in chosen_anchors:
+			if local.get_point_position(id).distance_to(local.get_point_position(old))<5.0:
+				separated = false
+				break
+		if separated: chosen_anchors.append(id)
+		if chosen_anchors.size()>=4: break
 	var best := PackedVector3Array()
 	var best_score := -INF
-	for option in candidates.slice(0,48):
-		var outward := local.get_id_path(start,int(option.id))
-		if outward.size()<5: continue
-		# Force an independent way back instead of retracing the same street.
-		for i in range(1,outward.size()-1): local.set_point_disabled(outward[i],true)
-		var inward := local.get_id_path(int(option.id),start)
-		for i in range(1,outward.size()-1): local.set_point_disabled(outward[i],false)
-		if inward.size()<4: continue
-		var route := PackedVector3Array([from])
-		for id in outward: route.append(local.get_point_position(id))
-		for i in range(1,inward.size()): route.append(local.get_point_position(inward[i]))
-		var area := 0.0
-		for i in range(1,route.size()-1):
-			var a := route[i]-from
-			var b := route[i+1]-from
-			area += a.x*b.z-a.z*b.x
-		area = absf(area)*.5
-		if area<65.0: continue
-		for i in range(1,approach.size()): route.append(approach[i])
-		route.append(finish)
-		var length := 0.0
-		var valid := true
-		for i in range(1,route.size()):
-			if not world.pedestrian_segment_clear(route[i-1],route[i]):
-				valid = false
-				break
-			length += route[i-1].distance_to(route[i])
-		if not valid or length<55.0 or length>260.0: continue
-		var score := minf(area,800.0)-absf(length-130.0)*.5
-		if score>best_score:
-			best = route
-			best_score = score
-		if area>=220.0 and length>=75.0 and length<=180.0: return route
+	for anchor in chosen_anchors:
+		var prefix := local.get_point_path(start,anchor)
+		if prefix.is_empty(): continue
+		for option in candidates:
+			var cycle := loop_ids(local,anchor,int(option.id))
+			if cycle.size()<7: continue
+			var route := PackedVector3Array([from])
+			route.append_array(prefix)
+			var area := 0.0
+			for i in range(1,cycle.size()):
+				var a := local.get_point_position(cycle[i-1])-from
+				var b := local.get_point_position(cycle[i])-from
+				area += a.x*b.z-a.z*b.x
+				route.append(local.get_point_position(cycle[i]))
+			area = absf(area)*.5
+			if area<65.0: continue
+			for i in range(prefix.size()-2,-1,-1): route.append(prefix[i])
+			for i in range(1,approach.size()): route.append(approach[i])
+			route.append(finish)
+			var length := 0.0
+			var valid := true
+			for i in range(1,route.size()):
+				if not world.pedestrian_segment_clear(route[i-1],route[i]):
+					valid = false
+					break
+				length += route[i-1].distance_to(route[i])
+			if not valid or length<55.0 or length>260.0: continue
+			var score := minf(area,800.0)-absf(length-130.0)*.5
+			if score>best_score:
+				best = route
+				best_score = score
+			if area>=220.0 and length>=75.0 and length<=180.0: return route
 	return best
 
 func _start_robbery() -> void:
