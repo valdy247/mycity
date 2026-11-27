@@ -409,13 +409,29 @@ func _make_arrivals_props() -> void:
 	cart.position = progress.cart_position
 	cart.rotation.y = progress.cart_angle
 	var steel := Color("#a9afb1")
-	_box(cart,Vector3(0,.24,0),Vector3(.68,.075,1.06),steel)
-	for x in [-.30,.30]:
-		_box(cart,Vector3(float(x),.56,.44),Vector3(.045,.68,.045),steel)
-		_box(cart,Vector3(float(x),.32,0),Vector3(.045,.12,1.04),steel)
-		for z in [-.44,.44]: _box(cart,Vector3(float(x),.09,float(z)),Vector3(.09,.16,.14),Color("#343a3c"))
-	_box(cart,Vector3(0,.90,.44),Vector3(.72,.07,.07),Color("#253c57"))
-	_box(cart,Vector3(0,.50,-.48),Vector3(.65,.34,.045),steel)
+	# Wide luggage platform, thin rails, actual round caster wheels.
+	_box(cart,Vector3(0,.24,0),Vector3(.92,.055,1.12),steel)
+	for x in [-.43,.43]:
+		_box(cart,Vector3(float(x),.58,.49),Vector3(.035,.68,.035),steel)
+		_box(cart,Vector3(float(x),.31,0),Vector3(.035,.095,1.10),steel)
+		for z in [-.45,.45]:
+			var wheel := MeshInstance3D.new()
+			var tire := CylinderMesh.new()
+			tire.top_radius = .085
+			tire.bottom_radius = .085
+			tire.height = .06
+			tire.radial_segments = 12
+			tire.rings = 0
+			wheel.mesh = tire
+			wheel.material_override = _mat(Color("#343a3c"))
+			wheel.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			cart.add_child(wheel)
+			wheel.position = Vector3(float(x),.09,float(z))
+			wheel.rotation.z = PI*.5
+			_box(cart,Vector3(float(x),.18,float(z)),Vector3(.05,.10,.05),steel)
+	_box(cart,Vector3(0,.92,.49),Vector3(.91,.045,.045),Color("#253c57"))
+	_box(cart,Vector3(0,.34,-.52),Vector3(.87,.035,.035),steel)
+	_box(cart,Vector3(0,.66,.49),Vector3(.85,.03,.035),steel)
 	_label3(self,"CARROS DE EQUIPAJE",Vector3(-5,2.4,-17),.006).rotation.y = PI
 
 func _make_bags() -> void:
@@ -503,7 +519,7 @@ func _sync() -> void:
 		bag.rotation = Vector3.ZERO
 		match place:
 			"hand": bag.position = Vector3(.40,-.62,-.75)
-			"cart": bag.position = Vector3(-.15 if i==0 else .15,.29,-.20 if i==0 else .25)
+			"cart": bag.position = Vector3(-.225 if i==0 else .225,.27,-.13)
 			"trunk":
 				bag.position = Vector3(-.28 if i==0 else .28,.61,-1.65)
 				bag.rotation.x = PI*.5
@@ -530,13 +546,29 @@ func _cart_can_park() -> bool:
 	var dx := maxf(absf(at.x-BELT.x)-5.0,0.0)
 	var dz := maxf(absf(at.z-BELT.z)-2.0,0.0)
 	if Vector2(dx,dz).length()>3.5 or at.z>=-3.0 or at.z<=-19.0: return false
+	return _cart_space_clear(at,cart.global_transform.basis)
+
+func _cart_space_clear(at: Vector3,orientation: Basis) -> bool:
+	# Test the whole loaded platform, not only a ray through its centre.
 	var shape := BoxShape3D.new()
-	shape.size = Vector3(.78,.65,1.12)
+	shape.size = Vector3(.98,.90,1.18)
 	var query := PhysicsShapeQueryParameters3D.new()
 	query.shape = shape
-	query.transform = Transform3D(cart.global_transform.basis,at+Vector3.UP*.50)
+	query.transform = Transform3D(orientation,at+Vector3.UP*.52)
 	query.exclude = [player.get_rid()]
 	return get_world_3d().direct_space_state.intersect_shape(query,1).is_empty()
+
+func _push_cart() -> bool:
+	var forward := -player.global_transform.basis.z
+	var orientation := Basis(Vector3.UP,yaw)
+	for distance in [1.45,1.25,1.05]:
+		var desired := player.global_position+forward*float(distance)
+		desired.y = .03
+		if _cart_space_clear(desired,orientation):
+			cart.global_position = desired
+			cart.rotation.y = yaw
+			return true
+	return false
 
 func _toggle_cart(value: bool) -> void:
 	var old := progress.cart_attached
@@ -790,23 +822,17 @@ func _physics_process(delta: float) -> void:
 	player.velocity.x = direction.x*speed
 	player.velocity.z = direction.z*speed
 	player.velocity.y -= 9.8*delta
+	var before_move := player.global_position
 	player.move_and_slide()
 	if player.position.y<-.8:
 		player.position = progress.checkpoint
 		player.velocity = Vector3.ZERO
-	if progress.cart_attached:
-		# Cart is pushed in front of the camera; the ray keeps it on the
-		# player's side of walls and locked doors when turning near a corner.
-		var start := player.global_position
-		start.y = .45
-		var forward := -player.global_transform.basis.z
-		var desired := start+forward*1.25
-		var query := PhysicsRayQueryParameters3D.create(start,desired)
-		query.exclude = [player.get_rid()]
-		var hit := get_world_3d().direct_space_state.intersect_ray(query)
-		if not hit.is_empty(): desired = start+forward*maxf(.35,start.distance_to(hit.position)-.35)
-		cart.global_position = Vector3(desired.x,.03,desired.z)
-		cart.rotation.y = yaw
+	if progress.cart_attached and not _push_cart():
+		# Prevent the trolley from sliding into the carousel or other solids.
+		player.global_position.x = before_move.x
+		player.global_position.z = before_move.z
+		player.velocity.x = 0.0
+		player.velocity.z = 0.0
 	# Keep the seated pose: the ordinary walking animation would straighten her legs.
 	var reach := -1.35 if progress.stage==2 else -1.05
 	officer.arms[1].rotation.x = lerpf(officer.arms[1].rotation.x,reach,minf(1.0,delta*7.0))
@@ -856,7 +882,14 @@ func _physics_process(delta: float) -> void:
 	if progress.stage in [5,7] and progress.cart_attached:
 		prompt.text = "[E] Soltar carrito" if _cart_can_park() else "Lleva el carrito a un espacio libre junto a la cinta."
 		return
-	if progress.stage==9 and not progress.cart_attached: action = "Tomar carrito"
+	if progress.stage==9:
+		if not progress.cart_attached: action = "Tomar carrito"
+		else:
+			prompt.text = "Empuja el carrito hacia la SALIDA · Sigue la flecha"
+			return
+	if progress.stage==10:
+		prompt.text = "Lleva el carrito hasta la parte trasera del taxi."
+		return
 	if progress.stage==2 and not spoken_welcome: action = ""
 	prompt.text = ("[E] "+action) if near and not action.is_empty() else "WASD · Caminar / Sigue el objetivo"
 
