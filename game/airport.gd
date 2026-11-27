@@ -1,12 +1,15 @@
 extends Node3D
-# Independent playable airport blockout. Dimensions/materials provisional until
-# the player's photographs are approved. No city world or business is loaded.
+# Airport arrivals inspired by the supplied exterior/interior/baggage references.
+# Geometry is procedural, not a measured terminal survey; the city is not loaded.
 const Progress = preload("res://airport_progress.gd")
 const Person = preload("res://street_person.gd")
 const Lights = preload("res://vehicle_lights.gd")
-const SPAWN := Vector3(-8.5,.91,3.0)
-const BAG_POINTS := [Vector3(-7,0,4),Vector3(-5.8,0,4)]
-const TASKS := ["Recoge la primera maleta.","Acércate a la parte trasera del taxi.","Abre el maletero.","Coloca la primera maleta dentro.","Regresa por la segunda maleta.","Coloca la segunda maleta dentro.","Cierra el maletero.","Sube al taxi por la puerta del pasajero.","Fase 1 completada. Viaje pendiente de la fase 2."]
+const DESK := Vector3(-1.7,0,-24)
+const GATE := Vector3(0,0,-20)
+const CART_START := Vector3(-5,.03,-16)
+const EXIT := Vector3(0,0,1)
+const BELT := Vector3(4,.72,-11)
+const TASKS := ["Espera tu turno en migración.","Acércate a la agente y entrega el pasaporte.","Espera la revisión y recoge el pasaporte.","Cruza el pasador verde.","Recoge un carrito de equipaje.","Recoge tu primera maleta de la cinta.","Coloca la primera maleta en el carrito.","Recoge tu segunda maleta de la cinta.","Coloca la segunda maleta en el carrito.","Sal del aeropuerto con tus maletas.","Acércate al taxi con el carrito.","Recoge la primera maleta del carrito.","Coloca la primera maleta en el maletero.","Recoge la segunda maleta del carrito.","Coloca la segunda maleta en el maletero.","Espera a que el chofer cierre el maletero.","Sube al taxi por la puerta del pasajero.","Fase 1 completada. Viaje pendiente."]
 var progress := Progress.new()
 var mats: Dictionary = {}
 var unit_box := BoxMesh.new()
@@ -23,7 +26,7 @@ var prompt: Label
 var message: Label
 var menu: PanelContainer
 var hud: CanvasLayer
-var yaw := -2.05
+var yaw := PI
 var pitch := -.08
 var menu_open := false
 var touch_keys: Dictionary = {}
@@ -31,6 +34,24 @@ var mobile := false
 var note_time := 0.0
 var marker: Node3D
 var lid_tween: Tween
+var officer: Person
+var previous: Person
+var passport: Node3D
+var cart: Node3D
+var gate_visual: MeshInstance3D
+var gate_light: MeshInstance3D
+var gate_body: StaticBody3D
+var exit_visual: MeshInstance3D
+var exit_body: StaticBody3D
+var belt_time := 0.0
+var stage_time := 0.0
+var spoken_welcome := false
+var voice_id := ""
+var bag_arrows: Array[Label3D] = []
+var other_bags: Array[Node3D] = []
+var driver_opening := false
+var driver_clock := 0.0
+var dialogue: Label
 
 func _ready() -> void:
 	mobile = OS.has_feature("android") or OS.has_feature("ios") or OS.get_cmdline_user_args().has("--touch-controls")
@@ -40,10 +61,13 @@ func _ready() -> void:
 	_make_taxi()
 	_make_people()
 	_make_player()
+	_make_arrivals_props()
 	_make_bags()
 	_make_hud()
+	var voices := DisplayServer.tts_get_voices_for_language("es")
+	if not voices.is_empty(): voice_id = voices[0]
 	_sync()
-	if progress.stage==8: _seat_player()
+	if progress.stage==Progress.COMPLETE: _seat_player()
 	else: Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if mobile else Input.MOUSE_MODE_CAPTURED
 
 func _mat(color: Color) -> StandardMaterial3D:
@@ -108,39 +132,110 @@ func _make_environment() -> void:
 	add_child(sun)
 
 func _make_terminal() -> void:
-	var concrete := Color("#c7c3b6")
-	var cream := Color("#e0d9ca")
-	var glass := Color("#506c7a")
-	var asphalt := Color("#555956")
-	var trim := Color("#a1a6a3")
-	_box(self,Vector3(0,-.18,8),Vector3(84,.36,50),concrete,true)
-	_box(self,Vector3(0,.012,18),Vector3(84,.022,12),asphalt)
+	var concrete := Color("#c8c5b8")
+	var tile := Color("#e5dfcd")
+	var cream := Color("#eee6d3")
+	var red := Color("#b92b2e")
+	var blue := Color("#12548c")
+	var ochre := Color("#c69a49")
+	var glass := Color("#445b65")
+	var metal := Color("#a9aaa5")
+	_box(self,Vector3(0,-.18,-4),Vector3(84,.36,64),concrete,true)
+	_box(self,Vector3(0,.012,18),Vector3(84,.022,12),Color("#555956"))
 	_box(self,Vector3(0,.015,5),Vector3(84,.03,13),concrete,true)
-	# Façade only: arrivals zone is outdoors. The interior is deliberately closed.
-	_box(self,Vector3(0,4.6,-8),Vector3(70,9.2,12),cream,true)
-	_box(self,Vector3(0,5.6,-1.94),Vector3(70,5.5,.14),glass)
-	_box(self,Vector3(0,8.4,-1.76),Vector3(70,.65,.28),cream)
-	for i in range(15):
-		var x := -33.6+float(i)*4.8
-		_box(self,Vector3(x,5.6,-1.80),Vector3(.13,5.5,.28),trim)
+	# The reference façade: ochre colonnade, deep blue fascia, long glass bays.
+	for side in [-1.0,1.0]:
+		var x := float(side)
+		_box(self,Vector3(x*19,2.2,-2),Vector3(33,4.4,.30),cream,true)
+		for i in range(7):
+			_box(self,Vector3(x*(4.8+float(i)*4.3),1.7,-1.80),Vector3(3.8,3.1,.12),glass)
+		_box(self,Vector3(x*14.8,2,-17),Vector3(.34,4,30),cream,true)
+	_box(self,Vector3(0,2,-32),Vector3(30,4,.35),cream,true)
+	_box(self,Vector3(0,4.12,-17),Vector3(30,.24,30),cream,true)
+	_box(self,Vector3(0,3.95,1.1),Vector3(72,.52,6.6),ochre,true)
+	_box(self,Vector3(0,4.35,1.1),Vector3(72,.32,6.6),blue)
+	_box(self,Vector3(0,5.0,.8),Vector3(24,1.0,1.0),blue)
+	_label3(self,"AEROPUERTO INTERNACIONAL\nJOSÉ MARTÍ – LA HABANA",Vector3(0,5.03,1.33),.010)
 	for i in range(10):
-		var x := -31.5+float(i)*7.0
-		_box(self,Vector3(x,1.5,-1.75),Vector3(5.6,2.9,.16),glass)
-		_box(self,Vector3(x,1.5,-1.63),Vector3(.09,2.9,.10),trim)
-		_box(self,Vector3(x,2.98,-1.63),Vector3(5.6,.13,.18),trim)
-	_box(self,Vector3(0,3.65,1.0),Vector3(72,.48,6.3),cream,true)
-	for i in range(9):
-		var x := -32.0+float(i)*8.0
-		_box(self,Vector3(x,1.78,3.8),Vector3(.48,3.56,.48),trim,true)
-	_label3(self,"AEROPUERTO INTERNACIONAL JOSÉ MARTÍ",Vector3(0,8.43,-1.55),.011,Color("#253941"))
-	_label3(self,"LLEGADAS  /  ARRIVALS",Vector3(0,3.71,4.22),.008,Color("#31424b"))
+		var x := -32.4+float(i)*7.2
+		if absf(x)>2.8: _box(self,Vector3(x,1.85,3.7),Vector3(.43,3.7,.43),ochre,true)
+	_label3(self,"SALIDA  /  ARRIVALS",Vector3(0,3.82,4.45),.006)
+	# Continuous tiled interior with thin joints, red ceiling borders and lights.
+	_box(self,Vector3(0,.016,-17),Vector3(29.4,.03,29.6),tile)
+	for x in range(-14,15):
+		_box(self,Vector3(float(x),.035,-17),Vector3(.012,.004,29.6),Color("#b5b1a4"))
+	for z in range(-31,-1):
+		_box(self,Vector3(0,.035,float(z)),Vector3(29.4,.004,.012),Color("#b5b1a4"))
+	for z in [-29.0,-24.0,-18.0,-12.0,-6.0]:
+		_box(self,Vector3(0,3.94,float(z)),Vector3(29.3,.07,.40),red)
+		for x in [-10.0,-5.0,0.0,5.0,10.0]:
+			_box(self,Vector3(float(x),3.91,float(z)+1.0),Vector3(.9,.035,.55),Color("#fff5d7"))
+	# Migration room and physically gated passage. Only the centre opening leads onward.
+	for side in [-1.0,1.0]:
+		_box(self,Vector3(float(side)*8.3,2,-20),Vector3(12.8,4,.32),cream,true)
+		_box(self,Vector3(float(side)*8.3,3.25,-20.19),Vector3(12.8,1.0,.08),red)
+	_box(self,Vector3(-3.0,1.05,-23),Vector3(2.35,2.1,1.5),Color("#d5d0c3"),true)
+	_box(self,Vector3(-3.0,2.35,-23),Vector3(2.45,.48,1.6),red)
+	_label3(self,"MIGRACIÓN  •  01",Vector3(-3,2.37,-23.83),.006).rotation.y = PI
+	_box(self,Vector3(-1.73,.99,-23.8),Vector3(.48,.10,.78),metal)
+	_box(self,Vector3(-3.0,1.30,-22.15),Vector3(.50,.35,.12),glass)
+	_label3(self,"CONTROL DE PASAPORTES",Vector3(0,3.4,-20.22),.008).rotation.y = PI
+	for side in [-1.0,1.0]:
+		_box(self,Vector3(float(side)*1.7,.55,-20),Vector3(.32,1.10,.55),metal,true)
+	gate_body = StaticBody3D.new()
+	add_child(gate_body)
+	gate_body.position = GATE+Vector3.UP*.53
+	var gate_shape := BoxShape3D.new()
+	gate_shape.size = Vector3(3.4,1.06,.23)
+	var gate_col := CollisionShape3D.new()
+	gate_col.shape = gate_shape
+	gate_body.add_child(gate_col)
+	gate_visual = _box(gate_body,Vector3.ZERO,Vector3(3.35,.12,.20),metal)
+	gate_light = _box(self,Vector3(1.7,1.16,-20.29),Vector3(.20,.12,.06),red)
+	# Queue barriers flank the walking lane, never close the central aisle.
+	for x in [-4.0,2.5]:
+		for z in [-30.0,-27.8,-25.6]:
+			_box(self,Vector3(float(x),.49,float(z)),Vector3(.07,.98,.07),Color("#323638"))
+			_box(self,Vector3(float(x),.035,float(z)),Vector3(.28,.07,.28),metal)
+			if z<-26.0: _box(self,Vector3(float(x),.88,float(z)+1.1),Vector3(.035,.07,2.2),blue)
+	# Red counter fascia, flight information panels and modest seating.
+	for i in range(3):
+		var z := -30.0+float(i)*3.0
+		_box(self,Vector3(12.9,1.0,z),Vector3(2.0,1.95,2.4),Color("#ddd9cc"),true)
+		_box(self,Vector3(13.0,2.52,z),Vector3(2.3,.75,2.75),red)
+		var display := _label3(self,"0"+str(i+2),Vector3(11.80,2.53,z),.006)
+		display.rotation.y = -PI*.5
+	_box(self,Vector3(8.5,2.65,-20.20),Vector3(4.5,1.35,.12),Color("#252d35"))
+	_label3(self,"LLEGADAS  /  ARRIVALS\nMIAMI      LANDED\nMADRID     LANDED\nPANAMÁ     EXPECTED",Vector3(8.5,2.66,-20.28),.0045,Color("#e4d381")).rotation.y = PI
+	for z in [-17.0,-14.0,-8.0]:
+		_box(self,Vector3(-13.5,.46,float(z)),Vector3(1.0,.13,2.2),blue,true)
+		_box(self,Vector3(-13.95,.85,float(z)),Vector3(.13,.75,2.2),blue)
+	# Baggage hall has an open aisle west of the carousel.
+	_box(self,Vector3(4,.30,-11),Vector3(10.0,.60,4.0),metal,true)
+	_box(self,Vector3(4,.65,-11),Vector3(9.85,.12,3.85),Color("#252b2d"))
+	_box(self,Vector3(4,.76,-11),Vector3(5.4,.18,1.3),metal)
+	_box(self,Vector3(4,1.4,-11),Vector3(.13,1.3,.13),metal)
+	_box(self,Vector3(4,2.07,-11),Vector3(1.8,.65,.14),Color("#168bbb"))
+	_label3(self,"2  EQUIPAJE",Vector3(4,2.08,-11.09),.006).rotation.y = PI
+	_label3(self,"2  EQUIPAJE",Vector3(4,2.08,-10.91),.006)
+	_label3(self,"RECOGIDA DE EQUIPAJE",Vector3(-5,3.40,-19.80),.008)
+	_box(self,Vector3(0,3.25,-2.25),Vector3(5,.5,.15),red)
+	_label3(self,"SALIDA",Vector3(0,3.25,-2.36),.008).rotation.y = PI
+	exit_body = StaticBody3D.new()
+	add_child(exit_body)
+	exit_body.position = Vector3(0,1.4,-2)
+	var exit_col := CollisionShape3D.new()
+	var exit_shape := BoxShape3D.new()
+	exit_shape.size = Vector3(5,2.8,.24)
+	exit_col.shape = exit_shape
+	exit_body.add_child(exit_col)
+	exit_visual = _box(exit_body,Vector3.ZERO,Vector3(4.95,2.78,.12),glass)
 	for x in range(-36,37,6):
 		_box(self,Vector3(float(x),.025,18),Vector3(2.8,.012,.11),Color("#e1d7ab"))
 	_box(self,Vector3(0,.028,11.9),Vector3(82,.012,.12),Color("#c9ac51"))
 	for x in [-32.0,-22.0,20.0,31.0]:
-		_box(self,Vector3(x,1.2,9.4),Vector3(.12,2.4,.12),trim)
+		_box(self,Vector3(x,1.2,9.4),Vector3(.12,2.4,.12),metal)
 		_label3(self,"TAXIS",Vector3(x,2.2,9.48),.005,Color("#233c4a"))
-	# Boundaries outside the visible playable pickup area.
 	for x in [-42.0,42.0]:
 		_box(self,Vector3(x,1,8),Vector3(.3,2,36),concrete,true)
 	_box(self,Vector3(0,1,26),Vector3(84,2,.3),concrete,true)
@@ -239,6 +334,8 @@ func _make_people() -> void:
 	driver.setup(414)
 	driver.position = Vector3(10.1,.03,11.0)
 	driver.rotation.y = PI
+	if progress.stage>=11 and progress.stage<Progress.COMPLETE:
+		driver.position = taxi.to_global(Vector3(-1.35,0,-2.25))
 
 func _make_player() -> void:
 	player = CharacterBody3D.new()
@@ -258,19 +355,75 @@ func _make_player() -> void:
 	player.rotation.y = yaw
 	camera.rotation.x = pitch
 
+func _suitcase(color: Color) -> Node3D:
+	var bag := Node3D.new()
+	add_child(bag)
+	_box(bag,Vector3(0,.23,0),Vector3(.40,.44,.24),color)
+	_box(bag,Vector3(0,.46,0),Vector3(.15,.045,.055),Color("#303738"))
+	for x in [-.15,.15]:
+		_box(bag,Vector3(float(x),.025,0),Vector3(.06,.05,.065),Color("#25292b"))
+	return bag
+
+func _make_arrivals_props() -> void:
+	officer = Person.new()
+	add_child(officer)
+	officer.setup(331)
+	officer.position = Vector3(-1.65,.03,-22.9)
+	officer.rotation.y = PI
+	previous = Person.new()
+	add_child(previous)
+	previous.setup(343)
+	previous.position = DESK+Vector3(0,.03,.0)
+	# Passport is a real prop that changes parent between hand and officer.
+	passport = Node3D.new()
+	add_child(passport)
+	_box(passport,Vector3.ZERO,Vector3(.105,.012,.15),Color("#213d66"))
+	_box(passport,Vector3(0,.008,0),Vector3(.094,.008,.135),Color("#d9d1b7"))
+	_box(passport,Vector3(0,.015,0),Vector3(.105,.008,.15),Color("#213d66"))
+	_label3(passport,"PASAPORTE",Vector3(0,.021,0),.0012,Color("#d4bd70")).rotation.x = -PI*.5
+	cart = Node3D.new()
+	add_child(cart)
+	cart.position = progress.cart_position
+	var steel := Color("#a9afb1")
+	_box(cart,Vector3(0,.24,0),Vector3(.68,.075,1.06),steel)
+	for x in [-.30,.30]:
+		_box(cart,Vector3(float(x),.56,.44),Vector3(.045,.68,.045),steel)
+		_box(cart,Vector3(float(x),.32,0),Vector3(.045,.12,1.04),steel)
+		for z in [-.44,.44]: _box(cart,Vector3(float(x),.09,float(z)),Vector3(.09,.16,.14),Color("#343a3c"))
+	_box(cart,Vector3(0,.90,.44),Vector3(.72,.07,.07),Color("#253c57"))
+	_box(cart,Vector3(0,.50,-.48),Vector3(.65,.34,.045),steel)
+	_label3(self,"CARROS DE EQUIPAJE",Vector3(-5,2.4,-17),.006).rotation.y = PI
+
 func _make_bags() -> void:
 	for i in range(2):
-		var bag := Node3D.new()
-		add_child(bag)
-		var color := Color("#596b79") if i==0 else Color("#76584a")
-		_box(bag,Vector3(0,.28,0),Vector3(.42,.53,.24),color)
-		_box(bag,Vector3(0,.55,0),Vector3(.15,.06,.06),Color("#303738"))
-		for x in [-.15,.15]:
-			_box(bag,Vector3(float(x),.035,0),Vector3(.065,.07,.07),Color("#25292b"))
+		var bag := _suitcase(Color("#506a8b") if i==0 else Color("#76584a"))
 		bags.append(bag)
+		var arrow := _label3(bag,"▼",Vector3(0,.85,0),.010,Color("#ffd976"))
+		arrow.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		bag_arrows.append(arrow)
+	for i in range(5):
+		other_bags.append(_suitcase([Color("#a73b39"),Color("#c6a247"),Color("#506f59"),Color("#4e5052"),Color("#8b7770")][i]))
 	marker = Node3D.new()
 	add_child(marker)
 	_label3(marker,"▼",Vector3(0,1.7,0),.010,Color("#ffd976")).billboard = BaseMaterial3D.BILLBOARD_ENABLED
+
+func _belt_point(slot: int) -> Vector3:
+	var a := belt_time*.17+float(slot)*TAU/7.0
+	return BELT+Vector3(cos(a)*4.35,0,sin(a)*1.65)
+
+func _update_belt(delta: float) -> void:
+	belt_time = fposmod(belt_time+delta,TAU/.17)
+	for i in range(other_bags.size()):
+		other_bags[i].position = _belt_point(i+2)
+	for i in range(bags.size()):
+		if Progress.bag_location(progress.stage,i)=="belt":
+			bags[i].position = _belt_point(i)
+
+func _say(words: String) -> void:
+	_notice("Agente: "+words)
+	if dialogue!=null:
+		dialogue.text = "Agente: "+words
+	if not voice_id.is_empty(): DisplayServer.tts_speak(words,voice_id,90,1.0,.92,0,true)
 
 func _trunk_point() -> Vector3:
 	return taxi.to_global(Vector3(0,0,-2.9))
@@ -280,68 +433,107 @@ func _door_point() -> Vector3:
 
 func _target() -> Vector3:
 	match progress.stage:
-		0: return BAG_POINTS[0]
-		4: return BAG_POINTS[1]
-		7: return _door_point()
-	return _trunk_point()
+		0: return Progress.SPAWN
+		1,2: return DESK
+		3: return GATE+Vector3.FORWARD*-2.0
+		4: return cart.global_position
+		5: return bags[0].global_position
+		6,8,11,13: return cart.global_position
+		7: return bags[1].global_position
+		9: return EXIT
+		10,12,14,15: return _trunk_point()
+		16: return _door_point()
+	return taxi.global_position
 
 func _near(at: Vector3,radius: float=1.45) -> bool:
 	return Vector2(player.global_position.x,player.global_position.z).distance_to(Vector2(at.x,at.z))<=radius
 
 func _sync() -> void:
 	var step := progress.stage
+	if previous!=null: previous.visible = step==0
+	var cleared := step>=3
+	gate_body.get_child(0).set_deferred("disabled",cleared)
+	gate_visual.visible = not cleared
+	gate_light.material_override = _mat(Color("#38b86a") if cleared else Color("#b92b2e"))
+	exit_body.get_child(0).set_deferred("disabled",step>=9)
+	exit_visual.visible = step<9
+	if step==2:
+		passport.show()
+		if passport.get_parent()!=officer: passport.reparent(officer,false)
+		passport.position = Vector3(.15,1.02,.39)
+		passport.rotation = Vector3.ZERO
+	elif step<=3:
+		passport.show()
+		if passport.get_parent()!=camera: passport.reparent(camera,false)
+		passport.position = Vector3(.31,-.38,-.55)
+		passport.rotation = Vector3(.55,0,-.18)
+	else: passport.hide()
 	for i in range(bags.size()):
 		var bag := bags[i]
-		var carried := (i==0 and step>=1 and step<=3) or (i==1 and step==5)
-		var stored := (i==0 and step>=4) or (i==1 and step>=6)
-		if carried:
-			if bag.get_parent()!=camera: bag.reparent(camera,false)
-			bag.position = Vector3(.40,-.62,-.75)
-			bag.rotation = Vector3.ZERO
-		elif stored:
-			if bag.get_parent()!=taxi: bag.reparent(taxi,false)
-			bag.position = Vector3(-.28 if i==0 else .28,.61,-1.65)
-			bag.rotation = Vector3.ZERO
-			# Lower the upright case into the trunk on its side.
-			bag.rotation.x = PI*.5
-		else:
-			if bag.get_parent()!=self: bag.reparent(self,false)
-			bag.position = BAG_POINTS[i]+Vector3.UP*.03
-			bag.rotation = Vector3.ZERO
-	lid.rotation.x = 1.15 if step>=3 and step<=6 else 0.0
-	marker.visible = step<8
-	if step<8: marker.global_position = _target()
-	objective.text = "CAPÍTULO 1 · DE REGRESO A CUBA\n"+TASKS[step]+"   (%d/8)" % step
-	if step==8: prompt.text = "Fase 1 completada · Esc para abrir el menú"
+		var place := Progress.bag_location(step,i)
+		var parent: Node3D = self
+		if place=="hand": parent = camera
+		elif place=="cart": parent = cart
+		elif place=="trunk": parent = taxi
+		if bag.get_parent()!=parent: bag.reparent(parent,false)
+		bag.rotation = Vector3.ZERO
+		match place:
+			"hand": bag.position = Vector3(.40,-.62,-.75)
+			"cart": bag.position = Vector3(-.15 if i==0 else .15,.29,-.20 if i==0 else .25)
+			"trunk":
+				bag.position = Vector3(-.28 if i==0 else .28,.61,-1.65)
+				bag.rotation.x = PI*.5
+			"belt": bag.position = _belt_point(i)
+		bag_arrows[i].visible = place=="belt" and step>=4
+	lid.rotation.x = 1.15 if step>=11 and step<=15 else 0.0
+	marker.visible = step not in [0,5,7,15,Progress.COMPLETE]
+	if marker.visible: marker.global_position = _target()
+	objective.text = "CAPÍTULO 1 · DE REGRESO A CUBA\n"+TASKS[step]+"   (%d/%d)" % [step,Progress.COMPLETE]
+	if step==Progress.COMPLETE: prompt.text = "Fase 1 completada · Esc para abrir el menú"
 
-func _advance(action: String) -> void:
+func _advance(action: String) -> bool:
 	var old := progress.stage
 	var old_pos := progress.checkpoint
-	if not progress.advance(action,player.global_position): return
+	var old_cart := progress.cart_position
+	if not progress.advance(action,player.global_position): return false
+	progress.cart_position = cart.global_position
 	if not progress.save_game():
 		progress.stage = old
 		progress.checkpoint = old_pos
+		progress.cart_position = old_cart
 		_notice("No se pudo guardar. Intenta de nuevo.")
-		return
+		return false
+	stage_time = 0.0
 	_sync()
-	if progress.stage==8: _seat_player()
+	if progress.stage==Progress.COMPLETE: _seat_player()
+	return true
 
 func _interact() -> void:
-	if menu_open or progress.stage==8: return
-	if not _near(_target()):
+	var step := progress.stage
+	if menu_open or step in [0,3,9,10,15,Progress.COMPLETE]: return
+	if not _near(_target(),1.60):
 		_notice("Acércate al objetivo marcado.")
 		return
-	if progress.stage==1: return
-	var before := progress.stage
-	var old_angle := lid.rotation.x
-	_advance(Progress.expected_action(before))
-	if progress.stage==before: return
-	if before in [2,6]:
-		if lid_tween!=null: lid_tween.kill()
-		var goal := lid.rotation.x
-		lid.rotation.x = old_angle
-		lid_tween = create_tween()
-		lid_tween.tween_property(lid,"rotation:x",goal,.45)
+	if step==2 and not spoken_welcome:
+		_notice("La agente está revisando tu pasaporte.")
+		return
+	if _advance(Progress.expected_action(step)):
+		if step==1:
+			dialogue.text = ""
+			spoken_welcome = false
+			_notice("La agente revisa tu pasaporte.")
+		if step==2:
+			dialogue.text = ""
+			gate_visual.show()
+			var opening := create_tween()
+			opening.tween_property(gate_visual,"position:y",1.6,.55)
+			opening.tween_callback(gate_visual.hide)
+			_notice("Pasaporte recuperado. Continúa por el paso verde.")
+		if step==8:
+			exit_visual.show()
+			var sliding := create_tween()
+			sliding.tween_property(exit_visual,"position:x",5.0,.65)
+			sliding.tween_callback(exit_visual.hide)
 
 func _seat_player() -> void:
 	player.velocity = Vector3.ZERO
@@ -409,6 +601,17 @@ func _make_hud() -> void:
 	message.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	message.add_theme_color_override("font_shadow_color",Color.BLACK)
 	message.add_theme_constant_override("shadow_offset_y",2)
+	dialogue = Label.new()
+	root.add_child(dialogue)
+	dialogue.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+	dialogue.offset_left = -360
+	dialogue.offset_right = 360
+	dialogue.offset_top = -140
+	dialogue.offset_bottom = -98
+	dialogue.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	dialogue.add_theme_font_size_override("font_size",23)
+	dialogue.add_theme_color_override("font_shadow_color",Color.BLACK)
+	dialogue.add_theme_constant_override("shadow_offset_y",2)
 	menu = PanelContainer.new()
 	root.add_child(menu)
 	menu.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
@@ -453,7 +656,7 @@ func _toggle_menu() -> void:
 	menu_open = not menu_open
 	menu.visible = menu_open
 	touch_keys.clear()
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if menu_open or mobile or progress.stage==8 else Input.MOUSE_MODE_CAPTURED
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if menu_open or mobile or progress.stage==Progress.COMPLETE else Input.MOUSE_MODE_CAPTURED
 
 func _restart() -> void:
 	# Only the new airport checkpoint is reset. Legacy saves remain untouched.
@@ -472,7 +675,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.keycode==KEY_E:
 			_interact()
 			get_viewport().set_input_as_handled()
-	if menu_open or progress.stage==8: return
+	if menu_open or progress.stage==Progress.COMPLETE: return
 	var look := Vector2.ZERO
 	if event is InputEventMouseMotion and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED: look = event.relative
 	elif event is InputEventScreenDrag and mobile: look = event.relative
@@ -498,18 +701,78 @@ func _physics_process(delta: float) -> void:
 		person.position.x = origin.x+sin(float(item.phase))*2.0
 		person.rotation.y = PI*.5 if cos(float(item.phase))>0 else -PI*.5
 		person.animate(delta,true,1.2)
-	if progress.stage==8: return
+	if progress.stage==Progress.COMPLETE: return
+	_update_belt(delta)
+	stage_time += delta
 	var axis := Vector2(float(_pressed(KEY_D,"right"))-float(_pressed(KEY_A,"left")),float(_pressed(KEY_S,"back"))-float(_pressed(KEY_W,"forward"))).limit_length(1.0)
 	var direction := player.transform.basis*Vector3(axis.x,0,axis.y)
-	player.velocity.x = direction.x*3.8
-	player.velocity.z = direction.z*3.8
+	var speed := 2.8 if progress.stage>=5 and progress.stage<=10 else 3.8
+	player.velocity.x = direction.x*speed
+	player.velocity.z = direction.z*speed
 	player.velocity.y -= 9.8*delta
 	player.move_and_slide()
 	if player.position.y<-.8:
 		player.position = progress.checkpoint
 		player.velocity = Vector3.ZERO
-	if progress.stage==1 and _near(_trunk_point()): _advance("approach")
-	var near := _near(_target())
-	var actions := ["Recoger maleta","","Abrir maletero","Guardar maleta","Recoger maleta","Guardar maleta","Cerrar maletero","Subir al taxi"]
-	if progress.stage<8:
-		prompt.text = ("[E] "+actions[progress.stage]) if near and progress.stage!=1 else "WASD · Caminar   /   Sigue el marcador"
+	if progress.stage>=5 and progress.stage<=10:
+		# Cart is pushed in front of the camera; the ray keeps it on the
+		# player's side of walls and locked doors when turning near a corner.
+		var start := player.global_position
+		start.y = .45
+		var forward := -player.global_transform.basis.z
+		var desired := start+forward*1.25
+		var query := PhysicsRayQueryParameters3D.create(start,desired)
+		query.exclude = [player.get_rid()]
+		var hit := get_world_3d().direct_space_state.intersect_ray(query)
+		if not hit.is_empty(): desired = start+forward*maxf(.35,start.distance_to(hit.position)-.35)
+		cart.global_position = Vector3(desired.x,.03,desired.z)
+		cart.rotation.y = yaw
+	officer.animate(delta,false)
+	if progress.stage==2:
+		officer.arms[1].rotation.x = lerpf(officer.arms[1].rotation.x,-1.0,minf(1.0,delta*7.0))
+	match progress.stage:
+		0:
+			if stage_time>1.5 and previous.visible:
+				if previous.walk_to(Vector3(5.2,.03,-24),delta,1.8) or stage_time>7.0:
+					if _advance("next"): _say("Siguiente.")
+		2:
+			if stage_time>=1.8 and not spoken_welcome:
+				spoken_welcome = true
+				_say("Bienvenido a la patria.")
+		3:
+			if player.global_position.z>-19.25 and absf(player.global_position.x)<2.3: _advance("pass_gate")
+		9:
+			if player.global_position.z>.25 and absf(player.global_position.x)<4.0: _advance("exit")
+		10:
+			if _near(_trunk_point(),2.0) and not driver_opening:
+				driver_opening = true
+				driver_clock = 0.0
+			if driver_opening:
+				driver_clock += delta
+				var at := taxi.to_global(Vector3(-1.35,0,-2.25))
+				if driver.walk_to(at,delta,2.0) or driver_clock>8.0:
+					var old := lid.rotation.x
+					if _advance("driver_open"):
+						lid.rotation.x = old
+						lid_tween = create_tween()
+						lid_tween.tween_property(lid,"rotation:x",1.15,.55)
+						driver.arms[1].rotation.x = -1.0
+						_notice("El chofer abrió el maletero.")
+		15:
+			driver.arms[1].rotation.x = -1.1
+			if stage_time>=.65:
+				var old := lid.rotation.x
+				if _advance("driver_close"):
+					lid.rotation.x = old
+					lid_tween = create_tween()
+					lid_tween.tween_property(lid,"rotation:x",0.0,.55)
+					_notice("El chofer cerró el maletero.")
+						driver.arms[1].rotation.x = 0.0
+	if progress.stage==Progress.COMPLETE: return
+	if marker.visible: marker.global_position = _target()
+	var near := _near(_target(),1.60)
+	var actions := ["","Entregar pasaporte","Recoger pasaporte","","Tomar carrito","Recoger primera maleta","Poner en carrito","Recoger segunda maleta","Poner en carrito","","","Tomar primera maleta","Guardar en maletero","Tomar segunda maleta","Guardar en maletero","","Subir al taxi"]
+	var action: String = actions[progress.stage]
+	if progress.stage==2 and not spoken_welcome: action = ""
+	prompt.text = ("[E] "+action) if near and not action.is_empty() else "WASD · Caminar / Sigue el objetivo"
+
