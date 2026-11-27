@@ -5,6 +5,18 @@ const Person = preload("res://street_person.gd")
 const Kit = preload("res://vehicle_kit.gd")
 const Bypass = preload("res://traffic_bypass.gd")
 const Garage = preload("res://home_garage.gd")
+const Visual = preload("res://yordi_visual.gd")
+var story_cue: AudioStreamPlayer
+var footsteps: AudioStreamPlayer
+var chase_overlay: CanvasLayer
+var chase_panel: PanelContainer
+var chase_caption: Label
+var chase_bar: ProgressBar
+var chase_initial := 0.0
+var chase_visual_clock := 0.0
+var chase_step_clock := 0.0
+var bike_visual_heading := 0.0
+var bike_visual_lean := 0.0
 const REWARD := 1000
 const SALE_DELAY := 25.0
 const RIVAL_SPEED := 5.1
@@ -79,6 +91,7 @@ func setup(controller) -> void:
 	world = game.cuba_world
 	business = game.business
 	service = game.taxis
+	_setup_visuals()
 	var life: Dictionary = business.ledger.life_data
 	if not life.has("yordi_ps5"):
 		life.yordi_ps5 = {"stage":0,"reward_paid":false,"police":false,"delivered":false}
@@ -217,15 +230,108 @@ func _ensure_yordi(at: Vector3) -> void:
 func _box_ps5(parent: Node3D) -> Node3D:
 	var box := Node3D.new()
 	parent.add_child(box)
-	business._box(box,Vector3.ZERO,Vector3(.49,.35,.16),Color("#e8ebef"))
+	var base_box: MeshInstance3D = business._box(box,Vector3.ZERO,Vector3(.49,.35,.16),Color("#e8ebef"))
+	var base_material := base_box.material_override as StandardMaterial3D
+	if base_material!=null: base_box.material_override = world.havana_textures.material(base_material,"cardboard")
 	business._box(box,Vector3(0,.125,.086),Vector3(.48,.09,.015),Color("#3468aa"))
 	business._box(box,Vector3(.10,-.035,.087),Vector3(.15,.19,.018),Color("#20262c"))
-	business._box(box,Vector3(.10,-.035,.10),Vector3(.11,.18,.012),Color("#e1e5ea"))
-	var label: Label3D = business._label(box,"PS5",Vector3(-.11,.025,.10))
+	for side in [-1.0,1.0]:
+		var cover: MeshInstance3D = business._box(box,Vector3(.10+float(side)*.035,-.035,.102),Vector3(.052,.18,.014),Color("#e1e5ea"))
+		cover.rotation.z = float(side)*.09
+	business._box(box,Vector3(-.12,-.095,.089),Vector3(.12,.042,.014),Color("#d4dae0"))
+	business._box(box,Vector3(0,.178,0),Vector3(.14,.012,.045),Color("#b4c3d2"))
+	var label: Label3D = business._label(box,"PS5",Vector3(-.11,.025,.10),Color("#263242"))
 	label.billboard = BaseMaterial3D.BILLBOARD_DISABLED
 	label.pixel_size = .0019
 	label.outline_size = 0
+	label.visibility_range_end = 12.0
 	return box
+
+func _setup_visuals() -> void:
+	story_cue = AudioStreamPlayer.new()
+	add_child(story_cue)
+	story_cue.volume_db = -14.0
+	footsteps = AudioStreamPlayer.new()
+	add_child(footsteps)
+	footsteps.volume_db = -20.0
+	footsteps.stream = Visual.cue("step")
+	chase_overlay = CanvasLayer.new()
+	chase_overlay.layer = 16
+	add_child(chase_overlay)
+	chase_panel = PanelContainer.new()
+	chase_overlay.add_child(chase_panel)
+	chase_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	chase_panel.offset_left = -150
+	chase_panel.offset_right = 150
+	chase_panel.offset_top = 14
+	chase_panel.offset_bottom = 69
+	chase_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color("#17212bed")
+	style.set_corner_radius_all(7)
+	style.content_margin_left = 12.0
+	style.content_margin_right = 12.0
+	style.content_margin_top = 8.0
+	style.content_margin_bottom = 8.0
+	chase_panel.add_theme_stylebox_override("panel",style)
+	var stack := VBoxContainer.new()
+	chase_panel.add_child(stack)
+	stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	chase_caption = Label.new()
+	chase_caption.text = "SIGUE A YORDI"
+	chase_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	chase_caption.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stack.add_child(chase_caption)
+	chase_bar = ProgressBar.new()
+	chase_bar.max_value = 1.0
+	chase_bar.step = .001
+	chase_bar.show_percentage = false
+	chase_bar.custom_minimum_size = Vector2(250,6)
+	chase_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stack.add_child(chase_bar)
+	chase_panel.hide()
+
+func _cue(kind: String) -> void:
+	if not is_instance_valid(story_cue): return
+	story_cue.stream = Visual.cue(kind)
+	story_cue.play()
+
+func _chase_visual(delta: float) -> void:
+	if not is_instance_valid(chase_panel): return
+	chase_visual_clock += delta
+	chase_step_clock += delta
+	var speed := Vector2(game.player.velocity.x,game.player.velocity.z).length()
+	if speed>1.2 and game.player.is_on_floor() and chase_step_clock>=clampf(1.15/speed,.25,.54):
+		chase_step_clock = 0.0
+		footsteps.play()
+	if chase_visual_clock<.15: return
+	chase_visual_clock = 0.0
+	chase_panel.show()
+	chase_bar.value = Visual.escape_progress(chase_initial,_escape_remaining())
+	chase_caption.text = "SIGUE A YORDI" if not is_instance_valid(yordi) else "SIGUE A YORDI · %d m" % roundi(yordi.global_position.distance_to(game.player.global_position))
+
+func _bike_details() -> void:
+	var details := Node3D.new()
+	bike.add_child(details)
+	for side in [-1.0,1.0]:
+		var x := float(side)
+		Kit._bar(details,Vector3(x*.23,1.15,.27),Vector3(x*.33,1.29,.25),.022,Color("#aeb3b7"),false)
+		Kit._box(details,Vector3(x*.35,1.29,.25),Vector3(.11,.07,.035),Color("#76858e"),false)
+		Kit._box(details,Vector3(x*.167,.50,-.42),Vector3(.035,.23,.035),Color("#a7a9aa"),false,.25)
+	Kit._box(details,Vector3(0,1.12,.39),Vector3(.14,.025,.09),Color("#252c30"),false)
+	Kit._box(details,Vector3(0,1.128,.40),Vector3(.11,.016,.065),Color("#91a5a4"),false)
+	Kit._box(details,Vector3(0,.67,-.90),Vector3(.16,.09,.018),Color("#e1dbc7"),false)
+	Kit._box(details,Vector3(0,.82,-.865),Vector3(.15,.045,.022),Color("#c44336"),false)
+	Kit._batch_finished(details)
+
+func _ride_visual(delta: float) -> void:
+	if not is_instance_valid(bike) or not is_instance_valid(bike_passenger): return
+	if not game.garage.riding_borrowed() or game.garage.borrowed_body!=bike: return
+	var turn := angle_difference(bike_visual_heading,bike.rotation.y)/maxf(delta,.001)
+	bike_visual_heading = bike.rotation.y
+	bike_visual_lean = lerpf(bike_visual_lean,Visual.rider_lean(game.garage.ride_speed,turn),minf(1.0,delta*7.0))
+	bike_passenger.rotation.z = bike_visual_lean
+	if is_instance_valid(game.garage.rider): game.garage.rider.rotation.z = bike_visual_lean
 
 func _carry_ps5() -> void:
 	if not is_instance_valid(yordi): return
@@ -346,6 +452,7 @@ func _spawn_bike(berth: Dictionary) -> void:
 	var d: Vector3 = berth.d
 	bike.rotation.y = atan2(d.x,d.z)
 	bike.add_to_group("traffic_parked")
+	_bike_details()
 	# Longer rear seat and rear passenger footrests; shared primitives.
 	Kit._box(bike,Vector3(0,.99,-.70),Vector3(.28,.10,.38),Color("#323638"),false)
 	for side in [-1.0,1.0]:
@@ -907,6 +1014,8 @@ func _start_manual_bike(destination: Vector3, returning: bool = false) -> void:
 	for knee in passenger.knees: knee.rotation.x = 1.28
 	for arm in passenger.arms: arm.rotation.x = -.55
 	bike_passenger = passenger
+	bike_visual_heading = bike.rotation.y
+	bike_visual_lean = 0.0
 	if returning:
 		if is_instance_valid(console_box):
 			console_box.reparent(passenger,false)
@@ -971,6 +1080,7 @@ func _purchase() -> void:
 	if _stage()!=6: return
 	business.close()
 	_carry_ps5()
+	_cue("success")
 	state.purchased = true
 	state.checkpoint = {"seller":_encode(seller_point),"bike":_encode(bike.global_position),"heading":_encode(bike.global_basis.z)}
 	_set_stage(7)
@@ -1015,6 +1125,11 @@ func _clear_foes() -> void:
 			walkers.erase(foe.get_instance_id())
 			foe.queue_free()
 	foes.clear()
+	if is_instance_valid(chase_panel): chase_panel.hide()
+	if is_instance_valid(footsteps): footsteps.stop()
+	chase_initial = 0.0
+	chase_visual_clock = 0.0
+	chase_step_clock = 0.0
 	if is_instance_valid(stone): stone.queue_free()
 	stone = null
 	robbery_phase = ""
@@ -1174,6 +1289,7 @@ func _start_robbery() -> void:
 	state.chase_start = _encode(at)
 	robbery_phase = "approach"
 	robbery_clock = 0.0
+	_cue("warning")
 	stone_camera_previous = game.first_person
 	stone_camera_changed = true
 	game.first_person = true
@@ -1299,6 +1415,11 @@ func _start_chase() -> void:
 	if foes.size()!=5 or escape_route.is_empty(): return
 	robbery_phase = ""
 	_set_stage(8)
+	chase_initial = _escape_remaining()
+	chase_visual_clock = 0.0
+	chase_step_clock = 0.0
+	chase_bar.value = 0.0
+	chase_panel.show()
 	chase_clock = 0.0
 	run_clock = 0.0
 	chase_sample = 0.0
@@ -1442,6 +1563,7 @@ func _chase_tick(delta: float) -> void:
 	var target := player_at-Vector3.UP*.86
 	_stone_tick(delta)
 	_lead_escape(delta,target)
+	_chase_visual(delta)
 	if is_instance_valid(yordi):
 		marker.global_position = yordi.global_position
 		marker.show()
@@ -1472,6 +1594,7 @@ func _chase_tick(delta: float) -> void:
 		rendezvous_clock = 0.0
 		bike_walk_elapsed = 0.0
 		_set_stage(9)
+		_cue("success")
 		_target(bike.global_position,"Moto de Yordi · regreso a casa")
 		business._notify("Yordi: ¡Ya los perdimos! Sube a la moto; vamos a casa.")
 		return
@@ -1522,7 +1645,27 @@ func can_list() -> bool:
 
 func open_listing() -> void:
 	if not can_list(): return
-	business._open("Facebook Marketplace · PS5","Publica el PS5 de Yordi. Él pagó la compra. Tu pago acordado es de 1,000 CUP al concretarse la venta.")
+	business._open("Facebook Marketplace · PS5")
+	var card := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color("#263549")
+	style.set_corner_radius_all(8)
+	style.content_margin_left = 12.0
+	style.content_margin_right = 12.0
+	style.content_margin_top = 10.0
+	style.content_margin_bottom = 10.0
+	card.add_theme_stylebox_override("panel",style)
+	business.content.add_child(card)
+	var column := VBoxContainer.new()
+	card.add_child(column)
+	var title := Label.new()
+	title.text = "PS5  ·  Consola"
+	title.add_theme_font_size_override("font_size",21)
+	column.add_child(title)
+	var detail := Label.new()
+	detail.text = "Vendedor: Yordi\nEstado: lista para publicar\nTu pago acordado: 1,000 CUP"
+	detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	column.add_child(detail)
 	business._button("Publicar PS5",_publish)
 	business._button("Volver",game.garage.open_phone_market)
 
@@ -1531,6 +1674,7 @@ func _publish() -> void:
 	state.sale_left = SALE_DELAY
 	_set_stage(13)
 	business.close()
+	_cue("success")
 	business._notify("PS5 publicado. Esperando comprador.")
 
 static func settle_sale(mission: Dictionary,ledger) -> bool:
@@ -1544,6 +1688,7 @@ static func settle_sale(mission: Dictionary,ledger) -> bool:
 func _complete_sale() -> void:
 	if not settle_sale(state,business.ledger): return
 	_save()
+	_cue("success")
 	if is_instance_valid(console_box): console_box.queue_free()
 	console_box = null
 	if is_instance_valid(yordi): yordi.hide()
@@ -1718,7 +1863,9 @@ func tick(delta: float) -> void:
 	if not trip_role.is_empty() and not game.taxi_riding:
 		_arrival_tick(delta)
 		return
-	if stage==5 or stage==11: return
+	if stage==5 or stage==11:
+		_ride_visual(delta)
+		return
 	if _busy(): return
 	if game.garage.inside and stage in [6,7,8,9,10]: return
 	if game.garage.has_home_tool(): return
