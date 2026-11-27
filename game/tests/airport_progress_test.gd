@@ -2,77 +2,58 @@ extends SceneTree
 const Progress = preload("res://airport_progress.gd")
 
 func _initialize() -> void:
-	var state := Progress.new()
-	var at := Vector3(0,.91,-24)
-	if state.advance("board",at) or state.stage!=0:
-		printerr("FAIL: boarding before migration")
-		quit(1)
-		return
-	var expected := [
-		["belt","belt"],["belt","belt"],["belt","belt"],["belt","belt"],["belt","belt"],["belt","belt"],
-		["hand","belt"],["cart","belt"],["cart","hand"],["cart","cart"],["cart","cart"],["cart","cart"],
-		["hand","cart"],["trunk","cart"],["trunk","hand"],["trunk","trunk"],["trunk","trunk"],["trunk","trunk"]
-	]
-	for step in range(Progress.COMPLETE+1):
-		for id in range(2):
-			if Progress.bag_location(step,id)!=expected[step][id]:
-				printerr("FAIL: bag ownership ",step," ",id)
+	var at := Vector3(0,.91,-17)
+	for move_cart in [false,true]:
+		for first in [0,1]:
+			var state := Progress.new()
+			for step in range(4):
+				if not state.advance(Progress.expected_action(step),at):
+					printerr("FAIL: migration")
+					quit(1)
+					return
+			if state.advance("exit",at) or state.advance("direct_pickup",at,first):
+				printerr("FAIL: bypassing mandatory cart")
 				quit(1)
 				return
-		if step==Progress.COMPLETE: break
-		var action := Progress.expected_action(step)
-		if step==5:
-			if not state.cart_attached or state.advance(action,at,0) or not state.set_cart_attached(false):
-				printerr("FAIL: must park before collecting luggage")
+			if move_cart:
+				if not state.advance("cart",at) or state.advance("pickup_first",at,first) or not state.set_cart_attached(false):
+					printerr("FAIL: parking")
+					quit(1)
+					return
+			if not state.advance("pickup_first",at,first) or state.stage!=6 or state.cart_attached:
+				printerr("FAIL: pickup with stationary cart")
 				quit(1)
 				return
-		if step in [6,7,8] and (state.cart_attached or state.set_cart_attached(true)):
-			printerr("FAIL: cart must remain parked during luggage transfer")
-			quit(1)
-			return
-		if step==9:
-			if state.advance(action,at) or not state.set_cart_attached(true):
-				printerr("FAIL: must take loaded cart before leaving")
+			if Progress.bag_location(6,first,first)!="hand" or Progress.bag_location(6,1-first,first)!="belt":
 				quit(1)
 				return
-		var bag_id := 0 if step==5 else (1 if step==7 else -1)
-		if not state.advance(action,at,bag_id) or state.stage!=step+1:
-			printerr("FAIL: arrival sequence ",step)
-			quit(1)
-			return
-		if state.advance(action,at):
-			printerr("FAIL: duplicate action ",step)
-			quit(1)
-			return
-	if state.stage!=Progress.COMPLETE or not Progress.expected_action(state.stage).is_empty():
-		quit(1)
-		return
-	if state.cart_attached:
-		printerr("FAIL: cart must remain outside taxi")
-		quit(1)
-		return
-	for first in [0,1]:
-		var direct := Progress.new()
-		direct.stage = 4
-		if not direct.advance("direct_pickup",at,first) or direct.stage!=6 or not direct.direct_mode:
-			printerr("FAIL: direct pickup")
-			quit(1)
-			return
-		if Progress.bag_location(6,first,first,true)!="hand" or not direct.advance("cart_first",at):
-			quit(1)
-			return
-		if direct.advance("pickup_second",at,first) or not direct.advance("pickup_second",at,1-first):
-			quit(1)
-			return
-		if not direct.advance("cart_second",at) or direct.stage!=15:
-			quit(1)
-			return
-		for id in range(2):
-			if Progress.bag_location(15,id,first,true)!="trunk":
+			if state.advance("exit",at) or not state.advance("cart_first",at) or Progress.bag_location(7,first,first)!="cart":
 				quit(1)
 				return
-		if not direct.advance("driver_close",at) or not direct.advance("board",at) or direct.stage!=Progress.COMPLETE:
-			quit(1)
-			return
-	print("Airport optional trolley and unordered luggage sequence: PASS")
+			if state.advance("pickup_second",at,first) or not state.advance("pickup_second",at,1-first):
+				quit(1)
+				return
+			if state.advance("exit",at) or not state.advance("cart_second",at) or state.stage!=9:
+				quit(1)
+				return
+			if Progress.bag_location(9,0,first)!="cart" or Progress.bag_location(9,1,first)!="cart":
+				quit(1)
+				return
+			if state.advance("exit",at) or not state.set_cart_attached(true):
+				quit(1)
+				return
+			for step in range(9,Progress.COMPLETE):
+				var action := Progress.expected_action(step)
+				if not state.advance(action,at) or state.advance(action,at):
+					printerr("FAIL: exit/taxi step ",step)
+					quit(1)
+					return
+			if state.stage!=Progress.COMPLETE or state.cart_attached:
+				quit(1)
+				return
+			for id in range(2):
+				if Progress.bag_location(state.stage,id,first)!="trunk":
+					quit(1)
+					return
+	print("PASS: both bag orders, stationary or moved cart, mandatory loading before exit")
 	quit(0)

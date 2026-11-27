@@ -10,21 +10,12 @@ var checkpoint := SPAWN
 var cart_position := Vector3(-5,.03,-16)
 var cart_attached := false
 var cart_angle := 0.0
-var direct_mode := false
 var first_bag := 0
 
 static func expected_action(step: int) -> String:
 	return ACTIONS[step] if step>=0 and step<ACTIONS.size() else ""
 
-static func bag_location(step: int,id: int,first: int=0,direct: bool=false) -> String:
-	if direct:
-		if id==first:
-			if step>=7: return "trunk"
-			if step==6: return "hand"
-		else:
-			if step>=15: return "trunk"
-			if step==8: return "hand"
-		return "belt"
+static func bag_location(step: int,id: int,first: int=0) -> String:
 	if id==first:
 		if step>=13: return "trunk"
 		if step==12 or step==6: return "hand"
@@ -38,16 +29,15 @@ static func bag_location(step: int,id: int,first: int=0,direct: bool=false) -> S
 # Parking and taking the cart are separate from luggage ownership.
 func set_cart_attached(value: bool) -> bool:
 	if value==cart_attached: return false
-	if value and stage!=9: return false
+	if value and stage not in [5,7,9]: return false
 	if not value and stage not in [5,7]: return false
 	cart_attached = value
 	return true
 
 func advance(action: String,at: Vector3,bag_id: int=-1) -> bool:
 	if stage>=COMPLETE or not at.is_finite(): return false
-	# Walk straight to either bag without ever taking a cart.
-	if stage==4 and action=="direct_pickup" and bag_id in [0,1]:
-		direct_mode = true
+	# The cart can stay at its original position. Both bags must still be loaded into it.
+	if stage==4 and action=="pickup_first" and bag_id in [0,1]:
 		first_bag = bag_id
 		cart_attached = false
 		stage = 6
@@ -62,8 +52,7 @@ func advance(action: String,at: Vector3,bag_id: int=-1) -> bool:
 	if stage==7 and bag_id!=1-first_bag: return false
 	if stage==4: cart_attached = true
 	if stage==10: cart_attached = false
-	if direct_mode and stage==8: stage = 15
-	else: stage += 1
+	stage += 1
 	checkpoint = at
 	return true
 
@@ -85,7 +74,6 @@ func load_game() -> bool:
 	var step := int(data.get("stage",-1))
 	if step<0 or step>COMPLETE: return false
 	stage = step
-	direct_mode = bool(data.get("direct_mode",false)) and step>=6 and step not in [9,10,11,12,13,14]
 	first_bag = clampi(int(data.get("first_bag",0)),0,1)
 	checkpoint = _read_point(data.get("checkpoint",[]),SPAWN)
 	cart_position = _read_point(data.get("cart_position",[]),Vector3(-5,.03,-16))
@@ -93,13 +81,22 @@ func load_game() -> bool:
 	cart_attached = bool(data.get("cart_attached",step in [5,7,10]))
 	if step<5 or step in [6,8] or step>=11: cart_attached = false
 	if step==10: cart_attached = true
-	if direct_mode: cart_attached = false
+	# Saves from the short-lived direct-to-taxi route restart only baggage collection.
+	# Migration remains completed; no legacy city data is touched.
+	if bool(data.get("direct_mode",false)):
+		stage = 4
+		checkpoint = Vector3(0,.91,-17.8)
+		cart_position = Vector3(-5,.03,-16)
+		cart_attached = false
+		first_bag = 0
+		cart_angle = 0.0
+		return true
 	cart_angle = float(data.get("cart_angle",0.0))
 	if not is_finite(cart_angle): cart_angle = 0.0
 	return true
 
 func save_game() -> bool:
-	var data := {"version":VERSION,"chapter":1,"scene":"airport","stage":stage,"cash":0,"properties":[],"vehicles":[],"businesses":[],"checkpoint":[checkpoint.x,checkpoint.y,checkpoint.z],"cart_position":[cart_position.x,cart_position.y,cart_position.z],"cart_attached":cart_attached,"cart_angle":cart_angle,"direct_mode":direct_mode,"first_bag":first_bag}
+	var data := {"version":VERSION,"chapter":1,"scene":"airport","stage":stage,"cash":0,"properties":[],"vehicles":[],"businesses":[],"checkpoint":[checkpoint.x,checkpoint.y,checkpoint.z],"cart_position":[cart_position.x,cart_position.y,cart_position.z],"cart_attached":cart_attached,"cart_angle":cart_angle,"first_bag":first_bag}
 	var temp := SAVE_PATH+".tmp"
 	var file := FileAccess.open(temp,FileAccess.WRITE)
 	if file==null: return false

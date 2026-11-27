@@ -52,7 +52,6 @@ var voice_id := ""
 var bag_arrows: Array[Label3D] = []
 var other_bags: Array[Node3D] = []
 var driver_opening := false
-var direct_open := false
 var driver_route_index := 0
 var driver_return_index := 0
 var driver_ready := false
@@ -64,7 +63,6 @@ var dialogue: Label
 func _ready() -> void:
 	mobile = OS.has_feature("android") or OS.has_feature("ios") or OS.get_cmdline_user_args().has("--touch-controls")
 	progress.load_game()
-	direct_open = progress.direct_mode and progress.stage>=7 and progress.stage<=15
 	_make_environment()
 	_make_terminal()
 	_make_taxi()
@@ -486,7 +484,7 @@ func _make_people() -> void:
 	driver.setup(414)
 	driver.position = taxi.to_global(Vector3(1.65,0,2.15))
 	driver.rotation.y = PI
-	if (progress.stage>=11 and progress.stage<16) or (progress.direct_mode and progress.stage in [7,8]):
+	if progress.stage>=11 and progress.stage<16:
 		driver.position = taxi.to_global(Vector3(.85,0,-2.90))
 	elif progress.stage==16:
 		driver.position = taxi.to_global(Vector3(1.65,0,.30))
@@ -640,7 +638,7 @@ func _update_belt(delta: float) -> void:
 	for i in range(other_bags.size()):
 		other_bags[i].position = _belt_point(i+2)
 	for i in range(bags.size()):
-		if Progress.bag_location(progress.stage,i,progress.first_bag,progress.direct_mode)=="belt":
+		if Progress.bag_location(progress.stage,i,progress.first_bag)=="belt":
 			bags[i].position = _belt_point(i)
 
 func _say(words: String) -> void:
@@ -659,7 +657,7 @@ func _nearest_belt_bag() -> int:
 	var best := 0
 	var distance := INF
 	for i in range(bags.size()):
-		if Progress.bag_location(progress.stage,i,progress.first_bag,progress.direct_mode)!="belt": continue
+		if Progress.bag_location(progress.stage,i,progress.first_bag)!="belt": continue
 		var at := bags[i].global_position
 		var d := Vector2(at.x,at.z).distance_to(Vector2(player.global_position.x,player.global_position.z))
 		if d<distance:
@@ -674,7 +672,7 @@ func _target() -> Vector3:
 		3: return GATE+Vector3.FORWARD*-2.0
 		4: return bags[_nearest_belt_bag()].global_position
 		5: return cart.global_position if progress.cart_attached else bags[_nearest_belt_bag()].global_position
-		6,8: return _trunk_point() if progress.direct_mode else cart.global_position
+		6,8: return cart.global_position
 		11,13: return cart.global_position
 		7: return cart.global_position if progress.cart_attached else bags[1-progress.first_bag].global_position
 		9: return EXIT if progress.cart_attached else cart.global_position
@@ -685,7 +683,7 @@ func _target() -> Vector3:
 # The taxi's visual marker is centered above its roof. Interaction
 # distances still use the trunk or passenger door, not the marker.
 func _position_marker() -> void:
-	if progress.stage in [10,12,14,16] or (progress.direct_mode and progress.stage in [6,8]):
+	if progress.stage in [10,12,14,16]:
 		marker.global_position = taxi.global_position
 		marker_arrow.position = Vector3(0,2.45,0)
 		marker_arrow.pixel_size = .020
@@ -704,7 +702,7 @@ func _sync() -> void:
 	gate_body.get_child(0).set_deferred("disabled",cleared)
 	gate_visual.visible = not cleared
 	gate_light.material_override = _mat(Color("#38b86a") if cleared else Color("#b92b2e"))
-	var exit_open := step>=9 or (progress.direct_mode and step>=6)
+	var exit_open := step>=9
 	exit_body.get_child(0).set_deferred("disabled",exit_open)
 	exit_visual.visible = not exit_open
 	if step==2:
@@ -720,7 +718,7 @@ func _sync() -> void:
 	else: passport.hide()
 	for i in range(bags.size()):
 		var bag := bags[i]
-		var place := Progress.bag_location(step,i,progress.first_bag,progress.direct_mode)
+		var place := Progress.bag_location(step,i,progress.first_bag)
 		var parent: Node3D = self
 		if place=="hand": parent = camera
 		elif place=="cart": parent = cart
@@ -735,7 +733,7 @@ func _sync() -> void:
 				bag.rotation.x = PI*.5
 			"belt": bag.position = _belt_point(i)
 		bag_arrows[i].visible = place=="belt" and step>=4
-	lid.rotation.x = 1.15 if (step>=11 and step<=15) or (progress.direct_mode and direct_open and step in [6,7,8]) else 0.0
+	lid.rotation.x = 1.15 if step>=11 and step<=15 else 0.0
 	_refresh_objective()
 	if marker.visible: _position_marker()
 	if step==Progress.COMPLETE: prompt.text = "Fase 1 completada · Esc para abrir el menú"
@@ -744,13 +742,13 @@ func _refresh_objective() -> void:
 	var step := progress.stage
 	var task: String = TASKS[step]
 	if step==4:
-		task = "Recoge cualquiera de tus maletas o toma el carrito si prefieres."
+		task = "Recoge cualquiera de tus maletas. Puedes acercar el carrito o dejarlo donde está."
 	elif step in [5,7] and progress.cart_attached:
 		task = "Estaciona el carrito en un espacio libre y pulsa E."
 	elif step in [5,7]:
 		task = "Recoge una de las maletas marcadas."
-	elif step in [6,8] and progress.direct_mode:
-		task = "Lleva la maleta al maletero del taxi."
+	elif step in [6,8]:
+		task = "Lleva la maleta al carrito y pulsa E para cargarla."
 	elif step==9 and not progress.cart_attached:
 		task = "Vuelve al carrito y pulsa E para llevar tus maletas a la salida."
 	marker.visible = step not in [0,4,15,Progress.COMPLETE] and (step not in [5,7] or progress.cart_attached)
@@ -809,7 +807,6 @@ func _advance(action: String,bag_id: int=-1) -> bool:
 	var old_cart := progress.cart_position
 	var old_attached := progress.cart_attached
 	var old_angle := progress.cart_angle
-	var old_direct := progress.direct_mode
 	var old_first := progress.first_bag
 	if not progress.advance(action,player.global_position,bag_id): return false
 	progress.cart_position = cart.global_position
@@ -820,7 +817,6 @@ func _advance(action: String,bag_id: int=-1) -> bool:
 		progress.cart_position = old_cart
 		progress.cart_attached = old_attached
 		progress.cart_angle = old_angle
-		progress.direct_mode = old_direct
 		progress.first_bag = old_first
 		_notice("No se pudo guardar. Intenta de nuevo.")
 		return false
@@ -835,7 +831,7 @@ func _interact() -> void:
 	if step==4:
 		var bag_id := _nearest_belt_bag()
 		if _near(bags[bag_id].global_position,1.60):
-			_advance("direct_pickup",bag_id)
+			_advance("pickup_first",bag_id)
 		elif _near(cart.global_position,1.60):
 			_advance("cart")
 		else: _notice("Acércate a una maleta marcada o al carrito.")
@@ -843,6 +839,14 @@ func _interact() -> void:
 	if step in [5,7] and progress.cart_attached:
 		if _cart_can_park(): _toggle_cart(false)
 		else: _notice("Busca espacio libre para soltar el carrito.")
+		return
+	if step in [5,7] and not progress.cart_attached:
+		var candidate := _nearest_belt_bag()
+		if _near(bags[candidate].global_position,1.60):
+			_advance(Progress.expected_action(step),candidate)
+		elif _near(cart.global_position,1.60):
+			_toggle_cart(true)
+		else: _notice("Acércate a una maleta marcada o al carrito.")
 		return
 	if step==9:
 		if not progress.cart_attached:
@@ -858,11 +862,7 @@ func _interact() -> void:
 	if step==2 and not spoken_welcome:
 		_notice("La agente está revisando tu pasaporte.")
 		return
-	if progress.direct_mode and step in [6,8] and not direct_open:
-		_notice("Espera a que el chofer abra el maletero.")
-		return
-	var bag_id := _nearest_belt_bag() if step in [5,7] else -1
-	if _advance(Progress.expected_action(step),bag_id):
+	if _advance(Progress.expected_action(step)):
 		if step==1:
 			dialogue.text = ""
 			spoken_welcome = false
@@ -874,7 +874,7 @@ func _interact() -> void:
 			opening.tween_property(gate_visual,"position:y",1.6,.55)
 			opening.tween_callback(gate_visual.hide)
 			_notice("Pasaporte recuperado. Continúa por el paso verde.")
-		if step==8 and not progress.direct_mode:
+		if step==8:
 			exit_visual.show()
 			var sliding := create_tween()
 			sliding.tween_property(exit_visual,"position:x",5.0,.65)
@@ -1089,17 +1089,6 @@ func _physics_process(delta: float) -> void:
 			if player.global_position.z>-19.25 and absf(player.global_position.x)<2.3: _advance("pass_gate")
 		9:
 			if progress.cart_attached and player.global_position.z>.25 and absf(player.global_position.x)<4.0: _advance("exit")
-		6,8:
-			if progress.direct_mode and not direct_open:
-				if _near(_trunk_point(),2.0): driver_opening = true
-				if driver_opening:
-					var direct_route: Array[Vector3] = [Vector3(1.65,0,-2.90),Vector3(.85,0,-2.90)]
-					driver_route_index = _driver_walk_route(direct_route,driver_route_index,delta)
-					if driver_route_index>=direct_route.size():
-						direct_open = true
-						lid_tween = create_tween()
-						lid_tween.tween_property(lid,"rotation:x",1.15,.55)
-						_notice("El chofer abrió el maletero.")
 		10:
 			if _near(_trunk_point(),2.0) and not driver_opening:
 				driver_opening = true
@@ -1129,20 +1118,22 @@ func _physics_process(delta: float) -> void:
 				var return_route: Array[Vector3] = [Vector3(1.65,0,-2.90),Vector3(1.65,0,.30)]
 				driver_return_index = _driver_walk_route(return_route,driver_return_index,delta)
 				driver_ready = driver_return_index>=return_route.size()
-	if (progress.stage<10 and not (progress.direct_mode and driver_opening and not direct_open)) or (progress.stage==10 and not driver_opening) or progress.stage in [11,12,13,14] or (progress.stage==16 and driver_ready):
+	if progress.stage<10 or (progress.stage==10 and not driver_opening) or progress.stage in [11,12,13,14] or (progress.stage==16 and driver_ready):
 		_idle_person(driver,delta,4.0)
 	if progress.stage==Progress.COMPLETE: return
 	if marker.visible: _position_marker()
 	var near := _near(_target(),1.60)
-	var actions := ["","Entregar pasaporte","Recoger pasaporte","","Tomar carrito","Recoger primera maleta","Poner en carrito","Recoger segunda maleta","Poner en carrito","","","Tomar primera maleta","Guardar en maletero","Tomar segunda maleta","Guardar en maletero","","Subir al taxi"]
+	var actions := ["","Entregar pasaporte","Recoger pasaporte","","Recoger maleta","Recoger primera maleta","Cargar maleta en carrito","Recoger segunda maleta","Cargar maleta en carrito","","","Tomar primera maleta","Guardar en maletero","Tomar segunda maleta","Guardar en maletero","","Subir al taxi"]
 	var action: String = actions[progress.stage]
 	if progress.stage==4:
 		if near: prompt.text = "[E] Recoger maleta"
-		elif _near(cart.global_position,1.60): prompt.text = "[E] Tomar carrito (opcional)"
-		else: prompt.text = "Recoge cualquiera de tus maletas · Carrito opcional"
+		elif _near(cart.global_position,1.60): prompt.text = "[E] Acercar carrito (opcional)"
+		else: prompt.text = "Recoge una maleta y llévala al carrito."
 		return
-	if progress.direct_mode and progress.stage in [6,8]:
-		prompt.text = ("[E] Guardar maleta en el taxi" if direct_open else "Espera al chofer.") if near else "Lleva la maleta hasta el taxi."
+	if progress.stage in [5,7] and not progress.cart_attached:
+		if near: prompt.text = "[E] Recoger maleta"
+		elif _near(cart.global_position,1.60): prompt.text = "[E] Mover carrito"
+		else: prompt.text = "Recoge una de tus maletas marcadas."
 		return
 	if progress.stage in [5,7] and progress.cart_attached:
 		prompt.text = "[E] Soltar carrito" if _cart_can_park() else "Lleva el carrito a un espacio libre."
