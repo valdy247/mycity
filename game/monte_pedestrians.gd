@@ -110,6 +110,12 @@ func _build() -> void:
 		if Time.get_ticks_usec()-slice_start>=BUILD_BUDGET_USEC:
 			await get_tree().physics_frame
 			slice_start = Time.get_ticks_usec()
+	# Add the actual clear park paths, not an artificial indoor doorway.
+	for strip in world.park_walkways:
+		_run(strip.a,strip.b,SIDEWALK_COST)
+		if Time.get_ticks_usec()-slice_start>=BUILD_BUDGET_USEC:
+			await get_tree().physics_frame
+			slice_start = Time.get_ticks_usec()
 	# Extend the existing Monte network into adjoining streets without
 	# building a city-wide physics graph at startup.
 	var corridor_nodes: Dictionary = {}

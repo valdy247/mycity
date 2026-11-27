@@ -6,6 +6,10 @@ const TrafficBypass = preload("res://traffic_bypass.gd")
 const HavanaTextures = preload("res://havana_textures.gd")
 const RoadWear = preload("res://road_wear.gd")
 const Latino = preload("res://latino_stadium.gd")
+const Parks = preload("res://city_parks.gd")
+var parks: Parks
+var park_sites: Array = []
+var park_walkways: Array = []
 var stadium: Latino
 var stadium_reservation := PackedVector2Array()
 var stadium_gates: Array = []
@@ -134,11 +138,17 @@ func setup(builder: Builder) -> void:
 	stadium = Latino.new()
 	add_child(stadium)
 	stadium_reservation = stadium.reserve(self)
+	parks = Parks.new()
+	add_child(parks)
+	parks.reserve(self)
 	_make_osm_streets()
 	_make_frontages()
 	if not stadium_reservation.is_empty():
 		stadium.build(self)
 		stadium_gates = stadium.gates
+	parks.build()
+	park_sites = parks.sites
+	park_walkways = parks.walkways
 	var wear := RoadWear.new()
 	add_child(wear)
 	wear.build(geography,street_geometry)
@@ -1912,7 +1922,7 @@ func _stadium_reserved(poly: PackedVector2Array) -> bool:
 	return not stadium_reservation.is_empty() and not Geometry2D.intersect_polygons(poly,stadium_reservation).is_empty()
 
 func _market_reserved(poly: PackedVector2Array) -> bool:
-	return _stadium_reserved(poly) or (not market_reservation.is_empty() and not Geometry2D.intersect_polygons(poly,market_reservation).is_empty())
+	return _stadium_reserved(poly) or (parks!=null and parks.reserved(poly)) or (not market_reservation.is_empty() and not Geometry2D.intersect_polygons(poly,market_reservation).is_empty())
 
 func _market_named(edge: Dictionary,term: String) -> bool:
 	var values: Array = [String(edge.name)]
@@ -2426,7 +2436,9 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		if _overlaps_game_lot(fp):
 			continue
 		var poly: PackedVector2Array = fp.poly
-		if _stadium_reserved(poly) or (market_drawn and _market_reserved(poly)):
+		if _stadium_reserved(poly) or (market_drawn and not market_reservation.is_empty() and not Geometry2D.intersect_polygons(poly,market_reservation).is_empty()):
+			continue
+		if parks!=null and parks.suppress_building(fp):
 			continue
 		var center: Vector3 = fp.center
 		var tile := Vector2i(floori(center.x/96.0),floori(center.z/96.0))

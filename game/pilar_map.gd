@@ -16,6 +16,7 @@ var signal_nodes: Dictionary = {}
 var building_count := 0
 var footprints: Array = []
 var stadium_boundary := PackedVector2Array()
+var park_areas: Array = []
 var poi: Array = []
 var junctions: Dictionary = {}
 var road_cells: Dictionary = {}
@@ -156,6 +157,24 @@ func _register_footprint(id: String,ids: Array,t: Dictionary) -> void:
 	footprints.append(item)
 	_index(footprint_cells,low,high,item)
 
+# Preserve only closed, fully mapped public park polygons; a named POI
+# by itself is not a license to clear the surrounding city block.
+func _register_park(id: String,ids: Array,t: Dictionary) -> void:
+	if ids.size()<4 or ids[0]!=ids.back() or String(t.get("access","")) in ["private","no"]: return
+	var polygon := PackedVector2Array()
+	for i in range(ids.size()-1):
+		if not points.has(ids[i]): return
+		var pos: Vector3 = points[ids[i]]
+		if absf(pos.x)>LIMIT or absf(pos.z)>LIMIT: return
+		var point := Vector2(pos.x,pos.z)
+		if polygon.is_empty() or polygon[polygon.size()-1].distance_to(point)>.05: polygon.append(point)
+	if polygon.size()<3 or Geometry2D.triangulate_polygon(polygon).is_empty(): return
+	var label := String(t.get("name",""))
+	if id=="373927999": label = "Parque de La Normal"
+	elif id=="23917140": label = "La Normal"
+	if label.is_empty(): label = "Parque público"
+	park_areas.append({"id":id,"name":label,"poly":polygon,"tags":t})
+
 func load_map() -> bool:
 	var parser := XMLParser.new()
 	if not FileAccess.file_exists(PATH):
@@ -213,6 +232,8 @@ func load_map() -> bool:
 				outline.append(Vector2(point.x,point.z))
 			if outline.size()>3 and outline[0].is_equal_approx(outline[outline.size()-1]): outline.remove_at(outline.size()-1)
 			if outline.size()>=3: stadium_boundary = outline
+		if String(t.get("leisure",""))=="park" or String(way.id) in ["373927999","23917140"]:
+			_register_park(String(way.id),way.refs,t)
 		if t.has("building"):
 			building_count += 1
 			_register_footprint(String(way.id),way.refs,t)
