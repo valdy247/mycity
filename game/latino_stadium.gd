@@ -8,7 +8,7 @@ const ROWS := 24
 var gates: Array = []
 var ring := PackedVector2Array()
 var center := Vector3.ZERO
-var basis := Basis.IDENTITY
+var stadium_basis := Basis.IDENTITY
 var half_x := 84.0
 var half_z := 94.0
 var surfaces: Dictionary = {}
@@ -89,7 +89,7 @@ func reserve(city) -> PackedVector2Array:
 			if not _safe_site(candidate,anchor): continue
 			best_score = area
 			center = at
-			basis = rotation
+			stadium_basis = rotation
 			half_x = hx*float(factor)
 			half_z = hz*float(factor)
 			ring = candidate
@@ -103,7 +103,7 @@ func _mat(key: String,color: Color) -> StandardMaterial3D:
 	return mat
 
 func _point(q: Vector2,y: float = 0.0) -> Vector3:
-	return center+basis*Vector3(q.x*half_x,y,q.y*half_z)
+	return center+stadium_basis*Vector3(q.x*half_x,y,q.y*half_z)
 
 func _surface(mat: StandardMaterial3D) -> SurfaceTool:
 	var id := mat.get_instance_id()
@@ -176,14 +176,14 @@ func _field() -> void:
 	_poly(PackedVector2Array([home+Vector2(0,.045),first-Vector2(.045,0),second-Vector2(0,.045),third+Vector2(.045,0)]),.104,grass)
 	for base in [home,first,second,third]:
 		var at := _point(base,.12)
-		_box(at,Vector3(.40,.08,.40),atan2(basis.z.x,basis.z.z)+PI*.25,paint)
+		_box(at,Vector3(.40,.08,.40),atan2(stadium_basis.z.x,stadium_basis.z.z)+PI*.25,paint)
 	var mound := _point(home+Vector2(0,dz*.96),.11)
 	var circle := PackedVector2Array()
 	for i in range(16):
 		var angle := TAU*float(i)/16.0
 		circle.append(home+Vector2(0,dz*.96)+Vector2(cos(angle)*2.7/half_x,sin(angle)*2.7/half_z))
 	_poly(circle,.116,dirt)
-	_box(mound+Vector3.UP*.04,Vector3(.62,.035,.15),atan2(basis.z.x,basis.z.z),paint)
+	_box(mound+Vector3.UP*.04,Vector3(.62,.035,.15),atan2(stadium_basis.z.x,stadium_basis.z.z),paint)
 	# Foul lines follow the exact 45-degree diamond axes in world metres.
 	var h := _point(home,.125)
 	for side in [-1.0,1.0]:
@@ -200,7 +200,7 @@ func _field() -> void:
 	for side in [-1.0,1.0]:
 		var q := Vector2(float(side)*.42,-.29)
 		var a := _point(q,.0)
-		var yaw := atan2(basis.z.x,basis.z.z)-float(side)*.65
+		var yaw := atan2(stadium_basis.z.x,stadium_basis.z.z)-float(side)*.65
 		_box(a+Vector3.UP*2.0,Vector3(12.0,.23,2.8),yaw,blue)
 		_box(a+Vector3.UP*.45,Vector3(11.5,.25,.55),yaw,light_concrete)
 		for x in [-5.7,5.7]:
@@ -330,18 +330,18 @@ func _tower(q: Vector2) -> void:
 
 func _signs() -> void:
 	var at := _point(Vector2(0,-.99),6.0)
-	var outward := -basis.z
+	var outward := -stadium_basis.z
 	var yaw := atan2(outward.x,outward.z)
 	_box(at+outward*.35,Vector3(25.0,2.2,.45),yaw,dark)
 	var label: Label3D = world._label("ESTADIO LATINOAMERICANO",at+outward*.62,.062,yaw,Color("#f5f4e8"))
 	label.visibility_range_end = 180.0
 	var board := _point(Vector2(0,.94),14.2)
-	var board_yaw := atan2(-basis.z.x,-basis.z.z)
+	var board_yaw := atan2(-stadium_basis.z.x,-stadium_basis.z.z)
 	_box(board,Vector3(20.0,8.0,.70),board_yaw,dark,true)
-	_box(board-basis.z*.40,Vector3(19.0,6.9,.16),board_yaw,_mat("screen",Color("#232d37")))
-	var title: Label3D = world._label("LATINOAMERICANO",board-basis.z*.52+Vector3.UP*2.25,.042,board_yaw,Color("#e6e9e3"))
+	_box(board-stadium_basis.z*.40,Vector3(19.0,6.9,.16),board_yaw,_mat("screen",Color("#232d37")))
+	var title: Label3D = world._label("LATINOAMERICANO",board-stadium_basis.z*.52+Vector3.UP*2.25,.042,board_yaw,Color("#e6e9e3"))
 	title.visibility_range_end = 190.0
-	var status: Label3D = world._label("INDUSTRIALES  ·  0   |   0",board-basis.z*.53,.046,board_yaw,Color("#c0dce5"))
+	var status: Label3D = world._label("INDUSTRIALES  ·  0   |   0",board-stadium_basis.z*.53,.046,board_yaw,Color("#c0dce5"))
 	status.visibility_range_end = 190.0
 
 func build(city) -> void:
