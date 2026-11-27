@@ -15,6 +15,7 @@ var names: Dictionary = {}
 var signal_nodes: Dictionary = {}
 var building_count := 0
 var footprints: Array = []
+var stadium_boundary := PackedVector2Array()
 var poi: Array = []
 var junctions: Dictionary = {}
 var road_cells: Dictionary = {}
@@ -204,6 +205,14 @@ func load_map() -> bool:
 	var seen: Dictionary = {}
 	for way in ways:
 		var t: Dictionary = way.tags
+		if String(way.id)=="665673095" or (String(t.get("leisure",""))=="stadium" and normalized(String(t.get("name",""))).contains("latinoamericano")):
+			var outline := PackedVector2Array()
+			for id in way.refs:
+				if not points.has(id): continue
+				var point: Vector3 = points[id]
+				outline.append(Vector2(point.x,point.z))
+			if outline.size()>3 and outline[0].is_equal_approx(outline[outline.size()-1]): outline.remove_at(outline.size()-1)
+			if outline.size()>=3: stadium_boundary = outline
 		if t.has("building"):
 			building_count += 1
 			_register_footprint(String(way.id),way.refs,t)

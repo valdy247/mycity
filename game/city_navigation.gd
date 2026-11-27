@@ -136,6 +136,8 @@ func _refresh_places() -> void:
 		_add_place(String(site.name),site.entrance)
 	for site in world.parts_sites:
 		_add_place(String(site.name),site.road)
+	for gate in world.stadium_gates:
+		_add_place("Estadio Latinoamericano · "+String(gate.label),gate.p)
 	map.business_markers.clear()
 	for place in destinations:
 		var p: Vector3 = place.p
