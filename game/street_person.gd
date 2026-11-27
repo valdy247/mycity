@@ -91,7 +91,7 @@ func setup(style: int,worker: bool = false,ambient: bool = false) -> void:
 		# Independent palette selections reduce identical-looking neighbors.
 		var ambient_skin: Array[Color] = [Color("#9b694b"),Color("#cc9b75"),Color("#70482f"),Color("#e1b797"),Color("#ac7a52"),Color("#845b43"),Color("#bf8967")]
 		var ambient_shirts: Array[Color] = [Color("#d6cfb6"),Color("#667e99"),Color("#9c6a68"),Color("#72918a"),Color("#e1e0da"),Color("#8d856c"),Color("#d85624"),Color("#922e42"),Color("#282e33"),Color("#c39b39"),Color("#577d5a"),Color("#9a795d"),Color("#a5b4c4"),Color("#b8a0b7")]
-		skin = ambient_skin[posmod(style*7+variant,ambient_skin.size())]
+		skin = ambient_skin[posmod(style*3+variant,ambient_skin.size())]
 		shirt = ambient_shirts[posmod(style*11+variant*3,ambient_shirts.size())]
 	var shorts := not worker and (outfit==1 or outfit==3)
 	if female and outfit==1:
