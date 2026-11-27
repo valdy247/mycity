@@ -40,6 +40,8 @@ var paper_texture: ImageTexture
 var resting_brush: Node3D
 var resting_tip: MeshInstance3D
 var resting_broom: Node3D
+var guest_door: Node3D
+var guest_door_tween: Tween
 var held_broom: Node3D
 var paint_cans: Dictionary = {}
 var floor_image: Image
@@ -333,7 +335,11 @@ func _build_interior() -> void:
 	_home_wall("partition_a",Vector3(-.1,1.5,-4.15),Vector3(.16,3,3.5),wall,true,true)
 	_home_wall("partition_b",Vector3(-.1,1.5,3.9),Vector3(.16,3,3.9),wall,true,true)
 	_home_wall("bedroom",Vector3(-4.7,1.5,-2.3),Vector3(4.4,3,.15),wall,true,true)
-	business._box(interior,Vector3(-.7,1.10,5.76),Vector3(1.2,2.2,.10),Color("#685144"))
+	guest_door = Node3D.new()
+	interior.add_child(guest_door)
+	guest_door.position = Vector3(-1.30,0,5.76)
+	business._box(guest_door,Vector3(.60,1.10,0),Vector3(1.2,2.2,.10),Color("#685144"))
+	business._box(guest_door,Vector3(1.07,1.06,-.07),Vector3(.13,.04,.05),Color("#c2b8a6"))
 	business._label(interior,"SALIR",Vector3(-.7,2.4,5.68),Color("#f9e9d2")).rotation.y = PI
 	business._box(interior,Vector3(3.2,.012,-1.4),Vector3(5.5,.025,5.2),Color("#777e7f"))
 	business._label(interior,"GARAJE",Vector3(3.1,2.65,-5.70),Color("#d2e6f2"))
@@ -362,6 +368,14 @@ func _build_interior() -> void:
 	_refresh_paint_station()
 	for id in FURNITURE: _refresh_furniture(String(id))
 	_refresh_preview()
+
+# The city and interior are separate rooms; the door remains a logical
+# threshold. Opening the visible leaf never removes the room collision.
+func set_guest_door(opened: bool) -> void:
+	if not is_instance_valid(guest_door): return
+	if is_instance_valid(guest_door_tween): guest_door_tween.kill()
+	guest_door_tween = create_tween()
+	guest_door_tween.tween_property(guest_door,"rotation:y",1.25 if opened else 0.0,.30)
 
 func _refresh_furniture(id: String) -> void:
 	if furniture_nodes.has(id):

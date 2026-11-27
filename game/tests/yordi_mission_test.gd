@@ -12,6 +12,16 @@ func _initialize() -> void:
 		quit(1)
 		return
 	mission.delivered = true
+	if Mission.settle_sale(mission,ledger):
+		printerr("FAIL: sale without buyer payment")
+		quit(1)
+		return
+	mission.buyer_paid = true
+	if Mission.settle_sale(mission,ledger):
+		printerr("FAIL: reward before buyer leaves")
+		quit(1)
+		return
+	mission.buyer_left = true
 	if not Mission.settle_sale(mission,ledger) or ledger.cash!=start+1000 or int(mission.stage)!=14:
 		printerr("FAIL: exact 1000 CUP reward")
 		quit(1)
@@ -43,7 +53,7 @@ func _initialize() -> void:
 		printerr("FAIL: motorcycle arrival guard")
 		quit(1)
 		return
-	var replay: Dictionary = {"stage":13,"reward_paid":false,"delivered":true,"previous_reward_paid":true}
+	var replay: Dictionary = {"stage":13,"reward_paid":false,"delivered":true,"previous_reward_paid":true,"buyer_paid":true,"buyer_left":true}
 	if not Mission.settle_sale(replay,ledger) or ledger.cash!=start+1000 or int(replay.stage)!=14:
 		printerr("FAIL: replay must not pay twice")
 		quit(1)

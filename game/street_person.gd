@@ -100,7 +100,8 @@ func setup(style: int,worker: bool = false,ambient: bool = false) -> void:
 			806: # Carlos: practical work shirt and faded jeans.
 				shirt = Color("#c5b79a")
 				pants = Color("#435b70")
-			807: # Yordi: dark red shirt, charcoal trousers.
+			807: # Permanent Yordi identity, including motorcycle passengers.
+				skin = Color("#e5b99b")
 				shirt = Color("#983c3e")
 				pants = Color("#373b42")
 			810: # Albertico: green polo, dark blue trousers.
@@ -137,7 +138,16 @@ func setup(style: int,worker: bool = false,ambient: bool = false) -> void:
 	var hair_colors: Array[Color] = [Color("#231e1b"),Color("#302b28"),Color("#4b3428"),Color("#3c3531")]
 	var hair: Color = Color("#d5c14b") if worker else hair_colors[posmod(variant,hair_colors.size())]
 	if age_group=="mayor": hair = Color("#a29d96")
-	_part(self,"head",Vector3(0,1.77,-.028),Vector3(.29,.17,.29),hair)
+	if story_character and style==807:
+		var cap := Color("#303b43")
+		_part(self,"portrait",Vector3(0,1.795,-.012),Vector3(.316,.155,.314),cap).name = "YordiCap"
+		_part(self,"head",Vector3(0,1.748,.139),Vector3(.29,.040,.235),cap).name = "YordiCapBrim"
+		_part(self,"head",Vector3(0,1.57,.055),Vector3(.247,.135,.22),Color("#514036")).name = "YordiBeard"
+		for side in [-1.0,1.0]:
+			_part(self,"head",Vector3(float(side)*.106,1.60,.045),Vector3(.055,.125,.14),Color("#514036"),true)
+		_part(self,"head",Vector3(0,1.612,.145),Vector3(.108,.026,.028),Color("#514036"),true)
+	else:
+		_part(self,"head",Vector3(0,1.77,-.028),Vector3(.29,.17,.29),hair)
 	_part(self,"head",Vector3(0,1.65,.155),Vector3(.055,.067,.048),skin,true)
 	for side in [-1.0,1.0]:
 		var eye := _part(self,"box",Vector3(float(side)*.060,1.69,.146),Vector3(.045,.022,.014),Color("#d9d3c9"),true)

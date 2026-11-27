@@ -3,7 +3,7 @@ extends RefCounted
 static var sounds: Dictionary = {}
 static func cue(kind: String) -> AudioStreamWAV:
 	if sounds.has(kind): return sounds[kind] as AudioStreamWAV
-	var duration := .40 if kind=="success" else (.19 if kind=="step" else .30)
+	var duration := .72 if kind=="knock" else (.40 if kind=="success" else (.19 if kind=="step" else .30))
 	var count := int(duration*16000)
 	var bytes := PackedByteArray()
 	bytes.resize(count*2)
@@ -14,6 +14,10 @@ static func cue(kind: String) -> AudioStreamWAV:
 		var frequency := 74.0 if kind=="step" else (104.0 if kind=="warning" else (523.25 if p<.45 else 659.25))
 		var signal_value := sin(TAU*t*frequency)*envelope
 		if kind=="step": signal_value += (float(posmod(i*73,257))/128.0-1.0)*envelope*.20
+		if kind=="knock":
+			var beat := fposmod(t,.24)
+			var decay := exp(-beat*34.0) if beat<.14 else 0.0
+			signal_value = (sin(TAU*t*112.0)*.70+sin(TAU*t*190.0)*.22)*decay
 		bytes.encode_s16(i*2,roundi(signal_value*3000.0))
 	var audio := AudioStreamWAV.new()
 	audio.format = AudioStreamWAV.FORMAT_16_BITS

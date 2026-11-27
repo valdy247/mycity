@@ -6,6 +6,8 @@ const Kit = preload("res://vehicle_kit.gd")
 const Bypass = preload("res://traffic_bypass.gd")
 const Garage = preload("res://home_garage.gd")
 const Visual = preload("res://yordi_visual.gd")
+const HomeSale = preload("res://yordi_home_sale.gd")
+var home_sale: HomeSale
 var story_cue: AudioStreamPlayer
 var footsteps: AudioStreamPlayer
 var chase_overlay: CanvasLayer
@@ -115,6 +117,9 @@ func setup(controller) -> void:
 			game.garage.waypoint_label = ""
 			if is_instance_valid(game.garage.waypoint): game.garage.waypoint.hide()
 	if stage==13: state.sale_left = maxf(0.0,float(state.get("sale_left",SALE_DELAY)))
+	home_sale = HomeSale.new()
+	add_child(home_sale)
+	home_sale.setup(self)
 	_save()
 
 # One-time replay for saves stranded during the original visit.
@@ -191,7 +196,7 @@ func objective() -> String:
 		10: return "Sube a la moto de Yordi · E."
 		11: return "Conduce la moto hasta casa · estaciona y pulsa E."
 		12: return "Abre el teléfono (P) y publica el PS5 en Marketplace." if bool(state.get("delivered",false)) else "Entra en tu casa con Yordi para dejar el PS5."
-		13: return "PS5 publicado. Espera al comprador (%d s)." % ceili(float(state.get("sale_left",SALE_DELAY)))
+		13: return home_sale.objective() if is_instance_valid(home_sale) else "PS5 publicado. Espera al comprador."
 	return ""
 
 func _ground(at: Vector3,sidewalk: bool = true) -> Vector3:
@@ -342,7 +347,7 @@ func _carry_ps5() -> void:
 	console_box.show()
 
 func _carry_pose() -> void:
-	if not is_instance_valid(yordi) or not is_instance_valid(console_box) or console_box.get_parent()!=yordi: return
+	if bool(state.get("delivered",false)) or not is_instance_valid(yordi) or not is_instance_valid(console_box) or console_box.get_parent()!=yordi: return
 	for arm in yordi.arms: arm.rotation.x = -1.15
 
 func _walk(actor: Person,target: Vector3,delta: float,speed: float,stop_range: float = .65) -> bool:
@@ -666,6 +671,7 @@ func _request_restart() -> void:
 func _restart_now() -> void:
 	restart_requested = false
 	if not _can_restart(): return
+	if is_instance_valid(home_sale): home_sale.clear()
 	var old_stage := _stage()
 	var paid := bool(state.get("reward_paid",false)) or bool(state.get("previous_reward_paid",false)) or old_stage>=14
 	var saved_seller: Dictionary = state.get("seller",{}).duplicate(true)
@@ -932,6 +938,7 @@ func _aim(actor: Node3D,center: Vector3,extent: Vector3,reach: float = 3.0) -> b
 
 func action_text() -> String:
 	if bool(state.get("resume_required",false)) or restore_pending or _busy(): return ""
+	if _stage()==13 and is_instance_valid(home_sale): return home_sale.action_text()
 	if game.garage.inside and _stage() not in [3,4]: return ""
 	if _stage()==7 and not robbery_phase.is_empty():
 		if robbery_phase=="pickup" and _aim(stone,Vector3.ZERO,Vector3(.22,.16,.22),3.0): return "[E] Recoger piedra"
@@ -949,6 +956,7 @@ func action_text() -> String:
 
 func interact() -> bool:
 	if bool(state.get("resume_required",false)) or restore_pending or game.garage.has_home_tool(): return false
+	if _stage()==13 and is_instance_valid(home_sale): return home_sale.interact()
 	if game.garage.inside and _stage() not in [3,4]: return false
 	if _stage()==8: return false
 	if _stage()==7 and not robbery_phase.is_empty():
@@ -1672,13 +1680,16 @@ func open_listing() -> void:
 func _publish() -> void:
 	if not can_list(): return
 	state.sale_left = SALE_DELAY
+	state.buyer_paid = false
+	state.buyer_left = false
 	_set_stage(13)
+	home_sale.begin()
 	business.close()
 	_cue("success")
 	business._notify("PS5 publicado. Esperando comprador.")
 
 static func settle_sale(mission: Dictionary,ledger) -> bool:
-	if int(mission.get("stage",0))!=13 or bool(mission.get("reward_paid",false)) or not bool(mission.get("delivered",false)): return false
+	if int(mission.get("stage",0))!=13 or bool(mission.get("reward_paid",false)) or not bool(mission.get("delivered",false)) or not bool(mission.get("buyer_paid",false)) or not bool(mission.get("buyer_left",false)): return false
 	mission.reward_paid = true
 	mission.stage = 14
 	if not bool(mission.get("previous_reward_paid",false)): ledger.cash += REWARD
@@ -1691,8 +1702,7 @@ func _complete_sale() -> void:
 	_cue("success")
 	if is_instance_valid(console_box): console_box.queue_free()
 	console_box = null
-	if is_instance_valid(yordi): yordi.hide()
-	if bool(state.get("bike_returned",false)): _discard_bike()
+	# Yordi remains visible and leaves through the door after paying.
 	_clear_target()
 	business._notify("MISIÓN CUMPLIDA · recompensa ya recibida" if bool(state.get("previous_reward_paid",false)) else "MISIÓN CUMPLIDA · +1,000 CUP")
 
@@ -1718,6 +1728,7 @@ func _deliver_home() -> void:
 	console_box.rotation = Vector3.ZERO
 	console_box.show()
 	state.delivered = true
+	yordi.animate(.25,false)
 	_clear_target()
 	_save()
 	business._notify("Yordi: Déjalo aquí. Publícalo en Marketplace y te doy los mil pesos cuando se venda.")
@@ -1839,11 +1850,13 @@ func tick(delta: float) -> void:
 		business.phone_ring.play()
 		open_call()
 		return
-	if stage==1 or stage==14: return
+	if stage==1: return
+	if stage==14:
+		if is_instance_valid(home_sale): home_sale.tick_departure(delta)
+		return
 	if not game.monte_pedestrians.initialized: return
 	if stage==13:
-		state.sale_left = maxf(0.0,float(state.get("sale_left",SALE_DELAY))-delta)
-		if float(state.sale_left)<=0.0: _complete_sale()
+		home_sale.tick(delta)
 		return
 	if restore_pending:
 		if not _checkpoint_safe():
@@ -1930,6 +1943,7 @@ func tick(delta: float) -> void:
 			if game.garage.inside:
 				if not bool(state.get("delivered",false)) or not is_instance_valid(console_box): _deliver_home()
 				if not bool(state.get("bike_returned",false)) and not bool(state.get("police",false)): _police_call()
+				if not business.modal_open(): home_sale.rest(delta)
 			elif is_instance_valid(yordi) and not bool(state.get("delivered",false)):
 				_walk(yordi,player_at,delta,3.5,1.8)
 				_carry_pose()
