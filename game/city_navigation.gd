@@ -266,7 +266,11 @@ func _draw_route(fit: bool) -> void:
 	var route_end := selected
 	var note := ""
 	var from := Vector3(origin.x,0,origin.z)
-	if mode.selected==0:
+	var escape: PackedVector3Array = game.yordi_mission.guided_escape_route() if game.yordi_mission!=null else PackedVector3Array()
+	if not escape.is_empty() and selected.distance_to(escape[escape.size()-1])<1.0:
+		for p in escape: path.append(p)
+		note = "Ruta de huida de Yordi · sigue su flecha."
+	elif mode.selected==0:
 		var walk: PackedVector3Array = game.monte_pedestrians.route_between(from,selected)
 		if not walk.is_empty():
 			for p in walk: path.append(p)
