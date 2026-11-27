@@ -72,6 +72,8 @@ var previous_first := true
 var riding := false
 var ride_kind := ""
 var ride_speed := 0.0
+var borrowed_body: CharacterBody3D
+var ride_exit_requested := false
 var owned: Dictionary = {}
 var traffic: Array = []
 var traffic_ready := false
@@ -561,7 +563,7 @@ func _aimed_home(at: Vector3) -> bool:
 	return get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
 
 func action_text(at: Vector3) -> String:
-	if riding: return "[E] Bajar detenido"
+	if riding: return "Frenando para bajar" if ride_exit_requested else "[E] Bajar"
 	if inside:
 		if at.distance_to(ROOM+Vector3(-.7,.86,5.25))<1.55: return "[E] Salir de casa"
 		var waste_action := _waste_action(at)
@@ -585,8 +587,8 @@ func action_text(at: Vector3) -> String:
 
 func interact(at: Vector3) -> bool:
 	if riding:
+		ride_exit_requested = true
 		if absf(ride_speed)<.6: _dismount()
-		else: business._notify("Detén el vehículo para bajar.")
 		return true
 	if inside:
 		if at.distance_to(ROOM+Vector3(-.7,.86,5.25))<1.55:
@@ -963,13 +965,52 @@ func _make_rider(body: CharacterBody3D,kind: String,style: int) -> Node3D:
 		for arm in person.arms: arm.rotation.x = -1.25
 	return person
 
+func riding_borrowed() -> bool:
+	return riding and is_instance_valid(borrowed_body)
+
+func _ride_body() -> CharacterBody3D:
+	if riding_borrowed(): return borrowed_body
+	return owned.get(ride_kind) as CharacterBody3D
+
+func _player_driver(body: CharacterBody3D) -> Node3D:
+	var source: Node3D = game.avatar
+	var driver := source.duplicate(0) as Node3D
+	body.add_child(driver)
+	driver.position = Vector3(0,1.10,-.18)
+	driver.rotation = Vector3.ZERO
+	driver.scale = Vector3(.85,.85,.85)
+	driver.show()
+	for limb in game.limb_legs:
+		var leg := driver.get_node_or_null(source.get_path_to(limb)) as Node3D
+		if leg!=null: leg.rotation = Vector3(-1.05,0,0)
+	for limb in game.limb_arms:
+		var arm := driver.get_node_or_null(source.get_path_to(limb)) as Node3D
+		if arm!=null: arm.rotation = Vector3(-1.18,0,0)
+	return driver
+
+func mount_borrowed_moto(body: CharacterBody3D) -> bool:
+	if riding or inside or game.driving or game.taxi_riding or game.bus_riding or not is_instance_valid(body) or not _free_hands(): return false
+	borrowed_body = body
+	body.remove_from_group("autonomous_traffic")
+	body.remove_from_group("traffic_parked")
+	body.set_meta("traffic_servicing",false)
+	body.set_meta("junction_guard",false)
+	rider = _player_driver(body)
+	_begin_manual_ride(body,"moto")
+	return true
+
 func _mount(kind: String) -> void:
 	if not _unlocked(kind) or _listed(kind):
 		business._notify("Este vehículo está reservado o bloqueado.")
 		return
 	var body: CharacterBody3D = owned[kind]
-	if kind!="carro": rider = _make_rider(body,kind,691)
+	borrowed_body = null
+	if kind!="carro": rider = _player_driver(body) if kind=="moto" else _make_rider(body,kind,691)
+	_begin_manual_ride(body,kind)
+
+func _begin_manual_ride(body: CharacterBody3D,kind: String) -> void:
 	riding = true
+	ride_exit_requested = false
 	ride_kind = kind
 	ride_speed = 0.0
 	previous_first = game.first_person
@@ -994,13 +1035,16 @@ func _store_park(kind: String) -> void:
 
 func _dismount(force: bool = false) -> void:
 	if not riding: return
-	var body: CharacterBody3D = owned[ride_kind]
+	var body := _ride_body()
+	if not is_instance_valid(body): return
+	var borrowed := riding_borrowed()
 	var spec: Dictionary = Kit.KITS[ride_kind]
 	var space := get_world_3d().direct_space_state
 	var destination := Vector3.ZERO
 	var found := false
-	for side in [-1.0,1.0]:
-		var p := body.to_global(Vector3(float(side)*(float(spec.width)*.5+.65),0,0))
+	for offset in [Vector2(-1.0,0),Vector2(1.0,0),Vector2(-1.5,0),Vector2(1.5,0),Vector2(0,-1.9),Vector2(0,1.9)]:
+		var local := Vector3(offset.x*(float(spec.width)*.5+.65),0,offset.y)
+		var p := body.to_global(local)
 		var ray := PhysicsRayQueryParameters3D.create(p+Vector3.UP*2,p-Vector3.UP*2,2)
 		var hit := space.intersect_ray(ray)
 		if hit.is_empty(): continue
@@ -1017,7 +1061,9 @@ func _dismount(force: bool = false) -> void:
 	if not found and not force:
 		business._notify("No hay espacio para bajar.")
 		return
-	_store_park(ride_kind)
+	if borrowed:
+		body.add_to_group("traffic_parked")
+	else: _store_park(ride_kind)
 	if rider!=null:
 		rider.queue_free()
 		rider = null
@@ -1030,8 +1076,11 @@ func _dismount(force: bool = false) -> void:
 	riding = false
 	ride_kind = ""
 	ride_speed = 0.0
+	ride_exit_requested = false
+	borrowed_body = null
 	game.first_person = previous_first
 	game._apply_camera_mode()
+	if borrowed and game.yordi_mission!=null: game.yordi_mission.on_manual_bike_exit(force)
 
 func reset() -> void:
 	_stop_home_paint()
@@ -1040,13 +1089,17 @@ func reset() -> void:
 	garage_near = false
 
 func drive(delta: float,movement: Vector2) -> void:
-	var body: CharacterBody3D = owned[ride_kind]
+	var body := _ride_body()
+	if not is_instance_valid(body): return
 	var spec: Dictionary = Kit.KITS[ride_kind]
-	var speed := float(spec.speed)*(1.0+.08*float(state.upgrades.get(ride_kind,0)))
+	var speed := float(spec.speed)*(1.0 if riding_borrowed() else 1.0+.08*float(state.upgrades.get(ride_kind,0)))
 	var boost := Input.is_physical_key_pressed(KEY_SHIFT) and movement.y<0.0 and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED
-	var target := -movement.y*(speed*(2.0 if boost else 1.0) if movement.y<=0 else speed*.28)
-	var brake := Input.is_physical_key_pressed(KEY_SPACE)
-	ride_speed = move_toward(ride_speed,0.0 if brake else target,delta*(12.0 if brake else (7.0 if boost else 4.0)))
+	var target := -movement.y*(minf(45.0,speed*3.0) if boost else (speed if movement.y<=0 else speed*.28))
+	var brake := Input.is_physical_key_pressed(KEY_SPACE) or ride_exit_requested
+	ride_speed = move_toward(ride_speed,0.0 if brake else target,delta*(16.0 if brake else (15.0 if boost else 4.0)))
+	if ride_exit_requested and absf(ride_speed)<.3:
+		_dismount()
+		return
 	var old := body.global_transform
 	var impact_speed := ride_speed
 	if absf(ride_speed)>.1: body.rotation.y -= movement.x*signf(ride_speed)*delta*1.65*minf(absf(ride_speed)/2.0,1.0)
@@ -1065,7 +1118,7 @@ func drive(delta: float,movement: Vector2) -> void:
 	last_save += delta
 	if last_save>=10.0:
 		last_save = 0.0
-		_store_park(ride_kind)
+		if not riding_borrowed(): _store_park(ride_kind)
 
 func _init_traffic() -> void:
 	if game.monte_services==null or not game.monte_services.initialized: return
