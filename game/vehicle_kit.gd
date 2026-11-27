@@ -67,6 +67,36 @@ static func _wheel(root: Node3D,p: Vector3,r: float,width: float,ghost: bool) ->
 		node.position = p
 		node.rotation.z = PI*.5
 
+# Open spoked wheels for bicycles and electric passenger tricycles.
+# Shared low-poly ring meshes replace the solid silver wheel discs.
+static func _ring(root: Node3D,p: Vector3,inner: float,outer: float,depth: float,color: Color,ghost: bool) -> void:
+	var key := "ring:"+str(inner)+":"+str(outer)
+	if not wheel_meshes.has(key):
+		var ring := TorusMesh.new()
+		ring.inner_radius = inner
+		ring.outer_radius = outer
+		ring.rings = 16
+		ring.ring_segments = 6
+		wheel_meshes[key] = ring
+	var node := MeshInstance3D.new()
+	node.mesh = wheel_meshes[key] as Mesh
+	node.material_override = _mat(color,ghost)
+	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	root.add_child(node)
+	node.position = p
+	node.rotation.z = PI*.5
+	node.scale.y = depth/(outer-inner)
+
+static func _spoked_wheel(root: Node3D,p: Vector3,r: float,width: float,ghost: bool) -> void:
+	var silver := Color("#abb1b2")
+	_ring(root,p,r*.77,r,width,Color("#303337"),ghost)
+	_ring(root,p,r*.73,r*.79,width*.52,silver,ghost)
+	_wheel(root,p,r*.13,width*.78,ghost)
+	for i in range(4):
+		var a := float(i)*PI/4.0
+		var d := Vector3(0,sin(a),cos(a))*r*.74
+		_bar(root,p-d,p+d,.012,silver,ghost)
+
 static func build(root: Node3D,kind: String,installed: Dictionary,all_parts: bool = false) -> void:
 	var spec: Dictionary = KITS[kind]
 	var car := kind=="carro"
@@ -93,7 +123,14 @@ static func build(root: Node3D,kind: String,installed: Dictionary,all_parts: boo
 					if tri:
 						_box(root,Vector3(0,.65,-.53),Vector3(1.14,.17,.98),paint,ghost)
 						_box(root,Vector3(0,1.48,-.40),Vector3(1.20,.09,1.16),paint,ghost)
-						for x in [-.53,.53]: _bar(root,Vector3(float(x),.67,-.9),Vector3(float(x),1.48,-.9),.06,paint,ghost)
+						for x in [-.53,.53]:
+							_bar(root,Vector3(float(x),.67,-.9),Vector3(float(x),1.48,-.9),.06,paint,ghost)
+							_bar(root,Vector3(float(x),.70,-.15),Vector3(float(x),1.48,-.15),.035,paint,ghost)
+							_box(root,Vector3(float(x),.84,-.57),Vector3(.055,.22,.76),paint,ghost)
+						# Bicitaxi-style passenger canopy and lower rear panel.
+						_box(root,Vector3(0,1.54,-.40),Vector3(1.12,.045,1.08),Color("#e1dac4"),ghost)
+						_box(root,Vector3(0,.76,-1.015),Vector3(1.04,.24,.055),paint,ghost)
+						_box(root,Vector3(0,.85,.875),Vector3(.34,.43,.055),paint,ghost,-.12)
 					if moto:
 						# Low-poly tank with a tapered front and rear, not a large cube.
 						_box(root,Vector3(0,.91,.15),Vector3(.31,.21,.38),paint,ghost)
@@ -103,11 +140,17 @@ static func build(root: Node3D,kind: String,installed: Dictionary,all_parts: boo
 						_box(root,Vector3(0,.76,-.65),Vector3(.22,.08,.36),paint,ghost,.12)
 						_box(root,Vector3(0,.77,-.84),Vector3(.18,.07,.045),Color("#a42f2d"),ghost)
 			"wheel_a":
-				_wheel(root,Vector3(-width*.42 if car else 0,r,z),r,.22 if car else .11,ghost)
+				var p := Vector3(-width*.42 if car else 0,r,z)
+				if car or moto: _wheel(root,p,r,.22 if car else .11,ghost)
+				else: _spoked_wheel(root,p,r,.11,ghost)
 			"wheel_b":
-				_wheel(root,Vector3(-width*.42 if car or tri else 0,r,-z),r,.22 if car else .11,ghost)
+				var p := Vector3(-width*.42 if car or tri else 0,r,-z)
+				if car or moto: _wheel(root,p,r,.22 if car else .11,ghost)
+				else: _spoked_wheel(root,p,r,.11,ghost)
 			"wheel_c":
-				_wheel(root,Vector3(width*.42,r,-z),r,.22 if car else .12,ghost)
+				var p := Vector3(width*.42,r,-z)
+				if tri: _spoked_wheel(root,p,r,.12,ghost)
+				else: _wheel(root,p,r,.22,ghost)
 			"wheel_d":
 				_wheel(root,Vector3(width*.42,r,z),r,.22,ghost)
 			"steer":
@@ -122,6 +165,9 @@ static func build(root: Node3D,kind: String,installed: Dictionary,all_parts: boo
 						_box(root,Vector3(0,1.06,.57),Vector3(.18,.15,.13),Color("#343b3c"),ghost)
 						_box(root,Vector3(0,1.06,.645),Vector3(.15,.12,.024),Color("#e2d9b7"),ghost)
 						_box(root,Vector3(0,.67,z),Vector3(.16,.07,.35),paint,ghost,-.12)
+						# Keep Yordi's mission-specific mirror positions untouched.
+						_box(root,Vector3(0,1.105,.48),Vector3(.13,.03,.09),Color("#303438"),ghost)
+						_box(root,Vector3(0,1.124,.48),Vector3(.085,.012,.06),Color("#91a5a4"),ghost)
 					else:
 						_bar(root,Vector3(0,.35,z),Vector3(0,1.11,z*.77),.06,Color("#b5b9bd"),ghost)
 						_box(root,Vector3(0,1.10,z*.77),Vector3(width*.86,.055,.07),Color("#343b3c"),ghost)
@@ -129,11 +175,29 @@ static func build(root: Node3D,kind: String,installed: Dictionary,all_parts: boo
 				if moto:
 					_box(root,Vector3(0,.93,-.32),Vector3(.29,.10,.51),Color("#323638"),ghost)
 					_box(root,Vector3(0,.98,-.55),Vector3(.25,.06,.17),Color("#323638"),ghost)
-				else: _box(root,Vector3(0,.93,-.23),Vector3(.55 if car or tri else .24,.11,.45),Color("#323638"),ghost)
+				else:
+					_box(root,Vector3(0,.93,-.23),Vector3(.55 if car or tri else .24,.11,.45),Color("#323638"),ghost)
+					if tri:
+						_box(root,Vector3(0,.91,-.76),Vector3(.91,.12,.38),Color("#323638"),ghost)
+						_box(root,Vector3(0,1.12,-.96),Vector3(.91,.33,.09),Color("#323638"),ghost)
+					elif not car:
+						_bar(root,Vector3(0,.55,-.18),Vector3(0,.89,-.23),.045,Color("#b5b9bd"),ghost)
 			"drive":
-				_box(root,Vector3(0,.47,.0),Vector3(.60 if car else (.27 if moto else .19),.29,.36),Color("#686d70"),ghost)
+				if car or moto or tri:
+					_box(root,Vector3(0,.47,.0),Vector3(.60 if car else (.27 if moto else .19),.29,.36),Color("#686d70"),ghost)
+				else:
+					# Pedals and chain guard instead of a generic engine block.
+					var metal := Color("#a8acad")
+					_bar(root,Vector3(-.16,.39,0),Vector3(.16,.39,0),.035,metal,ghost)
+					for side in [-1.0,1.0]:
+						var x := float(side)
+						_bar(root,Vector3(x*.16,.39,0),Vector3(x*.16,.39,x*.15),.025,metal,ghost)
+						_box(root,Vector3(x*.21,.39,x*.15),Vector3(.13,.035,.095),Color("#343b3c"),ghost)
+					_bar(root,Vector3(.067,.36,0),Vector3(.067,.36,-z),.045,Color("#3c4447"),ghost)
 				if moto:
 					_box(root,Vector3(0,.65,.07),Vector3(.24,.12,.20),Color("#555a5d"),ghost)
+					for fin in range(4):
+						_box(root,Vector3(0,.52+float(fin)*.035,.07),Vector3(.29,.012,.23),Color("#969a9b"),ghost)
 					_bar(root,Vector3(.16,.44,.16),Vector3(.21,.36,-.63),.055,Color("#969a9b"),ghost)
 					_box(root,Vector3(.21,.36,-.63),Vector3(.08,.08,.30),Color("#696d70"),ghost)
 					for side in [-1.0,1.0]:
