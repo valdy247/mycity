@@ -412,6 +412,23 @@ static func watchdog(state: Dictionary,body: CharacterBody3D,streets: Streets,ro
 		var candidate := Vector3(target.x,origin.y,target.z)-direction*float(meters)
 		if origin.distance_to(candidate)<=35.0 and origin.distance_to(candidate)>1.5:
 			options.append({"p":candidate,"d":direction,"index":index})
+	# If all original-lane recovery poses are blocked, check a neighbouring
+	# lane on the same carriageway. Retain the pending route waypoint.
+	var alternate: Array = []
+	for option in options:
+		var p: Vector3 = option.p
+		var d: Vector3 = option.d
+		var lane := streets.four_lane_at(p,d)
+		if lane.is_empty(): continue
+		var side: Vector3 = lane.right
+		var half := float(lane.half)
+		var lateral := float(lane.lateral)
+		for target_lateral in [half*.25,half*.75]:
+			var candidate := p+side*(float(target_lateral)-lateral)
+			if candidate.distance_to(origin)<1.5: continue
+			if not streets.in_carriageway(candidate,d,width,length,d): continue
+			alternate.append({"p":candidate,"d":d,"index":int(option.index)})
+	options.append_array(alternate)
 	for option in options:
 		var p: Vector3 = option.p
 		var d: Vector3 = option.d
@@ -683,8 +700,9 @@ static func rejoin_index(body: CharacterBody3D,route: Array,index: int,streets: 
 
 # Initiate a lane change before the driver has reached a complete stop.
 # The expensive path search is still throttled by each driver's cooldown.
-static func early_lane_pass(body: CharacterBody3D,streets: Streets,blocked: bool,_free: float) -> bool:
-	return blocked
+static func early_lane_pass(body: CharacterBody3D,_streets: Streets,blocked: bool,free: float) -> bool:
+	# Avoid running a full planner for each normal moving traffic queue.
+	return blocked and free<5.0 and body.velocity.length()<2.5
 
 # Intersection admission: reserve one crossing at a time, before the
 # vehicle's nose enters the junction. Verify that its tail can exit too.
