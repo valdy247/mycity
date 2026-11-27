@@ -4,7 +4,7 @@ extends Node3D
 const Progress = preload("res://airport_progress.gd")
 const Person = preload("res://street_person.gd")
 const Lights = preload("res://vehicle_lights.gd")
-const DESK := Vector3(-1.7,0,-24)
+const DESK := Vector3(-2.7,0,-24.4)
 const GATE := Vector3(0,0,-20)
 const CART_START := Vector3(-5,.03,-16)
 const EXIT := Vector3(0,0,1)
@@ -174,11 +174,30 @@ func _make_terminal() -> void:
 	for side in [-1.0,1.0]:
 		_box(self,Vector3(float(side)*8.3,2,-20),Vector3(12.8,4,.32),cream,true)
 		_box(self,Vector3(float(side)*8.3,3.25,-20.19),Vector3(12.8,1.0,.08),red)
-	_box(self,Vector3(-3.0,1.05,-23),Vector3(2.35,2.1,1.5),Color("#d5d0c3"),true)
-	_box(self,Vector3(-3.0,2.35,-23),Vector3(2.45,.48,1.6),red)
-	_label3(self,"MIGRACIÓN  •  01",Vector3(-3,2.37,-23.83),.006).rotation.y = PI
-	_box(self,Vector3(-1.73,.99,-23.8),Vector3(.48,.10,.78),metal)
-	_box(self,Vector3(-3.0,1.30,-22.15),Vector3(.50,.35,.12),glass)
+	# Enclosed immigration cubicle, with an open service window facing the queue.
+	var booth := Vector3(-2.7,0,-22.5)
+	var panel := Color("#d5d0c3")
+	_box(self,booth+Vector3(0,.51,-.96),Vector3(2.15,1.02,.12),panel,true)
+	_box(self,booth+Vector3(0,1.04,-1.03),Vector3(2.21,.10,.43),metal)
+	_box(self,booth+Vector3(0,2.28,0),Vector3(2.25,.36,2.12),red)
+	_box(self,booth+Vector3(0,1.08,.97),Vector3(2.15,2.16,.12),panel,true)
+	for side in [-1.0,1.0]:
+		var x := float(side)*1.02
+		_box(self,booth+Vector3(x,.53,0),Vector3(.12,1.06,1.92),panel,true)
+		for z in [-.94,.94]:
+			_box(self,booth+Vector3(x,1.66,float(z)),Vector3(.10,1.23,.10),metal,true)
+		var pane := _box(self,booth+Vector3(x,1.61,0),Vector3(.04,1.08,1.78),glass,true)
+		var transparent := StandardMaterial3D.new()
+		transparent.albedo_color = Color(.56,.72,.76,.23)
+		transparent.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		pane.material_override = transparent
+	_label3(self,"MIGRACIÓN  •  01",booth+Vector3(0,2.29,-1.07),.0055).rotation.y = PI
+	# Desk equipment and chair, leaving the officer's head visible in the window.
+	_box(self,booth+Vector3(-.65,1.22,-.66),Vector3(.42,.36,.09),Color("#333b40"))
+	_box(self,booth+Vector3(-.65,1.08,-.60),Vector3(.40,.035,.22),Color("#363b3f"))
+	_box(self,booth+Vector3(0,.48,.20),Vector3(.48,.10,.48),Color("#343a3e"))
+	_box(self,booth+Vector3(0,.81,.47),Vector3(.48,.65,.09),Color("#343a3e"))
+	_box(self,booth+Vector3(0,.24,.20),Vector3(.09,.45,.09),metal)
 	_label3(self,"CONTROL DE PASAPORTES",Vector3(0,3.4,-20.22),.008).rotation.y = PI
 	for side in [-1.0,1.0]:
 		_box(self,Vector3(float(side)*1.7,.55,-20),Vector3(.32,1.10,.55),metal,true)
@@ -368,8 +387,12 @@ func _make_arrivals_props() -> void:
 	officer = Person.new()
 	add_child(officer)
 	officer.setup(331)
-	officer.position = Vector3(-1.65,.03,-22.9)
+	officer.position = Vector3(-2.7,-.33,-22.30)
 	officer.rotation.y = PI
+	officer.scale = Vector3(.94,.94,.94)
+	for leg in officer.limbs: leg.rotation.x = -PI*.5
+	for knee in officer.knees: knee.rotation.x = PI*.5
+	for arm in officer.arms: arm.rotation.x = -1.05
 	previous = Person.new()
 	add_child(previous)
 	previous.setup(343)
@@ -384,6 +407,7 @@ func _make_arrivals_props() -> void:
 	cart = Node3D.new()
 	add_child(cart)
 	cart.position = progress.cart_position
+	cart.rotation.y = progress.cart_angle
 	var steel := Color("#a9afb1")
 	_box(cart,Vector3(0,.24,0),Vector3(.68,.075,1.06),steel)
 	for x in [-.30,.30]:
@@ -437,10 +461,10 @@ func _target() -> Vector3:
 		1,2: return DESK
 		3: return GATE+Vector3.FORWARD*-2.0
 		4: return cart.global_position
-		5: return bags[0].global_position
+		5: return Vector3(-2.5,0,-11) if progress.cart_attached else bags[0].global_position
 		6,8,11,13: return cart.global_position
-		7: return bags[1].global_position
-		9: return EXIT
+		7: return Vector3(-2.5,0,-11) if progress.cart_attached else bags[1].global_position
+		9: return EXIT if progress.cart_attached else cart.global_position
 		10,12,14,15: return _trunk_point()
 		16: return _door_point()
 	return taxi.global_position
@@ -460,7 +484,7 @@ func _sync() -> void:
 	if step==2:
 		passport.show()
 		if passport.get_parent()!=officer: passport.reparent(officer,false)
-		passport.position = Vector3(.15,1.02,.39)
+		passport.position = Vector3(.15,1.49,.83)
 		passport.rotation = Vector3.ZERO
 	elif step<=3:
 		passport.show()
@@ -486,21 +510,68 @@ func _sync() -> void:
 			"belt": bag.position = _belt_point(i)
 		bag_arrows[i].visible = place=="belt" and step>=4
 	lid.rotation.x = 1.15 if step>=11 and step<=15 else 0.0
-	marker.visible = step not in [0,5,7,15,Progress.COMPLETE]
+	_refresh_objective()
 	if marker.visible: marker.global_position = _target()
-	objective.text = "CAPÍTULO 1 · DE REGRESO A CUBA\n"+TASKS[step]+"   (%d/%d)" % [step,Progress.COMPLETE]
 	if step==Progress.COMPLETE: prompt.text = "Fase 1 completada · Esc para abrir el menú"
+
+func _refresh_objective() -> void:
+	var step := progress.stage
+	var task: String = TASKS[step]
+	if step in [5,7] and progress.cart_attached:
+		task = "Estaciona el carrito cerca de la cinta y pulsa E para soltarlo."
+	elif step==9 and not progress.cart_attached:
+		task = "Vuelve al carrito y pulsa E para llevar tus maletas a la salida."
+	marker.visible = step not in [0,15,Progress.COMPLETE] and (step not in [5,7] or progress.cart_attached)
+	objective.text = "CAPÍTULO 1 · DE REGRESO A CUBA\n"+task+"   (%d/%d)" % [step,Progress.COMPLETE]
+
+func _cart_can_park() -> bool:
+	var at := cart.global_position
+	# Any free point within reach of the carousel, not a fixed parking slot.
+	var dx := maxf(absf(at.x-BELT.x)-5.0,0.0)
+	var dz := maxf(absf(at.z-BELT.z)-2.0,0.0)
+	if Vector2(dx,dz).length()>3.5 or at.z>=-3.0 or at.z<=-19.0: return false
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(.78,.65,1.12)
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = shape
+	query.transform = Transform3D(cart.global_transform.basis,at+Vector3.UP*.50)
+	query.exclude = [player.get_rid()]
+	return get_world_3d().direct_space_state.intersect_shape(query,1).is_empty()
+
+func _toggle_cart(value: bool) -> void:
+	var old := progress.cart_attached
+	var old_pos := progress.checkpoint
+	var old_cart := progress.cart_position
+	var old_angle := progress.cart_angle
+	if not progress.set_cart_attached(value): return
+	progress.checkpoint = player.global_position
+	progress.cart_position = cart.global_position
+	progress.cart_angle = cart.rotation.y
+	if not progress.save_game():
+		progress.cart_attached = old
+		progress.checkpoint = old_pos
+		progress.cart_position = old_cart
+		progress.cart_angle = old_angle
+		_notice("No se pudo guardar. Intenta de nuevo.")
+		return
+	_refresh_objective()
+	_notice("Carrito recogido." if value else "Carrito estacionado. Recoge las maletas.")
 
 func _advance(action: String) -> bool:
 	var old := progress.stage
 	var old_pos := progress.checkpoint
 	var old_cart := progress.cart_position
+	var old_attached := progress.cart_attached
+	var old_angle := progress.cart_angle
 	if not progress.advance(action,player.global_position): return false
 	progress.cart_position = cart.global_position
+	progress.cart_angle = cart.rotation.y
 	if not progress.save_game():
 		progress.stage = old
 		progress.checkpoint = old_pos
 		progress.cart_position = old_cart
+		progress.cart_attached = old_attached
+		progress.cart_angle = old_angle
 		_notice("No se pudo guardar. Intenta de nuevo.")
 		return false
 	stage_time = 0.0
@@ -510,7 +581,16 @@ func _advance(action: String) -> bool:
 
 func _interact() -> void:
 	var step := progress.stage
-	if menu_open or step in [0,3,9,10,15,Progress.COMPLETE]: return
+	if menu_open or step in [0,3,10,15,Progress.COMPLETE]: return
+	if step in [5,7] and progress.cart_attached:
+		if _cart_can_park(): _toggle_cart(false)
+		else: _notice("Busca espacio libre cerca de la cinta para soltar el carrito.")
+		return
+	if step==9:
+		if not progress.cart_attached:
+			if _near(cart.global_position,1.60): _toggle_cart(true)
+			else: _notice("Acércate al carrito.")
+		return
 	if not _near(_target(),1.60):
 		_notice("Acércate al objetivo marcado.")
 		return
@@ -706,7 +786,7 @@ func _physics_process(delta: float) -> void:
 	stage_time += delta
 	var axis := Vector2(float(_pressed(KEY_D,"right"))-float(_pressed(KEY_A,"left")),float(_pressed(KEY_S,"back"))-float(_pressed(KEY_W,"forward"))).limit_length(1.0)
 	var direction := player.transform.basis*Vector3(axis.x,0,axis.y)
-	var speed := 2.8 if progress.stage>=5 and progress.stage<=10 else 3.8
+	var speed := 2.8 if progress.cart_attached else (3.1 if progress.stage in [6,8,12,14] else 3.8)
 	player.velocity.x = direction.x*speed
 	player.velocity.z = direction.z*speed
 	player.velocity.y -= 9.8*delta
@@ -714,7 +794,7 @@ func _physics_process(delta: float) -> void:
 	if player.position.y<-.8:
 		player.position = progress.checkpoint
 		player.velocity = Vector3.ZERO
-	if progress.stage>=5 and progress.stage<=10:
+	if progress.cart_attached:
 		# Cart is pushed in front of the camera; the ray keeps it on the
 		# player's side of walls and locked doors when turning near a corner.
 		var start := player.global_position
@@ -727,9 +807,9 @@ func _physics_process(delta: float) -> void:
 		if not hit.is_empty(): desired = start+forward*maxf(.35,start.distance_to(hit.position)-.35)
 		cart.global_position = Vector3(desired.x,.03,desired.z)
 		cart.rotation.y = yaw
-	officer.animate(delta,false)
-	if progress.stage==2:
-		officer.arms[1].rotation.x = lerpf(officer.arms[1].rotation.x,-1.0,minf(1.0,delta*7.0))
+	# Keep the seated pose: the ordinary walking animation would straighten her legs.
+	var reach := -1.35 if progress.stage==2 else -1.05
+	officer.arms[1].rotation.x = lerpf(officer.arms[1].rotation.x,reach,minf(1.0,delta*7.0))
 	match progress.stage:
 		0:
 			if stage_time>1.5 and previous.visible:
@@ -742,7 +822,7 @@ func _physics_process(delta: float) -> void:
 		3:
 			if player.global_position.z>-19.25 and absf(player.global_position.x)<2.3: _advance("pass_gate")
 		9:
-			if player.global_position.z>.25 and absf(player.global_position.x)<4.0: _advance("exit")
+			if progress.cart_attached and player.global_position.z>.25 and absf(player.global_position.x)<4.0: _advance("exit")
 		10:
 			if _near(_trunk_point(),2.0) and not driver_opening:
 				driver_opening = true
@@ -750,7 +830,7 @@ func _physics_process(delta: float) -> void:
 			if driver_opening:
 				driver_clock += delta
 				var at := taxi.to_global(Vector3(-1.35,0,-2.25))
-				if driver.walk_to(at,delta,2.0) or driver_clock>8.0:
+				if (driver.walk_to(at,delta,2.0) or driver_clock>8.0) and _near(_trunk_point(),2.0):
 					var old := lid.rotation.x
 					if _advance("driver_open"):
 						lid.rotation.x = old
@@ -773,6 +853,10 @@ func _physics_process(delta: float) -> void:
 	var near := _near(_target(),1.60)
 	var actions := ["","Entregar pasaporte","Recoger pasaporte","","Tomar carrito","Recoger primera maleta","Poner en carrito","Recoger segunda maleta","Poner en carrito","","","Tomar primera maleta","Guardar en maletero","Tomar segunda maleta","Guardar en maletero","","Subir al taxi"]
 	var action: String = actions[progress.stage]
+	if progress.stage in [5,7] and progress.cart_attached:
+		prompt.text = "[E] Soltar carrito" if _cart_can_park() else "Lleva el carrito a un espacio libre junto a la cinta."
+		return
+	if progress.stage==9 and not progress.cart_attached: action = "Tomar carrito"
 	if progress.stage==2 and not spoken_welcome: action = ""
 	prompt.text = ("[E] "+action) if near and not action.is_empty() else "WASD · Caminar / Sigue el objetivo"
 

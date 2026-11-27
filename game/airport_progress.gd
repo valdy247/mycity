@@ -8,6 +8,8 @@ const SPAWN := Vector3(0,.91,-29)
 var stage := 0
 var checkpoint := SPAWN
 var cart_position := Vector3(-5,.03,-16)
+var cart_attached := false
+var cart_angle := 0.0
 
 static func expected_action(step: int) -> String:
 	return ACTIONS[step] if step>=0 and step<ACTIONS.size() else ""
@@ -23,8 +25,20 @@ static func bag_location(step: int,id: int) -> String:
 		if step>=9: return "cart"
 	return "belt"
 
+# Parking and taking the cart are separate from luggage ownership.
+func set_cart_attached(value: bool) -> bool:
+	if value==cart_attached: return false
+	if value and stage!=9: return false
+	if not value and stage not in [5,7]: return false
+	cart_attached = value
+	return true
+
 func advance(action: String,at: Vector3) -> bool:
 	if stage>=COMPLETE or action!=expected_action(stage) or not at.is_finite(): return false
+	if stage in [5,6,7,8] and cart_attached: return false
+	if stage in [9,10] and not cart_attached: return false
+	if stage==4: cart_attached = true
+	if stage==10: cart_attached = false
 	stage += 1
 	checkpoint = at
 	return true
@@ -49,10 +63,16 @@ func load_game() -> bool:
 	stage = step
 	checkpoint = _read_point(data.get("checkpoint",[]),SPAWN)
 	cart_position = _read_point(data.get("cart_position",[]),Vector3(-5,.03,-16))
+	# Existing v2 checkpoints remain usable, even if the cart was previously glued to the player.
+	cart_attached = bool(data.get("cart_attached",step in [5,7,10]))
+	if step<5 or step in [6,8] or step>=11: cart_attached = false
+	if step==10: cart_attached = true
+	cart_angle = float(data.get("cart_angle",0.0))
+	if not is_finite(cart_angle): cart_angle = 0.0
 	return true
 
 func save_game() -> bool:
-	var data := {"version":VERSION,"chapter":1,"scene":"airport","stage":stage,"cash":0,"properties":[],"vehicles":[],"businesses":[],"checkpoint":[checkpoint.x,checkpoint.y,checkpoint.z],"cart_position":[cart_position.x,cart_position.y,cart_position.z]}
+	var data := {"version":VERSION,"chapter":1,"scene":"airport","stage":stage,"cash":0,"properties":[],"vehicles":[],"businesses":[],"checkpoint":[checkpoint.x,checkpoint.y,checkpoint.z],"cart_position":[cart_position.x,cart_position.y,cart_position.z],"cart_attached":cart_attached,"cart_angle":cart_angle}
 	var temp := SAVE_PATH+".tmp"
 	var file := FileAccess.open(temp,FileAccess.WRITE)
 	if file==null: return false

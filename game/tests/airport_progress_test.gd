@@ -21,6 +21,20 @@ func _initialize() -> void:
 				return
 		if step==Progress.COMPLETE: break
 		var action := Progress.expected_action(step)
+		if step==5:
+			if not state.cart_attached or state.advance(action,at) or not state.set_cart_attached(false):
+				printerr("FAIL: must park before collecting luggage")
+				quit(1)
+				return
+		if step in [6,7,8] and (state.cart_attached or state.set_cart_attached(true)):
+			printerr("FAIL: cart must remain parked during luggage transfer")
+			quit(1)
+			return
+		if step==9:
+			if state.advance(action,at) or not state.set_cart_attached(true):
+				printerr("FAIL: must take loaded cart before leaving")
+				quit(1)
+				return
 		if not state.advance(action,at) or state.stage!=step+1:
 			printerr("FAIL: arrival sequence ",step)
 			quit(1)
@@ -32,5 +46,9 @@ func _initialize() -> void:
 	if state.stage!=Progress.COMPLETE or not Progress.expected_action(state.stage).is_empty():
 		quit(1)
 		return
-	print("Airport migration, cart, bag ownership and taxi sequence: PASS")
+	if state.cart_attached:
+		printerr("FAIL: cart must remain outside taxi")
+		quit(1)
+		return
+	print("Airport migration, parked cart, bag ownership and taxi sequence: PASS")
 	quit(0)
