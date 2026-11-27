@@ -209,7 +209,7 @@ func _textured(base: StandardMaterial3D,at: Vector3) -> StandardMaterial3D:
 	texture_kinds[material_id] = kind
 	return base if kind.is_empty() else havana_textures.material(base,kind)
 
-func _cube(at: Vector3, size: Vector3, material: StandardMaterial3D, angle: float = 0.0, solid: bool = false) -> void:
+func _cube(at: Vector3, size: Vector3, material: StandardMaterial3D, angle: float = 0.0, solid: bool = false, close_detail: bool = false) -> void:
 	material = _textured(material,at)
 	var basis := Basis(Vector3.UP,angle)
 	var level := 0
@@ -222,7 +222,7 @@ func _cube(at: Vector3, size: Vector3, material: StandardMaterial3D, angle: floa
 	var origin := Vector3(float(tile.x)*96.0,0,float(tile.y)*96.0)
 	# Thin trim, window bars, wires and weathering are close-range detail.
 	# Structural geometry and all collisions remain present.
-	var detail := not solid and not home_building and minf(size.x,minf(size.y,size.z))<=.15
+	var detail := not solid and not home_building and (close_detail or minf(size.x,minf(size.y,size.z))<=.15)
 	var key := str(tile)+":"+str(material.get_instance_id())+":"+str(level)+":"+str(detail)
 	if not box_groups.has(key):
 		box_groups[key] = {"material":material,"transforms":[],"home_level":level,"origin":origin,"detail":detail}
@@ -2492,7 +2492,11 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		var paint := String(edit.get("paint",""))
 		if Color.html_is_valid(paint):
 			base_color = Color(paint)
+		# Phase 2: dress only ordinary, unedited residential footprints near the playable district.
+		var residential_kind := String(tags.get("building","yes"))
+		var local_dressing := not market and not preserve_home and edit.is_empty() and String(fp.id)!=house_id and String(fp.id)!=alborada_poly_id and not geographic_by_building.has(String(fp.id)) and not tags.has("name") and not tags.has("amenity") and not tags.has("shop") and not tags.has("office") and residential_kind in ["yes","house","residential","apartments","terrace"] and _havana_detail_near(center)
 		var wall_key := ("monte_wall" if monte else "mapped_wall")+str(idx)
+		if local_dressing and monte: wall_key = "mapped_wall_monte_phase2_"+str(idx)
 		if not paint.is_empty() or market: wall_key = "custom_wall_"+String(fp.id)
 		var wall := _mat(wall_key,base_color)
 		wall.cull_mode = BaseMaterial3D.CULL_DISABLED
@@ -2547,8 +2551,10 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 		height_sources[height_source] = int(height_sources.get(height_source,0))+1
 		kept_footprints.append(fp)
 		editable_buildings[String(fp.id)] = {"poly":poly,"center":center,"height":h,"height_source":height_source,"name":String(tags.get("name","Edificio")),"protected":market or String(fp.id)==alborada_poly_id or geographic_by_building.has(String(fp.id)),"front":front}
+		if local_dressing and h>=3.0 and h<=15.0 and posmod(String(fp.id).hash(),5)==0:
+			_havana_roof_cistern(poly,center,h)
 		if not front.is_empty():
-			_detail_front(front,h,idx,portal,market,monte,portal_depth,PackedVector2Array() if preserve_home or market or avenue_faces.is_empty() else lower)
+			_detail_front(front,h,idx,portal,market,monte,portal_depth,PackedVector2Array() if preserve_home or market or avenue_faces.is_empty() else lower,local_dressing)
 			if monte and portal:
 				_monte_portal(front,poly,portal_depth,portal_ceiling,idx,base_color)
 			if not preserve_home and not market and _avenue_edge(front.road):
@@ -2558,7 +2564,7 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 				var side_portal := bool(entry.portal)
 				var side_arcade := bool(entry.arcade)
 				var side_depth := float(entry.depth)
-				_detail_front(side_front,h,idx,side_portal,false,side_arcade,side_depth,lower)
+				_detail_front(side_front,h,idx,side_portal,false,side_arcade,side_depth,lower,local_dressing)
 				if side_portal:
 					_monte_portal(side_front,poly,side_depth,portal_ceiling,idx,base_color)
 				if _avenue_edge(side_front.road): _avenue_bays(side_front,h,portal_ceiling,side_depth,lower,idx,base_color,side_portal)
@@ -3102,7 +3108,7 @@ func _monte_portal(front: Dictionary,poly: PackedVector2Array,depth: float,ceili
 	_cube((a+b)*.5-n*.07+Vector3.UP*(ceiling-.03),Vector3(length,.22,.27),trim,angle)
 	_cube((a+b)*.5-n*.07+Vector3.UP*(ceiling+.18),Vector3(length,.14,.21),trim,angle)
 
-func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool,monte: bool = false,portal_depth: float = 2.25,lower: PackedVector2Array = PackedVector2Array()) -> void:
+func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool,monte: bool = false,portal_depth: float = 2.25,lower: PackedVector2Array = PackedVector2Array(),local_dressing: bool = false) -> void:
 	var a: Vector3 = front.a
 	var b: Vector3 = front.b
 	var n: Vector3 = front.normal
@@ -3162,6 +3168,11 @@ func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool
 					_balcony_planter(p,t,n,y,w,angle)
 			if not market and posmod(idx+i*3+level,5)==0 and _havana_detail_near(p):
 				_window_shutters(p,t,n,y,w,angle,door_mat)
+			elif local_dressing and idx%3==0 and level<=2 and w>=.75 and posmod(idx+i+level,3)==0:
+				# A sparse iron grille on windows without balconies or shutters.
+				for bar in [-.28,0.0,.28]:
+					_cube(p+t*w*float(bar)+n*.16+Vector3.UP*y,Vector3(.035,1.70,.045),iron,angle)
+				_cube(p+n*.17+Vector3.UP*y,Vector3(w*.82,.045,.05),iron,angle)
 		if not market:
 			var wear_seed := posmod(idx*13+i*7,11)
 			var wear_x := minf(step*.22,.62)*(1.0 if wear_seed%2==0 else -1.0)
@@ -3175,6 +3186,23 @@ func _detail_front(front: Dictionary,h: float,idx: int,portal: bool,market: bool
 # detail distance; no collision, individual NPC, texture download or physics.
 func _havana_detail_near(p: Vector3) -> bool:
 	return p.distance_squared_to(texture_anchor)<=62500.0 or p.distance_squared_to(texture_market)<=32400.0
+
+func _havana_roof_cistern(poly: PackedVector2Array,center: Vector3,h: float) -> void:
+	# Rectangular rooftop water storage. Refuse narrow or concave edges;
+	# a conservative radius covers every corner and keeps it inside the lot.
+	var point := Vector2(center.x,center.z)
+	if not Geometry2D.is_point_in_polygon(point,poly): return
+	for i in range(poly.size()):
+		var nearest := Geometry2D.get_closest_point_to_segment(point,poly[i],poly[(i+1)%poly.size()])
+		if point.distance_to(nearest)<1.25: return
+	var base := _mat("havana_cistern_base",Color("#96938b"))
+	var tank := _mat("havana_cistern_dark",Color("#454b48"))
+	var lid := _mat("havana_cistern_lid",Color("#656b65"))
+	var p := Vector3(center.x,h,center.z)
+	# Shared sector MultiMeshes, close-range only; no new physics or shadows.
+	_cube(p+Vector3.UP*.10,Vector3(1.36,.20,1.06),base,0.0,false,true)
+	_cube(p+Vector3.UP*.59,Vector3(1.13,.78,.86),tank,0.0,false,true)
+	_cube(p+Vector3.UP*1.01,Vector3(1.18,.06,.91),lid,0.0,false,true)
 
 func _balcony_planter(p: Vector3,t: Vector3,n: Vector3,y: float,w: float,angle: float) -> void:
 	var center := p+t*w*.26+n*.38+Vector3.UP*(y-.80)
