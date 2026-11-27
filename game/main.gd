@@ -1016,11 +1016,12 @@ func _read_controls() -> Vector2:
 	return movement
 
 func _drive(delta: float, movement: Vector2) -> void:
-	var target := -movement.y * (13.0 if movement.y <= 0 else 4.0)
+	var boost := Input.is_physical_key_pressed(KEY_SHIFT) and movement.y<0.0 and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED
+	var target := -movement.y * ((26.0 if boost else 13.0) if movement.y <= 0 else 4.0)
 	var brake := Input.is_physical_key_pressed(KEY_SPACE) or Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
 	if brake:
 		target = 0.0
-	drive_speed = move_toward(drive_speed, target, delta * (14.0 if brake else 5.0))
+	drive_speed = move_toward(drive_speed, target, delta * (14.0 if brake else (8.5 if boost else 5.0)))
 	if absf(drive_speed) > 0.15:
 		van.rotation.y -= movement.x * signf(drive_speed) * delta * 1.35 * minf(absf(drive_speed) / 3.0, 1.0)
 	var prior := van.global_transform
@@ -1055,25 +1056,25 @@ func _update_hud() -> void:
 		_update_compact_hud()
 		return
 	if garage!=null and garage.riding:
-		status.text = "Vehículo · %d km/h\nW/S: acelerar y retroceder | A/D: girar\nEspacio: frenar | E: bajar | H: ocultar controles" % roundi(absf(garage.ride_speed)*3.6)
+		status.text = "Vehículo · %d km/h\nW/S: acelerar y retroceder | Shift: turbo | A/D: girar\nEspacio: frenar | E: bajar | H: ocultar controles" % roundi(absf(garage.ride_speed)*3.6)
 		return
 	if bus_riding:
 		var bus: Dictionary = urban_buses.player_bus
 		status.text = "GUAGUA | "+String(bus.get("line",""))+"\n"
 		status.text += "Bajada solicitada · próxima parada" if urban_buses.player_exit_requested else "E: solicitar bajar en la siguiente parada"
-		status.text += "\nR: regresar a casa | H: ocultar controles"
+		status.text += "\nShift: acelerar | R: regresar a casa | H: ocultar controles"
 		if not bus.active_stop.is_empty(): status.text += "\nParada: "+String(bus.active_stop.name)
 		return
 	if taxi_riding:
 		var ride_name := "MOTO DE YORDI" if yordi_mission!=null and yordi_mission.owns_passenger_trip() and yordi_mission.trip_role=="bike_out" else "TAXI"
-		status.text = ride_name+" | "+taxis.ride_status+"\n"+taxis.speed_description()+" | T: cambiar velocidad\nE: detener y bajar | R: volver a casa si te bloqueas | H: ocultar controles"
+		status.text = ride_name+" | "+taxis.ride_status+"\n"+taxis.speed_description()+" | T: cambiar velocidad | Shift: turbo\nE: detener y bajar | R: volver a casa si te bloqueas | H: ocultar controles"
 		return
 	var title := "PILAR-ATARÉS | La Habana" if cuba_world != null else ("VALDY JR TV | Ciudad 2.0" if native_city else "VALDY JR TV | Ciudad original")
 	if not city_loaded:
 		title = "MODO DE PRUEBA | Exporta city.glb desde Blender"
 	if driving:
 		status.text = title + "\nCONDUCIENDO | %d km/h" % roundi(absf(drive_speed) * 3.6)
-		status.text += "\nW/S: acelerar y retroceder | A/D: girar | Espacio: frenar\nE: salir detenido | R: reiniciar | Esc: liberar mouse"
+		status.text += "\nW/S: acelerar y retroceder | Shift: turbo | A/D: girar | Espacio: frenar\nE: salir detenido | R: reiniciar | Esc: liberar mouse"
 	else:
 		status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
 		var action := yordi_mission.action_text() if yordi_mission!=null else ""
@@ -1126,15 +1127,15 @@ func _update_hud() -> void:
 func _update_compact_hud() -> void:
 	var lines: Array[String] = ["[H] Controles · [M] Mapa · [F11] Pantalla completa" if city_navigation!=null else "[H] Controles · [F11] Pantalla completa"]
 	if garage!=null and garage.riding:
-		lines.append("%d km/h · [E] Bajar detenido" % roundi(absf(garage.ride_speed)*3.6))
+		lines.append("%d km/h · [Shift] Turbo · [E] Bajar detenido" % roundi(absf(garage.ride_speed)*3.6))
 	elif bus_riding:
 		var bus: Dictionary = urban_buses.player_bus
-		lines.append("Guagua "+String(bus.get("line",""))+" · "+("Bajada solicitada" if urban_buses.player_exit_requested else "[E] Bajar en próxima parada"))
+		lines.append("Guagua "+String(bus.get("line",""))+" · "+("Bajada solicitada" if urban_buses.player_exit_requested else "[E] Bajar en próxima parada")+" · [Shift] Acelerar")
 	elif taxi_riding:
 		var ride_name := "Moto de Yordi" if yordi_mission!=null and yordi_mission.owns_passenger_trip() and yordi_mission.trip_role=="bike_out" else "Taxi"
-		lines.append(ride_name+" · "+taxis.ride_status+" | [E] Bajar")
+		lines.append(ride_name+" · "+taxis.ride_status+" | "+taxis.speed_description()+" | [Shift] Turbo · [E] Bajar")
 	elif driving:
-		lines.append("%d km/h · [E] Bajar detenido" % roundi(absf(drive_speed)*3.6))
+		lines.append("%d km/h · [Shift] Turbo · [E] Bajar detenido" % roundi(absf(drive_speed)*3.6))
 	else:
 		var action := yordi_mission.action_text() if yordi_mission!=null else ""
 		if action.is_empty() and carlos_mission!=null: action = carlos_mission.action_text()
@@ -1397,7 +1398,7 @@ func _physics_process(delta: float) -> void:
 			_leave_bus(true)
 			return
 		cuba_world.tick(delta)
-		urban_buses.tick(delta)
+		urban_buses.tick(delta,Input.is_physical_key_pressed(KEY_SHIFT) and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED)
 		if monte_services!=null: monte_services.tick(delta)
 		if monte_pedestrians!=null: monte_pedestrians.tick(delta)
 		if taxis!=null: taxis.tick(delta,cuba_world.cuba_clock)
@@ -1435,7 +1436,7 @@ func _physics_process(delta: float) -> void:
 		if interact_requested:
 			taxis.request_stop()
 		interact_requested = false
-		taxis.tick(delta,cuba_world.cuba_clock)
+		taxis.tick(delta,cuba_world.cuba_clock,Input.is_physical_key_pressed(KEY_SHIFT) and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED)
 		var taxi: CharacterBody3D = taxis.passenger.body
 		player.global_position = taxi.global_position+Vector3.UP*.8
 		if taxis.ready_to_exit():
