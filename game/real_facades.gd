@@ -326,7 +326,7 @@ func _tejas_cafe(fp: Dictionary,face: Dictionary,tile: Vector2i,h: float) -> boo
 		var mid := (a+b)*.5
 		var bay_count := clampi(roundi(width/3.7),2,12)
 		var bay := width/float(bay_count)
-		var open_portal := wall in recessed
+		var open_portal: bool = recessed.has(wall)
 		# Deep blue fascia, pale stone balcony and roof cornice.
 		_box(mid+n*.07+Vector3.UP*(ground-.25),n,width,.58,.24,blue)
 		_box(mid+n*.16+Vector3.UP*(ground+.08),n,width,.20,.40,stone)
