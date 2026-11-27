@@ -53,6 +53,10 @@ var crate_view: Node3D
 var crate_rack: Node3D
 var purchase_rack: Node3D
 var buyer: Person
+var buyer_agent: Dictionary = {}
+var last_customer_style := -1
+var recent_customers: Array[int] = []
+var trading_open := false
 var buyer_time := 0.0
 var buyer_path := PackedVector3Array()
 var buyer_index := 0
@@ -428,11 +432,6 @@ func _make_scene() -> void:
 	_make_stall_details()
 	stock_display = Node3D.new()
 	stand.add_child(stock_display)
-	buyer = Person.new()
-	add_child(buyer)
-	buyer.setup(210)
-	buyer.social_context = "shopping"
-	buyer.hide()
 	var counter: Vector3 = world.food_factory.counter
 	var clerk := _person(self,813)
 	clerk.add_to_group("mission_merchant_visuals")
@@ -1393,7 +1392,7 @@ func _sync_visuals() -> void:
 	var tier := stall_tier(ledger.sold) if ledger.stage==4 else 0
 	for i in range(stall_growth.size()): stall_growth[i].visible = tier>=i+1
 	if is_instance_valid(stall_sign):
-		stall_sign.text = "ALBERTICO · ABIERTO" if ledger.stage==4 else "ALIMENTOS · ALBERTICO"
+		stall_sign.text = ("ALBERTICO · ABIERTO" if is_trading_hour() else "CERRADO · 07–18 H") if ledger.stage==4 else "ALIMENTOS · ALBERTICO"
 	# Refresh only what changed; sales must not recreate paid boxes, cargo or hands.
 	var pending_key := JSON.stringify(ledger.pending)
 	if pending_visual_key!=pending_key:
@@ -1481,77 +1480,77 @@ func _update_hud() -> void:
 	if hud.text!=value: hud.text = value
 	_refresh_notice()
 
-# Sales and stock remain independent of the visual customer. If no
-# verified doorway can reach the stall, do not fake a walk through a wall.
-func _start_buyer(product_key: String = "") -> void:
-	if buyer==null or not buyer_path.is_empty() or stand==null or world.pedestrian_router==null: return
-	var trip: Dictionary = world.pedestrian_router.call("customer_trip",stand.global_position,world.business_frontage.global_transform.basis)
+# The buyer is an existing, walking citizen, not a spawned clone.
+static func trading_hour(minutes: float) -> bool:
+	var minute := fposmod(minutes,1440.0)
+	return minute>=420.0 and minute<1080.0
+
+func is_trading_hour() -> bool:
+	return life!=null and trading_hour(float(life.state.get("minutes",480.0)))
+
+func _merchant_ready() -> bool:
+	return is_instance_valid(albertico) and albertico.is_visible_in_tree() and is_instance_valid(stand) and albertico.global_position.distance_to(stand.global_position)<2.5 and (first_story==null or first_story.fetch_phase.is_empty())
+
+func _start_buyer() -> void:
+	if is_instance_valid(buyer) or not is_trading_hour() or not _merchant_ready() or ledger.total(ledger.stock)<=0 or world.pedestrian_router==null: return
+	var trip: Dictionary = world.pedestrian_router.call("take_street_customer",stand.global_position,world.business_frontage.global_transform.basis,recent_customers)
 	if trip.is_empty(): return
-	var path: PackedVector3Array = trip.path
-	if path.size()<2 or not world.pedestrian_segment_clear(path[0],path[0]): return
-	var door: Dictionary = trip.door
-	buyer_normal = door.normal
-	buyer_path = path
+	buyer_agent = trip.agent
+	buyer = buyer_agent.node
+	buyer_path = trip.path
 	buyer_index = 1
 	buyer_time = 0.0
-	buyer_returning = false
 	buyer_blocked = 0.0
-	buyer_product = product_key
 	buyer_served = false
+	last_customer_style = buyer.style_id
+	recent_customers.append(last_customer_style)
+	if recent_customers.size()>5: recent_customers.pop_front()
 	buyer.set_bag(false)
-	buyer.global_position = buyer_path[0]
-	buyer.rotation.y = atan2(buyer_normal.x,buyer_normal.z)
-	buyer.show()
+	buyer.social_context = "shopping"
+
+func _release_buyer() -> void:
+	if is_instance_valid(buyer) and is_instance_valid(world.pedestrian_router):
+		world.pedestrian_router.call("release_street_customer",buyer_agent)
+	buyer = null
+	buyer_agent = {}
+	buyer_path = PackedVector3Array()
+	buyer_index = 0
+	buyer_blocked = 0.0
 
 func _tick_buyer(delta: float) -> void:
-	if buyer==null or buyer_path.is_empty(): return
-	if buyer.conversation_active(delta): return
-	if not buyer_returning and buyer_index>=buyer_path.size():
+	if not is_instance_valid(buyer): return
+	if not is_trading_hour() or not _merchant_ready():
+		_release_buyer()
+		return
+	if buyer_index>=buyer_path.size():
 		buyer.animate(delta,false)
 		var facing := stand.global_position-buyer.global_position
 		facing.y = 0.0
 		if facing.length_squared()>.01: buyer.rotation.y = lerp_angle(buyer.rotation.y,atan2(facing.x,facing.z),minf(delta*8.0,1.0))
 		buyer_time += delta
-		if buyer_time>=.5 and not buyer_served:
+		if buyer_time>=.55 and not buyer_served:
 			buyer_served = true
+			var before := ledger.unread
+			var sale := ledger.sell_one()
+			if sale.is_empty():
+				_release_buyer()
+				return
 			buyer.set_bag(true)
-			if is_instance_valid(buyer.carried):
-				var key := buyer_product
-				for product_key in Ledger.PRODUCTS:
-					if String(Ledger.PRODUCTS[product_key].name)==buyer_product:
-						key = String(product_key)
-						break
-				_box(buyer.carried,Vector3(0,.025,.19),Vector3(.15,.10,.015),crate_band(key))
-		if is_instance_valid(albertico) and albertico is Person:
-			albertico.arms[1].rotation.x = lerpf(albertico.arms[1].rotation.x,-.85,minf(delta*8.0,1.0))
-		if buyer_time>=2.0:
-			buyer_returning = true
-			buyer_index = buyer_path.size()-2
-		return
-	if buyer_returning and buyer_index<0:
-		# The entire return route has been completed. Disappear only at
-		# the same registered doorway, never at an arbitrary wall or timer.
-		if buyer.global_position.distance_to(buyer_path[0])<.14:
-			buyer.rotation.y = atan2(-buyer_normal.x,-buyer_normal.z)
-			buyer.hide()
-			buyer.set_bag(false)
-			buyer_path = PackedVector3Array()
+			_notify("Albertico vendió "+String(sale.product)+" · +%d CUP" % int(sale.net))
+			if ledger.unread>before: phone_ring.play()
+			delivery_gesture = .65
+			_sync_visuals()
+		if buyer_time>=2.0: _release_buyer()
 		return
 	var target: Vector3 = buyer_path[buyer_index]
 	var next := buyer.global_position.move_toward(target,maxf(.12,1.5*delta))
-	if not world.pedestrian_segment_clear(buyer.global_position,next):
+	if not world.pedestrian_segment_clear(buyer.global_position,next) or not world.pedestrian_space_clear(buyer,next,.48):
 		buyer.animate(delta,false)
 		buyer_blocked += delta
-		# A blocked customer can abort the approach and return to the
-		# previous waypoint; if the way home is blocked, wait visibly.
-		if not buyer_returning and buyer_blocked>2.0:
-			buyer_returning = true
-			buyer_index = maxi(0,buyer_index-1)
-			buyer_blocked = 0.0
+		if buyer_blocked>4.0: _release_buyer()
 		return
 	buyer_blocked = 0.0
-	if buyer.walk_to(target,delta,1.5):
-		buyer_index += -1 if buyer_returning else 1
+	if buyer.walk_to(target,delta,1.5): buyer_index += 1
 
 func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	if life!=null: life.tick(delta,in_vehicle,editor)
@@ -1577,18 +1576,17 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 		arrow.position.y = 2.68+sin(phase*3.0)*.13
 		factory_arrow.position.y = 1.90+sin(phase*3.0)*.13
 	if ledger.stage==4 and not editor:
-		ledger.sales_clock += delta
-		if ledger.sales_clock>=18.0:
+		var open_now := is_trading_hour()
+		if trading_open!=open_now:
+			trading_open = open_now
 			ledger.sales_clock = 0.0
-			var before := ledger.unread
-			var sale := ledger.sell_one()
-			if not sale.is_empty():
-				_notify("Albertico vendió "+String(sale.product)+" · +%d CUP" % int(sale.net))
-				if ledger.unread>before:
-					_notify("Albertico te llama · P para leer su mensaje")
-					phone_ring.play()
-				_start_buyer(String(sale.product))
-				_sync_visuals()
+			_sync_visuals()
+		if open_now and not is_instance_valid(buyer):
+			ledger.sales_clock += delta
+			if ledger.sales_clock>=10.0:
+				ledger.sales_clock = 0.0
+				_start_buyer()
+		elif not open_now: ledger.sales_clock = 0.0
 	if not editor: _tick_buyer(delta)
 	refresh += delta
 	if refresh>=.18:

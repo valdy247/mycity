@@ -160,11 +160,58 @@ func _new_site(p: Vector3,d: Vector3,width: float,edge: Dictionary) -> Dictionar
 	_fill(site)
 	return site
 
+func _litter(root: Node3D,small: bool) -> void:
+	var litter := Node3D.new()
+	litter.name = "StreetLitter"
+	root.add_child(litter)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = int(absf(root.global_position.x*137.0+root.global_position.z*79.0))+31
+	var palette := [Color("#2c302e"),Color("#3d403a"),Color("#7f775e"),Color("#b5a991"),Color("#535a44")]
+	for kind in range(2):
+		var transforms: Array[Transform3D] = []
+		var colors: Array[Color] = []
+		var count := (7 if small else 13) if kind==0 else (8 if small else 16)
+		for i in range(count):
+			var sign_value := -1.0 if i%2==0 else 1.0
+			var z := rng.randf_range(.43,.83) if small else rng.randf_range(1.13,1.60)
+			var p := Vector3(rng.randf_range(-.27,.25),.11,z*sign_value)
+			var dims := Vector3(rng.randf_range(.23,.39),.24,rng.randf_range(.25,.42)) if kind==0 else Vector3(rng.randf_range(.10,.27),.025,rng.randf_range(.12,.32))
+			if kind==1: p.y = .022
+			var safe := true
+			for x in [-.5,.5]:
+				for dz in [-.5,.5]:
+					if world.street_geometry.point_on_road(root.to_global(p+Vector3(float(x)*dims.x,0,float(dz)*dims.z))): safe = false
+			if not safe: continue
+			# Keep debris close to the container, never create a new obstacle.
+			if not world.pedestrian_segment_clear(root.to_global(p),root.to_global(p)): continue
+			transforms.append(Transform3D(Basis(Vector3.UP,rng.randf_range(0.0,TAU)).scaled_local(dims),p))
+			colors.append(palette[rng.randi_range(0,palette.size()-1)])
+		if transforms.is_empty(): continue
+		var batch := MultiMesh.new()
+		batch.transform_format = MultiMesh.TRANSFORM_3D
+		batch.use_colors = true
+		batch.mesh = bag_mesh if kind==0 else mesh
+		batch.instance_count = transforms.size()
+		for i in range(transforms.size()):
+			batch.set_instance_transform(i,transforms[i])
+			batch.set_instance_color(i,colors[i])
+		var visual := MultiMeshInstance3D.new()
+		visual.multimesh = batch
+		var mat := StandardMaterial3D.new()
+		mat.vertex_color_use_as_albedo = true
+		mat.roughness = .95
+		visual.material_override = mat
+		visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		visual.visibility_range_end = 65.0
+		litter.add_child(visual)
+
 func _fill(site: Dictionary) -> void:
 	var root: Node3D = site.root
 	var bags: Array = site.bags
 	var large := bool(site.large)
-	var count := 26 if large else 13
+	var count := 34 if large else 20
+	# Decorative litter uses two instanced meshes, not dozens of new bodies.
+	if not root.has_node("StreetLitter"): _litter(root,false)
 	for i in range(count):
 		var p := Vector3.ZERO
 		if i<6:
@@ -173,7 +220,7 @@ func _fill(site: Dictionary) -> void:
 			# Local +X points TOWARD the road. Keep the overflow within
 			# the bins' curbside footprint; stack higher instead of wider.
 			var slot := i-6
-			p = Vector3(-.16+float(slot%2)*.29,1.18+float(floori(float(slot)/8.0))*.39,-.91+float(floori(float(slot%8)/2.0))*.59)
+			p = Vector3(-.16+float(slot%2)*.29,1.14+float(floori(float(slot)/8.0))*.25,-.91+float(floori(float(slot%8)/2.0))*.59)
 		# The whole bag, including its collision sphere, must clear asphalt.
 		var safe := true
 		for x in [-.28,.28]:
@@ -189,7 +236,7 @@ func _fill(site: Dictionary) -> void:
 		bag.rotation.y = float(i)*.86
 		var colors: Array[Color] = [Color("#353935"),Color("#ccc5ac"),Color("#8a806b"),Color("#d5d0c7"),Color("#5e6c4d")]
 		_part(bag,Vector3.ZERO,Vector3(.52,.47,.49),colors[i%colors.size()],bag_mesh)
-		if i>=6:
+		if i>=6 and i<14:
 			var collision := CollisionShape3D.new()
 			var shape := SphereShape3D.new()
 			shape.radius = .25
@@ -316,6 +363,7 @@ func _place_corner_bin(id: String) -> bool:
 					_part(root,Vector3(.04,.89,0),Vector3(.40,.32,.45),Color("#353935"),bag_mesh)
 					var site := {"root":root,"curb":root.global_position,"bags":[],"refill":0.0,"corner":true}
 					corner_sites.append(site)
+					_litter(root,true)
 					return true
 	return false
 

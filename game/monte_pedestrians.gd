@@ -248,6 +248,63 @@ func _register_doors() -> void:
 
 # Albertico shares the pedestrian graph instead of crossing buildings
 # with an unchecked straight-line animation.
+# Temporarily transfer a real outdoor pedestrian to the stall controller.
+# Keep their profile, appearance and world position. No new NPC allocation.
+func take_street_customer(stand_at: Vector3,frontage: Basis,recent: Array) -> Dictionary:
+	if not initialized: return {}
+	var options: Array = []
+	for i in range(walkers.size()):
+		var agent: Dictionary = walkers[i]
+		var person: Person = agent.node
+		if not is_instance_valid(person) or not person.is_visible_in_tree() or person.style_id in recent: continue
+		if person.has_meta("incident_role") or person.has_meta("conversation_until") or bool(agent.get("indoors",false)) or agent.has("yield_target") or float(agent.pause)>0.0: continue
+		var at := person.global_position
+		var distance := at.distance_to(stand_at)
+		if distance<5.0 or distance>38.0 or world.street_geometry.point_on_road(at): continue
+		# Exclude the player's doorstep and other door thresholds.
+		if not world.garage_home_site.is_empty() and at.distance_to(world.garage_home_site.door)<5.0: continue
+		var on_door := false
+		for dest in destinations:
+			if not bool(dest.get("door",false)): continue
+			if graph.get_point_position(int(dest.id)).distance_squared_to(at)<1.0:
+				on_door = true
+				break
+		if not on_door: options.append({"index":i,"distance":distance})
+	options.shuffle()
+	for option in options.slice(0,5):
+		var agent: Dictionary = walkers[int(option.index)]
+		var person: Person = agent.node
+		for shift in [frontage.z*.95,-frontage.z*.95,frontage.x*1.25,-frontage.x*1.25]:
+			var ground := _ground(stand_at+shift)
+			if ground.is_empty(): continue
+			var target: Vector3 = ground.p
+			if world.street_geometry.point_on_road(target): continue
+			var path := route_between(person.global_position,target)
+			if path.size()<2: continue
+			var length := 0.0
+			for i in range(1,path.size()): length += path[i-1].distance_to(path[i])
+			if length>55.0: continue
+			walkers.remove_at(int(option.index))
+			person.remove_from_group("bus_yield_walkers")
+			person.phone_idle = false
+			return {"agent":agent,"path":path}
+	return {}
+
+func release_street_customer(agent: Dictionary) -> void:
+	if agent.is_empty() or not is_instance_valid(agent.get("node")): return
+	var person: Person = agent.node
+	agent.pause = 0.0
+	agent.lod_dt = 0.0
+	agent.erase("yield_target")
+	agent.erase("preview_index")
+	agent.erase("blocked_time")
+	agent.erase("people_wait")
+	agent.path = PackedVector3Array()
+	agent.index = 0
+	if not _choose_route(agent,true): agent.pause = .5
+	person.add_to_group("bus_yield_walkers")
+	walkers.append(agent)
+
 func customer_trip(stand_at: Vector3,frontage: Basis) -> Dictionary:
 	if not initialized: return {}
 	var options: Array[Vector3] = [

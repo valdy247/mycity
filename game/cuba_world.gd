@@ -4,6 +4,7 @@ const MapData = preload("res://pilar_map.gd")
 const StreetGeometry = preload("res://street_geometry.gd")
 const TrafficBypass = preload("res://traffic_bypass.gd")
 const HavanaTextures = preload("res://havana_textures.gd")
+const RoadWear = preload("res://road_wear.gd")
 var havana_textures := HavanaTextures.new()
 var texture_anchor := Vector3.ZERO
 var texture_market := Vector3.ZERO
@@ -128,6 +129,9 @@ func setup(builder: Builder) -> void:
 	_reserve_market_block()
 	_make_osm_streets()
 	_make_frontages()
+	var wear := RoadWear.new()
+	add_child(wear)
+	wear.build(geography,street_geometry)
 	_make_corner_plaques()
 	_make_utility_network()
 	_make_signal_visuals()
