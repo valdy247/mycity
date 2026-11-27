@@ -1302,6 +1302,7 @@ func _build_house_tools() -> void:
 	paint_station.add_child(resting_broom)
 	resting_broom.position = BROOM_POS
 	resting_broom.rotation.x = -.15
+	_make_broom_model(resting_broom)
 	floor_image = Image.create(FLOOR_COLS*3,FLOOR_ROWS*3,false,Image.FORMAT_RGBA8)
 	floor_image.fill(Color(0,0,0,0))
 	floor_texture = ImageTexture.create_from_image(floor_image)
