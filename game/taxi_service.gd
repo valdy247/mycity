@@ -351,10 +351,15 @@ func _show_selection(result: Dictionary) -> void:
 	selected_route = result
 	go_button.disabled = false
 
+func _trip_dimensions(body: CharacterBody3D) -> Vector3:
+	# Width, height, length. Motorcycles must not use the taxi envelope.
+	return body.get_meta("trip_dimensions",Vector3(1.90,1.8,4.80))
+
 func _ensure_safe_arrival(waypoints: Array,ids: Array[String],result: Dictionary,body: CharacterBody3D) -> bool:
 	if waypoints.is_empty(): return false
+	var dims := _trip_dimensions(body)
 	var last: Vector3 = waypoints.back().p
-	if streets.intersection_clear_for_stop(last,4.80,1.90): return true
+	if streets.intersection_clear_for_stop(last,dims.z,dims.x): return true
 	var node := String(result.get("exit",ids.back())) if bool(result.get("partial",false)) else String(ids.back())
 	if not geography.points.has(node): return false
 	var center: Vector3 = geography.points[node]
@@ -368,9 +373,9 @@ func _ensure_safe_arrival(waypoints: Array,ids: Array[String],result: Dictionary
 		var finish: Vector3 = geography.points[other]
 		var d := (finish-center).normalized()
 		if approach.normalized().dot(d)<-.5: continue
-		var desired := center+d*minf(center.distance_to(finish)*.5,18.0)+geography.lane_offset(center,finish,1.90,true)
-		var berth := streets.safe_stop_on_edge(center,finish,desired,4.80,1.90)
-		if not streets.intersection_clear_for_stop(berth,4.80,1.90): continue
+		var desired := center+d*minf(center.distance_to(finish)*.5,18.0)+geography.lane_offset(center,finish,dims.x,true)
+		var berth := streets.safe_stop_on_edge(center,finish,desired,dims.z,dims.x)
+		if not streets.intersection_clear_for_stop(berth,dims.z,dims.x): continue
 		options.append({"p":berth,"node":String(other),"distance":berth.distance_to(last)})
 	options.sort_custom(func(a,b): return float(a.distance)<float(b.distance))
 	if options.is_empty(): return false
@@ -390,6 +395,7 @@ func prepare_trip() -> bool:
 	selected_route = {}
 	var ids: Array[String] = result.path
 	var body: CharacterBody3D = selected.body
+	var dims := _trip_dimensions(body)
 	var waypoints: Array = []
 	var start: Vector3 = geography.points[ids[0]]
 	var forward := body.global_transform.basis.z.normalized()
@@ -405,7 +411,7 @@ func prepare_trip() -> bool:
 		if dist<closest:
 			closest = dist
 			current_road = edge
-	first_offset = Vector3(-forward.z,0,forward.x)*geography.lane_distance(current_road,1.90)
+	first_offset = Vector3(-forward.z,0,forward.x)*geography.lane_distance(current_road,dims.x)
 	# Approach the next directed graph node from the current lane.
 	var first_stop := start+first_offset
 	var partial: bool = bool(result.get("partial",false))
@@ -413,36 +419,36 @@ func prepare_trip() -> bool:
 		var remaining := body.position.distance_to(first_stop)
 		first_stop -= forward*minf(4.5,remaining*.5)
 		if not current_road.is_empty():
-			first_stop = streets.safe_stop_on_edge(current_road.a,current_road.b,first_stop,4.80,1.90)
+			first_stop = streets.safe_stop_on_edge(current_road.a,current_road.b,first_stop,dims.z,dims.x)
 	waypoints.append({"p":first_stop,"node":ids[0]})
 	for i in range(ids.size()-1):
 		var a: Vector3 = geography.points[ids[i]]
 		var b: Vector3 = geography.points[ids[i+1]]
 		var d := (b-a).normalized()
-		var lane_offset := router.lane(a,b)
+		var lane_offset := geography.lane_offset(a,b,dims.x)
 		var length := a.distance_to(b)
 		# Leave room before the last corner for passenger drop-off.
 		if length>8.0:
 			waypoints.append({"p":a+d*minf(3.0,length*.25)+lane_offset,"node":""})
 		var end := b+lane_offset
 		if i==ids.size()-2 and not partial:
-			end = b-d*minf(4.5,length*.35)+geography.lane_offset(a,b,1.90,true)
-			end = streets.safe_stop_on_edge(a,b,end,4.80,1.90)
+			end = b-d*minf(4.5,length*.35)+geography.lane_offset(a,b,dims.x,true)
+			end = streets.safe_stop_on_edge(a,b,end,dims.z,dims.x)
 		waypoints.append({"p":end,"node":ids[i+1]})
 	if partial:
 		var entry: Vector3 = geography.points[String(result.entry)]
 		var exit_point: Vector3 = geography.points[String(result.exit)]
 		var target: Vector3 = result.point
-		var lane_offset := router.lane(entry,exit_point)
+		var lane_offset := geography.lane_offset(entry,exit_point,dims.x)
 		var direction := (exit_point-entry).normalized()
 		if entry.distance_to(target)>4.0:
 			waypoints.append({"p":entry+direction*2.0+lane_offset,"node":""})
-		var berth := streets.safe_stop_on_edge(entry,exit_point,target+geography.lane_offset(entry,exit_point,1.90,true),4.80,1.90)
+		var berth := streets.safe_stop_on_edge(entry,exit_point,target+geography.lane_offset(entry,exit_point,dims.x,true),dims.z,dims.x)
 		waypoints.append({"p":berth,"node":""})
 	if not _ensure_safe_arrival(waypoints,ids,result,body):
 		_show_selection({"error":"No hay una parada segura junto a ese destino. Elige una calle cercana."})
 		return false
-	selected.path = _smooth_route(waypoints,body.global_position)
+	selected.path = _smooth_route(waypoints,body.global_position,dims.x)
 	stop_requested = false
 	selected.index = 0
 	selected.goal = String(result.id)
@@ -475,10 +481,11 @@ func request_stop() -> void:
 func ready_to_exit() -> bool:
 	if passenger.is_empty(): return false
 	var body: CharacterBody3D = passenger.body
-	return (arrived or stop_requested) and streets.intersection_clear_for_stop(body.global_position,4.80,1.90) and float(passenger.speed)<.15 and body.velocity.length()<.15
+	var dims := _trip_dimensions(body)
+	return (arrived or stop_requested) and streets.intersection_clear_for_stop(body.global_position,dims.z,dims.x) and float(passenger.speed)<.15 and body.velocity.length()<.15
 
 # Round sharp corners along the actual road. Keep signals and the final stop.
-func _smooth_route(raw: Array,origin: Vector3) -> Array:
+func _smooth_route(raw: Array,origin: Vector3,width: float = 1.90) -> Array:
 	var result: Array = []
 	for i in range(raw.size()):
 		var item: Dictionary = raw[i]
@@ -515,7 +522,7 @@ func _smooth_route(raw: Array,origin: Vector3) -> Array:
 				var p := entry.lerp(corner,t).lerp(corner.lerp(exit_point,t),t)
 				var tangent := (corner-entry).lerp(exit_point-corner,t).normalized()
 				var right := Vector3(-tangent.z,0,tangent.x)
-				if not streets.point_on_road(p) or not streets.point_on_road(p+right*.95) or not streets.point_on_road(p-right*.95):
+				if not streets.point_on_road(p) or not streets.point_on_road(p+right*(width*.5)) or not streets.point_on_road(p-right*(width*.5)):
 					valid = false
 					break
 				rounded.append({"p":p,"node":""})
@@ -704,6 +711,7 @@ func tick(delta: float,_clock: float) -> void:
 	_tick_yielding_taxis(delta)
 	if passenger.is_empty(): return
 	var body: CharacterBody3D = passenger.body
+	var dims := _trip_dimensions(body)
 	if arrived:
 		body.velocity = Vector3.ZERO
 		passenger.speed = 0.0
@@ -714,7 +722,7 @@ func tick(delta: float,_clock: float) -> void:
 	if not stop_requested:
 		var watch_index := index
 		while watch_index<waypoints.size()-1 and bool(waypoints[watch_index].get("bypass",false)): watch_index += 1
-		var restored := TrafficBypass.watchdog(passenger,body,streets,waypoints,watch_index,1.90,4.80,1.8,delta,false)
+		var restored := TrafficBypass.watchdog(passenger,body,streets,waypoints,watch_index,dims.x,dims.z,dims.y,delta,false)
 		if restored>=0:
 			passenger.index = restored
 			return
@@ -737,18 +745,19 @@ func tick(delta: float,_clock: float) -> void:
 	var distance := diff.length()
 	var d := diff.normalized()
 	var speed := _route_speed(body,waypoints,index)
+	if dims.z<3.0: speed = minf(speed,11.0)
 	if bool(waypoints[index].get("bypass",false)): speed = minf(speed,4.0)
 	passenger.signal_wait = 0.0
 	var reach := minf(maxf(5.0,float(passenger.speed)*float(passenger.speed)/(2.0*BRAKE)+3.0),distance+.7)
-	var free := TrafficBypass.clear_distance(body,d,reach,1.90,4.80)
+	var free := TrafficBypass.clear_distance(body,d,reach,dims.x,dims.z)
 	var blocked := free<reach-.05
 	var stalled := TrafficBypass.stalled(passenger,body,delta)
-	var junction_limit := TrafficBypass.junction_gate(passenger,body,streets,waypoints,index,false,1.90,4.80,1.8,delta)
+	var junction_limit := TrafficBypass.junction_gate(passenger,body,streets,waypoints,index,false,dims.x,dims.z,dims.y,delta)
 	speed = TrafficBypass.junction_speed(speed,junction_limit,BRAKE)
-	var should_stop := stop_requested and streets.intersection_clear_for_stop(body.global_position,4.80,1.90)
-	body.set_meta("traffic_priority",4.8)
+	var should_stop := stop_requested and streets.intersection_clear_for_stop(body.global_position,dims.z,dims.x)
+	body.set_meta("traffic_priority",dims.z)
 	body.set_meta("traffic_servicing",stop_requested or float(passenger.signal_wait)>0.0)
-	if not bool(body.get_meta("traffic_servicing")) and TrafficBypass.cooperate(passenger,body,streets,1.90,4.80,1.8,delta,stalled,target): return
+	if not bool(body.get_meta("traffic_servicing")) and TrafficBypass.cooperate(passenger,body,streets,dims.x,dims.z,dims.y,delta,stalled,target): return
 	if bool(passenger.get("cooperative_rejoin",false)):
 		passenger.cooperative_rejoin = false
 		while index<waypoints.size()-1 and bool(waypoints[index].get("bypass",false)): index += 1
@@ -761,7 +770,7 @@ func tick(delta: float,_clock: float) -> void:
 		var base := index
 		while base<waypoints.size() and bool(waypoints[base].get("bypass",false)): base += 1
 		if base<waypoints.size():
-			var bypass := TrafficBypass.recover(body,waypoints,base,streets,1.90,4.80,geography.signal_nodes)
+			var bypass := TrafficBypass.recover(body,waypoints,base,streets,dims.x,dims.z,geography.signal_nodes,dims.y)
 			if not bypass.is_empty():
 				var changed: Array = waypoints.slice(0,index)
 				changed.append_array(bypass.path)
@@ -775,7 +784,7 @@ func tick(delta: float,_clock: float) -> void:
 				return
 	if blocked: speed = minf(speed,sqrt(2.0*BRAKE*maxf(0.0,free-.7)))
 	if should_stop: speed = 0.0
-	if not stop_requested and float(passenger.signal_wait)<=0.0 and TrafficBypass.retreat(passenger,body,streets,1.90,4.80,delta,stalled>3.5 and float(passenger.speed)<.12):
+	if not stop_requested and float(passenger.signal_wait)<=0.0 and TrafficBypass.retreat(passenger,body,streets,dims.x,dims.z,delta,stalled>3.5 and float(passenger.speed)<.12):
 		passenger.speed = 0.0
 		return
 	if stalled<.1 and not blocked: passenger.backed_up = 0.0
