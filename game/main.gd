@@ -1063,7 +1063,8 @@ func _update_hud() -> void:
 		if not bus.active_stop.is_empty(): status.text += "\nParada: "+String(bus.active_stop.name)
 		return
 	if taxi_riding:
-		status.text = "TAXI | "+taxis.ride_status+"\n"+taxis.speed_description()+" | T: cambiar velocidad\nE: detener y bajar | R: volver a casa si te bloqueas | H: ocultar controles"
+		var ride_name := "MOTO DE YORDI" if yordi_mission!=null and yordi_mission.owns_passenger_trip() and yordi_mission.trip_role=="bike_out" else "TAXI"
+		status.text = ride_name+" | "+taxis.ride_status+"\n"+taxis.speed_description()+" | T: cambiar velocidad\nE: detener y bajar | R: volver a casa si te bloqueas | H: ocultar controles"
 		return
 	var title := "PILAR-ATARÉS | La Habana" if cuba_world != null else ("VALDY JR TV | Ciudad 2.0" if native_city else "VALDY JR TV | Ciudad original")
 	if not city_loaded:
@@ -1128,7 +1129,8 @@ func _update_compact_hud() -> void:
 		var bus: Dictionary = urban_buses.player_bus
 		lines.append("Guagua "+String(bus.get("line",""))+" · "+("Bajada solicitada" if urban_buses.player_exit_requested else "[E] Bajar en próxima parada"))
 	elif taxi_riding:
-		lines.append("Taxi · "+taxis.ride_status+" | [E] Bajar")
+		var ride_name := "Moto de Yordi" if yordi_mission!=null and yordi_mission.owns_passenger_trip() and yordi_mission.trip_role=="bike_out" else "Taxi"
+		lines.append(ride_name+" · "+taxis.ride_status+" | [E] Bajar")
 	elif driving:
 		lines.append("%d km/h · [E] Bajar detenido" % roundi(absf(drive_speed)*3.6))
 	else:
@@ -1297,6 +1299,8 @@ func _leave_taxi(emergency: bool = false) -> bool:
 	player.velocity = Vector3.ZERO
 	player_shape.set_deferred("disabled",false)
 	var mission_ride: bool = yordi_mission!=null and yordi_mission.owns_passenger_trip()
+	var interrupted: bool = mission_ride and not emergency and not taxis.arrived
+	if interrupted: yordi_mission.remember_interrupted_ride()
 	taxi_riding = false
 	first_person = taxi_previous_first
 	yaw = taxi.rotation.y+PI
@@ -1306,8 +1310,8 @@ func _leave_taxi(emergency: bool = false) -> bool:
 		business.taxi_arrival(player.global_position)
 	taxis.finish_trip()
 	_apply_camera_mode()
-	if mission_ride: yordi_mission.on_ride_end(emergency)
-	exit_message = "Viaje en taxi terminado."
+	if mission_ride: yordi_mission.on_ride_end(emergency,interrupted)
+	exit_message = "Vuelve a subir para continuar la misión." if interrupted else "Viaje terminado."
 	message_time = 3.0
 	_update_hud()
 	return true
@@ -1426,7 +1430,7 @@ func _physics_process(delta: float) -> void:
 			monte_services.tick(delta)
 		if monte_pedestrians!=null:
 			monte_pedestrians.tick(delta)
-		if interact_requested and not (yordi_mission!=null and yordi_mission.owns_passenger_trip()):
+		if interact_requested:
 			taxis.request_stop()
 		interact_requested = false
 		taxis.tick(delta,cuba_world.cuba_clock)
