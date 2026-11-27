@@ -1059,7 +1059,9 @@ func _dismount(force: bool = false) -> void:
 			found = true
 			break
 	if not found and not force:
-		business._notify("No hay espacio para bajar.")
+		ride_exit_requested = false
+		body.velocity = Vector3.ZERO
+		business._notify("No hay espacio para bajar. Mueve el vehículo y vuelve a pulsar E.")
 		return
 	if borrowed:
 		body.add_to_group("traffic_parked")
