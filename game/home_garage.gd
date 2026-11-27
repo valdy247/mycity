@@ -42,6 +42,7 @@ var resting_tip: MeshInstance3D
 var resting_broom: Node3D
 var guest_door: Node3D
 var guest_door_tween: Tween
+var guest_door_open := false
 var held_broom: Node3D
 var paint_cans: Dictionary = {}
 var floor_image: Image
@@ -372,7 +373,8 @@ func _build_interior() -> void:
 # The city and interior are separate rooms; the door remains a logical
 # threshold. Opening the visible leaf never removes the room collision.
 func set_guest_door(opened: bool) -> void:
-	if not is_instance_valid(guest_door): return
+	if not is_instance_valid(guest_door) or guest_door_open==opened: return
+	guest_door_open = opened
 	if is_instance_valid(guest_door_tween): guest_door_tween.kill()
 	guest_door_tween = create_tween()
 	guest_door_tween.tween_property(guest_door,"rotation:y",1.25 if opened else 0.0,.30)

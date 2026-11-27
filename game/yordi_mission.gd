@@ -1700,8 +1700,10 @@ func _complete_sale() -> void:
 	if not settle_sale(state,business.ledger): return
 	_save()
 	_cue("success")
-	if is_instance_valid(console_box): console_box.queue_free()
-	console_box = null
+	# Keep the console in the departing buyer's hands until he exits the scene.
+	if is_instance_valid(console_box) and (not is_instance_valid(home_sale.buyer) or console_box.get_parent()!=home_sale.buyer):
+		console_box.queue_free()
+		console_box = null
 	# Yordi remains visible and leaves through the door after paying.
 	_clear_target()
 	business._notify("MISIÓN CUMPLIDA · recompensa ya recibida" if bool(state.get("previous_reward_paid",false)) else "MISIÓN CUMPLIDA · +1,000 CUP")

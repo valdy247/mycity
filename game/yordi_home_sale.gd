@@ -31,9 +31,12 @@ var departing := false
 var outside := false
 var buyer_outside := false
 var buyer_exit_target := Vector3.INF
+var departure_target := Vector3.INF
+var buyer_retry := 0.0
+var departure_retry := 0.0
 
-func setup(owner) -> void:
-	mission = owner
+func setup(controller) -> void:
+	mission = controller
 	game = mission.game
 	business = mission.business
 	state = mission.state
@@ -70,6 +73,8 @@ func clear() -> void:
 	buyer_outside = false
 	departing = false
 	outside = false
+	departure_target = Vector3.INF
+	buyer_exit_target = Vector3.INF
 	banner_left = 0.0
 	banner.hide()
 	game.garage.set_guest_door(false)
@@ -286,6 +291,17 @@ func _leave_buyer() -> void:
 
 func _outside_buyer(delta: float) -> void:
 	if not buyer_outside or not is_instance_valid(buyer): return
+	buyer_retry = maxf(0.0,buyer_retry-delta)
+	if not buyer_exit_target.is_finite() and buyer_retry<=0.0:
+		buyer_retry = 2.0
+		var basis: Basis = mission.world.garage_home_site.basis
+		for side in [1.0,-1.0]:
+			for distance in [8.0,5.0,3.0]:
+				var p: Vector3 = mission._ground(buyer.global_position+basis.x*float(side)*float(distance))
+				if p.is_finite() and mission.world.pedestrian_segment_clear(buyer.global_position,p):
+					buyer_exit_target = p
+					break
+			if buyer_exit_target.is_finite(): break
 	if buyer_exit_target.is_finite():
 		if not mission._walk(buyer,buyer_exit_target,delta,2.2,.65):
 			for arm in buyer.arms: arm.rotation.x = -1.15
@@ -426,6 +442,8 @@ func tick(delta: float) -> void:
 					banner_left = 4.5
 					departing = true
 					outside = false
+					departure_target = Vector3.INF
+					departure_retry = 0.0
 					_go("farewell")
 
 func tick_departure(delta: float) -> void:
@@ -447,15 +465,18 @@ func tick_departure(delta: float) -> void:
 	else:
 		clock += delta
 		if clock>.8: game.garage.set_guest_door(false)
-		var at: Vector3 = mission._bike_wait_site() if is_instance_valid(mission.bike) else Vector3.INF
-		if not at.is_finite():
-			var basis: Basis = mission.world.garage_home_site.basis
-			for side in [1.0,-1.0]:
-				var p: Vector3 = mission._ground(actor.global_position+basis.x*float(side)*7.0)
-				if p.is_finite() and mission.world.pedestrian_segment_clear(actor.global_position,p):
-					at = p
-					break
-		if at.is_finite() and mission._walk(actor,at,delta,2.2,.70):
+		departure_retry = maxf(0.0,departure_retry-delta)
+		if not departure_target.is_finite() and departure_retry<=0.0:
+			departure_retry = 2.0
+			if is_instance_valid(mission.bike): departure_target = mission._bike_wait_site()
+			if not departure_target.is_finite():
+				var basis: Basis = mission.world.garage_home_site.basis
+				for side in [1.0,-1.0]:
+					var p: Vector3 = mission._ground(actor.global_position+basis.x*float(side)*7.0)
+					if p.is_finite() and mission.world.pedestrian_segment_clear(actor.global_position,p):
+						departure_target = p
+						break
+		if departure_target.is_finite() and mission._walk(actor,departure_target,delta,2.2,.70):
 			actor.hide()
 			actor.queue_free()
 			mission.yordi = null
