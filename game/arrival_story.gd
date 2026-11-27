@@ -1,14 +1,11 @@
 extends Node3D
 # Chapter 1. Uses the normal Havana street graph and the airport taxi's cabin.
 const Person = preload("res://street_person.gd")
-const LINES := [
-	["Chofer","Cuéntame, ¿cómo fue el vuelo?",1.84],
-	["Tú","Sí, fue bastante bien.",2.72],
-	["Chofer","¿Y qué? ¿De visita?",1.76],
-	["Tú","Ya quisiera. Después de doce años, deportado. Y ahora... a comenzar de cero.",6.96],
-	["Chofer","Oh, qué mal, compadre. Al Cerro me dijiste, ¿verdad?",4.08],
-	["Tú","Sí, al Cerro.",2.32],
-	["Chofer","No te preocupes. Esto está duro, pero vas a estar bien.",3.52]
+const FARE_LINES := [
+	["Tú","Debo pagarle al taxista.",2.1],
+	["Tú","Eh, pero espera. ¿Dónde está mi billetera? Carajo, la perdí en el avión.",5.6],
+	["Tú","Mira, lo que pasa es que perdí mi billetera. Dame unos días, yo te voy a pagar esto.",6.5],
+	["Chofer","Tranquilo, mi amigo. Llámame cuando lo tengas.",3.2]
 ]
 var game
 var service
@@ -45,12 +42,20 @@ var look := Vector2.ZERO
 var busy := false
 var trunk_open := false
 var fallback_voice := ""
+var fare_index := 0
+var fare_clock := 0.0
+var fare_wait := .6
+var fare_active := false
+var departure_origin := Vector3.ZERO
+var departure_started := false
+var departure_record: Dictionary = {}
+var approach_cut_done := false
 
 func active() -> bool:
 	return phase!="done"
 
 func cinematic() -> bool:
-	return phase in ["initial","ride","title","approach","arrival","error"]
+	return phase not in ["done","unload"]
 
 func setup(controller) -> void:
 	game = controller
@@ -74,6 +79,11 @@ func setup(controller) -> void:
 	if home.is_empty():
 		_fail("No se encontró la casa existente en el mapa.")
 		return
+	# Old builds ended at the last suitcase. Complete the newly added fare
+	# scene without deleting either suitcase or the separate campaign save.
+	if int(state.get("step",0))>=2 and not bool(state.get("fare_scene_done",false)) and state.get("cab",[]).size()==4:
+		state.step = 1
+		dropped = [true,true]
 	if int(state.get("step",0))>=2:
 		phase = "done"
 		_make_bags_at_home()
@@ -199,8 +209,10 @@ func _begin_ride() -> void:
 	cab_view.fov = 82
 	cab_view.far = 320
 	cab_view.make_current()
-	phase = "ride"
+	# Airport dialogue and chapter card have already finished before loading.
+	phase = "approach"
 	fade.color = Color.BLACK
+	subtitle.text = "Cargando partida…"
 	engine.play()
 	# Keep the normal city traffic and signals active; no manual stop or fare UI.
 	service.speed_mode = 0
@@ -236,46 +248,23 @@ func _make_bags_at_home() -> void:
 		bags.append(bag)
 		_place_bag_home(i)
 
-func _play_line(i: int) -> void:
-	var item: Array = LINES[i]
+func _play_fare_line(i: int) -> void:
+	var item: Array = FARE_LINES[i]
 	subtitle.text = String(item[0])+": "+String(item[1])
-	var path := "res://audio/taxi/ride_%02d.mp3" % (i+1)
+	var path := "res://audio/taxi/fare_%02d.mp3" % (i+1)
 	var stream: AudioStreamMP3
 	if FileAccess.file_exists(path): stream = AudioStreamMP3.load_from_file(path)
 	elif ResourceLoader.exists(path): stream = load(path) as AudioStreamMP3
-	line_left = float(item[2])+.32
+	fare_wait = float(item[2])+.32
 	voice.stop()
 	if stream!=null and stream.get_length()>0.0:
 		stream.loop = false
 		voice.stream = stream
 		voice.play()
-		line_left = stream.get_length()+.32
+		fare_wait = stream.get_length()+.32
 	else:
 		push_warning("MyCity: missing dialogue "+path)
-		# Readable subtitles if the separate voice pack is not yet installed.
-	line_active = true
-
-func _tick_ride(delta: float) -> void:
-	cinematic_clock += delta
-	game.player.global_position = cab.global_position+Vector3.UP
-	fade.color.a = move_toward(fade.color.a,0.0,delta*1.8)
-	if cinematic_clock<1.2: return
-	if line_index==0 and not line_active and cinematic_clock<5.0 and cab.velocity.length()<.5: return
-	line_left -= delta
-	if line_left>0.0: return
-	if line_active:
-		line_active = false
-		voice.stop()
-		subtitle.text = ""
-		line_index += 1
-		line_left = .36 if line_index!=4 else .70
-		return
-	if line_index<LINES.size():
-		_play_line(line_index)
-		return
-	phase = "title"
-	title_clock = 0.0
-	subtitle.text = ""
+	fare_active = true
 
 func _safe_approach_cut() -> void:
 	# This is a cinematic time ellipsis, only while the screen is fully black.
@@ -284,13 +273,13 @@ func _safe_approach_cut() -> void:
 	var current := int(service.passenger.index)
 	if current>=path.size()-2: return
 	var remaining := cab.global_position.distance_to(path.back().p)
-	if remaining<35.0: return
+	if remaining<26.0: return
 	for i in range(path.size()-2,maxi(current,path.size()-35),-1):
 		var p: Vector3 = path[i].p
 		var next: Vector3 = path[i+1].p
 		var d := next-p
 		d.y = 0
-		if d.length()<.8 or p.distance_to(path.back().p)<12.0 or p.distance_to(path.back().p)>38.0: continue
+		if d.length()<.8 or p.distance_to(path.back().p)<8.0 or p.distance_to(path.back().p)>25.0: continue
 		d = d.normalized()
 		if not world.street_geometry.point_on_road(p): continue
 		var angle := atan2(d.x,d.z)
@@ -312,17 +301,6 @@ func _safe_approach_cut() -> void:
 		service.resume_mission_trip(saved)
 		return
 
-func _tick_title(delta: float) -> void:
-	title_clock += delta
-	fade.color.a = move_toward(fade.color.a,1.0,delta*2.0)
-	if fade.color.a>=.99:
-		title.show()
-	if title_clock<3.7: return
-	_safe_approach_cut()
-	title.hide()
-	phase = "approach"
-	arrival_wait = 0.0
-
 func _arrive() -> void:
 	var exit: Dictionary = service.stop_position(game.player,game.player_shape.shape)
 	if exit.is_empty():
@@ -336,6 +314,7 @@ func _arrive() -> void:
 	cab.set_meta("traffic_servicing",true)
 	state.step = 1
 	state.cab = [at.x,at.y,at.z,angle]
+	state.exit = [exit.position.x,exit.position.y,exit.position.z]
 	_save()
 	_exit_cab(exit.position)
 
@@ -349,7 +328,13 @@ func _resume_arrival() -> void:
 	cab.rotation.y = float(saved[3])
 	_build_story_cab()
 	var basis: Basis = home.basis
-	_exit_cab(Vector3(home.door)+basis.z*1.4+Vector3.UP*.9)
+	var at := Vector3(home.door)+basis.z*1.4+Vector3.UP*.9
+	var previous: Array = state.get("exit",[])
+	if previous.size()==3: at = Vector3(float(previous[0]),float(previous[1]),float(previous[2]))
+	_exit_cab(at)
+	if dropped[0] and dropped[1]:
+		game.garage._enter()
+		_begin_fare()
 
 func _exit_cab(at: Vector3) -> void:
 	engine.stop()
@@ -418,7 +403,7 @@ func interact() -> void:
 			dropped[i] = true
 			_place_bag_home(i)
 			_save()
-			if dropped[0] and dropped[1]: _finish()
+			if dropped[0] and dropped[1]: _begin_fare()
 		elif carry<0 and game.player.global_position.distance_to(Vector3(-.7,110.86,5.25))<1.8:
 			game.garage._exit()
 		return
@@ -436,8 +421,158 @@ func interact() -> void:
 		if dropped[1-i]: lid.rotation.x = 0.0
 		break
 
+func _begin_fare() -> void:
+	phase = "wallet"
+	fare_index = 0
+	fare_wait = .6
+	fare_active = false
+	fare_clock = 0.0
+	game.player.velocity = Vector3.ZERO
+	game.business.layer.hide()
+	objective.text = ""
+	subtitle.text = ""
+	lid.rotation.x = 0.0
+
+func _face_point(at: Vector3,pitch_value: float=-.08) -> void:
+	var d: Vector3 = at-game.player.global_position
+	game.yaw = atan2(d.x,d.z)+PI
+	game.pitch = pitch_value
+	game.pivot.rotation = Vector3(game.pitch,game.yaw,0)
+
+func _safe_talk_position() -> Vector3:
+	# Prefer the saved sidewalk exit. Check for newly spawned traffic.
+	var previous: Array = state.get("exit",[])
+	var positions: Array[Vector3] = []
+	if previous.size()==3: positions.append(Vector3(float(previous[0]),float(previous[1]),float(previous[2])))
+	for side in [-1.0,1.0]:
+		for along in [-2.5,-1.1,0.0]:
+			positions.append(cab.to_global(Vector3(float(side)*1.8,.90,float(along))))
+	for at in positions:
+		var ray := PhysicsRayQueryParameters3D.create(at+Vector3.UP,at-Vector3.UP*2.0,2)
+		ray.exclude = [game.player.get_rid(),cab.get_rid()]
+		var hit := get_world_3d().direct_space_state.intersect_ray(ray)
+		if hit.is_empty(): continue
+		var q := PhysicsShapeQueryParameters3D.new()
+		q.shape = game.player_shape.shape
+		var floor_at: Vector3 = hit.position+Vector3.UP*.90
+		q.transform = Transform3D(Basis.IDENTITY,floor_at)
+		q.collision_mask = 1|4|8|16|32
+		q.exclude = [game.player.get_rid()]
+		if get_world_3d().direct_space_state.intersect_shape(q,1).is_empty(): return floor_at
+	return game.player.global_position
+
+func _tick_fare(delta: float) -> void:
+	fare_clock += delta
+	game.player.velocity = Vector3.ZERO
+	if phase=="wallet":
+		# The player looks down to check their pockets, then raises their view.
+		var target_pitch := -.62 if fare_index==1 else -.12
+		game.pitch = lerpf(game.pitch,target_pitch,minf(delta*3.5,1.0))
+		game.pivot.rotation = Vector3(game.pitch,game.yaw,0)
+	if phase=="wallet_exit":
+		fade.color.a = move_toward(fade.color.a,1.0,delta*3.0)
+		if fade.color.a<.99: return
+		if game.garage.inside: game.garage._exit()
+		var safe := _safe_talk_position()
+		if safe.y>50.0:
+			var basis: Basis = home.basis
+			safe = Vector3(home.door)+basis.z*1.4+Vector3.UP*.9
+		game.garage.inside = false
+		game.player.global_position = safe
+		game.player.velocity = Vector3.ZERO
+		_face_point(driver.global_position+Vector3.UP*1.5)
+		phase = "fare_talk"
+		fare_wait = .6
+		fare_clock = 0.0
+		return
+	if phase=="fare_talk":
+		fade.color.a = move_toward(fade.color.a,0.0,delta*2.0)
+		var d: Vector3 = game.player.global_position-driver.global_position
+		driver.rotation.y = lerp_angle(driver.rotation.y,atan2(d.x,d.z)-cab.rotation.y,minf(delta*5.0,1.0))
+		driver.arms[1].rotation.x = lerpf(driver.arms[1].rotation.x,-.45 if fare_index==3 and fare_active else 0.0,minf(delta*5.0,1.0))
+	fare_wait -= delta
+	if fare_wait>0.0: return
+	if fare_active:
+		fare_active = false
+		voice.stop()
+		subtitle.text = ""
+		fare_index += 1
+		fare_wait = .45
+		return
+	if phase=="wallet" and fare_index>=2:
+		phase = "wallet_exit"
+		return
+	if fare_index>=FARE_LINES.size():
+		phase = "driver_leave"
+		fare_clock = 0.0
+		departure_origin = cab.global_position
+		return
+	_play_fare_line(fare_index)
+
+func _start_driver_departure() -> bool:
+	var road: Dictionary = service._parking_road(cab.global_position,cab.global_basis.z)
+	if road.is_empty(): return false
+	var start: String = road.next
+	var direction: Vector3 = road.d
+	for offset in [direction*150.0,direction*90.0,Vector3(130,0,0),Vector3(-130,0,0),Vector3(0,0,130),Vector3(0,0,-130)]:
+		var result: Dictionary = service.router.resolve_point(cab.global_position+offset,start)
+		if result.has("error") or float(result.get("distance",0.0))<25.0: continue
+		service.selected = {"body":cab,"next_node":start,"path":[],"index":0,"speed":0.0,"blocked":0.0,"goal":"","label":"","note":""}
+		service.selected_route = result
+		service.trip_confirmed = true
+		if service.prepare_trip():
+			departure_record = service.passenger
+			return true
+		service.selected = {}
+		service.dialog.hide()
+	# A short, legal forward segment is enough to leave the front of the house.
+	var finish: Vector3 = road.b
+	var berth: Vector3 = world.street_geometry.safe_stop_on_edge(road.a,road.b,finish-direction*5.0+Vector3(road.side)*service.curb_offset(float(road.width),1.90),4.80,1.90)
+	if berth.distance_to(cab.global_position)<5.0: return false
+	var record := {"body":cab,"path":[{"p":berth,"node":""}],"index":0,"next_node":start,"label":"La Habana","note":"","goal":start}
+	if service.resume_mission_trip(record):
+		departure_record = service.passenger
+		return true
+	return false
+
+func _tick_driver_leave(delta: float) -> void:
+	fare_clock += delta
+	game.player.velocity = Vector3.ZERO
+	if not departure_started:
+		_face_point(driver.global_position+Vector3.UP*1.2)
+		# Walk around the rear of the taxi to the driver's side, then sit.
+		var points: Array[Vector3] = [Vector3(-1.35,0,-2.8),Vector3(1.35,0,-2.8),Vector3(1.35,0,.3)]
+		var index := mini(2,floori(fare_clock/1.2))
+		var goal: Vector3 = points[index]
+		var d: Vector3 = goal-driver.position
+		if d.length()>.08:
+			driver.position = driver.position.move_toward(goal,delta*2.6)
+			driver.rotation.y = atan2(d.x,d.z)
+			driver.animate(delta,true)
+		if fare_clock<4.0: return
+		driver.position = Vector3(.39,.17,.19)
+		driver.rotation = Vector3.ZERO
+		driver.scale = Vector3(.74,.74,.74)
+		for leg in driver.limbs: leg.rotation.x = -1.45
+		for knee in driver.knees: knee.rotation.x = 1.35
+		for arm in driver.arms: arm.rotation.x = -1.15
+		departure_started = true
+		fare_clock = 0.0
+		if _start_driver_departure():
+			return
+		push_warning("MyCity: no safe departure route; leaving off camera.")
+		return
+	_face_point(cab.global_position+Vector3.UP*.9)
+	if cab.global_position.distance_to(departure_origin)>12.0 or (service.arrived and fare_clock>1.0):
+		_finish()
+	elif fare_clock>10.0:
+		# A traffic jam must not trap the player in the cinematic indefinitely.
+		_finish()
+
 func _finish() -> void:
 	state.step = 2
+	state.fare_scene_done = true
+	state.taxi_payment_pending = true
 	_save()
 	phase = "done"
 	subtitle.text = ""
@@ -447,12 +582,21 @@ func _finish() -> void:
 	game.map_credit.show()
 	game.business.layer.show()
 	game._update_hud()
-	# The driver remains a non-interactive NPC; no free taxi or van is awarded.
-	if is_instance_valid(cab):
-		cab.queue_free()
+	# Keep the departing cab in city traffic rather than deleting it in view.
+	# Once its route finishes it is returned to the ordinary taxi fleet.
+	if is_instance_valid(cab) and departure_record.is_empty():
+		cab.add_to_group("traffic_parked")
+		cab.set_meta("traffic_servicing",false)
+
+func _process(_delta: float) -> void:
+	if phase=="done" and not departure_record.is_empty() and service.passenger.get("body")==cab and service.arrived:
+		var record: Dictionary = service.passenger
+		service.finish_trip()
+		service.taxis.append(record)
+		departure_record = {}
 
 func handle_look(relative: Vector2) -> void:
-	if phase in ["ride","title","approach"] and is_instance_valid(cab_view):
+	if phase=="approach" and is_instance_valid(cab_view):
 		look.x = clampf(look.x-relative.x*.003,-1.15,1.15)
 		look.y = clampf(look.y-relative.y*.003,-.48,.35)
 		cab_view.rotation = Vector3(look.y-.06,PI+look.x,0)
@@ -463,12 +607,19 @@ func handle_look(relative: Vector2) -> void:
 
 func tick(delta: float) -> void:
 	match phase:
-		"ride": _tick_ride(delta)
-		"title": _tick_title(delta)
 		"approach":
-			fade.color.a = move_toward(fade.color.a,0.0,delta*1.1)
 			game.player.global_position = cab.global_position+Vector3.UP
 			arrival_wait += delta
+			if not approach_cut_done:
+				approach_cut_done = true
+				_safe_approach_cut()
+			var close_to_home: bool = service.arrived
+			if not service.passenger.is_empty():
+				var route: Array = service.passenger.path
+				if not route.is_empty(): close_to_home = cab.global_position.distance_to(route.back().p)<30.0
+			if close_to_home:
+				subtitle.text = ""
+				fade.color.a = move_toward(fade.color.a,0.0,delta*1.3)
 			if service.arrived and fade.color.a<=.01:
 				phase = "arrival"
 				arrival_wait = 0.0
@@ -478,6 +629,8 @@ func tick(delta: float) -> void:
 			if arrival_wait>.85:
 				fade.color.a = move_toward(fade.color.a,1.0,delta*2.5)
 				if fade.color.a>=.99: _arrive()
+		"wallet","wallet_exit","fare_talk": _tick_fare(delta)
+		"driver_leave": _tick_driver_leave(delta)
 		"unload":
 			var direction: Vector2 = game._read_controls()
 			var move := Vector3(direction.x,0,direction.y).normalized().rotated(Vector3.UP,game.yaw)

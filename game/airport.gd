@@ -79,6 +79,24 @@ var mission_panel: PanelContainer
 var cinema_fade: ColorRect
 var boarding_transition := false
 var entering_adaptation := false
+var departure_started := false
+var departure_clock := 0.0
+var departure_distance := 0.0
+var departure_speed := 0.0
+var departure_line := 0
+var departure_wait := 1.0
+var departure_title_clock := -1.0
+var chapter_title: Label
+var chapter_loading: Label
+const RIDE_LINES := [
+	["Chofer","Cuéntame, ¿cómo fue el vuelo?",1.84],
+	["Tú","Sí, fue bastante bien.",2.72],
+	["Chofer","¿Y qué? ¿De visita?",1.76],
+	["Tú","Ya quisiera. Después de doce años, deportado. Y ahora... a comenzar de cero.",6.96],
+	["Chofer","Oh, qué mal, compadre. Al Cerro me dijiste, ¿verdad?",4.08],
+	["Tú","Sí, al Cerro.",2.32],
+	["Chofer","No te preocupes. Esto está duro, pero vas a estar bien.",3.52]
+]
 var protagonist_voice_id := ""
 const MIGRATION_LINES := {"next":["Agente","¡Próximooo!",1.52],"greeting":["Agente","Buenas tardes, su pasaporte, por favor.",2.64],"handover":["Tú","Buenas tardes. Aquí tiene.",2.24],"question":["Agente","¿Hace mucho tiempo que no viene a Cuba?",2.24],"answer":["Tú","Sí, hace varios años.",3.52],"welcome":["Agente","Todo está en orden. Puede pasar a recoger su equipaje. Bienvenido a la patria.",4.64],"thanks":["Tú","Muchas gracias.",1.44]}
 var voice_id := ""
@@ -687,8 +705,11 @@ func _make_terminal() -> void:
 	for x in [-32.0,-22.0,20.0,31.0]:
 		_box(self,Vector3(x,1.2,9.4),Vector3(.12,2.4,.12),metal)
 		_terminal_sign("TAXIS",Vector3(x,2.2,9.48),Vector2(.95,.42),.0045,true)
-	for x in [-42.0,42.0]:
-		_box(self,Vector3(x,1,8),Vector3(.3,2,36),concrete,true)
+	_box(self,Vector3(-42,1,8),Vector3(.3,2,36),concrete,true)
+	# The right-hand gate is a real exit from the terminal forecourt.
+	_box(self,Vector3(42,1,1),Vector3(.3,2,22),concrete,true)
+	_box(self,Vector3(42,1,24.5),Vector3(.3,2,3),concrete,true)
+	_make_departure_landscape()
 	_box(self,Vector3(0,1,26),Vector3(84,2,.3),concrete,true)
 	for x in [-28.0,-15.0,25.0,35.0]:
 		_box(self,Vector3(x,.24,23.4),Vector3(2.5,.48,1.5),Color("#a5a89b"))
@@ -939,6 +960,33 @@ func _make_taxi_interior(root: Node3D,rear_door: Node3D) -> void:
 	_box(root,Vector3(0,1.58,.895),Vector3(1.45,.09,.03),Color("#315b78"))
 	_box(root,Vector3(-.04,1.185,.76),Vector3(.20,.075,.11),Color("#dfb43e"))
 	_label3(root,"TAXI",Vector3(-.04,1.185,.70),.0017,black).rotation.y = PI
+
+# A lightweight original road and countryside, only for the airport prologue.
+func _make_departure_landscape() -> void:
+	var land := Node3D.new()
+	land.name = "AirportDepartureRoad"
+	add_child(land)
+	var grass := Color("#71904d")
+	_box(land,Vector3(252,-.24,18.4),Vector3(420,.45,220),grass)
+	_box(land,Vector3(250,.005,18.4),Vector3(416,.025,8.2),Color("#555b58"))
+	for side in [-1.0,1.0]:
+		_box(land,Vector3(250,.024,18.4+float(side)*3.65),Vector3(416,.018,.10),Color("#deded0"))
+	for i in range(70):
+		var x := 44.0+float(i)*6.0
+		_box(land,Vector3(x,.025,18.4),Vector3(2.8,.012,.11),Color("#e4d2a0"))
+	for i in range(15):
+		var x := 58.0+float(i)*26.0
+		for side in [-1.0,1.0]:
+			var z := 18.4+float(side)*(28.0+float((i*7)%5)*8.0)
+			var patch := _fp_rounded(land,Vector3(x,-1.3,z),Vector3(32,3.4,26),grass.darkened(.04+float(i%3)*.035))
+			patch.rotation.y = float(i)*.4
+			if i%3==0:
+				var pos := Vector3(x+3,0,z*.82+18.4*.18)
+				_box(land,pos+Vector3(0,1.65,0),Vector3(.19,3.3,.19),Color("#76654b"))
+				for k in range(5):
+					var angle := float(k)*TAU/5.0
+					var frond := _fp_rounded(land,pos+Vector3(cos(angle)*.72,3.38,sin(angle)*.72),Vector3(1.7,.18,.55),Color("#466b3f"))
+					frond.rotation.y = -angle
 
 func _make_taxi() -> void:
 	taxi = Node3D.new()
@@ -1544,8 +1592,12 @@ func _migration_line(key: String) -> void:
 	migration_played[key] = true
 	migration_voice.stop()
 	if not voice_id.is_empty() or not protagonist_voice_id.is_empty(): DisplayServer.tts_stop()
-	var is_taxi_line := TAXI_GREETING_LINES.has(key)
-	var line: Array = TAXI_GREETING_LINES[key] if is_taxi_line else MIGRATION_LINES[key]
+	var is_ride_line := key.begins_with("ride_")
+	var is_taxi_line := TAXI_GREETING_LINES.has(key) or is_ride_line
+	var line: Array
+	if is_ride_line: line = RIDE_LINES[int(key.trim_prefix("ride_"))-1]
+	elif is_taxi_line: line = TAXI_GREETING_LINES[key]
+	else: line = MIGRATION_LINES[key]
 	active_speaker = String(line[0])
 	speech_clock = 0.0
 	dialogue.text = String(line[0])+": "+String(line[1])
@@ -1898,6 +1950,64 @@ func _interact() -> void:
 			sliding.tween_property(exit_visual,"position:x",5.0,.65)
 			sliding.tween_callback(exit_visual.hide)
 
+func _city_arrival_saved() -> bool:
+	var path := "user://mycity_adaptation_v1.json"
+	if not FileAccess.file_exists(path): return false
+	var f := FileAccess.open(path,FileAccess.READ)
+	if f==null: return false
+	var value: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	if not value is Dictionary: return false
+	var life: Dictionary = value.get("city_life",{})
+	return int(life.get("adaptation",{}).get("step",0))>=1
+
+func _tick_departure(delta: float) -> void:
+	if not departure_started:
+		departure_started = true
+		if progress.ride_finished or _city_arrival_saved():
+			departure_title_clock = 2.1
+			cinema_fade.color = Color.BLACK
+		if not voice_id.is_empty(): DisplayServer.tts_stop()
+	if departure_title_clock>=0.0:
+		departure_title_clock += delta
+		cinema_fade.color.a = move_toward(cinema_fade.color.a,1.0,delta*1.6)
+		if cinema_fade.color.a>=.99: chapter_title.show()
+		if departure_title_clock>=2.0: chapter_loading.show()
+		if departure_title_clock>=3.4:
+			entering_adaptation = true
+			progress.ride_finished = true
+			progress.save_game()
+			get_tree().set_meta("mycity_adaptation",true)
+			get_tree().change_scene_to_file.call_deferred("res://main.tscn")
+		return
+	departure_clock += delta
+	departure_speed = move_toward(departure_speed,10.0,delta*2.2)
+	departure_distance += departure_speed*delta
+	# Pull out from the taxi rank into the open exit lane, then drive straight.
+	var x := 7.5+departure_distance
+	var t := clampf(departure_distance/13.0,0.0,1.0)
+	var z := 13.4+5.0*smoothstep(0.0,1.0,t)
+	var slope := (5.0/13.0)*6.0*t*(1.0-t)
+	taxi.position = Vector3(x,.025,z)
+	taxi.rotation.y = atan2(1.0,slope)
+	for arm in driver.arms: arm.rotation.x = -1.15
+	migration_remaining = maxf(0.0,migration_remaining-delta)
+	if migration_remaining>0.0: return
+	if not active_speaker.is_empty():
+		migration_voice.stop()
+		active_speaker = ""
+		dialogue.text = ""
+		departure_wait = .35
+		return
+	departure_wait -= delta
+	if departure_wait>0.0 or departure_clock<1.8: return
+	if departure_line<RIDE_LINES.size():
+		departure_line += 1
+		_migration_line("ride_%02d" % departure_line)
+		return
+	departure_title_clock = 0.0
+	dialogue.text = ""
+
 func _seat_player(animate_entry: bool=false) -> void:
 	var side := _boarding_side()
 	var boarding_door := door if side<0.0 else opposite_door
@@ -2015,6 +2125,27 @@ func _make_hud() -> void:
 	cinema_fade.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(cinema_fade)
 	cinema_fade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	chapter_title = Label.new()
+	root.add_child(chapter_title)
+	chapter_title.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	chapter_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	chapter_title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	chapter_title.text = "CAPÍTULO 1\nLA ADAPTACIÓN"
+	chapter_title.add_theme_font_size_override("font_size",44)
+	chapter_title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	chapter_title.hide()
+	chapter_loading = Label.new()
+	root.add_child(chapter_loading)
+	chapter_loading.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+	chapter_loading.offset_left = -220
+	chapter_loading.offset_right = 220
+	chapter_loading.offset_top = -105
+	chapter_loading.offset_bottom = -55
+	chapter_loading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	chapter_loading.text = "Cargando partida…"
+	chapter_loading.add_theme_font_size_override("font_size",17)
+	chapter_loading.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	chapter_loading.hide()
 	menu = PanelContainer.new()
 	root.add_child(menu)
 	menu.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
@@ -2093,7 +2224,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventScreenDrag and mobile: look = event.relative
 	if look!=Vector2.ZERO:
 		if progress.stage==Progress.COMPLETE:
-			if boarding_transition: return
+			if boarding_transition or departure_title_clock>=0.0: return
 			cabin_look.x = clampf(cabin_look.x-look.x*.003,-1.15,1.15)
 			cabin_look.y = clampf(cabin_look.y-look.y*.003,-.50,.38)
 			camera.rotation = Vector3(cabin_look.y-.06,PI+cabin_look.x,0)
@@ -2117,11 +2248,7 @@ func _physics_process(delta: float) -> void:
 	_tick_actor_faces(delta)
 	if progress.stage==Progress.COMPLETE:
 		_tick_airport_audio(delta)
-		if not boarding_transition and not entering_adaptation:
-			entering_adaptation = true
-			cinema_fade.color = Color.BLACK
-			get_tree().set_meta("mycity_adaptation",true)
-			get_tree().change_scene_to_file.call_deferred("res://main.tscn")
+		if not boarding_transition and not entering_adaptation: _tick_departure(delta)
 		return
 	_update_belt(delta)
 	stage_time += delta
