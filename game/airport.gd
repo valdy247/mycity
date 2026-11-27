@@ -33,6 +33,7 @@ var touch_keys: Dictionary = {}
 var mobile := false
 var note_time := 0.0
 var marker: Node3D
+var marker_arrow: Label3D
 var lid_tween: Tween
 var officer: Person
 var previous: Person
@@ -445,7 +446,8 @@ func _make_bags() -> void:
 		other_bags.append(_suitcase([Color("#a73b39"),Color("#c6a247"),Color("#506f59"),Color("#4e5052"),Color("#8b7770")][i]))
 	marker = Node3D.new()
 	add_child(marker)
-	_label3(marker,"▼",Vector3(0,1.7,0),.010,Color("#ffd976")).billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	marker_arrow = _label3(marker,"▼",Vector3(0,1.7,0),.010,Color("#ffd976"))
+	marker_arrow.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 
 func _belt_point(slot: int) -> Vector3:
 	var a := belt_time*.17+float(slot)*TAU/7.0
@@ -484,6 +486,18 @@ func _target() -> Vector3:
 		10,12,14,15: return _trunk_point()
 		16: return _door_point()
 	return taxi.global_position
+
+# The taxi's visual marker is centered above its roof. Interaction
+# distances still use the trunk or passenger door, not the marker.
+func _position_marker() -> void:
+	if progress.stage in [10,12,14,16]:
+		marker.global_position = taxi.global_position
+		marker_arrow.position = Vector3(0,2.45,0)
+		marker_arrow.pixel_size = .020
+	else:
+		marker.global_position = _target()
+		marker_arrow.position = Vector3(0,1.7,0)
+		marker_arrow.pixel_size = .010
 
 func _near(at: Vector3,radius: float=1.45) -> bool:
 	return Vector2(player.global_position.x,player.global_position.z).distance_to(Vector2(at.x,at.z))<=radius
@@ -527,7 +541,7 @@ func _sync() -> void:
 		bag_arrows[i].visible = place=="belt" and step>=4
 	lid.rotation.x = 1.15 if step>=11 and step<=15 else 0.0
 	_refresh_objective()
-	if marker.visible: marker.global_position = _target()
+	if marker.visible: _position_marker()
 	if step==Progress.COMPLETE: prompt.text = "Fase 1 completada · Esc para abrir el menú"
 
 func _refresh_objective() -> void:
@@ -875,7 +889,7 @@ func _physics_process(delta: float) -> void:
 					_notice("El chofer cerró el maletero.")
 					driver.arms[1].rotation.x = 0.0
 	if progress.stage==Progress.COMPLETE: return
-	if marker.visible: marker.global_position = _target()
+	if marker.visible: _position_marker()
 	var near := _near(_target(),1.60)
 	var actions := ["","Entregar pasaporte","Recoger pasaporte","","Tomar carrito","Recoger primera maleta","Poner en carrito","Recoger segunda maleta","Poner en carrito","","","Tomar primera maleta","Guardar en maletero","Tomar segunda maleta","Guardar en maletero","","Subir al taxi"]
 	var action: String = actions[progress.stage]
