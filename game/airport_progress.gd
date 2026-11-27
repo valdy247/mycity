@@ -12,6 +12,7 @@ var cart_attached := false
 var cart_angle := 0.0
 var first_bag := 0
 var ride_finished := false
+const DEPARTURE_REVISION := 2
 
 static func expected_action(step: int) -> String:
 	return ACTIONS[step] if step>=0 and step<ACTIONS.size() else ""
@@ -75,7 +76,7 @@ func load_game() -> bool:
 	var step := int(data.get("stage",-1))
 	if step<0 or step>COMPLETE: return false
 	stage = step
-	ride_finished = bool(data.get("ride_finished",false)) and step==COMPLETE
+	ride_finished = bool(data.get("ride_finished",false)) and step==COMPLETE and int(data.get("departure_revision",0))==DEPARTURE_REVISION
 	first_bag = clampi(int(data.get("first_bag",0)),0,1)
 	checkpoint = _read_point(data.get("checkpoint",[]),SPAWN)
 	cart_position = _read_point(data.get("cart_position",[]),Vector3(-5,.03,-16))
@@ -97,7 +98,7 @@ func load_game() -> bool:
 	return true
 
 func save_game() -> bool:
-	var data := {"version":VERSION,"chapter":1,"scene":"airport","stage":stage,"ride_finished":ride_finished,"cash":0,"properties":[],"vehicles":[],"businesses":[],"checkpoint":[checkpoint.x,checkpoint.y,checkpoint.z],"cart_position":[cart_position.x,cart_position.y,cart_position.z],"cart_attached":cart_attached,"cart_angle":cart_angle,"first_bag":first_bag}
+	var data := {"version":VERSION,"chapter":1,"scene":"airport","stage":stage,"ride_finished":ride_finished,"departure_revision":DEPARTURE_REVISION,"cash":0,"properties":[],"vehicles":[],"businesses":[],"checkpoint":[checkpoint.x,checkpoint.y,checkpoint.z],"cart_position":[cart_position.x,cart_position.y,cart_position.z],"cart_attached":cart_attached,"cart_angle":cart_angle,"first_bag":first_bag}
 	var temp := SAVE_PATH+".tmp"
 	var file := FileAccess.open(temp,FileAccess.WRITE)
 	if file==null: return false

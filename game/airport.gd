@@ -80,6 +80,7 @@ var cinema_fade: ColorRect
 var boarding_transition := false
 var entering_adaptation := false
 var departure_started := false
+var replay_departure := false
 var departure_clock := 0.0
 var departure_distance := 0.0
 var departure_speed := 0.0
@@ -128,6 +129,13 @@ const AIRPORT_ANNOUNCEMENTS := ["Atención, pasajeros. Comprueben sus etiquetas 
 func _ready() -> void:
 	mobile = OS.has_feature("android") or OS.has_feature("ios") or OS.get_cmdline_user_args().has("--touch-controls")
 	progress.load_game()
+	# Explicit QA entry point: replay only the taxi prologue, never delete saves.
+	replay_departure = OS.get_cmdline_user_args().has("--replay-airport-ride")
+	if replay_departure:
+		progress.stage = Progress.COMPLETE
+		progress.ride_finished = false
+		progress.cart_attached = false
+		progress.checkpoint = Vector3(7.5,.91,11.5)
 	_make_environment()
 	_make_terminal()
 	_make_taxi()
@@ -1868,6 +1876,7 @@ func _advance(action: String,bag_id: int=-1) -> bool:
 					break
 	var before_prop: Transform3D = moving_prop.global_transform if is_instance_valid(moving_prop) else Transform3D.IDENTITY
 	if not progress.advance(action,player.global_position,bag_id): return false
+	if action=="board": progress.ride_finished = false
 	progress.cart_position = cart.global_position
 	progress.cart_angle = cart.rotation.y
 	if not progress.save_game():
@@ -1950,38 +1959,59 @@ func _interact() -> void:
 			sliding.tween_property(exit_visual,"position:x",5.0,.65)
 			sliding.tween_callback(exit_visual.hide)
 
-func _city_arrival_saved() -> bool:
-	var path := "user://mycity_adaptation_v1.json"
-	if not FileAccess.file_exists(path): return false
-	var f := FileAccess.open(path,FileAccess.READ)
-	if f==null: return false
-	var value: Variant = JSON.parse_string(f.get_as_text())
-	f.close()
-	if not value is Dictionary: return false
-	var life: Dictionary = value.get("city_life",{})
-	return int(life.get("adaptation",{}).get("step",0))>=1
-
 func _tick_departure(delta: float) -> void:
 	if not departure_started:
 		departure_started = true
-		if progress.ride_finished or _city_arrival_saved():
+		# Only a completed dialogue from this revision can skip the prologue.
+		# An older city save must not suppress a newly boarded taxi sequence.
+		if progress.ride_finished and not replay_departure:
 			departure_title_clock = 2.1
 			cinema_fade.color = Color.BLACK
+		else:
+			migration_voice.stop()
+			active_speaker = ""
+			migration_remaining = 0.0
+			print("MyCity: airport departure started; seven mandatory dialogue lines.")
 		if not voice_id.is_empty(): DisplayServer.tts_stop()
 	if departure_title_clock>=0.0:
 		departure_title_clock += delta
+		if not progress.ride_finished and cinema_fade.color.a<.99: _move_departure_taxi(delta)
 		cinema_fade.color.a = move_toward(cinema_fade.color.a,1.0,delta*1.6)
 		if cinema_fade.color.a>=.99: chapter_title.show()
 		if departure_title_clock>=2.0: chapter_loading.show()
 		if departure_title_clock>=3.4:
 			entering_adaptation = true
-			progress.ride_finished = true
-			progress.save_game()
+			if not replay_departure:
+				progress.ride_finished = true
+				progress.save_game()
 			get_tree().set_meta("mycity_adaptation",true)
 			get_tree().change_scene_to_file.call_deferred("res://main.tscn")
 		return
+	_move_departure_taxi(delta)
 	departure_clock += delta
-	departure_speed = move_toward(departure_speed,10.0,delta*2.2)
+	migration_remaining = maxf(0.0,migration_remaining-delta)
+	if migration_remaining>0.0: return
+	if not active_speaker.is_empty():
+		migration_voice.stop()
+		active_speaker = ""
+		dialogue.text = ""
+		departure_wait = .48
+		return
+	departure_wait -= delta
+	if departure_wait>0.0 or departure_clock<2.2: return
+	if departure_line<RIDE_LINES.size():
+		departure_line += 1
+		_migration_line("ride_%02d" % departure_line)
+		print("MyCity: airport ride dialogue ",departure_line,"/",RIDE_LINES.size())
+		return
+	# The whole conversation must end while moving through the fields.
+	if departure_distance<70.0: return
+	departure_title_clock = 0.0
+	dialogue.text = ""
+	print("MyCity: airport ride complete; chapter title.")
+
+func _move_departure_taxi(delta: float) -> void:
+	departure_speed = move_toward(departure_speed,9.0,delta*2.0)
 	departure_distance += departure_speed*delta
 	# Pull out from the taxi rank into the open exit lane, then drive straight.
 	var x := 7.5+departure_distance
@@ -1991,22 +2021,6 @@ func _tick_departure(delta: float) -> void:
 	taxi.position = Vector3(x,.025,z)
 	taxi.rotation.y = atan2(1.0,slope)
 	for arm in driver.arms: arm.rotation.x = -1.15
-	migration_remaining = maxf(0.0,migration_remaining-delta)
-	if migration_remaining>0.0: return
-	if not active_speaker.is_empty():
-		migration_voice.stop()
-		active_speaker = ""
-		dialogue.text = ""
-		departure_wait = .35
-		return
-	departure_wait -= delta
-	if departure_wait>0.0 or departure_clock<1.8: return
-	if departure_line<RIDE_LINES.size():
-		departure_line += 1
-		_migration_line("ride_%02d" % departure_line)
-		return
-	departure_title_clock = 0.0
-	dialogue.text = ""
 
 func _seat_player(animate_entry: bool=false) -> void:
 	var side := _boarding_side()
