@@ -1,4 +1,5 @@
 extends Node3D
+const VehicleLights = preload("res://vehicle_lights.gd")
 const World = preload("res://cuba_world.gd")
 const Planner = preload("res://urban_bus_routes.gd")
 const Person = preload("res://street_person.gd")
@@ -526,6 +527,12 @@ func _body(truck: bool,index: int) -> CharacterBody3D:
 	collision.shape = shape
 	body.add_child(collision)
 	collision.position.y = shape.size.y*.5+.06
+	if truck:
+		VehicleLights.attach(body,Vector3(.86,1.02,3.09),Vector3(.95,.88,-3.21),Vector3(.28,.18,.04),Vector3(.17,.12,.04))
+	elif index%5!=4:
+		VehicleLights.attach(body,Vector3(.70,.85,2.12),Vector3(.72,.82,-2.115),Vector3(.19,.19,.025),Vector3(.14,.15,.025))
+	else:
+		VehicleLights.attach(body,Vector3(.65,.79,length*.5+.065),Vector3(.65,.79,-length*.5-.065),Vector3(.23,.17,.025),Vector3(.20,.15,.025))
 	return body
 
 # Add intermediate points for distributed spawning on long blocks.

@@ -1,4 +1,5 @@
 extends Node3D
+const VehicleLights = preload("res://vehicle_lights.gd")
 const Routes = preload("res://taxi_routes.gd")
 const TrafficBypass = preload("res://traffic_bypass.gd")
 const TaxiMap = preload("res://taxi_map.gd")
@@ -174,6 +175,7 @@ func _make_taxi(index: int) -> CharacterBody3D:
 	col.shape = shape
 	body.add_child(col)
 	col.position.y = .82
+	VehicleLights.attach(body,Vector3(.70,.81,2.39),Vector3(.70,.76,-2.39),Vector3(.25,.21,.025),Vector3(.16,.21,.025))
 	return body
 
 func _make_dialog() -> void:

@@ -1,4 +1,5 @@
 extends Node3D
+const VehicleLights = preload("res://vehicle_lights.gd")
 const MapData = preload("res://pilar_map.gd")
 const StreetGeometry = preload("res://street_geometry.gd")
 const Planner = preload("res://urban_bus_routes.gd")
@@ -495,6 +496,7 @@ func _make_bus(line: String,index: int) -> Dictionary:
 	collision.shape = shape
 	body.add_child(collision)
 	collision.position.y = 1.54
+	VehicleLights.attach(body,Vector3(.91,.93,half+.127),Vector3(1.02,.91,-half-.095),Vector3(.30,.15,.025),Vector3(.17,.32,.025))
 	return {"body":body,"door":door}
 
 func _set_bus_door(door: Node3D,opened: bool) -> void:

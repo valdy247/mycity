@@ -1,6 +1,8 @@
 extends Node3D
 # First playable local prototype. Static world, third-person movement.
 const CITY_PATH = "res://city.glb"
+const VehicleLights = preload("res://vehicle_lights.gd")
+var road_headlight: SpotLight3D
 const Shoe = preload("res://character_shoe.gd")
 const CityBuilder = preload("res://city_builder.gd")
 const CityWorld = preload("res://city_world.gd")
@@ -586,7 +588,36 @@ func _refresh_diagnostics() -> void:
 			lines.append(" H%d Q%d T%d R%d P%d" % [int(cafe.get("harina",0)),int(cafe.get("queso",0)),int(cafe.get("tomate",0)),int(cafe.get("refresco",0)),int(cafe.get("perrito",0))])
 	diagnostics_text.text = "\n".join(lines)
 
+func _update_vehicle_lights() -> void:
+	if business==null or business.life==null: return
+	VehicleLights.update_time(get_tree(),float(business.life.state.get("minutes",480.0)))
+	var body: Node3D
+	if driving and is_instance_valid(van):
+		body = van
+	elif garage!=null and garage.riding:
+		body = garage._ride_body()
+	elif (taxi_riding or bus_riding) and is_instance_valid(pivot):
+		body = pivot.get_parent() as Node3D
+	if not VehicleLights.night or not is_instance_valid(body) or not body.has_meta("night_lamp_front"):
+		if is_instance_valid(road_headlight): road_headlight.hide()
+		return
+	if not is_instance_valid(road_headlight):
+		road_headlight = SpotLight3D.new()
+		add_child(road_headlight)
+		road_headlight.light_color = Color("#fff0d6")
+		road_headlight.light_energy = 1.8
+		road_headlight.spot_range = 22.0
+		road_headlight.spot_angle = 37.0
+		road_headlight.spot_attenuation = 1.4
+		road_headlight.shadow_enabled = false
+	var local_front: Vector3 = body.get_meta("night_lamp_front")
+	var at := body.to_global(local_front+Vector3(0,0,.10))
+	road_headlight.global_position = at
+	road_headlight.look_at(at+body.global_basis.z*10.0-Vector3.UP*1.5,Vector3.UP)
+	road_headlight.show()
+
 func _process(delta: float) -> void:
+	_update_vehicle_lights()
 	fps_time += delta
 	if fps_time>=.5:
 		fps_time = 0.0
@@ -798,6 +829,7 @@ func _new_van_body(position_world: Vector3) -> CharacterBody3D:
 	car.add_child(collision)
 	add_child(car)
 	car.global_position = position_world + Vector3.UP * 0.04
+	VehicleLights.attach(car,Vector3(.76,.91,2.58),Vector3(.89,.91,-2.58),Vector3(.29,.17,.035),Vector3(.12,.28,.035))
 	return car
 
 # Reuse only the two original vehicles; do not attach the old city permanently.

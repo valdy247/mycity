@@ -1,4 +1,5 @@
 extends RefCounted
+const VehicleLights = preload("res://vehicle_lights.gd")
 # Reusable low-poly vehicle assemblies. Each part has its own material
 # and can be shown as a translucent guide until installed.
 const KITS := {
@@ -184,4 +185,11 @@ static func body(root: Node3D,kind: String) -> CharacterBody3D:
 	col.shape = shape
 	node.add_child(col)
 	col.position.y = float(spec.height)*.5+.03
+	if kind=="moto":
+		VehicleLights.attach(node,Vector3(0,1.06,.675),Vector3(0,.77,-.875),Vector3(.14,.11,.025),Vector3(.17,.06,.025))
+	elif kind=="carro":
+		var end := float(spec.length)*.5+.025
+		VehicleLights.attach(node,Vector3(.63,.72,end),Vector3(.63,.72,-end),Vector3(.27,.17,.035),Vector3(.22,.15,.035))
+	elif kind=="triciclo":
+		VehicleLights.attach(node,Vector3(0,.85,.94),Vector3(.42,.67,-1.04),Vector3(.14,.11,.035),Vector3(.12,.09,.035))
 	return node
