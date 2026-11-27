@@ -115,7 +115,7 @@ func _make_terminal() -> void:
 	var trim := Color("#a1a6a3")
 	_box(self,Vector3(0,-.18,8),Vector3(84,.36,50),concrete,true)
 	_box(self,Vector3(0,.012,18),Vector3(84,.022,12),asphalt)
-	_box(self,Vector3(0,.065,5),Vector3(84,.13,13),concrete,true)
+	_box(self,Vector3(0,.015,5),Vector3(84,.03,13),concrete,true)
 	# Façade only: arrivals zone is outdoors. The interior is deliberately closed.
 	_box(self,Vector3(0,4.6,-8),Vector3(70,9.2,12),cream,true)
 	_box(self,Vector3(0,5.6,-1.94),Vector3(70,5.5,.14),glass)
@@ -206,7 +206,7 @@ func _car_shell(root: Node3D,paint: Color,interactive: bool) -> void:
 func _make_taxi() -> void:
 	taxi = Node3D.new()
 	add_child(taxi)
-	taxi.position = Vector3(7.5,.13,13.4)
+	taxi.position = Vector3(7.5,.025,13.4)
 	taxi.rotation.y = PI*.5
 	_car_shell(taxi,Color("#d6ad47"),true)
 	_box(taxi,Vector3(0,1.65,-.1),Vector3(.54,.18,.30),Color("#ead16e"))
@@ -217,7 +217,7 @@ func _make_taxi() -> void:
 	for i in range(3):
 		var other := Node3D.new()
 		add_child(other)
-		other.position = Vector3([-13.0,20.0,31.0][i],.13,13.4)
+		other.position = Vector3([-13.0,20.0,31.0][i],.025,13.4)
 		other.rotation.y = PI*.5
 		_car_shell(other,[Color("#aeb8b9"),Color("#e1dacb"),Color("#66838c")][i],false)
 		# Parked props are outside the mission's walkable interaction area.
@@ -228,7 +228,7 @@ func _make_people() -> void:
 		var person := Person.new()
 		add_child(person)
 		person.setup(330+i*17,i==0 or i==5,true)
-		person.position = Vector3(-28+float(i)*7.7,.13,6.4 if i%2==0 else 8.4)
+		person.position = Vector3(-28+float(i)*7.7,.03,6.4 if i%2==0 else 8.4)
 		person.rotation.y = PI*.5
 		if i%3==1: person.set_bag(true)
 		if i in [2,6]:
@@ -237,7 +237,7 @@ func _make_people() -> void:
 	driver = Person.new()
 	add_child(driver)
 	driver.setup(414)
-	driver.position = Vector3(10.1,.13,11.0)
+	driver.position = Vector3(10.1,.03,11.0)
 	driver.rotation.y = PI
 
 func _make_player() -> void:
@@ -306,7 +306,7 @@ func _sync() -> void:
 			bag.rotation.x = PI*.5
 		else:
 			if bag.get_parent()!=self: bag.reparent(self,false)
-			bag.position = BAG_POINTS[i]+Vector3.UP*.13
+			bag.position = BAG_POINTS[i]+Vector3.UP*.03
 			bag.rotation = Vector3.ZERO
 	lid.rotation.x = 1.15 if step>=3 and step<=6 else 0.0
 	marker.visible = step<8
