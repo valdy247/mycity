@@ -28,6 +28,7 @@ func reserve(city) -> void:
 		city.street_geometry._register(index,poly)
 		if areas.size()>=MAX_PARKS: break
 	_identify_alcobenda()
+	_identify_dump()
 	for id in ["373927999","23917140"]:
 		var found := false
 		for item in areas:
@@ -66,6 +67,24 @@ func _identify_alcobenda() -> void:
 	chosen.name = "Parque Alcobenda"
 	chosen["neglected"] = true
 	print("Alcobenda: parcela OSM ",chosen.id," identificada por Monte y Estévez.")
+
+# Exact location supplied by the player in the editor.
+func _identify_dump() -> void:
+	var pin: Vector3 = world.geography.project(23.1221716,-82.3671415)
+	var point := Vector2(pin.x,pin.z)
+	var matches: Array = []
+	for item in areas:
+		if Geometry2D.is_point_in_polygon(point,item.poly): matches.append(item)
+	if matches.size()!=1:
+		push_warning("Parque vertedero: GPS sin perímetro único; no se modifican parcelas vecinas.")
+		return
+	var chosen: Dictionary = matches[0]
+	chosen["neglected"] = true
+	chosen["dump"] = true
+	print("Parque vertedero: OSM ",chosen.id," identificado por GPS.")
+
+static func normal_style(id: String) -> bool:
+	return id in ["373927999","23917140"]
 
 func reserved(poly: PackedVector2Array) -> bool:
 	for park in world.street_geometry.near(index,poly):
@@ -163,6 +182,74 @@ func _bench(p: Vector2,heading: Vector2) -> void:
 		world._local_cube(at,basis,Vector3(float(x),.22,0),Vector3(.12,.44,.44),metal)
 		world._local_cube(at,basis,Vector3(float(x),.70,-.20),Vector3(.09,.55,.09),metal)
 
+# La Normal: a continuous blue concrete base, pale slab and black
+# steel backrest. Straight and curved units share the same geometry.
+func _normal_segment(a: Vector2,b: Vector2,inward: Vector2) -> void:
+	var length := a.distance_to(b)
+	var mid := (a+b)*.5
+	var angle := atan2(inward.x,inward.y)
+	var frame := Basis(Vector3.UP,angle)
+	var at := _v(mid,.055)
+	var blue := _mat("normal_blue",Color("#287eae"))
+	var seat := _mat("normal_seat",Color("#bcbab0"))
+	var iron := _mat("normal_iron",Color("#252b2a"))
+	world._local_cube(at,frame,Vector3(0,.20,0),Vector3(length+.025,.40,.57),blue,true)
+	world._local_cube(at,frame,Vector3(0,.43,0),Vector3(length+.03,.09,.62),seat)
+	for y in [.69,.96]:
+		world._local_cube(at,frame,Vector3(0,float(y),-.27),Vector3(length+.04,.045,.035),iron)
+	for x in [-.34,.34]:
+		world._local_cube(at,frame,Vector3(length*float(x),.73,-.27),Vector3(.035,.66,.045),iron)
+
+func _normal_bench(points: PackedVector2Array,heading: Vector2,poly: PackedVector2Array,routes: Array,occupied: Array[Vector2]) -> bool:
+	# Validate the whole unit before creating any collision shapes.
+	for i in range(points.size()-1):
+		var a := points[i]
+		var b := points[i+1]
+		for fraction in [0.0,.5,1.0]:
+			var p := a.lerp(b,float(fraction))
+			if not _free(p,poly,.65): return false
+			for route in routes:
+				if Geometry2D.get_closest_point_to_segment(p,route.a,route.b).distance_to(p)<1.6: return false
+			for old in occupied:
+				if old.distance_to(p)<1.1: return false
+	for i in range(points.size()-1):
+		var a := points[i]
+		var b := points[i+1]
+		var axis := (b-a).normalized()
+		var inward := Vector2(-axis.y,axis.x)
+		if inward.dot(heading)<0.0: inward = -inward
+		_normal_segment(a,b,inward)
+		occupied.append((a+b)*.5)
+	return true
+
+func _normal_straight(p: Vector2,heading: Vector2,poly: PackedVector2Array,routes: Array,occupied: Array[Vector2]) -> bool:
+	var side := Vector2(-heading.y,heading.x)
+	return _normal_bench(PackedVector2Array([p-side*1.8,p-side*.6,p+side*.6,p+side*1.8]),heading,poly,routes,occupied)
+
+func _normal_curve(p: Vector2,heading: Vector2,poly: PackedVector2Array,routes: Array,occupied: Array[Vector2]) -> bool:
+	var side := Vector2(-heading.y,heading.x)
+	var points := PackedVector2Array()
+	# A shallow semicircular bench facing the adjacent clearing.
+	for i in range(9):
+		var angle := lerpf(-1.10,1.10,float(i)/8.0)
+		points.append(p+side*sin(angle)*2.5+heading*(1.0-cos(angle))*2.5)
+	return _normal_bench(points,heading,poly,routes,occupied)
+
+func _normal_ground(poly: PackedVector2Array,hub: Vector2,rng: RandomNumberGenerator) -> void:
+	# Irregular grass islands in a broad, pale worn clearing, as in the
+	# supplied aerial photograph. This is an approximation, not a survey.
+	var lawn := _mat("normal_grass",Color("#78894d"))
+	var rect: Rect2 = world.street_geometry.bounds(poly)
+	for i in range(clampi(roundi(area(poly)/95.0),4,18)):
+		var p := Vector2(rng.randf_range(rect.position.x,rect.end.x),rng.randf_range(rect.position.y,rect.end.y))
+		if not _free(p,poly,1.0) or p.distance_to(hub)<3.0: continue
+		var radius := rng.randf_range(2.4,5.8)
+		var patch := PackedVector2Array()
+		for j in range(9):
+			var angle := TAU*float(j)/9.0
+			patch.append(p+Vector2(cos(angle),sin(angle))*radius*rng.randf_range(.70,1.1))
+		for part in Geometry2D.intersect_polygons(patch,poly): _paint(part,.052,lawn,"park_normal_grass")
+
 func _lamp(p: Vector2) -> void:
 	var metal := _mat("iron",Color("#424b45"))
 	world._cube(_v(p,1.65),Vector3(.12,3.30,.12),metal,0.0,true)
@@ -171,7 +258,7 @@ func _lamp(p: Vector2) -> void:
 
 # Three reused mesh batches for debris: bags, broken masonry and scrap.
 # No rigid bodies, lights, or per-frame simulation.
-func _debris(poly: PackedVector2Array,routes: Array,hub: Vector2,rng: RandomNumberGenerator) -> void:
+func _debris(poly: PackedVector2Array,routes: Array,hub: Vector2,rng: RandomNumberGenerator,dump: bool = false) -> void:
 	var rect: Rect2 = world.street_geometry.bounds(poly)
 	var material := StandardMaterial3D.new()
 	material.vertex_color_use_as_albedo = true
@@ -185,21 +272,21 @@ func _debris(poly: PackedVector2Array,routes: Array,hub: Vector2,rng: RandomNumb
 	block.size = Vector3.ONE
 	var palette := [Color("#252923"),Color("#43473c"),Color("#737364"),Color("#8b8270"),Color("#b4ac94"),Color("#755741"),Color("#52666a")]
 	var centers: Array[Vector2] = []
-	for attempt in range(80):
+	for attempt in range(800 if dump else 80):
 		var point := Vector2(rng.randf_range(rect.position.x,rect.end.x),rng.randf_range(rect.position.y,rect.end.y))
-		if not _free(point,poly,1.25) or point.distance_to(hub)<2.0: continue
+		if not _free(point,poly,.75 if dump else 1.25) or (not dump and point.distance_to(hub)<2.0): continue
 		var clear := true
 		for route in routes:
 			if Geometry2D.get_closest_point_to_segment(point,route.a,route.b).distance_to(point)<2.1: clear = false
 		for old in centers:
-			if old.distance_to(point)<3.0: clear = false
+			if old.distance_to(point)<(1.55 if dump else 3.0): clear = false
 		if clear: centers.append(point)
-		if centers.size()>=clampi(roundi(area(poly)/22.0),5,24): break
+		if centers.size()>= (clampi(roundi(area(poly)/3.5),12,110) if dump else clampi(roundi(area(poly)/22.0),5,24)): break
 	for kind in range(3):
 		var transforms: Array[Transform3D] = []
 		var colors: Array[Color] = []
 		for pile in centers:
-			for j in range(9 if kind==0 else (8 if kind==1 else 12)):
+			for j in range((15 if kind==0 else (10 if kind==1 else 15)) if dump else (9 if kind==0 else (8 if kind==1 else 12))):
 				var point := pile+Vector2(rng.randf_range(-1.1,1.1),rng.randf_range(-1.1,1.1))
 				if not _free(point,poly,.55): continue
 				var clear := true
@@ -209,8 +296,10 @@ func _debris(poly: PackedVector2Array,routes: Array,hub: Vector2,rng: RandomNumb
 				var dims := Vector3(rng.randf_range(.28,.65),rng.randf_range(.20,.48),rng.randf_range(.25,.58))
 				if kind==1: dims = Vector3(rng.randf_range(.32,.85),rng.randf_range(.15,.38),rng.randf_range(.20,.52))
 				if kind==2: dims = Vector3(rng.randf_range(.12,.48),.035,rng.randf_range(.14,.55))
+				if dump and kind!=2: dims *= rng.randf_range(1.0,1.40)
 				var at := _v(point,.055+dims.y*.5)
-				if kind!=2 and j%4==0: at.y += .12
+				if kind!=2 and j%4==0: at.y += (.38 if dump else .12)
+				if dump and kind!=2 and j%5==0: at.y += .28
 				var tilt := rng.randf_range(-.22,.22) if kind==1 else 0.0
 				var rotation := Basis.from_euler(Vector3(tilt,rng.randf_range(0.0,TAU),tilt*.5))
 				transforms.append(Transform3D(rotation.scaled_local(dims),at))
@@ -247,10 +336,19 @@ func build() -> void:
 		var poly: PackedVector2Array = item.poly
 		var hub := _hub(poly)
 		var neglected := bool(item.get("neglected",false))
-		_paint(poly,.048,bare if neglected else lawn,"park_bare" if neglected else "park_grass")
+		var dump := bool(item.get("dump",false))
+		var normal := normal_style(String(item.id)) and not neglected
+		var ground := _mat("dump_ground",Color("#655e4e")) if dump else (bare if neglected else (paving if normal else lawn))
+		_paint(poly,.048,ground,"park_dump" if dump else ("park_bare" if neglected else "park_grass"))
 		if not hub.is_finite(): continue
 		var rng := RandomNumberGenerator.new()
 		rng.seed = String(item.id).hash()
+		if dump:
+			# No tidy paths or usable seating through a completely filled dump.
+			_debris(poly,[],hub,rng,true)
+			sites.append({"name":item.name,"p":_v(hub,.065),"id":item.id})
+			continue
+		if normal: _normal_ground(poly,hub,rng)
 		var routes: Array = []
 		var entries: Array[Vector2] = []
 		for i in range(poly.size()):
@@ -285,21 +383,30 @@ func build() -> void:
 		sites.append({"name":item.name,"p":_v(gps,.065),"id":item.id})
 		# Seats beside paths; avoid making the pedestrian routes narrower.
 		var seats := 0
+		var occupied: Array[Vector2] = []
 		for route in routes:
 			var direction: Vector2 = (route.b-route.a).normalized()
 			var side := Vector2(-direction.y,direction.x)
 			for sign_value in [-1.0,1.0]:
 				var point: Vector2 = route.a.lerp(route.b,.58)+side*2.0*float(sign_value)
 				if _free(point,poly,1.1) and seats<(1 if neglected else 8):
-					_bench(point,-side*float(sign_value))
-					seats += 1
+					var heading := -side*float(sign_value)
+					if normal:
+						var placed := false
+						if seats%2==1:
+							placed = _normal_curve(point,heading,poly,routes,occupied)
+						if not placed: placed = _normal_straight(point,heading,poly,routes,occupied)
+						if placed: seats += 1
+					else:
+						_bench(point,heading)
+						seats += 1
 			var lamp_at: Vector2 = route.a.lerp(route.b,.82)+side*1.7
 			if not neglected and _free(lamp_at,poly,.65): _lamp(lamp_at)
 		var transforms: Array[Transform3D] = []
 		var colors: Array[Color] = []
 		var planted: Array[Vector2] = []
 		var rect: Rect2 = world.street_geometry.bounds(poly)
-		var target := clampi(roundi(area(poly)/(240.0 if neglected else 110.0)),2,MAX_TREES)
+		var target := clampi(roundi(area(poly)/(240.0 if neglected else (85.0 if normal else 110.0))),2,MAX_TREES)
 		for i in range(target*8):
 			if planted.size()>=target: break
 			var point := Vector2(rng.randf_range(rect.position.x,rect.end.x),rng.randf_range(rect.position.y,rect.end.y))
@@ -309,6 +416,8 @@ func build() -> void:
 				if Geometry2D.get_closest_point_to_segment(point,route.a,route.b).distance_to(point)<2.7: safe = false
 			for old in planted:
 				if old.distance_to(point)<4.0: safe = false
+			for seat_point in occupied:
+				if seat_point.distance_to(point)<1.35: safe = false
 			if not safe: continue
 			planted.append(point)
 			_tree(point,rng,transforms,colors)
