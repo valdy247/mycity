@@ -1109,31 +1109,58 @@ func _start_chase() -> void:
 	_target(escape_goal,"Refugio · sigue a Yordi")
 	business._notify("Yordi: ¡Corre, sígueme! Yo sé por dónde.")
 
+# Follow the precomputed route directly. Calling the generic walking
+# planner at every waypoint introduces pauses and outdated subpaths.
+func _run_leader(target: Vector3,delta: float,pace: float) -> bool:
+	var origin := yordi.global_position
+	var diff := target-origin
+	var length := diff.length()
+	if length<.03: return false
+	var direction := diff/length
+	var distance := minf(length,pace*delta)
+	for angle in [0.0,.35,-.35,.75,-.75,1.2,-1.2]:
+		var heading := direction.rotated(Vector3.UP,float(angle))
+		var step := origin+heading*distance
+		if not world.pedestrian_segment_clear(origin,step): continue
+		if not world.pedestrian_space_clear(yordi,step,.55): continue
+		yordi.global_position = step
+		yordi.rotation.y = lerp_angle(yordi.rotation.y,atan2(heading.x,heading.z),minf(1.0,delta*18.0))
+		yordi.animate(delta,true,pace)
+		return true
+	yordi.animate(delta,false)
+	return false
+
 func _lead_escape(delta: float,player_at: Vector3) -> void:
 	if not is_instance_valid(yordi): return
-	while escape_index<escape_route.size() and yordi.global_position.distance_to(escape_route[escape_index])<.7:
+	# Consume reached samples without stopping between them. At a corner
+	# keep the next segment unless its shortcut is physically clear.
+	while escape_index<escape_route.size():
+		var near := yordi.global_position.distance_to(escape_route[escape_index])
+		if near>.65: break
+		if escape_index+1<escape_route.size() and near>.10:
+			var next_point := escape_route[escape_index+1]
+			var probe := yordi.global_position.move_toward(next_point,minf(1.0,yordi.global_position.distance_to(next_point)))
+			if not world.pedestrian_segment_clear(yordi.global_position,probe): break
 		escape_index += 1
 	if escape_index>=escape_route.size():
 		yordi.animate(delta,false)
 		_carry_pose()
 		return
 	var gap := yordi.global_position.distance_to(player_at)
-	# Lead at a pace the player can follow, and wait briefly if separated.
-	var pace := 6.4 if gap<9.0 else (3.0 if gap<16.0 else 0.0)
+	# Player sprint is 8 m/s. Lead quickly when close, then ease the
+	# pace smoothly to let the player catch up; never wait mid-chase.
+	var pace := lerpf(8.7,5.8,smoothstep(5.0,23.0,gap))
 	var next := escape_route[escape_index]
-	if pace>0.0:
-		_walk(yordi,next,delta,pace,.45)
-	else: yordi.animate(delta,false)
-	leader_retry += delta
-	if leader_retry>=3.0:
-		if pace>0.0 and leader_last.distance_to(yordi.global_position)<.7:
-			var replacement: PackedVector3Array = game.monte_pedestrians.route_between(yordi.global_position,escape_goal)
-			if not replacement.is_empty():
-				escape_route = replacement
-				escape_index = 1
-				walkers.erase(yordi.get_instance_id())
-		leader_last = yordi.global_position
+	var moving := _run_leader(next,delta,pace)
+	if moving: leader_retry = 0.0
+	else: leader_retry += delta
+	if leader_retry>=1.5:
+		var replacement: PackedVector3Array = game.monte_pedestrians.route_between(yordi.global_position,escape_goal)
+		if replacement.size()>1:
+			escape_route = replacement
+			escape_index = 1
 		leader_retry = 0.0
+	leader_last = yordi.global_position
 	_carry_pose()
 
 func _chase_tick(delta: float) -> void:
