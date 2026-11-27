@@ -184,14 +184,14 @@ func objective() -> String:
 		3: return "Habla con Yordi."
 		4: return "Sal de casa con Yordi." if game.garage.inside else "Sube a la moto de Yordi."
 		5: return "Conduce hasta Esquina de Tejas y estaciona cerca del vendedor · E: bajar."
-		6: return "Ve con Yordi a buscar el PS5."
+		6: return "Acércate al vendedor con Yordi y pulsa E para comprar el PS5."
 		7: return _robbery_objective()
 		8: return "¡Sigue a Yordi! Mantén Shift · %d m de recorrido" % roundi(_escape_remaining())
 		9: return "Sube a la moto de Yordi · E."
 		10: return "Sube a la moto de Yordi · E."
 		11: return "Conduce la moto hasta casa · estaciona y pulsa E."
-		12: return "Lleva el PS5 a casa y publícalo en Marketplace."
-		13: return "PS5 publicado · esperando comprador."
+		12: return "Abre el teléfono (P) y publica el PS5 en Marketplace." if bool(state.get("delivered",false)) else "Entra en tu casa con Yordi para dejar el PS5."
+		13: return "PS5 publicado. Espera al comprador (%d s)." % ceili(float(state.get("sale_left",SALE_DELAY)))
 	return ""
 
 func _ground(at: Vector3,sidewalk: bool = true) -> Vector3:
