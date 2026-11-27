@@ -263,7 +263,7 @@ func nearby(at: Vector3) -> Dictionary:
 	var best := 3.7*3.7
 	for taxi in taxis:
 		var body: CharacterBody3D = taxi.body
-		if taxi==passenger or not taxi.path.is_empty() or not (taxi.get("yield_path",[]) as Array).is_empty() or not (taxi.get("cooperative_path",[]) as Array).is_empty(): continue
+		if bool(taxi.get("albertico_reserved",false)) or taxi==passenger or not taxi.path.is_empty() or not (taxi.get("yield_path",[]) as Array).is_empty() or not (taxi.get("cooperative_path",[]) as Array).is_empty(): continue
 		var d := at.distance_squared_to(body.position+Vector3.UP*.8)
 		if d<best:
 			best = d

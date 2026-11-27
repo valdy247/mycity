@@ -430,6 +430,7 @@ func _refresh_preview() -> void:
 	preview.visible = not owned.has(kind)
 
 func _free_hands() -> bool:
+	if business.first_story!=null and business.first_story.carrying_table(): return false
 	if game.backpack!=null and not game.backpack.empty_hands(): return false
 	return business.ledger.carry.is_empty() and business.life.state.meal.is_empty() and (game.monte_services==null or game.monte_services.player_bag==null) and String(state.part).is_empty() and String(state.held_furniture).is_empty() and String(state.get("paint_carry","")).is_empty() and String(state.get("paint_tool","")).is_empty() and state.get("waste_hand",{}).is_empty()
 

@@ -6,6 +6,7 @@ const Person = preload("res://street_person.gd")
 const CityLife = preload("res://city_life.gd")
 const StoryCamera = preload("res://story_camera.gd")
 const Interface = preload("res://interface_style.gd")
+var first_story: Node
 var phone_destination: Callable
 var notice_panel: PanelContainer
 var notice_title: Label
@@ -176,6 +177,7 @@ func _arrow(root: Node3D,p: Vector3,color: Color) -> Node3D:
 static func crate_band(key: String) -> Color:
 	match key:
 		"pollo": return Color("#ac5348")
+		"huevos": return Color("#d4c7a3")
 		"picadillo": return Color("#63825b")
 		"perrito": return Color("#487eaa")
 		"harina": return Color("#c6aa71")
@@ -348,6 +350,9 @@ func take_aimed(at: Vector3) -> bool:
 		_notify("Primero acepta la misión de Albertico y llega a la MIPYME.")
 		return true
 	var key := String(target.get_meta("mipyme_key"))
+	if first_story!=null and first_story.active():
+		first_story.buy(key,String(target.get_meta("supplier","primary")),bool(target.get_meta("paid")))
+		return true
 	if not bool(target.get_meta("paid")):
 		var supplier := String(target.get_meta("supplier","primary"))
 		if life!=null and not life.reserve_crate(supplier,key):
@@ -777,6 +782,7 @@ func _nearest_vehicle(at: Vector3) -> Dictionary:
 	return nearest
 
 func cargo_action(at: Vector3) -> bool:
+	if first_story!=null and first_story.active(): return first_story.cargo_action()
 	if life!=null and not life.state.meal.is_empty():
 		_notify("Termina de comer antes de cargar mercancía.")
 		return true
@@ -829,6 +835,7 @@ func aimed_albertico_text(at: Vector3) -> String:
 	ray.exclude = [player.get_rid()]
 	if not get_world_3d().direct_space_state.intersect_ray(ray).is_empty(): return ""
 	if ledger.stage==0: return "[E] Hablar con Albertico"
+	if first_story!=null and first_story.active(): return first_story.companion_action()
 	if not ledger.carry.is_empty() and ledger.stage>=3: return "[E] Entregar caja a Albertico"
 	if ledger.stage==3 and ledger.total(ledger.stock)>0: return "[E] Contratar a Albertico"
 	return "[E] Hablar con Albertico"
@@ -859,6 +866,8 @@ func interact_albertico(at: Vector3) -> bool:
 	if aimed_albertico_text(at).is_empty(): return false
 	if ledger.stage==0:
 		open_story(albertico,"Albertico",["Albertico: Asere, te tengo un bisne. Te voy a dar la luz: hay una gente que vende comida.","Albertico: Tú me la traes y yo la vendo. ¿Te sirve?"],"Sí, vamos arriba",_accept,"No, ahora no")
+	elif first_story!=null and first_story.active():
+		first_story.talk()
 	elif not ledger.carry.is_empty() and ledger.stage>=3:
 		if ledger.deliver():
 			delivery_gesture = .65
@@ -872,6 +881,7 @@ func interact_albertico(at: Vector3) -> bool:
 	return true
 
 func _accept() -> void:
+	if first_story!=null and not first_story.begin(): return
 	ledger.accept()
 	close()
 	_notify("MISIÓN INICIADA · Te tengo un bisne")
@@ -884,6 +894,9 @@ func _hire() -> void:
 		_sync_visuals()
 
 func _open_shop() -> void:
+	if first_story!=null and first_story.active():
+		_notify(first_story.objective())
+		return
 	if ledger.stage<2:
 		_open("MIPYME de alimentos","Primero habla con Albertico y llega aquí en taxi.")
 		_button("Cerrar",close)
@@ -896,6 +909,7 @@ func _open_shop() -> void:
 	_button("Salir",close)
 
 func _buy(key: String) -> void:
+	if first_story!=null and first_story.active(): return
 	if ledger.buy(key,1):
 		_notify("Compraste una caja de "+_product_name(key)+". Recógela al lado.")
 		_sync_visuals()
@@ -914,6 +928,7 @@ func _open_pickup() -> void:
 	_button("Cerrar",close)
 
 func _pickup(key: String) -> void:
+	if first_story!=null and first_story.active(): return
 	if ledger.pick_up(key):
 		close()
 		_notify("Llevas una caja de "+_product_name(key)+". G para cargarla.")
@@ -1251,6 +1266,7 @@ func _meet_albertico() -> void:
 		close()
 		_sync_visuals()
 		_notify("Albertico te espera afuera de tu casa.")
+		if first_story!=null: first_story.prepare_meeting()
 
 func open_phone_gps() -> void:
 	phone_mode = true
@@ -1283,9 +1299,9 @@ func _clear_visual_children(root: Node3D) -> void:
 func _sync_visuals() -> void:
 	if arrow==null: return
 	albertico.visible = ledger.albertico_visible()
-	arrow.visible = ledger.albertico_visible() and ledger.stage in [0,3]
+	arrow.visible = ledger.albertico_visible() and (ledger.stage==0 or (ledger.stage==3 and (first_story==null or not first_story.active())))
 	factory_arrow.visible = ledger.stage in [1,2]
-	stand.visible = ledger.stage>=1
+	stand.visible = ledger.stage==4 or (first_story==null and ledger.stage>=1 and not ledger.life_data.has("albertico_story")) or (first_story!=null and not first_story.active() and not ledger.life_data.has("albertico_story") and ledger.stage>=1)
 	var tier := stall_tier(ledger.sold) if ledger.stage==4 else 0
 	for i in range(stall_growth.size()): stall_growth[i].visible = tier>=i+1
 	if is_instance_valid(stall_sign):
@@ -1353,6 +1369,7 @@ func _sync_cargo_views() -> void:
 		cargo_views[key] = _label(body,"%d cajas · G" % count,Vector3(0,2.65,0),Color("#ffe19a"))
 
 func _objective() -> String:
+	if first_story!=null and first_story.active(): return first_story.objective()
 	if albertico==null: return "Misión no disponible: falta la MIPYME o el puesto."
 	match ledger.stage:
 		0:
@@ -1375,6 +1392,7 @@ func _update_hud() -> void:
 		hud.text = "%d CUP%s\n%s\n%s | G: cargar / descargar" % [ledger.cash,carrying,_objective(),phone]
 	else:
 		hud.text = "%d CUP%s | %s" % [ledger.cash,carrying,phone]
+		if first_story!=null and first_story.active(): hud.text += "\n"+first_story.objective()
 	if carlos_objective.is_valid():
 		var job: String = carlos_objective.call()
 		if not job.is_empty(): hud.text += "\n"+job

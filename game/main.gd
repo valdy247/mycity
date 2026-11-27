@@ -11,6 +11,7 @@ const PilarEditor = preload("res://pilar_editor.gd")
 const TaxiService = preload("res://taxi_service.gd")
 const UrbanBuses = preload("res://urban_buses.gd")
 const BusinessMission = preload("res://business_mission.gd")
+const FirstStory = preload("res://albertico_story.gd")
 const HomeGarage = preload("res://home_garage.gd")
 var garage: HomeGarage
 const CarlosMission = preload("res://carlos_mission.gd")
@@ -218,6 +219,10 @@ func _ready() -> void:
 		yordi_mission.setup(self)
 		business.yordi_call = yordi_mission.open_call
 		business.yordi_objective = yordi_mission.objective
+		var first_story := FirstStory.new()
+		business.add_child(first_story)
+		business.first_story = first_story
+		first_story.setup(self)
 		city_navigation = CityNavigation.new()
 		add_child(city_navigation)
 		city_navigation.setup(self)
@@ -1116,6 +1121,7 @@ func _face_cuba_home() -> void:
 	pivot.rotation = Vector3(pitch,yaw,0)
 
 func _reset_player() -> void:
+	if business!=null and business.first_story!=null and business.first_story.reset_checkpoint(): return
 	if yordi_mission!=null and yordi_mission.checkpoint_reset(): return
 	if carlos_mission!=null: carlos_mission.reset()
 	if garage!=null: garage.reset()
@@ -1210,7 +1216,8 @@ func _update_hud() -> void:
 		status.text += "\nW/S: acelerar y retroceder | Shift: turbo | A/D: girar | Espacio: frenar\nE: salir detenido | R: reiniciar | Esc: liberar mouse"
 	else:
 		status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
-		var action := yordi_mission.action_text() if yordi_mission!=null else ""
+		var action: String = business.first_story.action_text() if business!=null and business.first_story!=null else ""
+		if action.is_empty() and yordi_mission!=null: action = yordi_mission.action_text()
 		if action.is_empty() and carlos_mission!=null: action = carlos_mission.action_text()
 		if action.is_empty() and backpack!=null: action = backpack.action_text()
 		if action.is_empty(): action = _albertico_action()
@@ -1272,7 +1279,8 @@ func _update_compact_hud() -> void:
 	elif driving:
 		lines.append("%d km/h · [Shift] Turbo · [E] Bajar detenido" % roundi(absf(drive_speed)*3.6))
 	else:
-		var action := yordi_mission.action_text() if yordi_mission!=null else ""
+		var action: String = business.first_story.action_text() if business!=null and business.first_story!=null else ""
+		if action.is_empty() and yordi_mission!=null: action = yordi_mission.action_text()
 		if action.is_empty() and carlos_mission!=null: action = carlos_mission.action_text()
 		if action.is_empty() and backpack!=null: action = backpack.action_text()
 		if action.is_empty(): action = _albertico_action()
@@ -1444,9 +1452,12 @@ func _leave_taxi(emergency: bool = false) -> bool:
 	yaw = taxi.rotation.y+PI
 	pitch = -.20
 	pivot.rotation = Vector3(pitch,yaw,0)
-	if business!=null and not emergency and not mission_ride:
+	var first_trip: bool = business!=null and business.first_story!=null and business.first_story.owns_trip()
+	var reached := taxis.arrived
+	if business!=null and not emergency and not mission_ride and not first_trip:
 		business.taxi_arrival(player.global_position)
 	taxis.finish_trip()
+	if first_trip: business.first_story.ride_ended(reached and not emergency)
 	_apply_camera_mode()
 	if mission_ride: yordi_mission.on_ride_end(emergency,interrupted)
 	exit_message = "Vuelve a subir para continuar la misión." if interrupted else "Viaje terminado."
@@ -1490,6 +1501,9 @@ func _physics_process(delta: float) -> void:
 	if city_navigation!=null and city_navigation.active:
 		player.velocity = Vector3.ZERO
 		return
+	if business!=null and business.first_story!=null and not building_mode:
+		business.first_story.tick(delta)
+	if _hold_story_input(): return
 	if carlos_mission!=null and not building_mode: carlos_mission.tick(delta)
 	if _hold_story_input(): return
 	if yordi_mission!=null and not building_mode: yordi_mission.tick(delta)
@@ -1658,6 +1672,12 @@ func _physics_process(delta: float) -> void:
 			elif not _safe_exit():
 				exit_message = "No hay espacio para salir. Mueve la van."
 				message_time = 2.0
+		elif business!=null and business.first_story!=null and business.first_story.interact():
+			player.velocity = Vector3.ZERO
+			_update_hud()
+			return
+		elif business!=null and business.first_story!=null and business.first_story.carrying_table():
+			return
 		elif yordi_mission!=null and yordi_mission.interact():
 			player.velocity = Vector3.ZERO
 			_update_hud()
@@ -1729,6 +1749,7 @@ func _physics_process(delta: float) -> void:
 	else:
 		var direction := Vector3(movement.x, 0, movement.y).normalized().rotated(Vector3.UP, yaw)
 		var speed: float = 8.0 if Input.is_physical_key_pressed(KEY_SHIFT) else 4.5
+		if business!=null and business.first_story!=null and business.first_story.carrying_table(): speed = 2.1
 		if city_world != null and city_world.family_home != null and city_world.family_home.pool_inside:
 			speed = 2.0
 		player.velocity.x = direction.x * speed

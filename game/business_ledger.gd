@@ -2,6 +2,7 @@ extends RefCounted
 # All prices are fictional gameplay values in CUP, not actual market data.
 const PRODUCTS := {
 	"pollo":{"name":"Pollo","cost":2200,"retail":300,"units":10},
+	"huevos":{"name":"Huevos","cost":1000,"retail":140,"units":10},
 	"picadillo":{"name":"Picadillo","cost":1500,"retail":210,"units":10},
 	"perrito":{"name":"Perrito (salchicha)","cost":1200,"retail":170,"units":10},
 	"harina":{"name":"Harina","cost":850,"retail":120,"units":10},
@@ -186,6 +187,7 @@ func deliver() -> bool:
 	return true
 
 func hire() -> bool:
+	if life_data.has("albertico_story"): return false
 	if stage!=3 or total(stock)<=0: return false
 	stage = 4
 	add_message("Albertico","¡Ya estamos montados! Yo vendo aquí afuera. Te aviso cuando quede poca mercancía. Mi parte es el 15% de cada venta.")

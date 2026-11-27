@@ -9,7 +9,7 @@ const MENU := {
 	"pan":{"name":"Pan con perro","price":120,"food":"pan","drink":"","fill":22,"needs":{"harina":1,"perrito":1}}
 }
 const INITIAL := {
-	"primary":{"pollo":12,"picadillo":10,"perrito":12},
+	"primary":{"pollo":12,"picadillo":10,"perrito":12,"huevos":12},
 	"mayorista_sol":{"harina":15,"queso":12,"tomate":14,"refresco":12},
 	"mayorista_union":{"aceite":12,"pollo":8,"perrito":9,"harina":8,"refresco":18,"tomate":10}
 }
@@ -191,7 +191,7 @@ func _refresh_rack(id: String,root: Node3D,primary: bool) -> void:
 		var key := String(keys[i])
 		var row := floori(float(i)/3.0)
 		var col := i%3
-		var p := Vector3(-.72+float(col)*.72,.17+float(row)*.62,0) if primary else Vector3(-1.02+float(col)*1.02,1.24+float(row)*.48,-.15)
+		var p := Vector3(-.885+float(i)*.59,.17,0) if primary else Vector3(-1.02+float(col)*1.02,1.24+float(row)*.48,-.15)
 		if int(inventory.get(key,0))>0:
 			business._selectable_crate(root,p,key,false,id)
 		var amount := int(inventory.get(key,0))

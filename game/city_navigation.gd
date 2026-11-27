@@ -112,7 +112,10 @@ func _refresh_places() -> void:
 	var world = game.cuba_world
 	var mission = game.carlos_mission
 	var first_stage: int = game.business.ledger.stage
-	if first_stage in [0,3] and game.business.ledger.albertico_visible() and is_instance_valid(game.business.albertico):
+	if game.business.first_story!=null and game.business.first_story.active():
+		var goal: Dictionary = game.business.first_story.destination()
+		if not goal.is_empty(): _add_place(String(goal.label),goal.p)
+	elif first_stage in [0,3] and game.business.ledger.albertico_visible() and is_instance_valid(game.business.albertico):
 		_add_place("MISIÓN · Albertico",game.business.albertico.global_position)
 	elif first_stage in [1,2] and not world.food_factory.is_empty():
 		_add_place("MISIÓN · Recoger mercancía",world.food_factory.counter)
