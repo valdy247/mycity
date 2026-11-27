@@ -398,7 +398,7 @@ static func reset_watchdog(state: Dictionary) -> void:
 	for key in ["watch_anchor","watch_elapsed","watch_still","watch_offroad","watch_safe","watch_retry","watch_report"]:
 		state.erase(key)
 
-static func watchdog(state: Dictionary,body: CharacterBody3D,streets: Streets,route: Array,index: int,width: float,length: float,height: float,delta: float,loop: bool = true) -> int:
+static func watchdog(state: Dictionary,body: CharacterBody3D,streets: Streets,route: Array,index: int,width: float,length: float,height: float,delta: float,loop: bool = true,stuck_after: float = 30.0) -> int:
 	if route.is_empty() or index<0 or index>=route.size(): return -1
 	state.watch_elapsed = float(state.get("watch_elapsed",0.0))+delta
 	if float(state.watch_elapsed)<.5: return -1
@@ -420,7 +420,7 @@ static func watchdog(state: Dictionary,body: CharacterBody3D,streets: Streets,ro
 		state.watch_safe = {"p":origin,"d":heading,"index":index}
 	# Briefly crossing an irregular corner is not the same as being stranded.
 	var offroad := float(state.watch_offroad)>=2.0 and (not streets.point_on_road(origin) or float(state.watch_still)>=3.0)
-	var stuck := float(state.watch_still)>=30.0
+	var stuck := float(state.watch_still)>=stuck_after
 	if not offroad and not stuck: return -1
 	var now := Time.get_ticks_msec()
 	if now<int(state.get("watch_retry",0)): return -1
@@ -454,6 +454,26 @@ static func watchdog(state: Dictionary,body: CharacterBody3D,streets: Streets,ro
 			if offset>0 and not streets.intersection_clear_for_stop(projection,length,width): continue
 			options.append({"p":candidate,"d":direction,"index":at})
 		if _mandatory_waypoint(route,at): break
+	# Long buses can get trapped on a short corner sample. As a last
+	# resort, inspect a wider stretch of their original route for a free
+	# pose on the far side, without skipping a boarding stop.
+	if length>=8.0 and stuck:
+		for offset in range(mini(65,route.size())):
+			var raw := index+offset
+			if raw>=route.size() and not loop: break
+			var at := raw%route.size()
+			var p := _route_point(route,at)
+			p.y = origin.y
+			if p.distance_to(origin)>42.0: break
+			if p.distance_to(origin)>3.0:
+				var previous := _route_point(route,posmod(at-1,route.size()))
+				var d := p-previous
+				d.y = 0.0
+				if d.length_squared()>.2:
+					d = d.normalized()
+					var candidate := p-d*.4
+					options.append({"p":candidate,"d":d,"index":at})
+			if _mandatory_waypoint(route,at): break
 	# A checkpoint is only useful if it belongs to the same pending leg.
 	var saved: Dictionary = state.get("watch_safe",{})
 	if not saved.is_empty() and int(saved.index)==index and origin.distance_to(saved.p)>1.5 and origin.distance_to(saved.p)<35.0:
