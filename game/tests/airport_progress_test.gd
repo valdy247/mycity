@@ -22,7 +22,7 @@ func _initialize() -> void:
 		if step==Progress.COMPLETE: break
 		var action := Progress.expected_action(step)
 		if step==5:
-			if not state.cart_attached or state.advance(action,at) or not state.set_cart_attached(false):
+			if not state.cart_attached or state.advance(action,at,0) or not state.set_cart_attached(false):
 				printerr("FAIL: must park before collecting luggage")
 				quit(1)
 				return
@@ -35,7 +35,8 @@ func _initialize() -> void:
 				printerr("FAIL: must take loaded cart before leaving")
 				quit(1)
 				return
-		if not state.advance(action,at) or state.stage!=step+1:
+		var bag_id := 0 if step==5 else (1 if step==7 else -1)
+		if not state.advance(action,at,bag_id) or state.stage!=step+1:
 			printerr("FAIL: arrival sequence ",step)
 			quit(1)
 			return
@@ -50,5 +51,28 @@ func _initialize() -> void:
 		printerr("FAIL: cart must remain outside taxi")
 		quit(1)
 		return
-	print("Airport migration, parked cart, bag ownership and taxi sequence: PASS")
+	for first in [0,1]:
+		var direct := Progress.new()
+		direct.stage = 4
+		if not direct.advance("direct_pickup",at,first) or direct.stage!=6 or not direct.direct_mode:
+			printerr("FAIL: direct pickup")
+			quit(1)
+			return
+		if Progress.bag_location(6,first,first,true)!="hand" or not direct.advance("cart_first",at):
+			quit(1)
+			return
+		if direct.advance("pickup_second",at,first) or not direct.advance("pickup_second",at,1-first):
+			quit(1)
+			return
+		if not direct.advance("cart_second",at) or direct.stage!=15:
+			quit(1)
+			return
+		for id in range(2):
+			if Progress.bag_location(15,id,first,true)!="trunk":
+				quit(1)
+				return
+		if not direct.advance("driver_close",at) or not direct.advance("board",at) or direct.stage!=Progress.COMPLETE:
+			quit(1)
+			return
+	print("Airport optional trolley and unordered luggage sequence: PASS")
 	quit(0)
