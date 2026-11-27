@@ -15,6 +15,7 @@ var camera: Camera3D
 var taxi: Node3D
 var lid: Node3D
 var door: Node3D
+var driver: Person
 var bags: Array[Node3D] = []
 var walkers: Array = []
 var objective: Label
@@ -233,7 +234,7 @@ func _make_people() -> void:
 		if i in [2,6]:
 			walkers.append({"node":person,"origin":person.position,"phase":float(i)})
 	# The assigned driver waits beside the front of the taxi.
-	var driver := Person.new()
+	driver = Person.new()
 	add_child(driver)
 	driver.setup(414)
 	driver.position = Vector3(10.1,.13,11.0)
@@ -346,11 +347,21 @@ func _seat_player() -> void:
 	player.velocity = Vector3.ZERO
 	player.set_physics_process(false)
 	player.hide()
+	if is_instance_valid(driver):
+		driver.reparent(taxi,false)
+		driver.position = Vector3(-.34,.32,.30)
+		driver.rotation = Vector3.ZERO
+		driver.scale = Vector3(.66,.66,.66)
+		for leg in driver.limbs: leg.rotation.x = -1.0
+		for knee in driver.knees: knee.rotation.x = 1.0
+		for arm in driver.arms: arm.rotation.x = -1.05
 	camera.reparent(taxi,false)
 	camera.position = Vector3(.36,1.31,.03)
 	camera.rotation = Vector3(0,PI,0)
 	camera.make_current()
-	door.rotation.y = 0.0
+	door.rotation.y = -.70
+	var boarding := create_tween()
+	boarding.tween_property(door,"rotation:y",0.0,.45)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	_notice("Maletas guardadas. Listo para comenzar el viaje.")
 
@@ -481,7 +492,7 @@ func _physics_process(delta: float) -> void:
 		if note_time<=0: message.text = ""
 	if menu_open: return
 	for item in walkers:
-		var person: Node3D = item.node
+		var person: Person = item.node
 		item.phase = float(item.phase)+delta*.30
 		var origin: Vector3 = item.origin
 		person.position.x = origin.x+sin(float(item.phase))*2.0
