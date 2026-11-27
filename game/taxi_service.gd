@@ -33,6 +33,8 @@ var speed_choice: OptionButton
 const SPEEDS := [12.0,18.0,22.0]
 const BRAKE := 9.0
 const ACCEL := 6.5
+const PASSENGER_BOOST := 2.0
+var boost_active := false
 var stop_requested := false
 var idle_scan := 0.0
 const SPEED_NAMES := ["Normal","Rápido","Exprés"]
@@ -565,7 +567,10 @@ func _smooth_route(raw: Array,origin: Vector3,width: float = 1.90) -> Array:
 	return result
 
 func _route_speed(body: CharacterBody3D,waypoints: Array,index: int) -> float:
-	var limit: float = SPEEDS[speed_mode]
+	var cruise: float = SPEEDS[speed_mode]
+	if _trip_dimensions(body).z<3.0: cruise = minf(cruise,11.0)
+	if boost_active: cruise = minf(cruise*PASSENGER_BOOST,36.0)
+	var limit := cruise
 	var previous: Vector3 = body.position
 	var traveled := 0.0
 	for i in range(index,waypoints.size()):
@@ -575,7 +580,7 @@ func _route_speed(body: CharacterBody3D,waypoints: Array,index: int) -> float:
 		var incoming := p-previous
 		var length := incoming.length()
 		traveled += length
-		var target_speed: float = SPEEDS[speed_mode]
+		var target_speed := cruise
 		if i==waypoints.size()-1:
 			target_speed = 0.0
 		else:
@@ -589,7 +594,7 @@ func _route_speed(body: CharacterBody3D,waypoints: Array,index: int) -> float:
 					target_speed = minf(target_speed,maxf(2.5,sqrt(6.0*radius)))
 		limit = minf(limit,sqrt(target_speed*target_speed+2.0*BRAKE*traveled))
 		previous = p
-		if traveled>40.0: break
+		if traveled>maxf(40.0,cruise*cruise/(2.0*BRAKE)+12.0): break
 	return limit
 
 # Trace the actual path rather than a long straight ray into a corner wall.
@@ -737,7 +742,8 @@ func _yield_idle_traffic(delta: float) -> void:
 			yield_to_bus({"position":body.global_position,"direction":forward},approaching)
 			break
 
-func tick(delta: float,_clock: float) -> void:
+func tick(delta: float,_clock: float,boost_requested: bool = false) -> void:
+	boost_active = boost_requested and not stop_requested and not arrived and not passenger.is_empty()
 	_yield_idle_traffic(delta)
 	_tick_yielding_taxis(delta)
 	if passenger.is_empty(): return
@@ -776,7 +782,6 @@ func tick(delta: float,_clock: float) -> void:
 	var distance := diff.length()
 	var d := diff.normalized()
 	var speed := _route_speed(body,waypoints,index)
-	if dims.z<3.0: speed = minf(speed,11.0)
 	if bool(waypoints[index].get("bypass",false)): speed = minf(speed,4.0)
 	passenger.signal_wait = 0.0
 	var reach := minf(maxf(5.0,float(passenger.speed)*float(passenger.speed)/(2.0*BRAKE)+3.0),distance+.7)
@@ -819,7 +824,7 @@ func tick(delta: float,_clock: float) -> void:
 		passenger.speed = 0.0
 		return
 	if stalled<.1 and not blocked: passenger.backed_up = 0.0
-	passenger.speed = move_toward(float(passenger.speed),speed,delta*(BRAKE if speed<float(passenger.speed) else ACCEL))
+	passenger.speed = move_toward(float(passenger.speed),speed,delta*(BRAKE if speed<float(passenger.speed) else ACCEL*(1.7 if boost_active else 1.0)))
 	var angle := lerp_angle(body.rotation.y,atan2(d.x,d.z),1.0-exp(-delta*8.0))
 	var advance := TrafficBypass.junction_advance(minf(float(passenger.speed)*delta,distance),junction_limit)
 	if blocked: advance = minf(advance,maxf(0.0,free-.7))
@@ -890,9 +895,10 @@ func finish_trip() -> void:
 	passenger = {}
 	arrived = false
 	stop_requested = false
+	boost_active = false
 
 func cycle_speed() -> void:
 	speed_mode = (speed_mode+1)%SPEEDS.size()
 
 func speed_description() -> String:
-	return "%s | %d km/h" % [SPEED_NAMES[speed_mode],roundi(float(passenger.get("speed",0.0))*3.6)]
+	return "%s | %d km/h" % ["Turbo" if boost_active else SPEED_NAMES[speed_mode],roundi(float(passenger.get("speed",0.0))*3.6)]
