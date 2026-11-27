@@ -767,7 +767,7 @@ func _physics_process(delta: float) -> void:
 					lid_tween = create_tween()
 					lid_tween.tween_property(lid,"rotation:x",0.0,.55)
 					_notice("El chofer cerró el maletero.")
-						driver.arms[1].rotation.x = 0.0
+					driver.arms[1].rotation.x = 0.0
 	if progress.stage==Progress.COMPLETE: return
 	if marker.visible: marker.global_position = _target()
 	var near := _near(_target(),1.60)
