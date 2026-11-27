@@ -40,6 +40,10 @@ var slow_clock := 0.0
 var arrival_wait := 0.0
 var trip_elapsed := 0.0
 var rendezvous_clock := 0.0
+var visit_elapsed := 0.0
+var visit_retry := 0.0
+var visit_notice := false
+var visit_foot_elapsed := 0.0
 var key_line := false
 var restore_pending := false
 var location_reported := false
@@ -213,6 +217,13 @@ func _walk(actor: Person,target: Vector3,delta: float,speed: float,stop_range: f
 				break
 			if not found: destination = actor.global_position
 		if world.pedestrian_segment_clear(actor.global_position,destination): path.append(destination)
+		elif game.garage.inside and actor.global_position.y>50.0 and destination.y>50.0:
+			# The city sidewalk graph cannot route inside the separate house.
+			for offset in [Vector3(-1.2,0,0),Vector3(1.2,0,0),Vector3(-1.2,0,-2.1),Vector3(-1.2,0,2.1),Vector3(-1.7,0,-2.8)]:
+				var via := Garage.ROOM+offset
+				if world.pedestrian_segment_clear(actor.global_position,via) and world.pedestrian_segment_clear(via,destination):
+					path = PackedVector3Array([via,destination])
+					break
 		else: path = game.monte_pedestrians.route_between(actor.global_position,destination)
 		memory.path = path
 		memory.index = 0
@@ -248,7 +259,9 @@ func _road_berth(near: Vector3,min_distance: float,max_distance: float,width: fl
 			var b: Vector3 = world.geography.points[last]
 			var d := (b-a).normalized()
 			if a.distance_to(b)<12.0: continue
-			for fraction in [.35,.6,.78]:
+			# Include the actual projection near the requested address, not just fixed block fractions.
+			var projected := clampf((near-a).dot(b-a)/a.distance_squared_to(b),.08,.92)
+			for fraction in [projected,.35,.6,.78]:
 				var p: Vector3 = a.lerp(b,float(fraction))+world.geography.lane_offset(a,b,width,true)
 				p = world.street_geometry.safe_stop_on_edge(a,b,p,length,width)
 				p.y = .065
@@ -477,6 +490,9 @@ func _confirm_seller() -> void:
 
 func _accept_visit() -> void:
 	business.close()
+	visit_elapsed = 0.0
+	visit_retry = 0.0
+	visit_notice = false
 	_set_stage(2)
 	_target(_home(),"Mi casa · visita de Yordi")
 
@@ -814,6 +830,57 @@ func _deliver_home() -> void:
 	_save()
 	business._notify("Yordi: Déjalo aquí. Publícalo en Marketplace y te doy los mil pesos cuando se venda.")
 
+# If the autonomous approach cannot finish, complete only the off-screen
+# leg of the visit at a verified free parking berth near the real home.
+# Never reposition a ridden motorcycle or an unrelated taxi.
+func _recover_visit() -> bool:
+	if _stage()!=2 or not game.garage.inside or game.taxi_riding: return false
+	if not service.passenger.is_empty() and (not is_instance_valid(bike) or service.passenger.body!=bike): return false
+	var home := _home()
+	if not home.is_finite(): return false
+	var door_point := _home_door_point()
+	if not door_point.is_finite(): return false
+	var berth := _road_berth(home,3.0,24.0,.85,2.1,1.8)
+	if berth.is_empty(): berth = _road_berth(home,3.0,45.0,.85,2.1,1.8)
+	if berth.is_empty():
+		if not visit_notice:
+			visit_notice = true
+			business._notify("Yordi: Estoy cerca, buscando dónde parquear.")
+		return false
+	if not service.passenger.is_empty(): service.finish_trip()
+	trip_role = ""
+	trip_body = null
+	_remove_riders()
+	if not is_instance_valid(bike): _spawn_bike(berth)
+	else:
+		var d: Vector3 = berth.d
+		bike.global_transform = Transform3D(Basis(Vector3.UP,atan2(d.x,d.z)),berth.p)
+		bike.velocity = Vector3.ZERO
+		bike.remove_from_group("autonomous_traffic")
+		bike.add_to_group("traffic_parked")
+		bike.set_meta("traffic_servicing",false)
+		state.bike_berth = {"p":_encode(berth.p),"d":_encode(d),"next":String(berth.next)}
+	# The player is inside; this is an off-screen arrival, not a visible teleport.
+	_ensure_yordi(door_point)
+	pickup_point = door_point
+	visit_foot_elapsed = 0.0
+	rendezvous_clock = 0.0
+	_set_stage(3)
+	_target(home,"Yordi está llegando a casa")
+	business._notify("Yordi: Ya parqueé la moto. Estoy en la puerta.")
+	print("Misión Yordi: llegada alternativa en estacionamiento libre.")
+	return true
+
+func _home_door_point() -> Vector3:
+	var home := _home()
+	if not home.is_finite(): return Vector3.INF
+	var basis: Basis = world.garage_home_site.basis
+	for distance in [.9,1.5,2.1]:
+		for lateral in [0.0,.7,-.7,1.4,-1.4]:
+			var p := _ground(home+basis.z*float(distance)+basis.x*float(lateral))
+			if p.is_finite() and world.pedestrian_space_clear(yordi,p,.65,false): return p
+	return _near_ground(home,yordi,5.0)
+
 func _arrival_tick(delta: float) -> void:
 	if not is_instance_valid(trip_body): return
 	trip_elapsed += delta
@@ -849,6 +916,7 @@ func _arrival_tick(delta: float) -> void:
 		rendezvous_clock = 0.0
 		_remove_riders()
 		_ensure_yordi(p)
+		visit_foot_elapsed = 0.0
 		_set_stage(3)
 		_target(_home(),"Yordi está llegando a casa")
 	elif role=="taxi_pickup":
@@ -885,6 +953,12 @@ func tick(delta: float) -> void:
 			retry_clock = 2.0
 			_restore_checkpoint()
 		return
+	if stage==2 and game.garage.inside and not _busy():
+		visit_elapsed += delta
+		visit_retry -= delta
+		if visit_elapsed>=35.0 and visit_retry<=0.0:
+			visit_retry = 4.0
+			if _recover_visit(): return
 	if not trip_role.is_empty() and not game.taxi_riding:
 		_arrival_tick(delta)
 		return
@@ -904,6 +978,9 @@ func tick(delta: float) -> void:
 				if berth.is_empty(): return
 				_spawn_bike(berth)
 			if _start_trip(bike,home,"Casa de mi hermano","visit",false): _driver()
+			else:
+				# A failed plan must not leave the same parked bike retrying forever.
+				_discard_bike()
 		3:
 			if not is_instance_valid(yordi): return
 			var home := _home()
@@ -912,10 +989,15 @@ func tick(delta: float) -> void:
 					rendezvous_clock -= delta
 					if rendezvous_clock<=0.0:
 						rendezvous_clock = 1.0
-						var door_point := _near_ground(home,yordi,3.5)
+						var door_point := _home_door_point()
 						if door_point.is_finite(): pickup_point = door_point
-					if not pickup_point.is_finite() or not _walk(yordi,pickup_point,delta,2.4,1.2): return
-					_ensure_yordi(Garage.ROOM+Vector3(-1.6,0,4.1))
+					visit_foot_elapsed += delta
+					if not pickup_point.is_finite(): return
+					if not _walk(yordi,pickup_point,delta,2.4,1.2) and visit_foot_elapsed<15.0: return
+					var entry := Garage.ROOM+Vector3(-1.6,0,4.1)
+					if not world.pedestrian_segment_clear(entry,entry) or not world.pedestrian_space_clear(yordi,entry,.7,false): return
+					_ensure_yordi(entry)
+					business._notify("Yordi: ¡Mano, ya llegué!")
 				if _walk(yordi,player_at,delta,2.0,2.1): _visit_scene()
 			elif _walk(yordi,player_at,delta,2.5,2.1): _visit_scene()
 		4:
