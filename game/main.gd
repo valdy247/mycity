@@ -103,6 +103,27 @@ const VAN_LAYER = 4
 var exit_message := ""
 var message_time := 0.0
 
+func _web_map_error() -> void:
+	# A missing map must never masquerade as a successful Havana demo.
+	set_process(false)
+	set_physics_process(false)
+	set_process_input(false)
+	set_process_unhandled_input(false)
+	var layer := CanvasLayer.new()
+	add_child(layer)
+	var bg := ColorRect.new()
+	bg.color = Color("#14232c")
+	layer.add_child(bg)
+	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var label := Label.new()
+	label.text = "MYCITY · LA HABANA\n\nNo se pudo cargar el mapa de Pilar-Atarés.\nLa exportación necesita pilar_atares_v2.osm.\nVuelve a exportar con MyCity Map Export activado."
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label.add_theme_font_size_override("font_size",24)
+	bg.add_child(label)
+	label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
 func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
 	if args.has("--low-graphics"): graphics_quality = 0
@@ -111,7 +132,7 @@ func _ready() -> void:
 	low_graphics = graphics_quality==0
 	_setup_visual_environment()
 	native_city = not args.has("--legacy-city")
-	if native_city and not args.has("--classic-city") and (FileAccess.file_exists("res://pilar_atares_v2.osm") or FileAccess.file_exists("res://pilar_atares.osm")):
+	if native_city and not args.has("--classic-city") and (OS.has_feature("web") or FileAccess.file_exists("res://pilar_atares_v2.osm") or FileAccess.file_exists("res://pilar_atares.osm")):
 		var candidate := CubaWorld.new()
 		var map_started := Time.get_ticks_msec()
 		if candidate.load_map():
@@ -119,7 +140,10 @@ func _ready() -> void:
 			cuba_world = candidate
 		else:
 			candidate.free()
-			push_warning("Mapa OSM invalido; se conserva Ciudad 2.0.")
+			push_warning("Mapa OSM no disponible o inválido.")
+	if OS.has_feature("web") and cuba_world==null:
+		_web_map_error()
+		return
 	builder = CityBuilder.new()
 	builder.native_city = native_city
 	if native_city:

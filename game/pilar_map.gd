@@ -2,6 +2,7 @@ extends RefCounted
 # OSM topology stays separate from fictional game buildings and characters.
 const PATH := "res://pilar_atares_v2.osm"
 const OLD_PATH := "res://pilar_atares.osm"
+const WEB_PATH := "res://web_map/pilar_atares_v2.osm"
 const LAT := 23.12115
 const LON := -82.3664
 const LIMIT := 1250.0
@@ -177,10 +178,19 @@ func _register_park(id: String,ids: Array,t: Dictionary) -> void:
 
 func load_map() -> bool:
 	var parser := XMLParser.new()
-	if not FileAccess.file_exists(PATH):
+	source_path = PATH
+	if OS.has_feature("web") and FileAccess.file_exists(WEB_PATH):
+		source_path = WEB_PATH
+	elif not FileAccess.file_exists(PATH):
+		if OS.has_feature("web"):
+			push_error("MyCity Web: falta el mapa actualizado pilar_atares_v2.osm.")
+			return false
 		source_path = OLD_PATH
-	if parser.open(source_path) != OK:
+	var open_error := parser.open(source_path)
+	if open_error != OK:
+		push_error("MyCity: no se pudo abrir "+source_path+" (error "+str(open_error)+")")
 		return false
+	print("MyCity mapa: ",source_path)
 	var refs: Array = []
 	var tags: Dictionary = {}
 	var active := ""

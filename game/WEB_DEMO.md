@@ -11,3 +11,7 @@ El mapa de OpenStreetMap está excluido de Git y reside localmente. No desplegar
 7. Conservar la atribución de OpenStreetMap y respetar ODbL para los datos de mapa distribuidos.
 
 No se cambian escenas, misiones, resolución ni renderer. Este perfil todavía necesita una exportación y prueba local. No publicar si la carga de la ciudad falla.
+
+## Corrección: la demo abre Ciudad 2.0
+
+Cerrar Godot antes de actualizar y reabrir el proyecto. Comprobar en Project Settings > Plugins que MyCity Map Export está activo. El plugin copia explícitamente el mapa local actualizado al PCK al exportar Web; la consola de exportación imprime MYCITY WEB MAP y el tamaño del archivo. El filtro *.osm se conserva como respaldo. Si falta el mapa actualizado o no se puede leer, el juego web muestra un error en vez de abrir Ciudad 2.0. Exportar nuevamente y probar antes de sustituir el despliegue. No se deben publicar archivos user:// ni partidas guardadas.
