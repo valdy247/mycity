@@ -21,7 +21,14 @@ var paint_clock := 0.0
 var paint_save_clock := 0.0
 var home_paint_dirty := false
 var paint_previous_first := true
-const CAN_CAPACITY := 100
+const CAN_CAPACITY := 300
+const WASTE_CAPACITY := 10
+const TRASH_POS := Vector3(4.9,0,5.20)
+var empty_cans: Dictionary = {}
+var waste_root: Node3D
+var waste_bag: Node3D
+var waste_overflow: Node3D
+var waste_mesh := SphereMesh.new()
 const BRUSH_LOAD := 10
 const FLOOR_COLS := 56
 const FLOOR_ROWS := 48
@@ -96,6 +103,14 @@ func setup(controller) -> void:
 		state.paint_charge = 0
 		state.house_tools_version = 1
 	state.paint_tool = ""
+	if int(state.get("paint_capacity_version",0))<1:
+		for color in state.paint_stock:
+			state.paint_stock[color] = maxi(0,int(state.paint_stock[color]))*3
+		state.paint_capacity_version = 1
+	for key in {"empty_paint":{},"waste_items":[],"waste_overflow":[],"waste_hand":{}}:
+		if not state.has(key):
+			var defaults := {"empty_paint":{},"waste_items":[],"waste_overflow":[],"waste_hand":{}}
+			state[key] = defaults[key]
 	if not state.has("paper_color"): state.paper_color = ""
 	if not state.has("floor_marks"): state.floor_marks = {}
 	if not state.has("paper_marks"): state.paper_marks = []
@@ -333,6 +348,7 @@ func _build_interior() -> void:
 	interior.add_child(paint_station)
 	paint_station.position = Vector3.ZERO
 	_build_house_tools()
+	_build_waste()
 	_refresh_paint_station()
 	for id in FURNITURE: _refresh_furniture(String(id))
 	_refresh_preview()
@@ -365,6 +381,8 @@ func _refresh_carried() -> void:
 	var id := String(state.held_furniture)
 	if FURNITURE.has(id):
 		business._box(carried_view,Vector3.ZERO,Vector3(.50,.36,.44),FURNITURE[id].color)
+	elif not state.get("waste_hand",{}).is_empty():
+		_make_waste_item(carried_view,state.waste_hand)
 	elif not String(state.paint_carry).is_empty():
 		_make_paint_can(carried_view,String(state.paint_carry))
 	elif not String(state.part).is_empty():
@@ -403,7 +421,7 @@ func _refresh_preview() -> void:
 
 func _free_hands() -> bool:
 	if game.backpack!=null and not game.backpack.empty_hands(): return false
-	return business.ledger.carry.is_empty() and business.life.state.meal.is_empty() and (game.monte_services==null or game.monte_services.player_bag==null) and String(state.part).is_empty() and String(state.held_furniture).is_empty() and String(state.get("paint_carry","")).is_empty() and String(state.get("paint_tool","")).is_empty()
+	return business.ledger.carry.is_empty() and business.life.state.meal.is_empty() and (game.monte_services==null or game.monte_services.player_bag==null) and String(state.part).is_empty() and String(state.held_furniture).is_empty() and String(state.get("paint_carry","")).is_empty() and String(state.get("paint_tool","")).is_empty() and state.get("waste_hand",{}).is_empty()
 
 func _home_menu() -> void:
 	business._open("Comprar vivienda","Casa con sala, dormitorio y garaje independiente.\nPrecio: %d CUP" % HOUSE_COST)
@@ -515,10 +533,7 @@ func _vendor_at(at: Vector3) -> Dictionary:
 
 func _nearest_bin(at: Vector3) -> Dictionary:
 	if game.monte_services==null: return {}
-	for site in game.monte_services.sites:
-		var p: Vector3 = site.curb
-		if at.distance_to(p)<3.0: return site
-	return {}
+	return game.monte_services.nearest_disposal_site(at)
 
 func _aimed_home(at: Vector3) -> bool:
 	if world.garage_home_site.is_empty(): return false
@@ -549,12 +564,17 @@ func action_text(at: Vector3) -> String:
 	if riding: return "[E] Bajar detenido"
 	if inside:
 		if at.distance_to(ROOM+Vector3(-.7,.86,5.25))<1.55: return "[E] Salir de casa"
+		var waste_action := _waste_action(at)
+		if not waste_action.is_empty(): return waste_action
 		var tool_action := _house_tool_action(at)
 		if not tool_action.is_empty(): return tool_action
 		if _aimed_project(at): return "[E] Mejorar / ensamblar "+String(Kit.KITS.get(String(state.project),{}).get("name","vehículo"))
 		if not String(state.held_furniture).is_empty(): return "[E] Colocar mueble · llévalo afuera para desechar"
 		var id := _aimed_furniture()
 		return "[E] Mover "+String(FURNITURE[id].name) if not id.is_empty() else ""
+	if not state.get("waste_hand",{}).is_empty():
+		if not _nearest_bin(at).is_empty(): return "[E] Tirar basura"
+		if not _aimed_home(at): return "Lleva la basura a un basurero de la calle"
 	if not String(state.held_furniture).is_empty() and not _nearest_bin(at).is_empty(): return "[E] Desechar mueble"
 	if _aimed_home(at): return "[E] Entrar a mi casa"
 	if not _vendor_at(at).is_empty(): return "[E] Comprar repuestos"
@@ -572,6 +592,7 @@ func interact(at: Vector3) -> bool:
 		if at.distance_to(ROOM+Vector3(-.7,.86,5.25))<1.55:
 			_exit()
 		elif not business.life.state.meal.is_empty(): return false
+		elif _waste_interact(at): pass
 		elif _house_tool_interact(at): pass
 		elif _aimed_project(at):
 			if _unlocked(String(state.project)):
@@ -586,6 +607,17 @@ func interact(at: Vector3) -> bool:
 				_refresh_furniture(id)
 				_refresh_carried()
 				_save()
+		return true
+	if not state.get("waste_hand",{}).is_empty():
+		var disposal := _nearest_bin(at)
+		if not disposal.is_empty():
+			if game.monte_services.add_household_waste(disposal,state.waste_hand):
+				state.waste_hand = {}
+				_refresh_carried()
+				_save()
+				business._notify("Basura depositada.")
+			return true
+		if _aimed_home(at): _enter()
 		return true
 	if not String(state.held_furniture).is_empty():
 		var bin := _nearest_bin(at)
@@ -1410,6 +1442,173 @@ func _refresh_paint_station() -> void:
 		var fill_node := can.get_node("PaintLevel") as Node3D
 		fill_node.position.y = -.145+.28*level
 		slot += 1
+	_refresh_empty_cans()
+
+func _make_empty_can(root: Node3D,color: String) -> void:
+	var shell := CylinderMesh.new()
+	shell.top_radius = .19
+	shell.bottom_radius = .17
+	shell.height = .34
+	shell.radial_segments = 12
+	shell.cap_top = false
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color("#737c80")
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var mesh := MeshInstance3D.new()
+	mesh.mesh = shell
+	mesh.material_override = mat
+	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	root.add_child(mesh)
+	business._box(root,Vector3(-.17,0,0),Vector3(.025,.14,.16),Color(PAINT_COLORS.get(color,"#a3abb3")))
+
+func _refresh_empty_cans() -> void:
+	if not is_instance_valid(paint_station): return
+	var slot := 0
+	for key in PAINT_COLORS:
+		var color := String(key)
+		var count := int(state.get("empty_paint",{}).get(color,0))
+		var group: Node3D = empty_cans.get(color)
+		if not is_instance_valid(group):
+			group = Node3D.new()
+			paint_station.add_child(group)
+			group.position = Vector3(5.68,.18,1.85+float(slot)*.49)
+			empty_cans[color] = group
+		var shown := mini(count,3)
+		while group.get_child_count()>shown:
+			var old := group.get_child(group.get_child_count()-1)
+			group.remove_child(old)
+			old.queue_free()
+		while group.get_child_count()<shown:
+			var can := Node3D.new()
+			group.add_child(can)
+			can.position.y = float(group.get_child_count()-1)*.22
+			_make_empty_can(can,color)
+		group.visible = count>0
+		slot += 1
+
+func _aim_empty_can() -> String:
+	for color in empty_cans:
+		var group: Node3D = empty_cans[color]
+		if not group.visible: continue
+		for child in group.get_children():
+			if _aim_tool(child,Vector3.ZERO,Vector3(.24,.20,.24)): return String(color)
+	return ""
+
+static func waste_volume(items: Array) -> int:
+	var total := 0
+	for item in items: total += int(item.get("volume",1))
+	return total
+
+# Shared entry point for future cooking, food packaging and other chores.
+# A full bag never consumes the new item: it becomes recoverable floor waste.
+func add_house_waste(kind: String,volume: int = 1,color: String = "") -> bool:
+	var item := {"kind":kind,"volume":maxi(1,volume),"color":color}
+	var fits := waste_volume(state.waste_items)+int(item.volume)<=WASTE_CAPACITY
+	if fits: state.waste_items.append(item)
+	else: state.waste_overflow.append(item)
+	_refresh_waste()
+	_save()
+	if not fits: business._notify("La bolsa está llena. La basura cayó al suelo.")
+	return fits
+
+func _build_waste() -> void:
+	waste_mesh.radius = .5
+	waste_mesh.height = 1.0
+	waste_mesh.radial_segments = 8
+	waste_mesh.rings = 4
+	waste_root = Node3D.new()
+	interior.add_child(waste_root)
+	waste_root.position = TRASH_POS
+	waste_bag = Node3D.new()
+	waste_root.add_child(waste_bag)
+	waste_overflow = Node3D.new()
+	waste_root.add_child(waste_overflow)
+	_refresh_waste()
+
+func _make_waste_item(root: Node3D,item: Dictionary) -> void:
+	if String(item.get("kind",""))=="paint_can":
+		_make_empty_can(root,String(item.get("color","")))
+		return
+	var mesh := MeshInstance3D.new()
+	mesh.mesh = waste_mesh
+	mesh.material_override = business._mat(Color("#343b35") if String(item.get("kind",""))=="bag" else Color("#9e8a63"))
+	mesh.scale = Vector3(.43,.48,.39) if String(item.get("kind",""))=="bag" else Vector3(.17,.12,.18)
+	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	root.add_child(mesh)
+
+func _clear_waste_visual(root: Node3D) -> void:
+	for child in root.get_children():
+		root.remove_child(child)
+		child.queue_free()
+
+func _refresh_waste() -> void:
+	if not is_instance_valid(waste_bag): return
+	_clear_waste_visual(waste_bag)
+	_clear_waste_visual(waste_overflow)
+	var fraction := clampf(float(waste_volume(state.waste_items))/WASTE_CAPACITY,0.0,1.0)
+	var mesh := MeshInstance3D.new()
+	mesh.mesh = waste_mesh
+	mesh.material_override = business._mat(Color("#343b35"))
+	mesh.scale = Vector3(.27+.24*fraction,.22+.43*fraction,.25+.22*fraction)
+	mesh.position.y = mesh.scale.y*.5
+	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	waste_bag.add_child(mesh)
+	business._box(waste_bag,Vector3(0,mesh.scale.y,.0),Vector3(.10,.08,.11),Color("#292e28"))
+	for i in range(mini(state.waste_overflow.size(),12)):
+		var prop := Node3D.new()
+		waste_overflow.add_child(prop)
+		prop.position = Vector3(-.50-float(i%4)*.42,.18,.18-float(i/4)*.32)
+		_make_waste_item(prop,state.waste_overflow[i])
+
+func _waste_action(at: Vector3) -> String:
+	if not is_instance_valid(waste_bag): return ""
+	var near_bag := at.distance_to(ROOM+TRASH_POS)<2.0
+	var hand: Dictionary = state.get("waste_hand",{})
+	if not hand.is_empty():
+		if near_bag and _aim_tool(waste_bag,Vector3(0,.28,0),Vector3(.4,.4,.4)):
+			return "[E] Echar basura en la bolsa" if String(hand.kind)!="bag" else "[E] Devolver bolsa"
+		return "Lleva la basura al basurero" if String(hand.kind)=="bag" else "Lleva el envase vacío a la bolsa o al basurero"
+	if not _free_hands(): return ""
+	if not _aim_empty_can().is_empty(): return "[E] Recoger lata vacía"
+	if near_bag and _aim_tool(waste_bag,Vector3(0,.28,0),Vector3(.4,.4,.4)):
+		return "[E] Sacar bolsa · %d%% llena" % roundi(100.0*waste_volume(state.waste_items)/WASTE_CAPACITY) if not state.waste_items.is_empty() else "Bolsa vacía"
+	for prop in waste_overflow.get_children():
+		if _aim_tool(prop,Vector3.ZERO,Vector3(.23,.22,.23)): return "[E] Recoger basura del suelo"
+	return ""
+
+func _waste_interact(at: Vector3) -> bool:
+	var action := _waste_action(at)
+	if action.is_empty(): return false
+	if action.contains("Recoger lata"):
+		var color := _aim_empty_can()
+		if color.is_empty(): return true
+		state.empty_paint[color] = maxi(0,int(state.empty_paint[color])-1)
+		state.waste_hand = {"kind":"paint_can","volume":3,"color":color}
+		_refresh_empty_cans()
+	elif action.contains("Sacar bolsa"):
+		state.waste_hand = {"kind":"bag","volume":waste_volume(state.waste_items),"items":state.waste_items.duplicate(true)}
+		state.waste_items = []
+	elif action.contains("Devolver bolsa"):
+		if not state.waste_items.is_empty():
+			business._notify("Ya hay otra bolsa con basura. Lleva esta al basurero.")
+			return true
+		state.waste_items = state.waste_hand.get("items",[]).duplicate(true)
+		state.waste_hand = {}
+	elif action.contains("Echar basura"):
+		var item: Dictionary = state.waste_hand.duplicate(true)
+		state.waste_hand = {}
+		add_house_waste(String(item.kind),int(item.volume),String(item.get("color","")))
+	elif action.contains("Recoger basura del suelo"):
+		var index := 0
+		for prop in waste_overflow.get_children():
+			if _aim_tool(prop,Vector3.ZERO,Vector3(.23,.22,.23)):
+				state.waste_hand = state.waste_overflow.pop_at(index)
+				break
+			index += 1
+	_refresh_waste()
+	_refresh_carried()
+	_save()
+	return true
 
 func _aim_tool(node: Node3D,center: Vector3,extent: Vector3) -> bool:
 	if not is_instance_valid(node): return false
@@ -1493,7 +1692,13 @@ func _dip_home_brush(color: String) -> void:
 	var existing := int(state.paint_charge) if String(state.paint_active)==color else 0
 	var amount := mini(BRUSH_LOAD-existing,int(state.paint_stock.get(color,0)))
 	if amount<=0: return
-	state.paint_stock[color] = int(state.paint_stock[color])-amount
+	var before := int(state.paint_stock[color])
+	var remaining := before-amount
+	state.paint_stock[color] = remaining
+	var emptied := ceili(float(before)/CAN_CAPACITY)-ceili(float(remaining)/CAN_CAPACITY)
+	if emptied>0:
+		if not state.has("empty_paint"): state.empty_paint = {}
+		state.empty_paint[color] = int(state.empty_paint.get(color,0))+emptied
 	state.paint_active = color
 	state.paint_charge = existing+amount
 	_refresh_paint_station()
