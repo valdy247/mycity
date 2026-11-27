@@ -383,12 +383,7 @@ func interact() -> bool:
 		if not game.garage._free_hands():
 			business._notify("Deja primero lo que llevas en las manos.")
 			return true
-		state.stage = 3
-		follow_clock = 0.0
-		follow_stall = 0.0
-		business._notify("Carlos: Vamos, es aquí cerca. Te sigo.")
-		_target(customer,"Casa del cliente")
-		_save()
+		business.open_story(carlos,"Carlos",["Carlos: Vamos, es aquí cerca. Te sigo."],"Vamos",_meet_carlos,"Ahora no")
 		return true
 	if action.contains("Entrar a casa del cliente"):
 		if not game.garage._free_hands():
@@ -400,6 +395,16 @@ func interact() -> bool:
 		_enter()
 		return true
 	return false
+
+func _meet_carlos() -> void:
+	if _stage()!=2 or not game.garage._free_hands(): return
+	business.close()
+	state.stage = 3
+	follow_clock = 0.0
+	follow_stall = 0.0
+	business._notify("Carlos: Vamos, es aquí cerca. Te sigo.")
+	_target(customer,"Casa del cliente")
+	_save()
 
 func _solid(p: Vector3,size: Vector3,color: Color,layer: int = 1) -> StaticBody3D:
 	return game.garage._solid(room,p,size,color,layer)
@@ -728,8 +733,7 @@ func _refresh_client() -> void:
 
 func _payment() -> void:
 	if _stage()!=4 or not _finished(): return
-	business._open("Cliente","Asere, me robaron el dinero al salir del cajero. No tengo efectivo. Tengo una goma de bicicleta en buen estado. ¿Te sirve como pago?")
-	business._button("Aceptar la goma",_accept_wheel)
+	business.open_story(client,"Cliente",["Cliente: Asere, me robaron el dinero al salir del cajero. No tengo efectivo.","Cliente: Tengo una goma de bicicleta en buen estado. ¿Te sirve como pago?"],"Aceptar la goma",_accept_wheel,"Ahora no")
 
 func _accept_wheel() -> void:
 	if _stage()!=4 or not _finished(): return

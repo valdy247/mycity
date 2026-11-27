@@ -24,7 +24,6 @@ var paused_role := ""
 var restart_requested := false
 var console_box: Node3D
 var marker: Node3D
-var cut_camera: Camera3D
 var foes: Array[Person] = []
 var walkers: Dictionary = {}
 var trip_body: CharacterBody3D
@@ -722,31 +721,12 @@ func _accept_visit() -> void:
 
 func _show_cinema(kind: String,actor: Node3D,words: String,button_text: String,callback: Callable) -> void:
 	cinematic = kind
-	if not is_instance_valid(cut_camera):
-		cut_camera = Camera3D.new()
-		add_child(cut_camera)
-	var player_point: Vector3 = game.player.global_position
-	var point := (actor.global_position+Vector3.UP*1.25+player_point)*.5
-	var direction := actor.global_position-player_point
-	direction.y = 0.0
-	if direction.length_squared()<.1: direction = Vector3.FORWARD
-	var side := Vector3(-direction.z,0,direction.x).normalized()
-	var candidate := point+side*2.6+Vector3.UP*.75
-	var ray := PhysicsRayQueryParameters3D.create(point,candidate,1|2|4|8)
-	ray.exclude = [game.player.get_rid()]
-	var hit := get_world_3d().direct_space_state.intersect_ray(ray)
-	if not hit.is_empty(): candidate = point.lerp(hit.position,.72)
-	cut_camera.global_position = candidate
-	if candidate.distance_to(point)>.25: cut_camera.look_at(point)
-	cut_camera.current = true
-	business.phone_mode = false
-	business._open("Yordi" if kind=="visit" else "Esquina de Tejas",words)
-	business._button(button_text,callback)
-	business._button("Omitir escena",callback)
+	var lines: Array = []
+	for line in words.split("\n",false): lines.append(line)
+	business.open_story(actor,"Yordi" if kind=="visit" else "Esquina de Tejas",lines,button_text,callback)
 
 func _end_cinema() -> void:
 	cinematic = ""
-	game.play_camera.current = true
 	business.close()
 
 func _visit_scene() -> void:
@@ -892,8 +872,7 @@ func interact() -> bool:
 			if not is_instance_valid(yordi) or yordi.global_position.distance_to(seller.global_position)>5.0:
 				business._notify("Espera a Yordi para pagar.")
 				return true
-			business._open("Vendedor","Aquí está el PS5. Yordi paga el precio acordado con su propio dinero.")
-			business._button("Recibir el PS5",_purchase)
+			business.open_story(seller,"Esquina de Tejas",["Vendedor: Aquí está el PS5. Yordi paga el precio acordado con su propio dinero."],"Recibir el PS5",_purchase,"Ahora no")
 		7: _start_robbery()
 		9,10:
 			if not game.garage._free_hands():
@@ -1543,7 +1522,7 @@ func can_list() -> bool:
 
 func open_listing() -> void:
 	if not can_list(): return
-	business._open("Facebook Marketplace · PS5","Publica el PS5 de Yordi. Él pagó la compra y el taxi. Tu pago acordado es de 1,000 CUP al concretarse la venta.")
+	business._open("Facebook Marketplace · PS5","Publica el PS5 de Yordi. Él pagó la compra. Tu pago acordado es de 1,000 CUP al concretarse la venta.")
 	business._button("Publicar PS5",_publish)
 	business._button("Volver",game.garage.open_phone_market)
 
@@ -1698,8 +1677,10 @@ func tick(delta: float) -> void:
 	if bool(state.get("resume_required",false)): return
 	if cinematic!="" and not business.modal_open():
 		cinematic = ""
-		game.play_camera.current = true
 		if _stage()==7: _clear_foes()
+		# Closing the visit without accepting leaves the original stage intact.
+		# Give the player time to move away before another automatic greeting.
+		retry_clock = maxf(retry_clock,3.0)
 	if business.modal_open() or game.building_mode or (game.city_navigation!=null and game.city_navigation.active): return
 	var stage := _stage()
 	if stage==0:
@@ -1775,8 +1756,8 @@ func tick(delta: float) -> void:
 					if not world.pedestrian_segment_clear(entry,entry) or not world.pedestrian_space_clear(yordi,entry,.7,false): return
 					_ensure_yordi(entry)
 					business._notify("Yordi: ¡Mano, ya llegué!")
-				if _walk(yordi,player_at,delta,2.0,2.1): _visit_scene()
-			elif _walk(yordi,player_at,delta,2.5,2.1): _visit_scene()
+				if _walk(yordi,player_at,delta,2.0,2.1) and retry_clock<=0.0: _visit_scene()
+			elif _walk(yordi,player_at,delta,2.5,2.1) and retry_clock<=0.0: _visit_scene()
 		4: _tick_departure(delta)
 		6:
 			if is_instance_valid(yordi):

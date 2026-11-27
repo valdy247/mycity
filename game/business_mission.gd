@@ -4,6 +4,19 @@ const World = preload("res://cuba_world.gd")
 const Taxi = preload("res://taxi_service.gd")
 const Person = preload("res://street_person.gd")
 const CityLife = preload("res://city_life.gd")
+const StoryCamera = preload("res://story_camera.gd")
+var story_camera: StoryCamera
+var story_active := false
+var story_lines: Array = []
+var story_index := 0
+var story_title := ""
+var story_accept_label := ""
+var story_cancel_label := ""
+var story_callback: Callable
+var story_confirming := false
+var story_voice_enabled := false
+var story_voice_playing := false
+var story_voice_id := ""
 var life: CityLife
 var garage_market: Callable
 var city_map: Callable
@@ -67,6 +80,8 @@ func setup(city: World,taxi_service: Taxi,actor: CharacterBody3D,vehicle: Charac
 	ledger.load_game()
 	box_mesh.size = Vector3.ONE
 	_make_ui()
+	story_camera = StoryCamera.new()
+	add_child(story_camera)
 	_make_scene()
 	life = CityLife.new()
 	add_child(life)
@@ -359,6 +374,7 @@ func modal_open() -> bool:
 	return (panel!=null and panel.visible) or (phone_panel!=null and phone_panel.visible)
 
 func close() -> void:
+	_end_story()
 	panel.hide()
 	if phone_panel!=null: phone_panel.hide()
 	phone_mode = false
@@ -367,6 +383,7 @@ func close() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 func _open(title: String,body: String = "") -> void:
+	_end_story()
 	content = phone_content if phone_mode else dialog_content
 	phone_balance = null
 	for child in content.get_children():
@@ -392,6 +409,145 @@ func _open(title: String,body: String = "") -> void:
 		if phone_mode: description.add_theme_color_override("font_color",Color("#b3c4d6"))
 		content.add_child(description)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+# Story dialogues use the existing modal so mission ticks and controls
+# obey the same pause/resume rules as the original interactions.
+func open_story(actor: Node3D,title: String,lines: Array,accept_label: String,callback: Callable,cancel_label: String = "") -> void:
+	phone_mode = false
+	_open(title)
+	story_active = true
+	story_title = title
+	story_lines = lines.duplicate()
+	if story_lines.is_empty(): story_lines.append(title)
+	story_index = 0
+	story_accept_label = accept_label
+	story_cancel_label = cancel_label
+	story_callback = callback
+	story_confirming = false
+	if phone_panel!=null: phone_panel.hide()
+	panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+	panel.offset_left = -360
+	panel.offset_right = 360
+	panel.offset_top = -238
+	panel.offset_bottom = -12
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color("#151c27ee")
+	style.border_color = Color("#536276")
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(10)
+	panel.add_theme_stylebox_override("panel",style)
+	if is_instance_valid(story_camera): story_camera.begin(actor,player,camera)
+	_render_story()
+
+static func story_line_parts(raw: String,fallback: String) -> PackedStringArray:
+	var colon := raw.find(":")
+	if colon>0 and colon<=24: return PackedStringArray([raw.left(colon).strip_edges(),raw.substr(colon+1).strip_edges()])
+	return PackedStringArray([fallback,raw])
+
+func _story_voice_available() -> bool:
+	if not DisplayServer.has_feature(DisplayServer.FEATURE_TEXT_TO_SPEECH): return false
+	if story_voice_id.is_empty():
+		var voices := DisplayServer.tts_get_voices_for_language("es")
+		if not voices.is_empty(): story_voice_id = voices[0]
+	return not story_voice_id.is_empty()
+
+func _stop_story_voice() -> void:
+	if story_voice_playing and DisplayServer.has_feature(DisplayServer.FEATURE_TEXT_TO_SPEECH):
+		DisplayServer.tts_stop()
+	story_voice_playing = false
+
+func _speak_story() -> void:
+	_stop_story_voice()
+	if not story_voice_enabled or not _story_voice_available() or story_index>=story_lines.size(): return
+	var parts := story_line_parts(String(story_lines[story_index]),story_title)
+	DisplayServer.tts_speak(parts[1],story_voice_id,75,1.0,1.0,0,true)
+	story_voice_playing = true
+
+func _toggle_story_voice() -> void:
+	if not story_active: return
+	story_voice_enabled = not story_voice_enabled
+	_render_story()
+
+func _render_story() -> void:
+	if not story_active: return
+	content = dialog_content
+	for child in content.get_children():
+		content.remove_child(child)
+		child.queue_free()
+	var heading := Label.new()
+	var final_page := story_index>=story_lines.size()
+	var parts := story_line_parts(String(story_lines[mini(story_index,story_lines.size()-1)]),story_title)
+	heading.text = story_title+"  ·  Decisión" if final_page else parts[0]+"  ·  %d/%d" % [story_index+1,story_lines.size()]
+	heading.add_theme_font_size_override("font_size",20)
+	heading.add_theme_color_override("font_color",Color("#f0d49a"))
+	content.add_child(heading)
+	var subtitle := Label.new()
+	if final_page:
+		var recap := PackedStringArray()
+		for line in story_lines: recap.append(String(line))
+		subtitle.text = "\n".join(recap)
+	else: subtitle.text = parts[1]
+	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	subtitle.custom_minimum_size.x = 650
+	subtitle.add_theme_font_size_override("font_size",16)
+	content.add_child(subtitle)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation",8)
+	content.add_child(row)
+	var next := Button.new()
+	next.text = story_accept_label if final_page else "Continuar"
+	next.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	next.pressed.connect(_confirm_story if final_page else _next_story)
+	row.add_child(next)
+	if not final_page:
+		var skip := Button.new()
+		skip.text = "Omitir diálogo"
+		skip.pressed.connect(_skip_story)
+		row.add_child(skip)
+	if not story_cancel_label.is_empty():
+		var cancel := Button.new()
+		cancel.text = story_cancel_label
+		cancel.pressed.connect(close)
+		row.add_child(cancel)
+	if _story_voice_available() and not final_page:
+		var voice := Button.new()
+		voice.text = "Voz: sí" if story_voice_enabled else "Voz: no"
+		voice.pressed.connect(_toggle_story_voice)
+		row.add_child(voice)
+	_speak_story()
+
+func _next_story() -> void:
+	if not story_active: return
+	story_index = mini(story_index+1,story_lines.size())
+	_render_story()
+
+func _skip_story() -> void:
+	if not story_active: return
+	story_index = story_lines.size()
+	_render_story()
+
+func _confirm_story() -> void:
+	# Skip only reveals the explicit decision; it cannot buy or accept anything.
+	if not story_active or story_index<story_lines.size() or story_confirming or not story_callback.is_valid(): return
+	story_confirming = true
+	var callback := story_callback
+	callback.call()
+	story_confirming = false
+
+func _end_story() -> void:
+	if not story_active: return
+	story_active = false
+	_stop_story_voice()
+	if is_instance_valid(story_camera): story_camera.finish()
+	story_lines.clear()
+	story_callback = Callable()
+	story_confirming = false
+	panel.remove_theme_stylebox_override("panel")
+	panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	panel.offset_left = -240
+	panel.offset_right = 240
+	panel.offset_top = -200
+	panel.offset_bottom = 200
 
 func _button(text_value: String,callback: Callable,disabled_value: bool = false) -> void:
 	var button := Button.new()
@@ -520,17 +676,13 @@ func interact(at: Vector3) -> bool:
 func interact_albertico(at: Vector3) -> bool:
 	if aimed_albertico_text(at).is_empty(): return false
 	if ledger.stage==0:
-		_open("Albertico","Asere, te tengo un bisne. Te voy a dar la luz: hay una gente que vende comida. Tú me la traes y yo la vendo. ¿Te sirve?")
-		_button("Sí, vamos arriba",_accept)
-		_button("No, ahora no",close)
+		open_story(albertico,"Albertico",["Albertico: Asere, te tengo un bisne. Te voy a dar la luz: hay una gente que vende comida.","Albertico: Tú me la traes y yo la vendo. ¿Te sirve?"],"Sí, vamos arriba",_accept,"No, ahora no")
 	elif not ledger.carry.is_empty() and ledger.stage>=3:
 		if ledger.deliver():
 			_notify("Caja entregada. "+_stock_text())
 			_sync_visuals()
 	elif ledger.stage==3 and ledger.total(ledger.stock)>0:
-		_open("Albertico","Déjame la mercancía aquí. Yo la vendo y me quedo con el 15% de cada venta. ¿Hacemos el negocio?")
-		_button("Contratar a Albertico",_hire)
-		_button("Ahora no",close)
+		open_story(albertico,"Albertico",["Albertico: Déjame la mercancía aquí. Yo la vendo y me quedo con el 15% de cada venta.","Albertico: ¿Hacemos el negocio?"],"Contratar a Albertico",_hire,"Ahora no")
 	else:
 		_open("Albertico","Trae las cajas de la MIPYME, cárgalas en el carro y déjamelas aquí.\n\n"+_stock_text())
 		_button("Cerrar",close)
