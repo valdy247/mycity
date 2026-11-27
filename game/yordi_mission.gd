@@ -73,6 +73,7 @@ var stone_clock := 0.0
 var stone_velocity := Vector3.ZERO
 var robbery_phase := ""
 var robbery_clock := 0.0
+var robbery_plan_failures := 0
 var escape_route := PackedVector3Array()
 var escape_index := 0
 var escape_goal := Vector3.INF
@@ -1091,6 +1092,7 @@ func _purchase() -> void:
 	_carry_ps5()
 	_cue("success")
 	state.purchased = true
+	robbery_plan_failures = 0
 	state.checkpoint = {"seller":_encode(seller_point),"bike":_encode(bike.global_position),"heading":_encode(bike.global_basis.z)}
 	_set_stage(7)
 	if is_instance_valid(seller): seller.hide()
@@ -1278,6 +1280,58 @@ func _plan_escape(from: Vector3) -> PackedVector3Array:
 			if area>=220.0 and length>=75.0 and length<=180.0: return route
 	return best
 
+# If the local pedestrian graph has no closed cycle, use a shorter
+# verified route away from the motorcycle and back to its boarding point.
+func _plan_short_escape(from: Vector3) -> PackedVector3Array:
+	if not is_instance_valid(bike): return PackedVector3Array()
+	var pedestrians = game.monte_pedestrians
+	var graph: AStar3D = pedestrians.graph
+	var start: int = pedestrians._nearest(from,12.0)
+	if start<0: return PackedVector3Array()
+	var finish := _bike_wait_site()
+	if not finish.is_finite() and from.distance_to(bike.global_position)<5.0 and world.pedestrian_segment_clear(from,from):
+		finish = from
+	if not finish.is_finite(): return PackedVector3Array()
+	var end_id: int = pedestrians._nearest(finish,12.0)
+	if end_id<0: return PackedVector3Array()
+	var options: Array = []
+	for value in pedestrians._near_ids(from,60.0):
+		var id := int(value)
+		var point := graph.get_point_position(id)
+		var gap := from.distance_to(point)
+		if gap<16.0 or gap>60.0 or graph.get_point_connections(id).is_empty(): continue
+		options.append({"id":id,"score":absf(gap-30.0)})
+	options.sort_custom(func(a,b): return float(a.score)<float(b.score))
+	for option in options.slice(0,32):
+		var outward := graph.get_point_path(start,int(option.id))
+		var inward := graph.get_point_path(int(option.id),end_id)
+		if outward.size()<2 or inward.size()<2: continue
+		var route := PackedVector3Array([from])
+		route.append_array(outward)
+		for i in range(1,inward.size()): route.append(inward[i])
+		route.append(finish)
+		var length := 0.0
+		var valid := true
+		for i in range(1,route.size()):
+			if not world.pedestrian_segment_clear(route[i-1],route[i]):
+				valid = false
+				break
+			length += route[i-1].distance_to(route[i])
+		if valid and length>=35.0 and length<=180.0: return route
+	return PackedVector3Array()
+
+func _safe_robbery_alternative() -> void:
+	# Do not strand a paid purchase when the geometry cannot support a chase.
+	# The pair leave before the confrontation; no reward is granted here.
+	_clear_foes()
+	robbery_plan_failures = 0
+	bike_wait_point = Vector3.INF
+	rendezvous_clock = 0.0
+	bike_walk_elapsed = 0.0
+	_set_stage(9)
+	_target(bike.global_position,"Moto de Yordi · regreso a casa")
+	business._notify("Yordi: Mano, por aquí no hay salida libre. Mejor nos vamos antes de que haya problemas. Sube a la moto.")
+
 func _start_robbery() -> void:
 	if _stage()!=7 or not robbery_phase.is_empty() or not is_instance_valid(yordi): return
 	if yordi.global_position.distance_to(game.player.global_position)>5.0:
@@ -1285,12 +1339,15 @@ func _start_robbery() -> void:
 		return
 	var at: Vector3 = game.player.global_position-Vector3.UP*.86
 	var path := _plan_escape(yordi.global_position)
-	if path.is_empty():
-		business._notify("Yordi: No encuentro una vuelta libre a la moto. Acércate a la acera y vuelve a intentarlo.")
+	if path.is_empty(): path = _plan_short_escape(yordi.global_position)
+	if path.is_empty() or not _spawn_foes(at):
+		robbery_plan_failures += 1
+		if robbery_plan_failures>=3 and is_instance_valid(bike) and at.distance_to(bike.global_position)<5.0 and yordi.global_position.distance_to(bike.global_position)<6.0:
+			_safe_robbery_alternative()
+		else:
+			business._notify("Yordi: Buscando una salida libre. Quédate junto a la moto.")
 		return
-	if not _spawn_foes(at):
-		business._notify("Espera un momento junto a la moto.")
-		return
+	robbery_plan_failures = 0
 	escape_route = path
 	escape_index = 1
 	escape_goal = path[path.size()-1]
@@ -1615,6 +1672,7 @@ func _chase_tick(delta: float) -> void:
 		_retry_chase()
 
 func _retry_chase() -> void:
+	robbery_plan_failures = 0
 	_clear_foes()
 	_set_stage(7)
 	restore_pending = true
