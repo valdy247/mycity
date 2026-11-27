@@ -152,6 +152,20 @@ func _fp_rounded(parent: Node3D,at: Vector3,dims: Vector3,color: Color) -> MeshI
 	part.scale = dims
 	return part
 
+func _fp_limb(color: Color,taper: float) -> MeshInstance3D:
+	var part := MeshInstance3D.new()
+	var mesh := CylinderMesh.new()
+	mesh.height = 1.0
+	mesh.bottom_radius = .5
+	mesh.top_radius = taper
+	mesh.radial_segments = 12
+	mesh.rings = 0
+	part.mesh = mesh
+	part.material_override = _mat(color)
+	part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	fp_rig.add_child(part)
+	return part
+
 func _make_first_person() -> void:
 	fp_rig = Node3D.new()
 	camera.add_child(fp_rig)
@@ -160,20 +174,30 @@ func _make_first_person() -> void:
 	for side in [-1.0,1.0]:
 		var hand := Node3D.new()
 		fp_rig.add_child(hand)
-		var upper := _fp_rounded(fp_rig,Vector3.ZERO,Vector3.ONE,sleeve)
-		var fore := _fp_rounded(fp_rig,Vector3.ZERO,Vector3.ONE,skin)
-		_fp_rounded(hand,Vector3.ZERO,Vector3(.088,.112,.053),skin)
+		var upper := _fp_limb(skin,.40)
+		var cuff := _fp_limb(sleeve,.48)
+		var fore := _fp_limb(skin,.31)
+		var elbow := _fp_rounded(fp_rig,Vector3.ZERO,Vector3(.094,.105,.094),skin)
+		_fp_rounded(hand,Vector3(0,-.008,0),Vector3(.080,.085,.045),skin)
 		for finger in range(4):
-			_fp_rounded(hand,Vector3(-.029+float(finger)*.019,.039,-.018),Vector3(.022,.060,.028),skin)
-		_fp_rounded(hand,Vector3(-float(side)*.043,-.005,-.013),Vector3(.036,.064,.038),skin)
-		fp_arms.append({"upper":upper,"fore":fore,"hand":hand,"target":Vector3(float(side)*.31,-.53,-.49)})
+			var x := -.027+float(finger)*.018
+			_fp_rounded(hand,Vector3(x,.033,-.006),Vector3(.018,.048,.023),skin)
+			_fp_rounded(hand,Vector3(x,.052,-.021),Vector3(.017,.023,.036),skin)
+		var thumb := _fp_rounded(hand,Vector3(-float(side)*.043,.006,-.009),Vector3(.027,.055,.033),skin)
+		thumb.rotation.z = -float(side)*.48
+		fp_arms.append({"upper":upper,"cuff":cuff,"fore":fore,"elbow":elbow,"hand":hand,"target":Vector3(float(side)*.28,-.18,-.26)})
 	_tick_first_person(0.0,false)
 
 func _fp_segment(mesh: MeshInstance3D,a: Vector3,b: Vector3,width: float) -> void:
 	var d := b-a
 	mesh.position = (a+b)*.5
 	mesh.quaternion = Quaternion(Vector3.UP,d.normalized()) if d.length()>.0001 else Quaternion.IDENTITY
-	mesh.scale = Vector3(width,maxf(.01,d.length()+.035),width)
+	mesh.scale = Vector3(width,maxf(.01,d.length()+.014),width)
+
+func _carried_bag_transform() -> Transform3D:
+	# Carry beside the body, not directly in front of the camera. Pitching the
+	# view does not rotate the suitcase or stretch the arm.
+	return camera.global_transform.affine_inverse()*player.global_transform*Transform3D(Basis.IDENTITY,Vector3(.34,-.32,-.42))
 
 func _tick_first_person(delta: float,moving: bool) -> void:
 	if not is_instance_valid(fp_rig): return
@@ -185,38 +209,69 @@ func _tick_first_person(delta: float,moving: bool) -> void:
 	var carried_bag: Node3D
 	for bag in bags:
 		if bag.get_parent()==camera: carried_bag = bag
+	if is_instance_valid(carried_bag) and not (fp_prop_tween!=null and fp_prop_tween.is_running()):
+		carried_bag.transform = _carried_bag_transform()
+	var body_to_view := camera.global_transform.affine_inverse()*player.global_transform
 	for i in range(2):
 		var arm: Dictionary = fp_arms[i]
 		var side := -1.0 if i==0 else 1.0
 		var hand: Node3D = arm["hand"]
-		var shoulder := Vector3(side*.34,-.54,-.07)
-		var target := Vector3(side*.34,-.61+sin(fp_clock+float(i)*PI)*(.035 if moving else .009),-.40)
-		var angle := Vector3(.24,0,side*.18)
+		# Anatomical shoulder position in body space, independent of camera pitch.
+		var shoulder := Vector3(side*.205,.39,-.075)
+		var target := Vector3(side*.28,-.16+sin(fp_clock+float(i)*PI)*(.025 if moving else .006),-.23)
+		var angle := Vector3(.18,0,side*.15)
+		var gripping := false
+		var holding_bag := false
 		if progress.cart_attached:
-			target = camera.to_local(cart.to_global(Vector3(side*.31,.92,.49)))
-			angle = Vector3(-1.0,0,side*.10)
+			target = player.to_local(cart.to_global(Vector3(side*.29,.952,.515)))
+			angle = Vector3(-PI*.5,0,0)
+			gripping = true
 		elif i==1 and is_instance_valid(carried_bag):
-			target = camera.to_local(carried_bag.to_global(Vector3(0,.503,0)))
-			angle = Vector3(-1.05,0,0)
+			# Palm rests above the actual handle; fingers curve around its bar.
+			target = player.to_local(carried_bag.to_global(Vector3(0,.535,.023)))
+			angle = Vector3(-PI*.5,0,0)
+			gripping = true
+			holding_bag = true
 		elif i==1 and step<=3 and passport.get_parent()==camera:
-			target = passport.position+Vector3(.034,-.025,.029)
+			target = player.to_local(passport.to_global(Vector3(.048,-.016,.015)))
 			angle = Vector3(-.72,0,-.18)
-		if i==1 and fp_action_time>0.0:
-			var reach := Vector3(.25,-.37,-.88)
-			if is_instance_valid(fp_action_prop): reach = camera.to_local(fp_action_prop.global_position)+Vector3(.03,.035,.025)
-			target = reach
-			angle = Vector3(-.85,0,0)
-		target.x = clampf(target.x,-.82,.82)
-		target.y = clampf(target.y,-1.08,.12)
-		target.z = clampf(target.z,-1.15,-.23)
+		if i==1 and fp_action_time>0.0 and is_instance_valid(fp_action_prop):
+			if fp_action_prop==passport:
+				target = player.to_local(passport.to_global(Vector3(.048,-.015,.015)))
+			else:
+				target = player.to_local(fp_action_prop.to_global(Vector3(0,.535,.025)))
+				holding_bag = true
+			angle = Vector3(-PI*.5,0,0)
+			gripping = true
 		var old: Vector3 = arm["target"]
-		var hand_at := old.lerp(target,1.0 if delta==0.0 else minf(1.0,delta*13.0))
+		var hand_at := old.lerp(target,1.0 if gripping or delta==0.0 else minf(1.0,delta*14.0))
+		var hand_basis := Basis.from_euler(angle)
+		var wrist := hand_at+hand_basis*Vector3(0,-.038,0)
+		# Two fixed-length arm segments: solve the elbow instead of stretching
+		# long cylinders between the camera and distant interaction points.
+		var span := wrist-shoulder
+		var distance := clampf(span.length(),.08,.675)
+		var axis := span.normalized() if span.length()>.001 else Vector3.FORWARD
+		wrist = shoulder+axis*distance
+		hand_at = wrist-hand_basis*Vector3(0,-.038,0)
 		arm["target"] = hand_at
-		hand.position = hand_at
-		hand.rotation = angle
-		var elbow := shoulder.lerp(hand_at,.48)+Vector3(side*.09,-.11,.02)
-		_fp_segment(arm["upper"],shoulder,elbow,.133)
-		_fp_segment(arm["fore"],elbow,hand_at,.093)
+		var upper_length := .35
+		var fore_length := .33
+		var along := (upper_length*upper_length-fore_length*fore_length+distance*distance)/(2.0*distance)
+		var bend := sqrt(maxf(0.0,upper_length*upper_length-along*along))
+		var pole := Vector3(side*.80,.32 if holding_bag else -.85,.20)
+		var bend_axis := (pole-axis*pole.dot(axis)).normalized()
+		if bend_axis.length_squared()<.01: bend_axis = Vector3(side,0,0)
+		var elbow := shoulder+axis*along+bend_axis*bend
+		hand.transform = body_to_view*Transform3D(hand_basis,hand_at)
+		var upper: MeshInstance3D = arm["upper"]
+		var cuff: MeshInstance3D = arm["cuff"]
+		var fore: MeshInstance3D = arm["fore"]
+		var joint: MeshInstance3D = arm["elbow"]
+		_fp_segment(cuff,body_to_view*shoulder,body_to_view*shoulder.lerp(elbow,.48),.137)
+		_fp_segment(upper,body_to_view*shoulder.lerp(elbow,.43),body_to_view*elbow,.106)
+		_fp_segment(fore,body_to_view*elbow,body_to_view*wrist,.095)
+		joint.position = body_to_view*elbow
 
 func _animate_prop_transfer(prop: Node3D,from: Transform3D) -> void:
 	if not is_instance_valid(prop): return
@@ -1626,7 +1681,7 @@ func _sync() -> void:
 		bag.rotation = Vector3.ZERO
 		bag.show()
 		match place:
-			"hand": bag.position = Vector3(.40,-.62,-.75)
+			"hand": bag.transform = _carried_bag_transform()
 			"cart": bag.position = Vector3(-.225 if i==0 else .225,.27,-.13)
 			"trunk":
 				bag.position = Vector3(-.28 if i==0 else .28,.61,-1.65)
@@ -1684,7 +1739,7 @@ func _cart_space_clear(at: Vector3,orientation: Basis) -> bool:
 func _push_cart() -> bool:
 	var forward := -player.global_transform.basis.z
 	var orientation := Basis(Vector3.UP,yaw)
-	for distance in [1.45,1.25,1.05]:
+	for distance in [1.12,1.03,.96]:
 		var desired := player.global_position+forward*float(distance)
 		desired.y = .03
 		if _cart_space_clear(desired,orientation):
@@ -2019,6 +2074,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		pitch = clampf(pitch-look.y*.003,-1.25,1.25)
 		player.rotation.y = yaw
 		camera.rotation.x = pitch
+		_tick_first_person(0.0,false)
 
 func _pressed(key: Key,touch: String) -> bool:
 	return Input.is_physical_key_pressed(key) or bool(touch_keys.get(touch,false))
