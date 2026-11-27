@@ -90,7 +90,7 @@ func _restart_visit_once(life: Dictionary) -> void:
 	life.yordi_replay_version = 2
 	var previous_stage := _stage()
 	if previous_stage==0: return
-	var already_paid := bool(state.get("reward_paid",false)) or previous_stage>=14
+	var already_paid := bool(state.get("reward_paid",false)) or bool(state.get("previous_reward_paid",false)) or previous_stage>=14
 	var saved_seller: Dictionary = state.get("seller",{}).duplicate(true)
 	state.clear()
 	state.merge({"stage":0,"reward_paid":false,"police":false,"delivered":false,"replay_ready":true,"previous_reward_paid":already_paid})
@@ -936,7 +936,7 @@ static func settle_sale(mission: Dictionary,ledger) -> bool:
 	mission.reward_paid = true
 	mission.stage = 14
 	if not bool(mission.get("previous_reward_paid",false)): ledger.cash += REWARD
-	ledger.add_message("Yordi","Ya vendimos el PS5. Aquí tienes tus mil pesos, como te prometí.")
+	ledger.add_message("Yordi","Ya vendimos el PS5. Tu pago anterior se conserva." if bool(mission.get("previous_reward_paid",false)) else "Ya vendimos el PS5. Aquí tienes tus mil pesos, como te prometí.")
 	return true
 
 func _complete_sale() -> void:
@@ -946,7 +946,7 @@ func _complete_sale() -> void:
 	console_box = null
 	if is_instance_valid(yordi): yordi.hide()
 	_clear_target()
-	business._notify("MISIÓN CUMPLIDA · +1,000 CUP")
+	business._notify("MISIÓN CUMPLIDA · recompensa ya recibida" if bool(state.get("previous_reward_paid",false)) else "MISIÓN CUMPLIDA · +1,000 CUP")
 
 func _police_call() -> void:
 	if bool(state.get("police",false)): return
