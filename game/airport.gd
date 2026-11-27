@@ -137,6 +137,7 @@ func _label3(parent: Node3D,words: String,p: Vector3,pixel: float,color: Color=C
 	label.pixel_size = pixel
 	label.modulate = color
 	label.outline_size = 0
+	label.double_sided = false
 	parent.add_child(label)
 	label.position = p
 	return label
@@ -247,6 +248,20 @@ func _make_contact_shadow(parent: Node3D,at: Vector3,dims: Vector2) -> void:
 	shadow.position = at
 	shadow.scale = Vector3(dims.x,1.0,dims.y)
 
+func _terminal_sign(words: String,at: Vector3,dims: Vector2,pixel: float,two_sided: bool=false,facing: float=0.0) -> void:
+	var sign_root := Node3D.new()
+	add_child(sign_root)
+	sign_root.position = at
+	sign_root.rotation.y = facing
+	_box(sign_root,Vector3.ZERO,Vector3(dims.x,dims.y,.10),Color("#164974"))
+	_box(sign_root,Vector3(0,-dims.y*.5+.025,0),Vector3(dims.x,.05,.12),Color("#a9afb1"))
+	var front := _label3(sign_root,words,Vector3(0,0,.058),pixel)
+	front.double_sided = false
+	if two_sided:
+		var back := _label3(sign_root,words,Vector3(0,0,-.058),pixel)
+		back.rotation.y = PI
+		back.double_sided = false
+
 func _make_environment() -> void:
 	var env := Environment.new()
 	env.background_mode = Environment.BG_SKY
@@ -338,14 +353,16 @@ func _make_terminal() -> void:
 		transparent.roughness = .22
 		transparent.cull_mode = BaseMaterial3D.CULL_DISABLED
 		pane.material_override = transparent
-	_label3(self,"MIGRACIÓN  •  01",booth+Vector3(0,2.29,-1.07),.0055).rotation.y = PI
+	var migration_sign := _label3(self,"MIGRACIÓN  •  01",booth+Vector3(0,2.29,-1.07),.004)
+	migration_sign.rotation.y = PI
+	migration_sign.double_sided = false
 	# Desk equipment and chair, leaving the officer's head visible in the window.
 	_box(self,booth+Vector3(-.65,1.22,-.66),Vector3(.42,.36,.09),Color("#333b40"))
 	_box(self,booth+Vector3(-.65,1.08,-.60),Vector3(.40,.035,.22),Color("#363b3f"))
 	_box(self,booth+Vector3(0,.48,.20),Vector3(.48,.10,.48),Color("#343a3e"))
 	_box(self,booth+Vector3(0,.81,.47),Vector3(.48,.65,.09),Color("#343a3e"))
 	_box(self,booth+Vector3(0,.24,.20),Vector3(.09,.45,.09),metal)
-	_label3(self,"CONTROL DE PASAPORTES",Vector3(0,3.4,-20.22),.008).rotation.y = PI
+	_terminal_sign("CONTROL DE PASAPORTES",Vector3(0,3.40,-20.23),Vector2(5.4,.65),.0065,false,PI)
 	for side in [-1.0,1.0]:
 		_box(self,Vector3(float(side)*1.7,.55,-20),Vector3(.32,1.10,.55),metal,true)
 	gate_body = StaticBody3D.new()
@@ -372,14 +389,18 @@ func _make_terminal() -> void:
 		var display := _label3(self,"0"+str(i+2),Vector3(11.80,2.53,z),.006)
 		display.rotation.y = -PI*.5
 	_box(self,Vector3(8.5,2.65,-20.20),Vector3(4.5,1.35,.12),Color("#252d35"))
-	_label3(self,"LLEGADAS  /  ARRIVALS\nMIAMI      LANDED\nMADRID     LANDED\nPANAMÁ     EXPECTED",Vector3(8.5,2.66,-20.28),.0045,Color("#e4d381")).rotation.y = PI
+	var flight_sign := _label3(self,"LLEGADAS  /  ARRIVALS\nMIAMI      LANDED\nMADRID     LANDED\nPANAMÁ     EXPECTED",Vector3(8.5,2.66,-20.28),.0045,Color("#e4d381"))
+	flight_sign.rotation.y = PI
+	flight_sign.double_sided = false
 	for z in [-17.0,-14.0,-8.0]:
 		_box(self,Vector3(-13.5,.46,float(z)),Vector3(1.0,.13,2.2),blue,true)
 		_box(self,Vector3(-13.95,.85,float(z)),Vector3(.13,.75,2.2),blue)
 	_make_baggage_carousel(metal,cream)
-	_label3(self,"RECOGIDA DE EQUIPAJE",Vector3(-5,3.40,-19.80),.008)
+	_terminal_sign("RECOGIDA DE EQUIPAJE",Vector3(-5,3.40,-19.74),Vector2(5.2,.65),.0065)
 	_box(self,Vector3(0,3.25,-2.25),Vector3(5,.5,.15),red)
-	_label3(self,"SALIDA",Vector3(0,3.25,-2.36),.008).rotation.y = PI
+	var exit_sign := _label3(self,"SALIDA",Vector3(0,3.25,-2.34),.007)
+	exit_sign.rotation.y = PI
+	exit_sign.double_sided = false
 	exit_body = StaticBody3D.new()
 	add_child(exit_body)
 	exit_body.position = Vector3(0,1.4,-2)
@@ -394,7 +415,7 @@ func _make_terminal() -> void:
 	_box(self,Vector3(0,.028,11.9),Vector3(82,.012,.12),Color("#c9ac51"))
 	for x in [-32.0,-22.0,20.0,31.0]:
 		_box(self,Vector3(x,1.2,9.4),Vector3(.12,2.4,.12),metal)
-		_label3(self,"TAXIS",Vector3(x,2.2,9.48),.005,Color("#233c4a"))
+		_terminal_sign("TAXIS",Vector3(x,2.2,9.48),Vector2(.95,.42),.0045,true)
 	for x in [-42.0,42.0]:
 		_box(self,Vector3(x,1,8),Vector3(.3,2,36),concrete,true)
 	_box(self,Vector3(0,1,26),Vector3(84,2,.3),concrete,true)
@@ -464,8 +485,11 @@ func _make_baggage_carousel(metal: Color,cream: Color) -> void:
 	# The signs and approach aisles stay in their existing locations.
 	_box(self,Vector3(4,1.4,-11),Vector3(.13,1.3,.13),metal)
 	_box(self,Vector3(4,2.07,-11),Vector3(1.8,.65,.14),Color("#168bbb"))
-	_label3(self,"2  EQUIPAJE",Vector3(4,2.08,-11.09),.006).rotation.y = PI
-	_label3(self,"2  EQUIPAJE",Vector3(4,2.08,-10.91),.006)
+	var belt_back := _label3(self,"2  EQUIPAJE",Vector3(4,2.08,-11.09),.0035)
+	belt_back.rotation.y = PI
+	belt_back.double_sided = false
+	var belt_front := _label3(self,"2  EQUIPAJE",Vector3(4,2.08,-10.91),.0035)
+	belt_front.double_sided = false
 
 func _wheel(root: Node3D,p: Vector3) -> void:
 	var wheel := MeshInstance3D.new()
@@ -1024,7 +1048,9 @@ func _make_arrivals_props() -> void:
 	_box(cart,Vector3(0,.92,.49),Vector3(.91,.045,.045),Color("#253c57"))
 	_box(cart,Vector3(0,.34,-.52),Vector3(.87,.035,.035),steel)
 	_box(cart,Vector3(0,.66,.49),Vector3(.85,.03,.035),steel)
-	_label3(self,"CARROS DE EQUIPAJE",Vector3(-5,2.4,-17),.006).rotation.y = PI
+	_terminal_sign("CARROS DE EQUIPAJE",Vector3(-5,3.25,-17),Vector2(3.8,.55),.0055,true)
+	for x in [-6.55,-3.45]:
+		_box(self,Vector3(float(x),3.76,-17),Vector3(.035,.48,.035),Color("#a9afb1"))
 
 func _make_bags() -> void:
 	for i in range(2):
