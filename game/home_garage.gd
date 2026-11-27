@@ -26,7 +26,7 @@ const BRUSH_LOAD := 10
 const FLOOR_COLS := 56
 const FLOOR_ROWS := 48
 const PAPER_POS := Vector3(5.35,.042,3.9)
-const BROOM_POS := Vector3(6.35,0,5.25)
+const BROOM_POS := Vector3(-2.9,0,5.25)
 var paper: MeshInstance3D
 var paper_image: Image
 var paper_texture: ImageTexture
@@ -1267,8 +1267,9 @@ func _make_brush_model(root: Node3D,color: Color) -> MeshInstance3D:
 	return business._box(root,Vector3(0,0,-.08),Vector3(.16,.055,.15),color)
 
 func _make_broom_model(root: Node3D) -> void:
-	business._box(root,Vector3(0,.68,0),Vector3(.045,1.25,.045),Color("#9c7646"))
-	business._box(root,Vector3(0,.10,0),Vector3(.34,.17,.13),Color("#b6a16b"))
+	business._box(root,Vector3(0,.74,0),Vector3(.055,1.34,.055),Color("#9c7646"))
+	business._box(root,Vector3(0,.18,0),Vector3(.38,.08,.16),Color("#a14e37"))
+	business._box(root,Vector3(0,.075,0),Vector3(.40,.14,.18),Color("#c5a260"))
 
 func _brush_color() -> Color:
 	return Color(PAINT_COLORS.get(String(state.paint_active),"#cab99a"))
@@ -1300,7 +1301,7 @@ func _build_house_tools() -> void:
 	resting_broom = Node3D.new()
 	paint_station.add_child(resting_broom)
 	resting_broom.position = BROOM_POS
-	resting_broom.rotation.z = -.12
+	resting_broom.rotation.x = -.15
 	floor_image = Image.create(FLOOR_COLS*3,FLOOR_ROWS*3,false,Image.FORMAT_RGBA8)
 	floor_image.fill(Color(0,0,0,0))
 	floor_texture = ImageTexture.create_from_image(floor_image)
@@ -1370,11 +1371,29 @@ func _refresh_paint_station() -> void:
 			shell.cap_top = false
 			var mesh := MeshInstance3D.new()
 			mesh.mesh = shell
-			mesh.material_override = business._mat(Color("#737c80"))
+						var shell_mat := StandardMaterial3D.new()
+			shell_mat.albedo_color = Color("#737c80")
+			shell_mat.roughness = .76
+			# An open cylinder has no back-facing inner wall by default.
+			# Draw both sides without changing any shared city materials.
+			shell_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+			mesh.material_override = shell_mat
+			mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			can.add_child(mesh)
+			var rim_mesh := TorusMesh.new()
+			rim_mesh.inner_radius = .169
+			rim_mesh.outer_radius = .199
+			rim_mesh.rings = 12
+			rim_mesh.ring_segments = 6
+			var rim := MeshInstance3D.new()
+			rim.mesh = rim_mesh
+			rim.material_override = business._mat(Color("#a4abad"))
+			rim.position.y = .17
+			rim.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			can.add_child(rim)
 			var fill_mesh := CylinderMesh.new()
-			fill_mesh.top_radius = .165
-			fill_mesh.bottom_radius = .165
+			fill_mesh.top_radius = .176
+			fill_mesh.bottom_radius = .176
 			fill_mesh.height = .025
 			fill_mesh.radial_segments = 12
 			var fill := MeshInstance3D.new()
@@ -1409,6 +1428,11 @@ func _aim_can() -> String:
 		if can.visible and _aim_tool(can,Vector3.ZERO,Vector3(.23,.19,.23)): return String(color)
 	return ""
 
+func _near_broom(at: Vector3) -> bool:
+	if not is_instance_valid(resting_broom): return false
+	var p := resting_broom.global_position
+	return Vector2(p.x-at.x,p.z-at.z).length()<1.35
+
 func _house_tool_action(at: Vector3) -> String:
 	var tool := String(state.paint_tool)
 	if not String(state.paint_carry).is_empty():
@@ -1419,11 +1443,11 @@ func _house_tool_action(at: Vector3) -> String:
 		if _aim_tool(resting_brush,Vector3.ZERO,Vector3(.38,.14,.28)): return "[E] Dejar brocha sobre el papel"
 		return "Clic izquierdo: pintar" if int(state.paint_charge)>0 else "Moja la brocha en un cubo de pintura"
 	if tool=="broom":
-		if _aim_tool(resting_broom,Vector3(0,.65,0),Vector3(.30,.75,.25)): return "[E] Dejar escoba"
+		if _near_broom(at) or _aim_tool(resting_broom,Vector3(0,.65,0),Vector3(.30,.75,.25)): return "[E] Dejar escoba"
 		return "Clic izquierdo: barrer"
 	if not _free_hands(): return ""
 	if _aim_tool(resting_brush,Vector3.ZERO,Vector3(.27,.12,.24)): return "[E] Recoger brocha"
-	if _aim_tool(resting_broom,Vector3(0,.65,0),Vector3(.30,.75,.25)): return "[E] Recoger escoba"
+	if _near_broom(at) or _aim_tool(resting_broom,Vector3(0,.65,0),Vector3(.30,.75,.25)): return "[E] Recoger escoba"
 	return ""
 
 func _house_tool_interact(at: Vector3) -> bool:
@@ -1456,7 +1480,7 @@ func _take_home_tool(tool: String) -> void:
 	if tool=="broom" and not is_instance_valid(held_broom):
 		held_broom = Node3D.new()
 		game.play_camera.add_child(held_broom)
-		held_broom.position = Vector3(.38,-.85,-.84)
+		held_broom.position = Vector3(.46,-.68,-1.05)
 		held_broom.rotation.x = -.65
 		_make_broom_model(held_broom)
 	_refresh_tools()
@@ -1601,12 +1625,16 @@ func _tick_home_paint(delta: float) -> void:
 	if paint_clock<.15: return
 	paint_clock = 0.0
 	var cam: Camera3D = game.play_camera
-	var ray := PhysicsRayQueryParameters3D.create(cam.global_position,cam.global_position-cam.global_basis.z*2.8,1|2)
+	var reach := 3.5 if String(state.paint_tool)=="broom" else 2.8
+	var ray := PhysicsRayQueryParameters3D.create(cam.global_position,cam.global_position-cam.global_basis.z*reach,1|2)
 	ray.exclude = [game.player.get_rid()]
 	var hit := get_world_3d().direct_space_state.intersect_ray(ray)
 	if hit.is_empty(): return
 	if String(state.paint_tool)=="broom":
-		if hit.normal.y>.7 and absf(float(hit.position.y)-ROOM.y)<.12: _sweep_at(hit.position)
+		if hit.normal.y>.7 and absf(float(hit.position.y)-ROOM.y)<.12:
+			var point: Vector3 = hit.position
+			var at: Vector3 = game.player.global_position
+			if Vector2(point.x-at.x,point.z-at.z).length()<=2.5: _sweep_at(point)
 		return
 	if int(state.paint_charge)<=0 or not hit.collider.has_meta("home_paint_wall"): return
 	var id := String(hit.collider.get_meta("home_paint_wall"))
