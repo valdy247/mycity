@@ -473,6 +473,37 @@ func prepare_trip() -> bool:
 	ride_status = String(passenger.note) if not String(passenger.note).is_empty() else "Destino: "+String(passenger.label)
 	return true
 
+# Resume a parked story vehicle from its exact remaining route.
+# No new fare, destination lookup or vehicle spawn.
+func resume_mission_trip(saved: Dictionary) -> bool:
+	if not passenger.is_empty() or not selected.is_empty() or dialog.visible or saved.is_empty(): return false
+	var body: CharacterBody3D = saved.get("body")
+	var path: Array = saved.get("path",[])
+	var index := int(saved.get("index",0))
+	if not is_instance_valid(body) or index<0 or index>=path.size(): return false
+	passenger = saved.duplicate(true)
+	TrafficBypass.reset_watchdog(passenger)
+	for key in ["junction_id","junction_token","junction_wait","junction_retry","junction_path"]:
+		passenger.erase(key)
+	passenger.speed = 0.0
+	passenger.traffic_stall = 0.0
+	passenger.traffic_last = body.global_position
+	passenger.retreat_remaining = 0.0
+	passenger.backed_up = 0.0
+	passenger.cooperative_path = []
+	passenger.cooperative_hold = 0
+	passenger.cooperative_rejoin = false
+	body.velocity = Vector3.ZERO
+	body.set_meta("traffic_servicing",false)
+	body.set_meta("junction_guard",false)
+	body.remove_from_group("traffic_parked")
+	body.add_to_group("autonomous_traffic")
+	stop_requested = false
+	arrived = false
+	ride_status = "Destino: "+String(passenger.label)
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	return true
+
 func request_stop() -> void:
 	if passenger.is_empty(): return
 	stop_requested = true
