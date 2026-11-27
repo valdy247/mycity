@@ -586,7 +586,7 @@ func _make_terminal_people() -> void:
 	# A passenger takes a non-player suitcase from the moving belt and carries it away.
 	var collector := _terminal_person(643,Vector3(5,.03,-15.9))
 	collector.rotation.y = 0.0
-	terminal_people.append({"node":collector,"role":"collect","state":0,"pause":2.0,"bag_slot":0,"index":0,"route":[Vector3(5,.03,-14.05),Vector3(5,.03,-16.0),Vector3(9.5,.03,-16.0)],"bag":null})
+	terminal_people.append({"node":collector,"role":"collect","state":0,"pause":2.0,"bag_slot":0,"index":0,"route":[Vector3(5,.03,-13.40),Vector3(5,.03,-16.0),Vector3(9.5,.03,-16.0)],"bag":null})
 	# A separate ambient trolley, never used by the player's mission.
 	var pusher := _terminal_person(672,Vector3(-8.5,.03,-14.6))
 	pusher.rotation.y = 0.0
@@ -665,15 +665,23 @@ func _tick_bag_collector(item: Dictionary,delta: float) -> void:
 		_idle_person(person,delta,2.0)
 		if not bag.visible: return
 		var at := bag.global_position
-		if absf(at.x-person.global_position.x)>.55 or absf(at.z+12.5)>.2: return
+		if absf(at.x-(person.global_position.x+.20))>.35 or absf(at.z+12.5)>.2: return
 		if _ambient_player_near(person): return
 		# Reach only for the assigned ambient bag, never the player's luggage.
 		ambient_bag_slots[slot] = true
-		bag.reparent(person.arms[1],false)
-		bag.position = Vector3(0,-.98,.02)
-		bag.rotation = Vector3.ZERO
-		item.state = 3
+		person.arms[1].rotation.x = -1.0
+		bag.reparent(person.arms[1],true)
+		var pickup := create_tween()
+		pickup.set_parallel(true)
+		pickup.tween_property(bag,"position",Vector3(0,-.98,.02),.42)
+		pickup.tween_property(bag,"rotation",Vector3.ZERO,.42)
+		item.state = 6
+		item.pause = .45
 		item.index = 1
+	elif state==6:
+		item.pause = float(item.pause)-delta
+		person.arms[1].rotation.x = lerpf(person.arms[1].rotation.x,-.08,minf(1.0,delta*4.0))
+		if float(item.pause)<=0.0: item.state = 3
 	elif state==3:
 		if _ambient_player_near(person):
 			_idle_person(person,delta,2.0)
