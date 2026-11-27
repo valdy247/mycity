@@ -20,6 +20,8 @@ const TASKS := ["Espera tu turno en migración.","Acércate a la agente y entreg
 var progress := Progress.new()
 var mats: Dictionary = {}
 var unit_box := BoxMesh.new()
+var contact_shadow_mesh: PlaneMesh
+var contact_shadow_material: StandardMaterial3D
 var player: CharacterBody3D
 var camera: Camera3D
 var taxi: Node3D
@@ -129,6 +131,112 @@ func _label3(parent: Node3D,words: String,p: Vector3,pixel: float,color: Color=C
 	label.position = p
 	return label
 
+# Tiny generated textures are shared; no external art dependencies or PBR maps.
+func _finish_texture(kind: String) -> Texture2D:
+	var noise := FastNoiseLite.new()
+	noise.seed = 1297
+	noise.frequency = .085
+	var img := Image.create(128,128,false,Image.FORMAT_RGB8)
+	for y in range(128):
+		for x in range(128):
+			var n := noise.get_noise_2d(float(x),float(y))
+			var fine := float(posmod(x*73+y*137+x*y*17,31))/30.0-.5
+			var v := .94+n*.055+fine*.045
+			if kind=="tile":
+				var tx := x%32
+				var ty := y%32
+				var variation := float(posmod(floori(float(x)/32.0)*13+floori(float(y)/32.0)*7,9))*.006
+				v = .91+n*.065+fine*.075+variation
+				if tx==0 or ty==0: v = .56
+				elif tx==1 or ty==1: v = .78
+				elif tx==31 or ty==31: v = .85
+			elif kind=="ceiling":
+				v = .95+fine*.035
+				if x%32==0 or y%32==0: v = .64
+			elif kind=="asphalt":
+				v = .82+n*.065+fine*.17
+			img.set_pixel(x,y,Color(v,v,v))
+	img.generate_mipmaps()
+	return ImageTexture.create_from_image(img)
+
+func _architectural_material(kind: String,color: Color) -> StandardMaterial3D:
+	var key := "architecture:"+kind+":"+color.to_html()
+	if not mats.has(key):
+		var texture_key := "texture:"+kind
+		if not mats.has(texture_key): mats[texture_key] = _finish_texture(kind)
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = color
+		mat.albedo_texture = mats[texture_key] as Texture2D
+		mat.roughness = .48 if kind=="tile" else .88
+		mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+		mat.uv1_triplanar = true
+		mat.uv1_world_triplanar = true
+		mat.uv1_scale = Vector3.ONE*.25 if kind in ["tile","ceiling"] else Vector3.ONE*.60
+		mats[key] = mat
+	return mats[key] as StandardMaterial3D
+
+func _architectural_finish(node: MeshInstance3D,kind: String,color: Color) -> void:
+	node.material_override = _architectural_material(kind,color)
+
+func _floor_and_ceiling() -> void:
+	# Replace dozens of individual grout strips with one repeating tile material.
+	_architectural_finish(_box(self,Vector3(0,.016,-17),Vector3(29.4,.03,29.6),Color("#e6dfd0")),"tile",Color("#e6dfd0"))
+	_architectural_finish(_box(self,Vector3(0,3.997,-17),Vector3(29.3,.012,29.7),Color("#e1e3df")),"ceiling",Color("#e1e3df"))
+	var frame_color := Color("#b6babe")
+	var diffuser := StandardMaterial3D.new()
+	diffuser.albedo_color = Color("#f8f6e8")
+	diffuser.emission_enabled = true
+	diffuser.emission = Color("#fff7e0")
+	diffuser.emission_energy_multiplier = .55
+	for z in [-29.0,-24.0,-18.0,-12.0,-6.0]:
+		_box(self,Vector3(0,3.94,float(z)),Vector3(29.3,.07,.40),Color("#a73034"))
+		for x in [-10.0,-5.0,0.0,5.0,10.0]:
+			var at := Vector3(float(x),3.935,float(z)+1.0)
+			_box(self,at,Vector3(1.20,.065,.65),frame_color)
+			var panel := _box(self,at+Vector3(0,-.042,0),Vector3(1.10,.024,.55),Color("#f8f6e8"))
+			panel.material_override = diffuser
+		# Ceiling vents and structural details are flat, never in the walking space.
+		for x in [-12.0,12.0]:
+			var at := Vector3(float(x),3.978,float(z)+2.0)
+			_box(self,at,Vector3(.75,.025,.45),frame_color)
+			for i in range(4):
+				_box(self,at+Vector3(0,-.018,-.15+float(i)*.10),Vector3(.61,.010,.026),Color("#646c70"))
+	# Five shadowless local lights, with small overlapping ranges, for Compatibility.
+	for at in [Vector3(0,3.55,-27),Vector3(-5,3.55,-15),Vector3(5,3.55,-15),Vector3(-5,3.55,-6),Vector3(5,3.55,-6)]:
+		var light := OmniLight3D.new()
+		light.light_color = Color("#fff5e2")
+		light.light_energy = .68
+		light.omni_range = 8.2
+		light.omni_attenuation = 1.5
+		light.shadow_enabled = false
+		add_child(light)
+		light.position = at
+
+func _make_contact_shadow(parent: Node3D,at: Vector3,dims: Vector2) -> void:
+	# A shared soft ground-contact decal, independent of expensive dynamic shadows.
+	if contact_shadow_mesh==null:
+		contact_shadow_mesh = PlaneMesh.new()
+		contact_shadow_mesh.size = Vector2.ONE
+		var img := Image.create(64,64,false,Image.FORMAT_RGBA8)
+		for y in range(64):
+			for x in range(64):
+				var p := Vector2(float(x)/63.0*2.0-1.0,float(y)/63.0*2.0-1.0)
+				var alpha := pow(maxf(0.0,1.0-p.length_squared()),2.0)*.33
+				img.set_pixel(x,y,Color(0.07,0.08,0.09,alpha))
+		img.generate_mipmaps()
+		contact_shadow_material = StandardMaterial3D.new()
+		contact_shadow_material.albedo_texture = ImageTexture.create_from_image(img)
+		contact_shadow_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		contact_shadow_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		contact_shadow_material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	var shadow := MeshInstance3D.new()
+	shadow.mesh = contact_shadow_mesh
+	shadow.material_override = contact_shadow_material
+	shadow.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	parent.add_child(shadow)
+	shadow.position = at
+	shadow.scale = Vector3(dims.x,1.0,dims.y)
+
 func _make_environment() -> void:
 	var env := Environment.new()
 	env.background_mode = Environment.BG_SKY
@@ -140,37 +248,48 @@ func _make_environment() -> void:
 	sky.sky_material = material
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color("#e1e1d8")
-	env.ambient_light_energy = .65
+	env.ambient_light_color = Color("#e5e8ec")
+	env.ambient_light_energy = .57
 	var world := WorldEnvironment.new()
 	world.environment = env
 	add_child(world)
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-48,-30,0)
-	sun.light_energy = 1.1
+	sun.light_energy = .88
+	sun.light_color = Color("#fff2dc")
 	sun.shadow_enabled = false
 	add_child(sun)
 
 func _make_terminal() -> void:
 	var concrete := Color("#c8c5b8")
-	var tile := Color("#e5dfcd")
 	var cream := Color("#eee6d3")
 	var red := Color("#b92b2e")
 	var blue := Color("#12548c")
 	var ochre := Color("#c69a49")
 	var glass := Color("#445b65")
 	var metal := Color("#a9aaa5")
-	_box(self,Vector3(0,-.18,-4),Vector3(84,.36,64),concrete,true)
-	_box(self,Vector3(0,.012,18),Vector3(84,.022,12),Color("#555956"))
-	_box(self,Vector3(0,.015,5),Vector3(84,.03,13),concrete,true)
+	_architectural_finish(_box(self,Vector3(0,-.18,-4),Vector3(84,.36,64),concrete,true),"concrete",concrete)
+	_architectural_finish(_box(self,Vector3(0,.012,18),Vector3(84,.022,12),Color("#555956")),"asphalt",Color("#555956"))
+	_architectural_finish(_box(self,Vector3(0,.015,5),Vector3(84,.03,13),concrete,true),"concrete",concrete)
 	# The reference façade: ochre colonnade, deep blue fascia, long glass bays.
 	for side in [-1.0,1.0]:
 		var x := float(side)
-		_box(self,Vector3(x*19,2.2,-2),Vector3(33,4.4,.30),cream,true)
+		_architectural_finish(_box(self,Vector3(x*19,2.2,-2),Vector3(33,4.4,.30),cream,true),"plaster",cream)
 		for i in range(7):
-			_box(self,Vector3(x*(4.8+float(i)*4.3),1.7,-1.80),Vector3(3.8,3.1,.12),glass)
-		_box(self,Vector3(x*14.8,2,-17),Vector3(.34,4,30),cream,true)
-	_box(self,Vector3(0,2,-32),Vector3(30,4,.35),cream,true)
+			var wx := x*(4.8+float(i)*4.3)
+			var pane := _box(self,Vector3(wx,1.7,-1.80),Vector3(3.8,3.1,.12),glass)
+			var tinted := _mat(Color("#516e7b")).duplicate() as StandardMaterial3D
+			tinted.roughness = .23
+			tinted.metallic = .12
+			pane.material_override = tinted
+			# Aluminium mullions and transoms give the exterior windows depth.
+			for edge in [-1.84,0.0,1.84]:
+				_box(self,Vector3(wx+float(edge),1.7,-1.70),Vector3(.045,3.1,.08),metal)
+			_box(self,Vector3(wx,2.42,-1.69),Vector3(3.8,.055,.08),metal)
+		_architectural_finish(_box(self,Vector3(x*14.8,2,-17),Vector3(.34,4,30),cream,true),"plaster",cream)
+		_box(self,Vector3(x*14.58,.13,-17),Vector3(.07,.26,29.5),Color("#8d9290"))
+	_architectural_finish(_box(self,Vector3(0,2,-32),Vector3(30,4,.35),cream,true),"plaster",cream)
+	_box(self,Vector3(0,.13,-31.77),Vector3(29.1,.26,.07),Color("#8d9290"))
 	_box(self,Vector3(0,4.12,-17),Vector3(30,.24,30),cream,true)
 	_box(self,Vector3(0,3.95,1.1),Vector3(72,.52,6.6),ochre,true)
 	_box(self,Vector3(0,4.35,1.1),Vector3(72,.32,6.6),blue)
@@ -178,22 +297,18 @@ func _make_terminal() -> void:
 	_label3(self,"AEROPUERTO INTERNACIONAL\nJOSÉ MARTÍ – LA HABANA",Vector3(0,5.03,1.33),.010)
 	for i in range(10):
 		var x := -32.4+float(i)*7.2
-		if absf(x)>2.8: _box(self,Vector3(x,1.85,3.7),Vector3(.43,3.7,.43),ochre,true)
+		if absf(x)>2.8:
+			_architectural_finish(_box(self,Vector3(x,1.85,3.7),Vector3(.43,3.7,.43),ochre,true),"plaster",ochre)
+			_box(self,Vector3(x,.16,3.7),Vector3(.54,.32,.54),Color("#9e988a"))
+			_make_contact_shadow(self,Vector3(x,.041,3.7),Vector2(1.1,1.1))
 	_label3(self,"SALIDA  /  ARRIVALS",Vector3(0,3.82,4.45),.006)
-	# Continuous tiled interior with thin joints, red ceiling borders and lights.
-	_box(self,Vector3(0,.016,-17),Vector3(29.4,.03,29.6),tile)
-	for x in range(-14,15):
-		_box(self,Vector3(float(x),.035,-17),Vector3(.012,.004,29.6),Color("#b5b1a4"))
-	for z in range(-31,-1):
-		_box(self,Vector3(0,.035,float(z)),Vector3(29.4,.004,.012),Color("#b5b1a4"))
-	for z in [-29.0,-24.0,-18.0,-12.0,-6.0]:
-		_box(self,Vector3(0,3.94,float(z)),Vector3(29.3,.07,.40),red)
-		for x in [-10.0,-5.0,0.0,5.0,10.0]:
-			_box(self,Vector3(float(x),3.91,float(z)+1.0),Vector3(.9,.035,.55),Color("#fff5d7"))
+	_floor_and_ceiling()
 	# Migration room and physically gated passage. Only the centre opening leads onward.
 	for side in [-1.0,1.0]:
-		_box(self,Vector3(float(side)*8.3,2,-20),Vector3(12.8,4,.32),cream,true)
+		_architectural_finish(_box(self,Vector3(float(side)*8.3,2,-20),Vector3(12.8,4,.32),cream,true),"plaster",cream)
 		_box(self,Vector3(float(side)*8.3,3.25,-20.19),Vector3(12.8,1.0,.08),red)
+		_box(self,Vector3(float(side)*8.3,.13,-20.20),Vector3(12.8,.26,.05),Color("#8d9290"))
+		_box(self,Vector3(float(side)*8.3,.13,-19.80),Vector3(12.8,.26,.05),Color("#8d9290"))
 	# Enclosed immigration cubicle, with an open service window facing the queue.
 	var booth := Vector3(-2.7,0,-22.5)
 	var panel := Color("#d5d0c3")
@@ -208,8 +323,10 @@ func _make_terminal() -> void:
 			_box(self,booth+Vector3(x,1.66,float(z)),Vector3(.10,1.23,.10),metal,true)
 		var pane := _box(self,booth+Vector3(x,1.61,0),Vector3(.04,1.08,1.78),glass,true)
 		var transparent := StandardMaterial3D.new()
-		transparent.albedo_color = Color(.56,.72,.76,.23)
+		transparent.albedo_color = Color(.68,.80,.84,.16)
 		transparent.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		transparent.roughness = .22
+		transparent.cull_mode = BaseMaterial3D.CULL_DISABLED
 		pane.material_override = transparent
 	_label3(self,"MIGRACIÓN  •  01",booth+Vector3(0,2.29,-1.07),.0055).rotation.y = PI
 	# Desk equipment and chair, leaving the officer's head visible in the window.
@@ -524,6 +641,7 @@ func _make_taxi() -> void:
 	taxi.position = Vector3(7.5,.025,13.4)
 	taxi.rotation.y = PI*.5
 	_car_shell(taxi,Color("#d6ad47"),true)
+	_make_contact_shadow(taxi,Vector3(0,.012,0),Vector2(2.5,5.3))
 	_box(taxi,Vector3(0,1.65,-.1),Vector3(.54,.18,.30),Color("#ead16e"))
 	var sign_label := _label3(taxi,"TAXI",Vector3(0,1.65,.061),.003,Color("#222222"))
 	sign_label = _label3(taxi,"TAXI",Vector3(0,1.65,-.261),.003,Color("#222222"))
@@ -535,6 +653,7 @@ func _make_taxi() -> void:
 		other.position = Vector3([-13.0,20.0,31.0][i],.025,13.4)
 		other.rotation.y = PI*.5
 		_car_shell(other,[Color("#aeb8b9"),Color("#e1dacb"),Color("#66838c")][i],false)
+		_make_contact_shadow(other,Vector3(0,.012,0),Vector2(2.5,5.3))
 		# Parked props are outside the mission's walkable interaction area.
 		_box(other,Vector3(0,.75,0),Vector3(1.75,1.5,4.5),Color("#777777"),true).hide()
 
@@ -544,6 +663,7 @@ func _make_people() -> void:
 		add_child(person)
 		person.setup(330+i*17,i==0 or i==5,true)
 		person.position = Vector3(-28+float(i)*7.7,.03,6.4 if i%2==0 else 8.4)
+		_make_contact_shadow(person,Vector3(0,.014,0),Vector2(.82,.68))
 		person.rotation.y = PI*.5
 		if i%3==1: person.set_bag(true)
 		if i in [2,6]:
@@ -567,6 +687,7 @@ func _terminal_person(style: int,at: Vector3,worker: bool=false) -> Person:
 	add_child(person)
 	person.setup(style,worker,true)
 	person.position = at
+	_make_contact_shadow(person,Vector3(0,.014,0),Vector2(.82,.68))
 	return person
 
 func _make_terminal_people() -> void:
