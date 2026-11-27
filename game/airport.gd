@@ -1116,13 +1116,15 @@ func _update_belt(delta: float) -> void:
 # Generate small PCM samples once per scene; no external assets are needed.
 func _airport_sample(kind: String,duration: float,looped: bool=false) -> AudioStreamWAV:
 	var count := roundi(duration*AIRPORT_SAMPLE_RATE)
+	# Generate an overlap for seamless loops, instead of dipping to silence at each repeat.
+	var overlap := roundi(.12*AIRPORT_SAMPLE_RATE) if looped else 0
 	var data := PackedByteArray()
-	data.resize(count*2)
+	data.resize((count+overlap)*2)
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 1979+kind.hash()
 	var low := 0.0
 	var mid := 0.0
-	for i in range(count):
+	for i in range(count+overlap):
 		var t := float(i)/float(AIRPORT_SAMPLE_RATE)
 		var white := rng.randf_range(-1.0,1.0)
 		low = lerpf(low,white,.035)
@@ -1130,21 +1132,20 @@ func _airport_sample(kind: String,duration: float,looped: bool=false) -> AudioSt
 		var value := 0.0
 		match kind:
 			"hall":
-				var swell := .6+.19*sin(TAU*1.5*t)+.15*sin(TAU*2.25*t+.7)
-				value = low*.50+mid*.23*swell+sin(TAU*60.0*t)*.026
+				value = low*.45+mid*.12
 			"outside":
-				value = low*.76+mid*.10+sin(TAU*43.0*t)*.035
+				value = low*.55+mid*.10
 			"belt":
-				value = low*.24+mid*.12+sin(TAU*74.0*t)*.085+sin(TAU*148.0*t)*.025
-				value += white*.037*pow(maxf(0.0,sin(TAU*8.0*t)),6.0)
+				# Steady mechanical hum: no repetitive impacts or rhythmic clicks.
+				value = low*.24+mid*.10+sin(TAU*74.0*t)*.025
 			"engine":
-				var pulse := .72+.28*sin(TAU*5.0*t)
-				value = (sin(TAU*32.0*t)*.22+sin(TAU*64.0*t)*.09+low*.30)*pulse
+				value = sin(TAU*48.0*t)*.035+sin(TAU*96.0*t)*.012+low*.24
 			"wheels":
-				value = (mid*.25+white*.06+low*.30)*(.65+.35*sin(TAU*9.0*t))
+				value = mid*.15+white*.025+low*.15
 			"step_a","step_b":
-				var hz := 95.0 if kind=="step_a" else 120.0
-				value = (low*.65+mid*.42+sin(TAU*hz*t)*.25)*exp(-t*22.0)
+				# A quiet shoe scuff rather than a bass-heavy thump.
+				var decay := 24.0 if kind=="step_a" else 29.0
+				value = (low*.22+mid*.35)*exp(-t*decay)
 			"bag":
 				value = (low*.75+mid*.22+sin(TAU*83.0*t)*.20)*exp(-t*13.0)
 			"latch":
@@ -1153,9 +1154,15 @@ func _airport_sample(kind: String,duration: float,looped: bool=false) -> AudioSt
 				var hz := 660.0 if t<.20 else 880.0
 				var local_t := fposmod(t,.20)
 				value = sin(TAU*hz*local_t)*.28*sin(PI*clampf(local_t/.20,0.0,1.0))
-		var ramp := .035 if looped else .008
-		var envelope := minf(1.0,minf(t/ramp,(duration-t)/ramp))
+		var envelope := 1.0 if looped else minf(1.0,minf(t/.008,(duration-t)/.025))
 		data.encode_s16(i*2,roundi(clampf(value*envelope,-1.0,1.0)*32767.0))
+	if looped:
+		for i in range(overlap):
+			var blend := smoothstep(0.0,1.0,float(i)/float(overlap))
+			var tail := float(data.decode_s16((count+i)*2))
+			var head := float(data.decode_s16(i*2))
+			data.encode_s16(i*2,roundi(lerpf(tail,head,blend)))
+		data.resize(count*2)
 	var sample := AudioStreamWAV.new()
 	sample.format = AudioStreamWAV.FORMAT_16_BITS
 	sample.mix_rate = AIRPORT_SAMPLE_RATE
@@ -1215,18 +1222,18 @@ func _tick_airport_audio(delta: float,moving: bool=false) -> void:
 	if airport_audio.is_empty(): return
 	var seated := progress.stage==Progress.COMPLETE
 	var inside := not seated and player.global_position.z<-2.0
-	_airport_volume("hall",-23.0 if inside else -65.0,delta)
-	_airport_volume("outside",-24.0 if not inside and not seated else -43.0 if seated else -65.0,delta)
-	_airport_volume("belt",-13.0 if inside and progress.stage>=4 else -65.0,delta)
-	_airport_volume("engine",-18.0 if not inside else -65.0,delta)
-	_airport_volume("wheels",-21.0 if moving and progress.cart_attached else -65.0,delta)
+	_airport_volume("hall",-28.0 if inside else -65.0,delta)
+	_airport_volume("outside",-31.0 if not inside and not seated else -48.0 if seated else -65.0,delta)
+	_airport_volume("belt",-28.0 if inside and progress.stage>=4 else -65.0,delta)
+	_airport_volume("engine",-30.0 if not inside else -65.0,delta)
+	_airport_volume("wheels",-32.0 if moving and progress.cart_attached else -65.0,delta)
 	if moving and not seated:
 		footstep_time -= delta
 		if footstep_time<=0.0:
 			footstep_variant = 1-footstep_variant
-			_airport_effect("step_a" if footstep_variant==0 else "step_b",-14.0 if inside else -18.0,"steps")
+			_airport_effect("step_a" if footstep_variant==0 else "step_b",-25.0 if inside else -28.0,"steps")
 			var pace := Vector2(player.velocity.x,player.velocity.z).length()
-			footstep_time = clampf(1.55/maxf(pace,1.0),.25,.57)
+			footstep_time = clampf(1.8/maxf(pace,1.0),.31,.67)
 	else:
 		footstep_time = 0.0
 	if announcement_caption_time>0.0:
