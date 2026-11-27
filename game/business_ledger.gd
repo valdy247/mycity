@@ -82,10 +82,21 @@ func _counts(value: Variant) -> Dictionary:
 func save_game() -> void:
 	if not persistence_enabled: return
 	var data := {"cash":cash,"stage":stage,"pending":pending,"carry":carry,"cargo":cargo,"stock":stock,"sold":sold,"revenue":revenue,"wages":wages,"expenses":expenses,"messages":messages,"unread":unread,"low_alert":low_alert,"city_life":life_data}
-	var f := FileAccess.open(SAVE_PATH,FileAccess.WRITE)
-	if f!=null:
-		f.store_string(JSON.stringify(data))
-		f.close()
+	# Write beside the live save, then replace it only after a complete write.
+	var temp := SAVE_PATH+".tmp"
+	var f := FileAccess.open(temp,FileAccess.WRITE)
+	if f==null:
+		push_warning("MyCity: no se pudo abrir guardado temporal.")
+		return
+	f.store_string(JSON.stringify(data))
+	f.flush()
+	var error := f.get_error()
+	f.close()
+	if error!=OK:
+		push_warning("MyCity: escritura de partida incompleta; se conserva la anterior.")
+		return
+	if DirAccess.rename_absolute(temp,SAVE_PATH)!=OK:
+		push_warning("MyCity: no se pudo reemplazar la partida; se conserva el archivo temporal.")
 
 # City purchases share the same wallet and save transaction as missions.
 func spend(amount: int) -> bool:

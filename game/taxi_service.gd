@@ -915,7 +915,7 @@ func tick(delta: float,_clock: float,boost_requested: bool = false) -> void:
 	if not stop_requested:
 		var watch_index := index
 		while watch_index<waypoints.size()-1 and bool(waypoints[watch_index].get("bypass",false)): watch_index += 1
-		var restored := TrafficBypass.watchdog(passenger,body,streets,waypoints,watch_index,dims.x,dims.z,dims.y,delta,false)
+		var restored := TrafficBypass.watchdog(passenger,body,streets,waypoints,watch_index,dims.x,dims.z,dims.y,delta,false,18.0)
 		if restored>=0:
 			passenger.index = restored
 			return
@@ -955,7 +955,7 @@ func tick(delta: float,_clock: float,boost_requested: bool = false) -> void:
 	elif ride_status.begins_with("Semáforo rojo"):
 		ride_status = "Destino: "+String(passenger.label)
 	var should_stop := stop_requested and streets.intersection_clear_for_stop(body.global_position,dims.z,dims.x)
-	body.set_meta("traffic_priority",dims.z)
+	body.set_meta("traffic_priority",dims.z+2.0 if bool(passenger.get("albertico_reserved",false)) else dims.z)
 	body.set_meta("traffic_servicing",stop_requested or float(passenger.signal_wait)>0.0)
 	# Shift requests a left pass before cooperative waiting or the ordinary
 	# bypass timer. Retain the crossing gate and the original destination.

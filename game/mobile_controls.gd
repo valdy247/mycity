@@ -32,6 +32,7 @@ func _layout() -> void:
 	# Right hand: action and jump/brake, with auxiliary controls above.
 	for spec in [["e",0,1],["space",1,0],["shift",0,0],["g",1,1],["use",2,0],["p",0,2],["m",1,2],["v",2,2],["i",2,1]]:
 		buttons[String(spec[0])] = Vector2(right-float(spec[1])*step,bottom-float(spec[2])*step)
+	buttons["pause"] = Vector2(43.0,view.y-34.0)
 	queue_redraw()
 
 func _vehicle() -> bool:
@@ -80,6 +81,7 @@ func _label(id: String) -> String:
 		"m": return "Mapa"
 		"v": return "Vista"
 		"i": return "Bolsa"
+		"pause": return "Menú"
 	return id
 
 func _draw() -> void:
@@ -112,6 +114,7 @@ func _trigger(id: String) -> void:
 		"m": game.touch_action(KEY_M)
 		"v": game.touch_action(KEY_V)
 		"i": game.touch_action(KEY_I)
+		"pause": game.open_game_menu()
 		"use":
 			use_held = true
 			game.touch_use()

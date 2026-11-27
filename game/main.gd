@@ -2,6 +2,8 @@ extends Node3D
 # First playable local prototype. Static world, third-person movement.
 const CITY_PATH = "res://city.glb"
 const TouchControls = preload("res://mobile_controls.gd")
+const GameMenu = preload("res://game_menu.gd")
+var game_menu: GameMenu
 var mobile_controls: TouchControls
 var mobile_mode := false
 const VehicleLights = preload("res://vehicle_lights.gd")
@@ -129,6 +131,10 @@ func _web_map_error() -> void:
 
 func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
+	mobile_mode = OS.has_feature("android") or OS.has_feature("ios") or args.has("--touch-controls")
+	if OS.has_feature("web"):
+		var coarse = JavaScriptBridge.eval("window.matchMedia('(pointer: coarse)').matches",true)
+		mobile_mode = mobile_mode or coarse==true
 	if args.has("--low-graphics"): graphics_quality = 0
 	elif args.has("--medium-graphics"): graphics_quality = 1
 	elif args.has("--high-graphics"): graphics_quality = 2
@@ -216,6 +222,7 @@ func _ready() -> void:
 			var body: CharacterBody3D = bus.body
 			avoid.append(body.global_position)
 		monte_services = MonteServices.new()
+		if mobile_mode: monte_services.civilian_limit = 14
 		add_child(monte_services)
 		monte_services.setup(cuba_world,cuba_world.home_spawn,avoid,player,play_camera,urban_buses.stops)
 		monte_pedestrians = MontePedestrians.new()
@@ -261,14 +268,23 @@ func _ready() -> void:
 		_face_cuba_home()
 		_apply_camera_mode()
 	_apply_performance_mode()
-	mobile_mode = OS.has_feature("android") or OS.has_feature("ios") or args.has("--touch-controls")
-	if OS.has_feature("web"):
-		var coarse = JavaScriptBridge.eval("window.matchMedia('(pointer: coarse)').matches",true)
-		mobile_mode = mobile_mode or coarse==true
 	if mobile_mode:
 		_enable_mobile_controls()
 	else:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	if cuba_world!=null:
+		game_menu = GameMenu.new()
+		add_child(game_menu)
+		game_menu.setup(self)
+		game_menu.open_menu(true)
+
+func open_game_menu() -> void:
+	if is_instance_valid(game_menu) and not touch_blocked(): game_menu.open_menu(false)
+
+func recover_checkpoint() -> void:
+	if taxi_riding: taxi_reset_requested = true
+	elif bus_riding: bus_reset_requested = true
+	else: reset_requested = true
 
 func _enable_mobile_controls() -> void:
 	if is_instance_valid(mobile_controls): return
@@ -282,7 +298,7 @@ func _enable_mobile_controls() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 func touch_blocked() -> bool:
-	return building_mode or (business!=null and (business.modal_open() or business.story_active)) or (taxis!=null and taxis.dialog.visible) or (city_navigation!=null and city_navigation.active) or (street_market!=null and not street_market.active.is_empty())
+	return (is_instance_valid(game_menu) and game_menu.menu_open) or building_mode or (business!=null and (business.modal_open() or business.story_active)) or (taxis!=null and taxis.dialog.visible) or (city_navigation!=null and city_navigation.active) or (street_market!=null and not street_market.active.is_empty())
 
 func gameplay_input() -> bool:
 	if mobile_mode: return not touch_blocked()
@@ -760,6 +776,10 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 	if not event is InputEventKey or not event.pressed or event.echo: return
+	if event.keycode==KEY_F10 and is_instance_valid(game_menu) and not touch_blocked():
+		open_game_menu()
+		get_viewport().set_input_as_handled()
+		return
 	if event.keycode==KEY_F11:
 		var window := get_window()
 		window.mode = Window.MODE_WINDOWED if window.mode in [Window.MODE_FULLSCREEN,Window.MODE_EXCLUSIVE_FULLSCREEN] else Window.MODE_FULLSCREEN

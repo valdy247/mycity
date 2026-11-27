@@ -24,6 +24,7 @@ var truck_retry := 0.0
 const MAX_GARBAGE_SITES := 9
 const GARBAGE_SITE_SPACING := 50.0
 const MAX_CIVILIAN_CARS := 24
+var civilian_limit := MAX_CIVILIAN_CARS
 var traffic_jobs: Array = []
 var traffic_clock := 0.0
 var traffic_phase := 0
@@ -717,7 +718,7 @@ func _traffic_tick(delta: float) -> void:
 	var total := 0
 	for car in vehicles:
 		if not bool(car.truck): total += 1
-	if total>=MAX_CIVILIAN_CARS:
+	if total>=civilian_limit:
 		traffic_jobs.clear()
 		return
 	var job: Dictionary = traffic_jobs.pop_front()

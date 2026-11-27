@@ -513,10 +513,25 @@ static func watchdog(state: Dictionary,body: CharacterBody3D,streets: Streets,ro
 			if not streets.in_carriageway(candidate,d,width,length,d): continue
 			alternate.append({"p":candidate,"d":d,"index":int(option.index)})
 	options.append_array(alternate)
+	# If a stalled vehicle cannot reach any original-lane checkpoint,
+	# try free poses on the same pending segment, including the approach
+	# behind its current position. Never skip a mandatory stop.
+	if stuck:
+		var side := Vector3(-direction.z,0,direction.x)
+		for along in [-12.0,-8.0,-4.0,4.0,8.0,12.0]:
+			for shift in [0.0,.7,-.7,1.4,-1.4,2.1,-2.1]:
+				var candidate := origin+direction*float(along)+side*float(shift)
+				if (target-candidate).dot(direction)<.5: continue
+				if not _on_road(streets,candidate,direction,width,length): continue
+				options.append({"p":candidate,"d":direction,"index":index})
+	var previous_recovery: Vector3 = state.get("watch_last_recovery",Vector3.INF)
 	for option in options:
 		var p: Vector3 = option.p
 		var d: Vector3 = option.d
+		if previous_recovery.is_finite() and p.distance_to(previous_recovery)<2.5 and now<int(state.get("watch_last_recovery_until",0)): continue
 		if not _recovery_pose_clear(body,streets,p,d,width,length,height): continue
+		state.watch_last_recovery = p
+		state.watch_last_recovery_until = now+60000
 		_junction_release(state,body,streets)
 		body.set_meta("junction_guard",false)
 		body.remove_meta("traffic_yield_until")
