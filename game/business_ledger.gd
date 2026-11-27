@@ -105,6 +105,24 @@ func add_message(sender: String,body: String) -> void:
 	if messages.size()>50: messages.pop_front()
 	unread = mini(50,unread+1)
 
+# The invitation and meeting are saved separately from mission acceptance.
+func albertico_visible() -> bool:
+	return stage>0 or bool(life_data.get("albertico_meeting",false))
+
+func invite_albertico() -> bool:
+	if stage!=0 or albertico_visible() or bool(life_data.get("albertico_invited",false)): return false
+	life_data["albertico_invited"] = true
+	add_message("Albertico","Asere, te tengo un bisne. Avísame por aquí y nos vemos afuera de tu casa.")
+	save_game()
+	return true
+
+func meet_albertico() -> bool:
+	if stage!=0 or albertico_visible() or not bool(life_data.get("albertico_invited",false)): return false
+	life_data["albertico_meeting"] = true
+	add_message("Tú → Albertico","Dale, nos vemos afuera.")
+	save_game()
+	return true
+
 func accept() -> void:
 	if stage!=0: return
 	stage = 1

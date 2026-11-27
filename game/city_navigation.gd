@@ -112,7 +112,7 @@ func _refresh_places() -> void:
 	var world = game.cuba_world
 	var mission = game.carlos_mission
 	var first_stage: int = game.business.ledger.stage
-	if first_stage in [0,3] and is_instance_valid(game.business.albertico):
+	if first_stage in [0,3] and game.business.ledger.albertico_visible() and is_instance_valid(game.business.albertico):
 		_add_place("MISIÓN · Albertico",game.business.albertico.global_position)
 	elif first_stage in [1,2] and not world.food_factory.is_empty():
 		_add_place("MISIÓN · Recoger mercancía",world.food_factory.counter)
@@ -127,7 +127,7 @@ func _refresh_places() -> void:
 			_add_place("MISIÓN · Llevar goma al garaje",world.garage_home_site.door)
 	if game.garage.waypoint_active: _add_place("Destino actual · "+game.garage.waypoint_label,game.garage.waypoint_point)
 	if not world.garage_home_site.is_empty(): _add_place("Mi casa / garaje",world.garage_home_site.door)
-	if is_instance_valid(game.business.albertico): _add_place("Albertico",game.business.albertico.global_position)
+	if game.business.ledger.albertico_visible() and is_instance_valid(game.business.albertico): _add_place("Albertico",game.business.albertico.global_position)
 	if not world.food_factory.is_empty(): _add_place("MIPYME · Fábrica",world.food_factory.counter)
 	for site in world.commerce_sites:
 		_add_place(String(site.name),site.entrance)

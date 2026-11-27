@@ -39,6 +39,8 @@ var player: CharacterBody3D
 var van: CharacterBody3D
 var camera: Camera3D
 var albertico: Node3D
+var albertico_intro_clock := 0.0
+const ALBERTICO_INVITE_DELAY := 15.0
 var arrow: Node3D
 var stand: Node3D
 var factory_arrow: Node3D
@@ -1236,10 +1238,19 @@ func _phone_thread(name_value: String) -> void:
 				_button("Preguntar qué tiene disponible",life._ask_stock.bind(String(id)))
 				_button("Ver contacto",life._contact_page.bind(String(id)))
 				break
+	if name_value=="Albertico" and ledger.stage==0 and bool(ledger.life_data.get("albertico_invited",false)) and not ledger.albertico_visible():
+		_button("Quedar con Albertico",_meet_albertico)
 	if name_value=="Carlos" and carlos_call.is_valid(): _button("Llamar a Carlos",carlos_call)
 	if name_value=="Yordi" and yordi_call.is_valid(): _button("Llamar a Yordi",yordi_call)
 	_button("Volver a mensajes",open_messages)
 	phone_scroll.set_deferred("scroll_vertical",100000)
+
+func _meet_albertico() -> void:
+	if not is_instance_valid(albertico): return
+	if ledger.meet_albertico():
+		close()
+		_sync_visuals()
+		_notify("Albertico te espera afuera de tu casa.")
 
 func open_phone_gps() -> void:
 	phone_mode = true
@@ -1271,9 +1282,10 @@ func _clear_visual_children(root: Node3D) -> void:
 
 func _sync_visuals() -> void:
 	if arrow==null: return
-	arrow.visible = ledger.stage==0 or ledger.stage==3
+	albertico.visible = ledger.albertico_visible()
+	arrow.visible = ledger.albertico_visible() and ledger.stage in [0,3]
 	factory_arrow.visible = ledger.stage in [1,2]
-	stand.show()
+	stand.visible = ledger.stage>=1
 	var tier := stall_tier(ledger.sold) if ledger.stage==4 else 0
 	for i in range(stall_growth.size()): stall_growth[i].visible = tier>=i+1
 	if is_instance_valid(stall_sign):
@@ -1343,7 +1355,10 @@ func _sync_cargo_views() -> void:
 func _objective() -> String:
 	if albertico==null: return "Misión no disponible: falta la MIPYME o el puesto."
 	match ledger.stage:
-		0: return "Habla con Albertico en su puesto de Monte."
+		0:
+			if ledger.albertico_visible(): return "Habla con Albertico afuera de tu casa."
+			if bool(ledger.life_data.get("albertico_invited",false)): return "P · Mensajes · Responde a Albertico."
+			return "Explora la ciudad. Pronto recibirás un mensaje."
 		1: return "Toma un taxi y selecciona MIPYME de alimentos."
 		2: return "Compra cajas y cárgalas en el carro con G."
 		3:
@@ -1442,11 +1457,16 @@ func _tick_buyer(delta: float) -> void:
 
 func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	if life!=null: life.tick(delta,in_vehicle,editor)
+	if ledger.stage==0 and not ledger.albertico_visible() and not bool(ledger.life_data.get("albertico_invited",false)) and not editor and not in_vehicle and not modal_open() and is_instance_valid(albertico):
+		albertico_intro_clock += delta
+		if albertico_intro_clock>=ALBERTICO_INVITE_DELAY and ledger.invite_albertico():
+			phone_ring.play()
+			_notify("Nuevo mensaje de Albertico · P para leerlo")
 	phase += delta
 	# Only two stationary merchants; animate when near the camera.
 	if not editor and is_instance_valid(camera):
 		for merchant in get_tree().get_nodes_in_group("mission_merchant_visuals"):
-			if merchant is Person and merchant.global_position.distance_squared_to(camera.global_position)<625.0:
+			if merchant is Person and merchant.is_visible_in_tree() and merchant.global_position.distance_squared_to(camera.global_position)<625.0:
 				merchant.animate(delta,false)
 	delivery_gesture = maxf(0.0,delivery_gesture-delta)
 	if delivery_gesture>0.0 and is_instance_valid(albertico) and albertico is Person:
