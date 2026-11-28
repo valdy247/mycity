@@ -946,6 +946,18 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 		else:
 			food_view.position = food_view.position.move_toward(Vector3(-.29,-.12 if active_hand==0 else -.36,-.74),delta*1.2)
 		drink_view.position.y = move_toward(drink_view.position.y,-.12 if active_hand==1 else -.36,delta*1.2)
+		if last_first_person and not in_vehicle and not state.meal.is_empty():
+			var cam: Camera3D = business.camera
+			if food_model=="arroz":
+				food_view.position = InteractionHand.camera_safe_pose(cam,Vector3(-.28,-.40,-.57),.15)
+				if is_instance_valid(rice_spoon_view):
+					var desired := Vector3(.30,-.39,-.58)
+					if active_hand==0: desired = Vector3(-.19,-.34,-.48) if bite_anim>.39 else Vector3(.045,-.12,-.24)
+					rice_spoon_view.position = InteractionHand.camera_safe_pose(cam,desired,.09)
+			elif not food_model.is_empty():
+				food_view.position = InteractionHand.camera_safe_pose(cam,Vector3(-.29,-.12 if active_hand==0 else -.36,-.74),.13)
+			if not drink_model.is_empty():
+				drink_view.position = InteractionHand.camera_safe_pose(cam,Vector3(.29,-.12 if active_hand==1 else -.36,-.74),.13)
 	var order: Dictionary = state.order
 	if not order.is_empty():
 		order.remaining = maxf(0.0,float(order.remaining)-delta)
