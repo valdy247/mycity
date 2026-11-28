@@ -1359,7 +1359,7 @@ func _job_near(site: Dictionary) -> bool:
 
 func open_neighborhood_jobs() -> void:
 	var job: Dictionary = ledger.life_data.get("neighborhood_job",{})
-	_open("Trabajos del barrio","Mandados sin inversión inicial. Recoge el encargo y entrégalo; no cobras hasta terminar.")
+	_open("Trabajos del barrio","Mandados de documentos sin inversión inicial. Recoge el sobre y entrégalo; no cobras hasta terminar.")
 	if not job.is_empty():
 		var collecting := String(job.phase)=="collect"
 		var site := _job_site(String(job.origin if collecting else job.destination))
@@ -1373,13 +1373,13 @@ func open_neighborhood_jobs() -> void:
 	else:
 		var sites := _job_sites()
 		for i in range(mini(3,sites.size())):
-			var from: Dictionary = sites[i]
+			var origin_site: Dictionary = sites[i]
 			if sites.size()<2: break
 			var destination: Dictionary = sites[(i+1)%sites.size()]
-			var distance: float = Vector3(from.entrance).distance_to(Vector3(destination.entrance))
+			var distance: float = Vector3(origin_site.entrance).distance_to(Vector3(destination.entrance))
 			var pay := clampi(roundi(160.0+distance*.65),180,450)
-			pay += roundi(float(pay)*float(ledger.reputation(String(from.contact))-50)*.002)
-			_button("%s → %s · %d CUP" % [from.name,destination.name,pay],_accept_neighborhood_job.bind(String(from.id),String(destination.id),pay))
+			pay += roundi(float(pay)*float(ledger.reputation(String(origin_site.contact))-50)*.002)
+			_button("%s → %s · %d CUP" % [origin_site.name,destination.name,pay],_accept_neighborhood_job.bind(String(origin_site.id),String(destination.id),pay))
 		if sites.size()<2: _button("No hay rutas disponibles todavía",open_neighborhood_jobs,true)
 	_button("Inicio",open_phone_home)
 
@@ -1449,6 +1449,8 @@ func open_business_summary() -> void:
 	_phone_metric("Ingresos acumulados","%d CUP" % ledger.revenue)
 	_phone_metric("Comisiones pagadas","%d CUP" % ledger.wages)
 	_phone_metric("Mercancía disponible",_stock_text())
+	_phone_metric("Gastos acumulados","%d CUP" % ledger.expenses)
+	if life!=null: _button("Mis establecimientos",life.open_managed_businesses)
 	_button("Inicio",open_phone_home)
 
 func open_messages() -> void:
