@@ -889,10 +889,16 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 			var item := String(MENU[order.key].name).to_lower()
 			business._notify(name_value+": "+String(["¡Muchacho, tu "+item+"!","¡Ya está listo tu pedido de "+item+"!","¡Ven a buscar tu "+item+"!","¡Mi hermano, aquí tienes tu "+item+"!","¡Orden lista, pasa por el mostrador!"].pick_random()))
 			ledger.save_game()
-	agent_tick_clock += delta
-	if agent_tick_clock>=.065:
-		_tick_agents(agent_tick_clock)
+	# Remote storefront NPC movement can wait while the player is in the rental room.
+	# Economy, hunger, energy and the game clock continue independently.
+	var controller = business.get_parent()
+	if controller.ambient_city_suspended():
 		agent_tick_clock = 0.0
+	else:
+		agent_tick_clock += delta
+		if agent_tick_clock>=.065:
+			_tick_agents(agent_tick_clock)
+			agent_tick_clock = 0.0
 	supply_clock += delta
 	if supply_clock>=5.0:
 		_supply_tick(supply_clock)
