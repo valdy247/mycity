@@ -660,7 +660,9 @@ func yield_to_runner(runner: Person,target: Vector3) -> void:
 
 func tick(delta: float) -> void:
 	# Keep monotonic elapsed time, initialized from the saved city clock.
-	resident_clock += delta
+	if life!=null and life.state.has("day"):
+		resident_clock = float(maxi(0,int(life.state.day)-1))*1440.0+float(life.state.minutes)
+	else: resident_clock += delta
 	if not initialized:
 		if building_graph: return
 		build_wait -= delta
