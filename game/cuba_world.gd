@@ -63,6 +63,8 @@ var monte_columns: Dictionary = {}
 var home_local_door := Vector3(0,0,1.65)
 var slots: Array = []
 var box_groups: Dictionary = {}
+var infrastructure_ready := false
+var infrastructure_building := false
 var shop_items: Array = []
 var inventory: Dictionary = {}
 var residents: Array = []
@@ -187,11 +189,25 @@ func _build_infrastructure_now() -> void:
 	wear.build(geography,street_geometry)
 	_make_corner_plaques()
 	_make_utility_network()
+	infrastructure_ready = true
 
 func _build_late_infrastructure() -> void:
 	# Allow the arrival camera and player to render before adding street decoration.
 	await get_tree().create_timer(8.0).timeout
 	if not is_inside_tree(): return
+	var controller = get_parent()
+	# Do expensive scene assembly in the interior or under the exit cover.
+	while not infrastructure_ready and not infrastructure_building and is_instance_valid(controller.garage) and not controller.garage.inside and not controller.home_exit_loading:
+		await get_tree().create_timer(.5).timeout
+		if not is_inside_tree(): return
+	await prepare_exit_infrastructure()
+
+func prepare_exit_infrastructure() -> void:
+	while infrastructure_building:
+		await get_tree().process_frame
+		if not is_inside_tree(): return
+	if infrastructure_ready: return
+	infrastructure_building = true
 	var started := Time.get_ticks_msec()
 	var wear := RoadWear.new()
 	add_child(wear)
@@ -206,6 +222,8 @@ func _build_late_infrastructure() -> void:
 	_flush_city_boxes()
 	var controller = get_parent()
 	set_graphics_quality(int(controller.graphics_quality))
+	infrastructure_ready = true
+	infrastructure_building = false
 	print("MyCity carga progresiva (ms): mobiliario urbano=",Time.get_ticks_msec()-started)
 
 # One static body per spatial tile instead of thousands of shapes on a
