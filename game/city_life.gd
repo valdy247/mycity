@@ -191,6 +191,7 @@ func _update_hud() -> void:
 	sleep_bar.value = energy
 	sleep_label.text = "Energía %d%%" % roundi(energy)
 	if float(state.coffee_minutes)>0.0: sleep_label.text += " · Café activo"
+	if float(state.get("party_alcohol",0.0))>30.0: sleep_label.text += " · Mareo"
 	if float(state.get("illness_minutes",0.0))>0.0: sleep_label.text += " · Malestar"
 	elif float(state.get("overfull_minutes",0.0))>0.0: sleep_label.text += " · Pesadez"
 
@@ -311,6 +312,9 @@ func sleep_at_home() -> String:
 	state.coffee_minutes = 0.0
 	state.illness_minutes = maxf(0.0,float(state.get("illness_minutes",0.0))-duration)
 	state.overfull_minutes = maxf(0.0,float(state.get("overfull_minutes",0.0))-duration)
+	var drinks := float(state.get("party_alcohol",0.0))
+	state.party_alcohol = maxf(0.0,drinks-duration*.45)
+	if drinks>=65.0: state.fatigue = minf(100.0,float(state.fatigue)+12.0)
 	state.alarm_minute = -1
 	state["bed_unmade"] = true
 	_update_hud()
@@ -1275,6 +1279,7 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	state.coffee_minutes = maxf(0.0,float(state.coffee_minutes)-passed)
 	state.fatigue = minf(100.0,float(state.fatigue)+(passed-stimulated*.65)/9.6)
 	state.overfull_minutes = maxf(0.0,float(state.get("overfull_minutes",0.0))-passed)
+	state.party_alcohol = maxf(0.0,float(state.get("party_alcohol",0.0))-passed*.45)
 	if float(state.get("illness_minutes",0.0))>0.0:
 		state.illness_minutes = maxf(0.0,float(state.illness_minutes)-passed)
 		state.fatigue = minf(100.0,float(state.fatigue)+passed*.025)
