@@ -27,6 +27,8 @@ var story_confirming := false
 var story_voice_enabled := false
 var story_voice_playing := false
 var story_voice_id := ""
+var story_clip_paths: Array = []
+var story_clip_player: AudioStreamPlayer
 var life: CityLife
 var garage_market: Callable
 var city_map: Callable
@@ -713,12 +715,13 @@ func _open(title: String,body: String = "") -> void:
 
 # Story dialogues use the existing modal so mission ticks and controls
 # obey the same pause/resume rules as the original interactions.
-func open_story(actor: Node3D,title: String,lines: Array,accept_label: String,callback: Callable,cancel_label: String = "") -> void:
+func open_story(actor: Node3D,title: String,lines: Array,accept_label: String,callback: Callable,cancel_label: String = "",clip_paths: Array = []) -> void:
 	phone_mode = false
 	_open(title)
 	story_active = true
 	story_title = title
 	story_lines = lines.duplicate()
+	story_clip_paths = clip_paths.duplicate()
 	if story_lines.is_empty(): story_lines.append(title)
 	story_index = 0
 	story_accept_label = accept_label
@@ -753,12 +756,25 @@ func _story_voice_available() -> bool:
 	return not story_voice_id.is_empty()
 
 func _stop_story_voice() -> void:
+	if is_instance_valid(story_clip_player): story_clip_player.stop()
 	if story_voice_playing and DisplayServer.has_feature(DisplayServer.FEATURE_TEXT_TO_SPEECH):
 		DisplayServer.tts_stop()
 	story_voice_playing = false
 
 func _speak_story() -> void:
 	_stop_story_voice()
+	if not story_clip_paths.is_empty():
+		if story_index>=story_clip_paths.size(): return
+		var path := String(story_clip_paths[story_index])
+		if not ResourceLoader.exists(path): return
+		var clip := load(path) as AudioStream
+		if clip==null: return
+		if not is_instance_valid(story_clip_player):
+			story_clip_player = AudioStreamPlayer.new()
+			add_child(story_clip_player)
+		story_clip_player.stream = clip
+		story_clip_player.play()
+		return
 	if not story_voice_enabled or not _story_voice_available() or story_index>=story_lines.size(): return
 	var parts := story_line_parts(String(story_lines[story_index]),story_title)
 	DisplayServer.tts_speak(parts[1],story_voice_id,75,1.0,1.0,0,true)
@@ -810,7 +826,7 @@ func _render_story() -> void:
 		cancel.text = story_cancel_label
 		cancel.pressed.connect(close)
 		row.add_child(cancel)
-	if _story_voice_available() and not final_page:
+	if story_clip_paths.is_empty() and _story_voice_available() and not final_page:
 		var voice := Button.new()
 		voice.text = "Voz: sí" if story_voice_enabled else "Voz: no"
 		voice.pressed.connect(_toggle_story_voice)
@@ -841,6 +857,7 @@ func _end_story() -> void:
 	_stop_story_voice()
 	if is_instance_valid(story_camera): story_camera.finish()
 	story_lines.clear()
+	story_clip_paths.clear()
 	story_callback = Callable()
 	story_confirming = false
 	panel.add_theme_stylebox_override("panel",_phone_style(Color("#152130f5"),14,Color("#40536a"),1,4))
