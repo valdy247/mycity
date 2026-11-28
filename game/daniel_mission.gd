@@ -34,7 +34,7 @@ var smoking := 0.0
 var cigarette: Node3D
 var drink_prop: Node3D
 var drink_time := 0.0
-var play: Node
+var play: PartyPlay
 var guests: Array[Dictionary] = []
 var party_lights: Array[OmniLight3D] = []
 var event_clock := 0.0
@@ -659,13 +659,13 @@ func tick(delta: float) -> void:
 		guest_clock = 0.0
 		_refresh_party_phase()
 	_tick_party_events(delta)
-	var period := _period()
 	for entry in dancers:
 		_tick_guest(entry,delta)
 	if dance_active:
 		if not business.modal_open() or not is_instance_valid(beat_label): dance_active = false
 		else:
 			dance_time += delta
+			var period := _period()
 			var phase := fposmod(_rhythm_clock(),period)
 			beat_label.text = ("¡AHORA!" if minf(phase,period-phase)<.16 else "Espera el pulso…")+"   %d/%d" % [dance_hits,dance_attempts]
 	if smoking>0.0:
@@ -718,12 +718,12 @@ func _guest_cell(p: Vector3) -> Vector2i:
 func _guest_walk(entry: Dictionary,goal: Vector3,delta: float) -> bool:
 	var person: Person = entry.node
 	if person.position.distance_to(goal)<.23: return true
-	var from := _guest_cell(person.position)
-	var to := _guest_cell(goal)
-	if guest_nav.is_point_solid(from) or guest_nav.is_point_solid(to): return false
-	if entry.get("nav_goal",Vector2i(999,999))!=to or not entry.has("nav_path"):
-		entry.nav_goal = to
-		entry.nav_path = guest_nav.get_id_path(from,to)
+	var start_cell := _guest_cell(person.position)
+	var target_cell := _guest_cell(goal)
+	if guest_nav.is_point_solid(start_cell) or guest_nav.is_point_solid(target_cell): return false
+	if entry.get("nav_goal",Vector2i(999,999))!=target_cell or not entry.has("nav_path"):
+		entry.nav_goal = target_cell
+		entry.nav_path = guest_nav.get_id_path(start_cell,target_cell)
 		entry.nav_index = 1
 	var path: Array = entry.nav_path
 	var index := int(entry.nav_index)
