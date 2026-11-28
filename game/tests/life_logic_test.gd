@@ -1,6 +1,7 @@
 extends SceneTree
 const Ledger = preload("res://business_ledger.gd")
 const Life = preload("res://city_life.gd")
+const Business = preload("res://business_mission.gd")
 var failures := 0
 
 func _initialize() -> void:
@@ -55,8 +56,39 @@ func _run() -> void:
 	_check(life._cafe_withdrawable(cafe)==0,"insolvent cafe cannot withdraw")
 	life.state.cafes["test"] = cafe
 	_check(not life._cafe_open("test"),"unpaid staff closes managed cafe")
+	# Closed cafés cannot sell to simulated pedestrians even with inventory.
+	life.state.minutes = 60.0
+	cafe.management.staff = true
+	cafe.management.wage_due = 0
+	_check(not life._cafe_open("test"),"night closure applies even with paid staff")
+	_check(life.citizen_purchase("test",500)==0,"closed cafe rejects simulated customer")
+	# Verify the route cooldown never blocks emergency income, and lateness
+	# reduces compensation rather than deleting the job.
+	var mission := Business.new()
+	mission.life = life
+	mission.ledger.persistence_enabled = false
+	mission.ledger.cash = 1000
+	mission.ledger.life_data.job_route_history = {"a→b":mission._job_now()+90.0}
+	_check(not mission._job_route_available("a","b"),"recently completed route cools down")
+	mission.ledger.cash = 0
+	_check(mission._job_route_available("a","b"),"broke player always has access to work")
+	var job := {"pay":300,"deadline":mission._job_now()+10.0}
+	_check(mission._job_pay(job)==300,"on-time job pays full amount")
+	life.state.minutes += 11.0
+	_check(mission._job_pay(job)==240,"late job remains payable at reduced rate")
+	mission.free()
 	life.free()
-	for suffix in ["",".bak",".tmp",".bak.tmp"]:
+	# Recover a complete temp snapshot if the primary never committed.
+	var pending := Ledger.new()
+	pending.save_path = path+".pending"
+	pending.cash = 345
+	pending.save_game()
+	DirAccess.rename_absolute(path+".pending",path+".tmp")
+	var recovered := Ledger.new()
+	recovered.save_path = path
+	recovered.load_game()
+	_check(recovered.cash==345,"complete interrupted temp write recovered before older backup")
+	for suffix in ["",".bak",".tmp",".bak.tmp",".pending"]:
 		if FileAccess.file_exists(path+suffix): DirAccess.remove_absolute(path+suffix)
 	print("MyCity life logic: ","PASS" if failures==0 else "FAIL"," | failures: ",failures)
 	quit(0 if failures==0 else 1)
