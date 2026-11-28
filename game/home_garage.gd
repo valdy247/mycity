@@ -1002,7 +1002,7 @@ func _attach_interaction_hand(root: Node3D,grip: Vector3,left: bool = false,unde
 	hand.configure(grip,left,under)
 	return hand
 
-func _refresh_carried() -> void: -> void:
+func _refresh_carried() -> void:
 	if carried_view==null: return
 	for child in carried_view.get_children():
 		carried_view.remove_child(child)
