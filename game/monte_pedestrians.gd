@@ -224,6 +224,7 @@ func _build() -> void:
 			stop["pedestrian_managed"] = true
 			destinations.append({"id":nearest,"kind":"bus","stop":stop})
 		buses.alight_handler = Callable(self,"accept_alighting")
+		buses.resident_release_handler = Callable(self,"release_resident")
 	print("Monte: ",graph.get_point_count()," pedestrian waypoints, ",destinations.size()," destinations; carga distribuida ",Time.get_ticks_msec()-started," ms.")
 	for dest in destinations:
 		if String(dest.kind)=="home": home_destinations.append(dest)
@@ -513,7 +514,6 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 		nearby.append(dest)
 	nearby.shuffle()
 	var profile: Dictionary = agent.get("profile",{})
-	var hour := fmod(resident_clock,1440.0)/60.0
 	if not profile.is_empty():
 		var home: Dictionary = profile.home
 		# In the evening favor the resident's own doorway if reachable.
