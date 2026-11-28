@@ -3,6 +3,7 @@ extends Node3D
 const Person = preload("res://street_person.gd")
 const InteractionHand = preload("res://interaction_hand.gd")
 const Ledger = preload("res://business_ledger.gd")
+const Residents = preload("res://resident_simulation.gd")
 const MENU := {
 	"pizza":{"name":"Pizza","price":160,"food":"pizza","drink":"","fill":30,"needs":{"harina":1,"queso":1,"tomate":1}},
 	"refresco":{"name":"Refresco","price":60,"food":"","drink":"refresco","fill":8,"needs":{"refresco":1}},
@@ -297,6 +298,13 @@ func sleep_at_home() -> String:
 	var duration := planned_sleep_minutes()
 	advance_sleep_economy(duration)
 	advance_game_minutes(duration)
+	var router = world.pedestrian_router
+	if is_instance_valid(router):
+		router.advance_residents()
+	else:
+		var saved: Dictionary = state.get("resident_profiles",{})
+		for key in saved:
+			if saved[key] is Dictionary: Residents.advance(saved[key],int(key),Residents.now(state))
 	state.fatigue = maxf(0.0,float(state.fatigue)-duration/FULL_SLEEP_MINUTES*100.0)
 	state.fullness = maxf(0.0,float(state.fullness)-duration*.025)
 	state.coffee_minutes = 0.0
@@ -909,10 +917,35 @@ func greet(person: Node3D) -> String:
 	var name_value := String(person.get_meta("citizen_name",""))
 	var known := bool(state.met.get(id,false))
 	state.met[id] = true
+	if person.has_meta("resident_style"):
+		var style := int(person.get_meta("resident_style"))
+		var router = world.pedestrian_router
+		if is_instance_valid(router): router.greet_resident(style)
+		var row: Dictionary = state.get("resident_profiles",{}).get(str(style),{})
+		ledger.save_game()
+		if not known: return "Mucho gusto, soy "+name_value+"."
+		match String(row.get("objective","")):
+			"comer": return "¡Qué bolá! Voy a buscar algo de comer."
+			"trabajar": return "¡Asere! Tengo que resolver lo del trabajo."
+			"estudiar": return "¡Buenas! Voy a estudiar un rato."
+			"descansar","volver a casa": return "¡Buenas! Voy pa' la casa a descansar."
+		if int(row.get("relationship",0))>=20: return "¡Mi hermano! Qué alegría verte otra vez."
+		return "¡Qué bolá! Aquí resolviendo lo del día."
 	ledger.save_game()
-	if known:
-		return String(["¡Muchacho! ¿Te acuerdas de mí? Soy "+name_value+".","¡Qué bolá! Soy "+name_value+", nos vimos en el negocio.","¡Mira quién está aquí! ¿Cómo te va? Soy "+name_value+"."].pick_random())
+	if known: return String(["¡Muchacho! ¿Te acuerdas de mí? Soy "+name_value+".","¡Qué bolá! Soy "+name_value+", nos vimos en el negocio.","¡Mira quién está aquí! ¿Cómo te va? Soy "+name_value+"."].pick_random())
 	return "Mucho gusto, soy "+name_value+"."
+
+func open_known_neighbors() -> void:
+	business._open("Vecinos","Personas que has conocido en el barrio. Sus actividades y relaciones se conservan al guardar.")
+	var saved: Dictionary = state.get("resident_profiles",{})
+	var found := false
+	for key in saved:
+		if not bool(state.met.get("resident_"+String(key),false)): continue
+		var row: Dictionary = saved[key]
+		found = true
+		business._phone_metric(String(row.get("name","Vecino")),"%s · %s\nConfianza: %d/100" % [String(row.get("job","")),String(row.get("personality","")),int(row.get("relationship",0))])
+	if not found: business._button("Saluda a un vecino en la calle para conocerlo",open_known_neighbors,true)
+	business._button("Inicio",business.open_phone_home)
 
 func _plan(agent: Dictionary,goal: Vector3,task: String) -> bool:
 	if world.pedestrian_router==null: return false
