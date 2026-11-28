@@ -130,6 +130,10 @@ var phone_balance: Label
 var layer: CanvasLayer
 var toast := ""
 var toast_time := 0.0
+var reward_layer: CanvasLayer
+var reward_voice: AudioStreamPlayer
+var reward_serial := 0
+var reward_active := false
 var refresh := 0.0
 var phase := 0.0
 var materials: Dictionary = {}
@@ -881,6 +885,98 @@ func _button(text_value: String,callback: Callable,disabled_value: bool = false)
 	button.disabled = disabled_value
 	button.pressed.connect(callback)
 	content.add_child(button)
+
+# Shared one-shot chapter completion overlay. It only presents rewards
+# already committed by the mission; it never changes the wallet/inventory.
+func show_mission_reward(reward: String, detail: String = "", reflection: String = "", clip_path: String = "", after: Callable = Callable()) -> void:
+	reward_serial += 1
+	var serial := reward_serial
+	reward_active = true
+	if is_instance_valid(reward_layer): reward_layer.queue_free()
+	if is_instance_valid(reward_voice): reward_voice.stop()
+	reward_layer = CanvasLayer.new()
+	reward_layer.layer = 35
+	add_child(reward_layer)
+	var root := Control.new()
+	reward_layer.add_child(root)
+	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var center := CenterContainer.new()
+	root.add_child(center)
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var stack := VBoxContainer.new()
+	center.add_child(stack)
+	stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stack.add_theme_constant_override("separation",12)
+	var width := minf(760.0,get_viewport().get_visible_rect().size.x*.88)
+	var heading := Label.new()
+	heading.text = "MISIÓN CUMPLIDA"
+	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	heading.add_theme_font_size_override("font_size",clampi(int(width*.074),25,56))
+	heading.add_theme_color_override("font_color",Color("#f5d47c"))
+	heading.add_theme_color_override("font_outline_color",Color("#111820"))
+	heading.add_theme_constant_override("outline_size",12)
+	stack.add_child(heading)
+	var prize := Label.new()
+	prize.text = reward
+	prize.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	prize.add_theme_font_size_override("font_size",clampi(int(width*.055),20,40))
+	prize.add_theme_color_override("font_color",Color("#f2fff2"))
+	prize.add_theme_color_override("font_outline_color",Color("#101811"))
+	prize.add_theme_constant_override("outline_size",9)
+	stack.add_child(prize)
+	var note := Label.new()
+	note.text = detail
+	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.custom_minimum_size.x = width
+	note.add_theme_font_size_override("font_size",clampi(int(width*.033),14,22))
+	note.add_theme_color_override("font_outline_color",Color.BLACK)
+	note.add_theme_constant_override("outline_size",7)
+	stack.add_child(note)
+	if not reflection.is_empty():
+		center.hide()
+		var subtitles := Label.new()
+		root.add_child(subtitles)
+		subtitles.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+		subtitles.offset_top = -110
+		subtitles.offset_bottom = -28
+		subtitles.offset_left = 24
+		subtitles.offset_right = -24
+		subtitles.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		subtitles.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		subtitles.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		subtitles.text = reflection
+		subtitles.add_theme_font_size_override("font_size",clampi(int(width*.035),16,25))
+		subtitles.add_theme_color_override("font_outline_color",Color.BLACK)
+		subtitles.add_theme_constant_override("outline_size",9)
+		var duration := 6.0
+		var clip: AudioStream
+		if FileAccess.file_exists(clip_path): clip = AudioStreamMP3.load_from_file(clip_path)
+		elif ResourceLoader.exists(clip_path): clip = load(clip_path) as AudioStream
+		if clip!=null and clip.get_length()>0.0:
+			if not is_instance_valid(reward_voice):
+				reward_voice = AudioStreamPlayer.new()
+				add_child(reward_voice)
+			reward_voice.stream = clip
+			reward_voice.play()
+			duration = clip.get_length()+.35
+		await get_tree().create_timer(duration).timeout
+		if serial!=reward_serial or not is_instance_valid(root): return
+		subtitles.queue_free()
+		center.show()
+	center.modulate.a = 0.0
+	var animation := create_tween()
+	animation.tween_property(center,"modulate:a",1.0,.25)
+	animation.tween_interval(4.0)
+	animation.tween_property(center,"modulate:a",0.0,.4)
+	await animation.finished
+	if serial!=reward_serial: return
+	reward_active = false
+	if is_instance_valid(reward_layer): reward_layer.queue_free()
+	reward_layer = null
+	if after.is_valid(): after.call()
 
 func _notify(value: String) -> void:
 	toast = value
