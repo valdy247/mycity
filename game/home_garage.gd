@@ -806,6 +806,9 @@ func _buy_home() -> void:
 	business._notify("Ya tienes tu casa. Pulsa E en la puerta.")
 
 func _enter() -> void:
+	if game.adaptation_mode and not world.garage_home_site.is_empty():
+		state.house = true
+		state.rented = true
 	if not bool(state.house): return
 	inside = true
 	garage_near = false
@@ -910,7 +913,7 @@ func rental_entry_near(at: Vector3) -> bool:
 	var basis: Basis = world.garage_home_site.basis
 	var offset := at-door
 	# Include the sidewalk approach when facade collision prevents reaching the threshold.
-	return absf(offset.y)<3.0 and absf(offset.dot(basis.x))<=2.6 and offset.dot(basis.z)>=-1.0 and offset.dot(basis.z)<=5.0
+	return absf(offset.y)<3.0 and (Vector2(offset.x,offset.z).length()<=3.5 or (absf(offset.dot(basis.x))<=2.6 and offset.dot(basis.z)>=-1.0 and offset.dot(basis.z)<=5.0))
 
 func _aimed_home(at: Vector3) -> bool:
 	if game.adaptation_mode: return rental_entry_near(at)
