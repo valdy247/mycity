@@ -52,6 +52,8 @@ func setup(mission) -> void:
 	if not state.has("fullness"): state.fullness = 100.0
 	if not state.has("minutes"): state.minutes = 480.0
 	if not state.has("supplies"): state.supplies = INITIAL.duplicate(true)
+	if business.adaptation_mode and not state.supplies.get("primary",{}).has("aceite"):
+		state.supplies.primary.aceite = 12
 	for supplier in INITIAL:
 		if not state.supplies.has(supplier): state.supplies[supplier] = INITIAL[supplier].duplicate(true)
 		for ingredient in INITIAL[supplier]:
@@ -292,7 +294,7 @@ func interact(at: Vector3) -> bool:
 # Cafes pay the wholesale replacement value plus a transport premium.
 # No free inventory, duplicate payout or bypass of the player wallet.
 func _delivery_price(key: String) -> int:
-	return roundi(float(Ledger.PRODUCTS[key].cost)*1.12)
+	return roundi(float(ledger.product(key).cost)*1.12)
 
 func _delivery_available(id: String,key: String) -> bool:
 	if not state.cafes.has(id) or not CAFE_INGREDIENTS.has(key): return false
@@ -316,7 +318,7 @@ func _deliver_to_cafe(id: String,key: String) -> void:
 	cafe.cash = int(cafe.cash)-_cafe_cost(key)
 	# A limited city logistics contract covers the transport difference.
 	cafe.delivery_cooldown = 120.0
-	cafe[key] = int(cafe.get(key,0))+int(Ledger.PRODUCTS[key].units)
+	cafe[key] = int(cafe.get(key,0))+int(ledger.product(key).units)
 	ledger.carry = ""
 	ledger.cash += price
 	ledger.revenue += price
@@ -489,7 +491,7 @@ func _ask_stock(id: String) -> void:
 	if String(site.kind)=="wholesale":
 		var stock: Dictionary = state.supplies.get(id,{})
 		for key in stock:
-			reply += "%s: %d cajas · %d CUP\n" % [Ledger.PRODUCTS[key].name,int(stock[key]),int(Ledger.PRODUCTS[key].cost)]
+			reply += "%s: %d cajas · %d CUP\n" % [Ledger.PRODUCTS[key].name,int(stock[key]),int(ledger.product(key).cost)]
 	else:
 		for key in MENU:
 			if _can_make(id,String(key)): reply += String(MENU[key].name)+" · "+str(MENU[key].price)+" CUP\n"
@@ -587,7 +589,7 @@ func _plan(agent: Dictionary,goal: Vector3,task: String) -> bool:
 # Cafeterias buy wholesale at a negotiated commercial rate, not the
 # player-facing crate price. All recipes remain profitable at menu prices.
 func _cafe_cost(key: String) -> int:
-	return ceili(float(Ledger.PRODUCTS[key].cost)*.40)
+	return ceili(float(ledger.product(key).cost)*.40)
 
 # Visiting residents consume actual ingredients and pay from their profile.
 # Returns the price only when a sale succeeded.
@@ -620,7 +622,7 @@ func _cafe_buy(id: String,supplier: String,key: String) -> bool:
 	var paid := mini(maxi(0,int(cafe.cash)),price)
 	cafe.cash = int(cafe.cash)-paid
 	cafe.supplier_debt = int(cafe.get("supplier_debt",0))+price-paid
-	cafe[key] = int(cafe.get(key,0))+int(Ledger.PRODUCTS[key].units)
+	cafe[key] = int(cafe.get(key,0))+int(ledger.product(key).units)
 	refresh_supplier(supplier)
 	return true
 

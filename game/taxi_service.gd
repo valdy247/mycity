@@ -1112,6 +1112,7 @@ func stop_position(player: CharacterBody3D,shape: Shape3D) -> Dictionary:
 		for distance_value in [1.65,2.1,2.6,3.5,4.4,5.5,6.5,8.0]:
 			for side in [1.0,-1.0]:
 				for along in [0.0,-1.3,1.3,-2.7,2.7]:
+					if bool(passenger.get("chapter_side_only",false)) and float(side)!=1.0: continue
 					var p := body.to_global(Vector3(-float(side)*float(distance_value),0,float(along)))
 					if pass_index==0 and streets.point_on_road(p): continue
 					if pass_index==1 and float(distance_value)>4.4: continue

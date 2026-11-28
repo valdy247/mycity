@@ -21,6 +21,8 @@ var helper_recovered := false
 var cargo_marker: Node3D
 const ROOM := Vector3(60,110,0)
 const FRIDGE := Vector3(-5.8,110,3.6)
+const RENTAL_FRIDGE := Vector3(-6.30,110,3.65)
+const RENTAL_OIL := Vector3(-6.35,110,-.65)
 var game
 var business
 var ledger: Ledger
@@ -536,7 +538,19 @@ func _make_fridge() -> void:
 	if not is_instance_valid(game.garage.interior): return
 	fridge = Node3D.new()
 	game.garage.interior.add_child(fridge)
-	fridge.global_position = FRIDGE
+	fridge.global_position = RENTAL_FRIDGE if game.adaptation_mode else FRIDGE
+	if game.adaptation_mode:
+		fridge.rotation.y = PI*.5
+		var body := StaticBody3D.new()
+		fridge.add_child(body)
+		body.position.y = .88
+		body.collision_layer = 1
+		body.collision_mask = 0
+		var col := CollisionShape3D.new()
+		var shape := BoxShape3D.new()
+		shape.size = Vector3(.70,1.76,.65)
+		col.shape = shape
+		body.add_child(col)
 	business._box(fridge,Vector3(0,.88,0),Vector3(.70,1.76,.65),Color("#d7d9d6"))
 	business._box(fridge,Vector3(0,1.43,.34),Vector3(.68,.58,.035),Color("#e8e9e5"))
 	business._box(fridge,Vector3(0,.55,.34),Vector3(.68,1.06,.035),Color("#e8e9e5"))
@@ -547,6 +561,12 @@ func _store_cold() -> bool:
 	if ledger.carry.is_empty(): return false
 	var key := ledger.carry
 	if active() and (_phase()!="cold" or not key in REQUIRED): return false
+	if game.adaptation_mode and ledger.stage==4:
+		if ledger.deliver():
+			business._sync_visuals()
+			business._notify("Mercancía guardada para Albertico.")
+			return true
+		return false
 	if state.is_empty():
 		# Old completed saves retain the standard direct stock path.
 		if ledger.stage==4 and ledger.deliver():
@@ -741,8 +761,10 @@ func talk() -> void:
 	business._notify(objective())
 
 func action_text() -> String:
-	if is_instance_valid(fridge) and game.garage.inside and not ledger.carry.is_empty() and game.player.global_position.distance_to(FRIDGE+Vector3.UP*.86)<1.65:
-		return "[E] Guardar caja en el frío"
+	if is_instance_valid(fridge) and game.garage.inside and not ledger.carry.is_empty():
+		var at: Vector3 = RENTAL_OIL if game.adaptation_mode and ledger.carry=="aceite" else fridge.global_position
+		if game.player.global_position.distance_to(at+Vector3.UP*.86)<1.85:
+			return "[E] Guardar caja en la cocina" if game.adaptation_mode and ledger.carry=="aceite" else "[E] Guardar caja en el frío"
 	if not active(): return ""
 	if carrying_table(): return "Lleva la mesa con Albertico"
 	if _phase()=="room" and game.player.global_position.distance_to(ROOM+Vector3(0,.86,-.55))<2.0: return "[E] Levantar mesa entre los dos"

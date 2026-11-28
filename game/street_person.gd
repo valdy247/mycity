@@ -18,7 +18,7 @@ var leisure_prop: Node3D
 var phone_idle := false
 var knees: Array[Node3D] = []
 # Story detail is limited to the main cast, not every city pedestrian.
-const STORY_STYLES := [806,807,810,813,933,945]
+const STORY_STYLES := [414,806,807,810,813,933,945]
 var story_character := false
 var idle_phase := 0.0
 var stride_weight := 0.0
@@ -104,6 +104,9 @@ func setup(style: int,worker: bool = false,ambient: bool = false) -> void:
 	if story_character:
 		shorts = false
 		match style:
+			414: # Recurring taxi driver: mature Cuban man, open collar.
+				shirt = Color("#c3bca9")
+				pants = Color("#46515c")
 			806: # Carlos: practical work shirt and faded jeans.
 				shirt = Color("#c5b79a")
 				pants = Color("#435b70")
@@ -127,6 +130,10 @@ func setup(style: int,worker: bool = false,ambient: bool = false) -> void:
 	var torso_width: float = .43 if worker else .37+float(build)*.04
 	var hip_width := .35 if worker else (.36+float(build)*.025 if female else .32+float(build)*.018)
 	var depth := .27 if worker else .24+float(build)*.025
+	if style==414 and story_character:
+		torso_width = .46
+		hip_width = .37
+		depth = .31
 	var height := 0.94+float(posmod(style,5))*.035
 	if ambient and posmod(variant,13)==0:
 		age_group = "menor"
@@ -144,7 +151,7 @@ func setup(style: int,worker: bool = false,ambient: bool = false) -> void:
 	_part(self,"portrait" if story_character else "head",Vector3(0,1.66,.015),Vector3(.28,.34,.29),skin)
 	var hair_colors: Array[Color] = [Color("#231e1b"),Color("#302b28"),Color("#4b3428"),Color("#3c3531")]
 	var hair: Color = Color("#d5c14b") if worker else hair_colors[posmod(variant,hair_colors.size())]
-	if age_group=="mayor": hair = Color("#a29d96")
+	if age_group=="mayor" or (story_character and style==414): hair = Color("#72716b")
 	if story_character and style==807:
 		var cap := Color("#303b43")
 		_part(self,"portrait",Vector3(0,1.795,-.012),Vector3(.316,.155,.314),cap).name = "YordiCap"

@@ -2,6 +2,8 @@ extends Node3D
 # Chapter 1. Uses the normal Havana street graph and the airport taxi's cabin.
 const Person = preload("res://street_person.gd")
 const MorningStory = preload("res://morning_story.gd")
+const InvestmentStory = preload("res://investment_story.gd")
+var investment: InvestmentStory
 var morning: MorningStory
 var bag_markers: Array[MeshInstance3D] = []
 const FARE_REVISION := 2
@@ -66,6 +68,7 @@ func active() -> bool:
 	return phase!="done"
 
 func cinematic() -> bool:
+	if phase=="investment" and investment!=null: return investment.cinematic()
 	if phase=="morning" and morning!=null: return morning.cinematic()
 	return phase not in ["done","unload"]
 
@@ -118,8 +121,11 @@ func setup(controller) -> void:
 		if not bool(state.get("bags_given_to_albertico",false)): _make_bags_at_home()
 		game.garage._enter()
 		if bool(state.get("morning_complete",false)):
-			phase = "done"
-			layer.hide()
+			if bool(state.get("investment_complete",false)):
+				phase = "done"
+				layer.hide()
+				InvestmentStory.restore_business(self)
+			else: _start_investment()
 		else:
 			_start_morning(true)
 		return
@@ -547,6 +553,9 @@ func _action() -> String:
 	return "[E] Recoger maleta del maletero" if _flat(game.player.global_position,_trunk())<2.1 else "Acércate al maletero del taxi."
 
 func interact() -> void:
+	if phase=="investment" and investment!=null:
+		investment.interact()
+		return
 	if phase=="morning" and morning!=null:
 		morning.interact()
 		return
@@ -762,6 +771,15 @@ func _start_morning(resuming: bool) -> void:
 	morning.setup(self,resuming)
 
 func morning_finished() -> void:
+	_start_investment()
+
+func _start_investment() -> void:
+	phase = "investment"
+	investment = InvestmentStory.new()
+	add_child(investment)
+	investment.setup(self)
+
+func investment_finished() -> void:
 	phase = "done"
 	layer.hide()
 	game.status.show()
@@ -781,6 +799,8 @@ func handle_look(relative: Vector2) -> void:
 		look.x = clampf(look.x-relative.x*.003,-1.15,1.15)
 		look.y = clampf(look.y-relative.y*.003,-.48,.35)
 		cab_view.rotation = Vector3(look.y-.06,PI+look.x,0)
+	elif phase=="investment" and investment!=null:
+		investment.handle_look(relative)
 	elif phase=="morning" and morning!=null:
 		morning.handle_look(relative)
 	elif phase=="unload":
@@ -792,6 +812,8 @@ func tick(delta: float) -> void:
 	_update_house_arrow(delta)
 	_update_bag_markers()
 	match phase:
+		"investment":
+			if investment!=null: investment.tick(delta)
 		"morning":
 			if morning!=null: morning.tick(delta)
 		"approach":

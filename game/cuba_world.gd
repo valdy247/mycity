@@ -1551,7 +1551,7 @@ func _reserve_food_factory(proposals: Array) -> void:
 			if not _lot_clear(c,front,edge) or _overlaps_footprint(lot): continue
 			var basis := Basis(Vector3.UP,atan2(front.x,front.z))
 			_add_lot(lot)
-			food_factory = {"center":c,"basis":basis,"counter":c+basis*Vector3(-1.6,.96,2.95),"pickup":c+basis*Vector3(1.55,.96,2.95),"road":lot.curb,"name":"MIPYME de alimentos"}
+			food_factory = {"center":c,"basis":basis,"counter":c+basis*Vector3(-1.6,.96,2.95),"pickup":c+basis*Vector3(1.55,.96,2.95),"road":lot.curb,"edge":lot.edge,"name":"MIPYME de alimentos"}
 			var wall := _mat("factory_wall",Color("#c8c3ae"))
 			var trim := _mat("factory_trim",Color("#638795"))
 			var floor_mat := _mat("public_floor",Color("#b9b5a5"))

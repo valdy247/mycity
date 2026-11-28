@@ -568,7 +568,8 @@ func _decorate_rental_home() -> void:
 	# Simple jalousies, curtains and wall decoration, away from the doorway.
 	_rental_window(decor,Vector3(-6.76,1.83,1.50),PI*.5,1.60)
 	_rental_window(decor,Vector3(-4.45,1.78,-5.76),0.0,1.45)
-	_rental_window(decor,Vector3(6.76,2.0,-3.40),-PI*.5,1.70)
+	# Keep the east window clear of the bathroom partition and mirror.
+	_rental_window(decor,Vector3(6.76,2.0,2.35),-PI*.5,1.50)
 	_rental_wall_frame(decor,Vector3(-3.4,1.9,-2.18),0.0,Color("#8b9e8b"))
 	_rental_wall_frame(decor,Vector3(-2.72,1.9,-2.18),0.0,Color("#b59872"))
 	# A low woven mat under the living-room area, below the existing
@@ -653,6 +654,10 @@ func _build_rental_bathroom() -> void:
 	_solid(root,Vector3(4.15,1.5,-5.26),Vector3(.13,3,.95),wall)
 	_solid(root,Vector3(4.15,1.5,-3.60),Vector3(.13,3,.50),wall)
 	_solid(root,Vector3(4.15,2.65,-4.42),Vector3(.15,.70,1.17),wall)
+	# Hinge at the north jamb, leaf open inside the bathroom along the north side.
+	var bath_door := _rental_root(root,Vector3(4.22,0,-4.78),PI*.5)
+	_rental_part(bath_door,Vector3(0,1.05,.43),Vector3(.065,2.10,.86),Color("#8a6d54"))
+	_rental_part(bath_door,Vector3(.052,1.03,.77),Vector3(.065,.045,.13),Color("#c9b27d"))
 	_rental_part(root,Vector3(5.49,.025,-4.54),Vector3(2.52,.03,2.28),tile)
 	for x in range(7):
 		_rental_part(root,Vector3(4.25+float(x)*.39,.043,-4.54),Vector3(.016,.006,2.28),Color("#9ea9a4"))
@@ -665,8 +670,8 @@ func _build_rental_bathroom() -> void:
 	_rental_round(sink,Vector3(0,.96,.065),Vector3(.49,.055,.34),Color("#99afb0"))
 	_rental_cylinder(sink,Vector3(0,1.02,-.18),.026,.14,Color("#a6b2b1"))
 	_rental_part(sink,Vector3(0,1.10,-.12),Vector3(.048,.045,.16),Color("#b0bdbd"))
-	_rental_part(sink,Vector3(0,1.66,-.31),Vector3(.72,.78,.05),Color("#8c8274"))
-	var mirror := _rental_part(sink,Vector3(0,1.66,-.277),Vector3(.64,.70,.012),Color("#a9c1c7"))
+	_rental_part(sink,Vector3(0,1.64,-.31),Vector3(.58,.66,.05),Color("#8c8274"))
+	var mirror := _rental_part(sink,Vector3(0,1.64,-.277),Vector3(.50,.58,.012),Color("#a9c1c7"))
 	var mirror_mat := StandardMaterial3D.new()
 	mirror_mat.albedo_color = Color("#a7bfc4")
 	mirror_mat.metallic = .6

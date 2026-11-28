@@ -327,6 +327,7 @@ func _finish_visit() -> void:
 	phase = "done"
 	marker.hide()
 	props.hide()
+	ambience.stop()
 	story.morning_finished()
 
 func tick(delta: float) -> void:
@@ -423,10 +424,15 @@ func tick(delta: float) -> void:
 		"handoff":
 			actor.rotation.y = 0.0
 			_face(Vector3(-1.85,110.65,4.1),-.47)
-			if handoff_index<2 and clock>=.45+float(handoff_index)*.95:
+			var bend := sin(clampf(fmod(clock,1.0),0.0,1.0)*PI)*.32 if handoff_index<2 else 0.0
+			actor.rotation.x = bend
+			for leg in actor.limbs: leg.rotation.x = -bend*.8
+			for knee in actor.knees: knee.rotation.x = bend*1.6
+			if handoff_index<2 and clock>=.55+float(handoff_index)*.95:
 				_give_bag(handoff_index)
 				handoff_index += 1
 			if clock>2.4:
+				actor.rotation.x = 0.0
 				phase = "goodbye"
 				_say(8)
 		"goodbye":
@@ -439,6 +445,8 @@ func tick(delta: float) -> void:
 					walk_index = 0
 		"visitor_leave":
 			_face(actor.global_position+Vector3.UP*1.35)
-			if _walk_visitor(delta):
+			var left := _walk_visitor(delta)
+			for arm in actor.arms: arm.rotation.x = -.10
+			if left:
 				# Doorway is a logical transition between interior and city.
 				_finish_visit()

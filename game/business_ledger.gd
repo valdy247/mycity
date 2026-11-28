@@ -11,6 +11,36 @@ const PRODUCTS := {
 	"aceite":{"name":"Aceite","cost":1400,"retail":195,"units":10},
 	"tomate":{"name":"Salsa de tomate","cost":750,"retail":105,"units":10}
 }
+const ADAPTATION_PRODUCTS := {
+	"pollo":{"name":"Pollo","cost":80000,"retail":9000,"units":10},
+	"huevos":{"name":"Huevos","cost":10000,"retail":120,"units":100},
+	"aceite":{"name":"Aceite","cost":23000,"retail":2600,"units":10},
+	"picadillo":{"name":"Picadillo","cost":6000,"retail":800,"units":10},
+	"perrito":{"name":"Perrito (salchicha)","cost":10000,"retail":1200,"units":10}
+}
+const ADAPTATION_INTERVALS := {"huevos":5.0,"aceite":27.0,"pollo":65.0,"picadillo":18.0,"perrito":22.0}
+func product(key: String) -> Dictionary:
+	if save_path=="user://mycity_adaptation_v1.json" and ADAPTATION_PRODUCTS.has(key): return ADAPTATION_PRODUCTS[key]
+	return PRODUCTS.get(key,{})
+
+func adaptation_sales() -> bool:
+	return save_path=="user://mycity_adaptation_v1.json"
+
+func advance_sales(delta: float) -> void:
+	if not adaptation_sales() or stage!=4: return
+	if not life_data.has("adaptation_sale_clocks"): life_data.adaptation_sale_clocks = {}
+	for key in stock:
+		if int(stock[key])<=0: continue
+		var interval := float(ADAPTATION_INTERVALS.get(key,35.0))
+		life_data.adaptation_sale_clocks[key] = minf(interval,float(life_data.adaptation_sale_clocks.get(key,0.0))+delta)
+
+func sale_ready() -> bool:
+	if not adaptation_sales(): return total(stock)>0
+	var clocks: Dictionary = life_data.get("adaptation_sale_clocks",{})
+	for key in stock:
+		if int(stock[key])>0 and float(clocks.get(key,0.0))>=float(ADAPTATION_INTERVALS.get(key,35.0)): return true
+	return false
+
 const COMMISSION_PERCENT := 15
 const VEHICLE_CAPACITY := 8
 const SAVE_PATH := "user://pilar_business_v1.json"
@@ -149,8 +179,8 @@ func factory_arrival() -> void:
 
 func buy(key: String,boxes: int) -> bool:
 	if stage<2 or not PRODUCTS.has(key) or boxes<1 or boxes>8: return false
-	var product: Dictionary = PRODUCTS[key]
-	var cost := int(product.cost)*boxes
+	var item: Dictionary = product(key)
+	var cost := int(item.cost)*boxes
 	if cash<cost: return false
 	cash -= cost
 	expenses += cost
@@ -197,15 +227,15 @@ func deliver_vehicle_box(id: String,key: String) -> bool:
 	counts[key] = int(counts[key])-1
 	if total(counts)==0: cargo.erase(id)
 	else: cargo[id] = counts
-	stock[key] = int(stock.get(key,0))+int(PRODUCTS[key].units)
+	stock[key] = int(stock.get(key,0))+int(product(key).units)
 	low_alert[key] = false
 	save_game()
 	return true
 
 func deliver() -> bool:
 	if carry.is_empty() or stage<3: return false
-	var product: Dictionary = PRODUCTS[carry]
-	stock[carry] = int(stock.get(carry,0))+int(product.units)
+	var item: Dictionary = product(carry)
+	stock[carry] = int(stock.get(carry,0))+int(item.units)
 	low_alert[carry] = false
 	carry = ""
 	save_game()
@@ -223,17 +253,22 @@ func sell_one() -> Dictionary:
 	if stage!=4: return {}
 	for key in PRODUCTS:
 		if int(stock.get(key,0))<=0: continue
-		var product: Dictionary = PRODUCTS[key]
-		var price := int(product.retail)
-		var pay := roundi(float(price)*float(COMMISSION_PERCENT)/100.0)
+		if adaptation_sales():
+			var clocks: Dictionary = life_data.get("adaptation_sale_clocks",{})
+			if float(clocks.get(key,0.0))<float(ADAPTATION_INTERVALS.get(key,35.0)): continue
+			clocks[key] = 0.0
+		var item: Dictionary = product(key)
+		var price := int(item.retail)
+		# No unapproved commission: the agreed first lot has 15,000 CUP gross profit.
+		var pay := 0 if adaptation_sales() else roundi(float(price)*float(COMMISSION_PERCENT)/100.0)
 		stock[key] = int(stock[key])-1
 		cash += price-pay
 		revenue += price
 		wages += pay
 		sold += 1
-		if int(stock[key])<=2 and not bool(low_alert.get(key,false)):
+		if int(stock[key])<=maxi(2,floori(float(item.units)*.2)) and not bool(low_alert.get(key,false)):
 			low_alert[key] = true
-			add_message("Albertico","Oye, se está acabando el "+String(product.name).to_lower()+". Quedan "+str(stock[key])+" unidades. Trae otra caja cuando puedas.")
+			add_message("Albertico","Oye, se está acabando el "+String(item.name).to_lower()+". Quedan "+str(stock[key])+" unidades. Trae otra caja cuando puedas.")
 		save_game()
-		return {"product":product.name,"net":price-pay}
+		return {"product":item.name,"net":price-pay}
 	return {}

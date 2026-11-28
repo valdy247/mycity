@@ -364,8 +364,8 @@ func aimed_text(at: Vector3) -> String:
 	if first_story!=null and first_story.active() and first_story._phase()=="shopping" and key in first_story.REQUIRED:
 		if first_story.state.bought.has(key): return "Caja ya comprada"
 		var owner := "Tú" if first_story.player_box(key) else "Albertico"
-		return "[E] Comprar "+_product_name(key)+" · %d CUP · Carga: %s" % [int(Ledger.PRODUCTS[key].cost),owner]
-	return "[E] Comprar y recoger "+_product_name(key)+" · %d CUP" % int(Ledger.PRODUCTS[key].cost)
+		return "[E] Comprar "+_product_name(key)+" · %d CUP · Carga: %s" % [int(ledger.product(key).cost),owner]
+	return "[E] Comprar y recoger "+_product_name(key)+" · %d CUP" % int(ledger.product(key).cost)
 
 func take_aimed(at: Vector3) -> bool:
 	var target := _aimed_crate(at)
@@ -474,10 +474,10 @@ func _make_scene() -> void:
 	# Counter top: .56+1.02/2=1.07; not the interaction point in the aisle.
 	purchase_rack.position = counter+basis*Vector3(0,.11,-1.37)
 	purchase_rack.rotation.y = basis.get_euler().y
-	var primary_products := ["pollo","picadillo","perrito"]
+	var primary_products := ["pollo","huevos","aceite"] if adaptation_mode else ["pollo","picadillo","perrito"]
 	for i in range(primary_products.size()):
 		var key := String(primary_products[i])
-		var product: Dictionary = Ledger.PRODUCTS[key]
+		var product: Dictionary = ledger.product(key)
 		var at := Vector3(-.70+float(i)*.70,.17,0)
 		_selectable_crate(purchase_rack,at,key,false)
 		var tag := _label(purchase_rack,"%d CUP" % int(product.cost),at+Vector3(0,.24,.21),Color("#f4ecd8"))
@@ -1043,7 +1043,7 @@ func _open_shop() -> void:
 		return
 	_open("MIPYME · Venta mayorista","Billetera: %d CUP. Cada caja contiene 10 unidades. Compra y recógelas en el mostrador de cajas." % ledger.cash)
 	for key in Ledger.PRODUCTS:
-		var product: Dictionary = Ledger.PRODUCTS[key]
+		var product: Dictionary = ledger.product(key)
 		var k := String(key)
 		_button("%s · caja %d CUP" % [product.name,product.cost],_buy.bind(k),ledger.cash<int(product.cost))
 	_button("Salir",close)
@@ -1438,10 +1438,10 @@ func _clear_visual_children(root: Node3D) -> void:
 
 func _sync_visuals() -> void:
 	if arrow==null: return
-	albertico.visible = not adaptation_mode and ledger.albertico_visible() and (first_story==null or (not first_story.rider_trip and not first_story.exit_retry and first_story.fetch_phase!="inside"))
+	albertico.visible = (not adaptation_mode or ledger.stage==4) and ledger.albertico_visible() and (first_story==null or (not first_story.rider_trip and not first_story.exit_retry and first_story.fetch_phase!="inside"))
 	arrow.visible = not adaptation_mode and ledger.albertico_visible() and (ledger.stage==0 or (ledger.stage==3 and (first_story==null or not first_story.active())))
 	factory_arrow.visible = not adaptation_mode and ledger.stage in [1,2]
-	stand.visible = not adaptation_mode and (ledger.stage==4 or (first_story!=null and first_story._phase()=="handshake") or (ledger.stage>=1 and not ledger.life_data.has("albertico_story")))
+	stand.visible = (not adaptation_mode or ledger.stage==4) and (ledger.stage==4 or (first_story!=null and first_story._phase()=="handshake") or (ledger.stage>=1 and not ledger.life_data.has("albertico_story")))
 	var tier := stall_tier(ledger.sold) if ledger.stage==4 else 0
 	for i in range(stall_growth.size()): stall_growth[i].visible = tier>=i+1
 	if is_instance_valid(stall_sign):
@@ -1630,11 +1630,19 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 			trading_open = open_now
 			ledger.sales_clock = 0.0
 			_sync_visuals()
+		if open_now and adaptation_mode: ledger.advance_sales(delta)
 		if open_now and not is_instance_valid(buyer):
 			ledger.sales_clock += delta
-			if ledger.sales_clock>=10.0:
+			if ledger.sales_clock>=(3.0 if adaptation_mode else 10.0):
 				ledger.sales_clock = 0.0
-				_start_buyer()
+				if not adaptation_mode or ledger.sale_ready():
+					_start_buyer()
+					if adaptation_mode and not is_instance_valid(buyer) and _merchant_ready() and (player.global_position.y>70.0 or player.global_position.distance_to(stand.global_position)>70.0):
+						var unread_before := ledger.unread
+						var sale := ledger.sell_one()
+						if not sale.is_empty():
+							_sync_visuals()
+							if ledger.unread>unread_before: phone_ring.play()
 		elif not open_now: ledger.sales_clock = 0.0
 	if not editor: _tick_buyer(delta)
 	refresh += delta
