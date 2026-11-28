@@ -26,6 +26,8 @@ var deferred_vehicles_done := false
 var deferred_vehicles_ready: PackedScene
 var home_exit_loading := false
 var home_exit_layer: CanvasLayer
+var perf_sample_clock := 0.0
+var perf_samples: Dictionary = {}
 var arrival_story: ArrivalStory
 var garage: HomeGarage
 const CarlosMission = preload("res://carlos_mission.gd")
@@ -826,6 +828,31 @@ func begin_home_exit_loading() -> void:
 	label.add_theme_font_size_override("font_size",25)
 	_finish_home_exit_loading.call_deferred()
 
+func ambient_city_suspended() -> bool:
+	return adaptation_mode and is_instance_valid(garage) and garage.inside and is_instance_valid(player) and player.global_position.y>70.0 and not home_exit_loading and (arrival_story==null or not arrival_story.active())
+
+func _record_city_cost(key: String,started: int) -> void:
+	var ms := float(Time.get_ticks_usec()-started)/1000.0
+	perf_samples[key] = maxf(float(perf_samples.get(key,0.0)),ms)
+
+func _tick_outdoor_free_play(delta: float) -> void:
+	if ambient_city_suspended(): return
+	var started := Time.get_ticks_usec()
+	if city_world!=null: city_world.tick(delta)
+	_record_city_cost("city",started)
+	started = Time.get_ticks_usec()
+	if urban_buses!=null: urban_buses.tick(delta)
+	_record_city_cost("buses",started)
+	started = Time.get_ticks_usec()
+	if taxis!=null: taxis.tick(delta,cuba_world.cuba_clock)
+	_record_city_cost("taxis",started)
+	started = Time.get_ticks_usec()
+	if monte_services!=null: monte_services.tick(delta)
+	_record_city_cost("traffic",started)
+	started = Time.get_ticks_usec()
+	if monte_pedestrians!=null: monte_pedestrians.tick(delta)
+	_record_city_cost("pedestrians",started)
+
 func _finish_home_exit_loading() -> void:
 	var started := Time.get_ticks_msec()
 	# Render the outdoor view behind the cover to warm visibility and materials.
@@ -845,8 +872,14 @@ func _finish_home_exit_loading() -> void:
 	print("MyCity: transición exterior (ms)=",Time.get_ticks_msec()-started)
 
 func _process(delta: float) -> void:
-	if adaptation_mode and not deferred_vehicles_done:
+	if adaptation_mode and not deferred_vehicles_done and not ambient_city_suspended():
 		_tick_deferred_vehicles(delta)
+	perf_sample_clock += delta
+	if perf_sample_clock>=5.0:
+		perf_sample_clock = 0.0
+		if Engine.get_frames_per_second()<30:
+			print("MyCity PERF: fps=",Engine.get_frames_per_second()," interior=",ambient_city_suspended()," draw calls=",Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)," max ms=",perf_samples)
+		perf_samples.clear()
 	if is_instance_valid(mobile_controls): mobile_controls.sync()
 	if arrival_story!=null and arrival_story.active():
 		_update_vehicle_lights()
@@ -1135,7 +1168,7 @@ func _tick_deferred_vehicles(delta: float) -> void:
 			deferred_vehicles_done = true
 			return
 	# Prefer an indoor moment, but don't wait forever if the player stays outside.
-	if not home_exit_loading and (garage==null or not garage.inside): return
+	if not home_exit_loading and deferred_vehicles_clock<45.0: return
 	deferred_vehicles_done = true
 	var started := Time.get_ticks_msec()
 	var source := deferred_vehicles_ready.instantiate()
@@ -1166,6 +1199,7 @@ func _extract_imported_vehicle(model: Node3D,holder: Node3D) -> void:
 		if parent is Node3D: pose = parent.transform*pose
 		parent = parent.get_parent()
 	model.get_parent().remove_child(model)
+	model.owner = null
 	holder.add_child(model)
 	model.transform = pose
 
@@ -1891,7 +1925,9 @@ func _physics_process(delta: float) -> void:
 			var facing := player.global_position-chatting_with.global_position
 			chatting_with.rotation.y = lerp_angle(chatting_with.rotation.y,atan2(facing.x,facing.z),minf(1.0,delta*10.0))
 	if garage!=null and not building_mode and not business.modal_open() and not (taxis!=null and taxis.dialog.visible):
+		var garage_started := Time.get_ticks_usec()
 		garage.tick(delta)
+		_record_city_cost("house",garage_started)
 	if garage!=null and garage.riding:
 		if business!=null and business.modal_open():
 			player.velocity = Vector3.ZERO
@@ -1936,7 +1972,9 @@ func _physics_process(delta: float) -> void:
 			_update_hud()
 		return
 	if business!=null:
+		var business_started := Time.get_ticks_usec()
 		business.tick(delta,driving or taxi_riding,building_mode)
+		_record_city_cost("business",business_started)
 		if business.modal_open():
 			player.velocity = Vector3.ZERO
 			return
@@ -1999,15 +2037,7 @@ func _physics_process(delta: float) -> void:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		interact_requested = false
 		reset_requested = false
-	if city_world != null:
-		city_world.tick(delta)
-	if urban_buses!=null:
-		urban_buses.tick(delta)
-	if taxis!=null: taxis.tick(delta,cuba_world.cuba_clock)
-	if monte_services!=null:
-		monte_services.tick(delta)
-	if monte_pedestrians!=null:
-		monte_pedestrians.tick(delta)
+	_tick_outdoor_free_play(delta)
 	if van != null and not van_ground_initialized:
 		if _support_van():
 			van_home = van.global_transform
