@@ -1,6 +1,7 @@
 extends "res://city_world.gd"
 # Real road centerlines; reconstructed facades and gameplay premises.
 const MapData = preload("res://pilar_map.gd")
+const MapCache = preload("res://city_map_cache.gd")
 const StreetGeometry = preload("res://street_geometry.gd")
 const TrafficBypass = preload("res://traffic_bypass.gd")
 const HavanaTextures = preload("res://havana_textures.gd")
@@ -114,7 +115,15 @@ var height_sources := {"height":0,"levels":0,"estimated":0}
 const MappedHeight = preload("res://mapped_height.gd")
 
 func load_map() -> bool:
-	return geography.load_map()
+	if OS.has_feature("web"): return geography.load_map()
+	var prepared := MapCache.prepare()
+	if prepared.is_empty(): return false
+	geography = prepared.geography
+	street_geometry = prepared.streets
+	market_topology = prepared.market
+	prebuilt_street_surfaces = prepared.surfaces
+	prebuilt_topology = true
+	return true
 
 func setup(builder: Builder) -> void:
 	var start_ms := Time.get_ticks_msec()
