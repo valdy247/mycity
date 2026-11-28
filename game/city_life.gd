@@ -1,6 +1,7 @@
 extends Node3D
 # City life runs on the existing game wallet and pedestrian navigation.
 const Person = preload("res://street_person.gd")
+const InteractionHand = preload("res://interaction_hand.gd")
 const Ledger = preload("res://business_ledger.gd")
 const MENU := {
 	"pizza":{"name":"Pizza","price":160,"food":"pizza","drink":"","fill":30,"needs":{"harina":1,"queso":1,"tomate":1}},
@@ -28,6 +29,7 @@ const FULL_SLEEP_MINUTES := 480.0
 var meal_root: Node3D
 var food_view: Node3D
 var drink_view: Node3D
+var rice_spoon_view: Node3D
 var avatar_food: Node3D
 var avatar_drink: Node3D
 var food_model := ""
@@ -506,9 +508,36 @@ func _refresh_meal() -> void:
 	drink_model = d
 	_draw_meal(food_view,f,int(meal.get("food_bites",0)))
 	_draw_meal(drink_view,d,int(meal.get("drink_sips",0)))
-	for view in [food_view,drink_view]:
-		if view.get_child_count()>0:
-			business._box(view,Vector3(0,-.07,.05),Vector3(.12,.07,.10),Color("#c59169"))
+	if is_instance_valid(rice_spoon_view):
+		rice_spoon_view.queue_free()
+		rice_spoon_view = null
+	if not f.is_empty():
+		var food_hand := InteractionHand.new()
+		food_view.add_child(food_hand)
+		food_hand.configure(Vector3(-.07,-.022,.06) if f=="arroz" else Vector3(-.06,-.035,.035),true,f=="arroz")
+	if not d.is_empty():
+		var drink_hand := InteractionHand.new()
+		drink_view.add_child(drink_hand)
+		drink_hand.configure(Vector3(.065,-.02,.03))
+	if f=="arroz":
+		rice_spoon_view = Node3D.new()
+		meal_root.add_child(rice_spoon_view)
+		rice_spoon_view.position = Vector3(.30,-.39,-.58)
+		var handle: MeshInstance3D = business._box(rice_spoon_view,Vector3(0,0,-.045),Vector3(.018,.014,.12),Color("#a4aaa7"))
+		var bowl := MeshInstance3D.new()
+		var mesh := SphereMesh.new()
+		mesh.radius = .5
+		mesh.height = 1.0
+		mesh.radial_segments = 12
+		mesh.rings = 5
+		bowl.mesh = mesh
+		bowl.scale = Vector3(.044,.012,.065)
+		bowl.position = Vector3(0,0,-.125)
+		bowl.material_override = business._mat(Color("#c7ceca"))
+		rice_spoon_view.add_child(bowl)
+		var spoon_hand := InteractionHand.new()
+		rice_spoon_view.add_child(spoon_hand)
+		spoon_hand.configure(Vector3(.024,-.005,.012))
 	if avatar_food!=null:
 		_draw_meal(avatar_food,f,int(meal.get("food_bites",0)))
 		_draw_meal(avatar_drink,d,int(meal.get("drink_sips",0)))
@@ -906,7 +935,16 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	state.fatigue = minf(100.0,float(state.fatigue)+(passed-stimulated*.65)/9.6)
 	if meal_root!=null:
 		meal_root.visible = not in_vehicle and last_first_person and not state.meal.is_empty()
-		food_view.position.y = move_toward(food_view.position.y,-.12 if active_hand==0 else -.36,delta*1.2)
+		if food_model=="arroz":
+			food_view.position = food_view.position.move_toward(Vector3(-.28,-.40,-.57),delta*1.2)
+			if is_instance_valid(rice_spoon_view):
+				var spoon_target := Vector3(.30,-.39,-.58)
+				if active_hand==0:
+					spoon_target = Vector3(-.19,-.34,-.48) if bite_anim>.39 else Vector3(.045,-.12,-.24)
+				rice_spoon_view.position = rice_spoon_view.position.move_toward(spoon_target,delta*2.4)
+				rice_spoon_view.rotation.x = lerpf(rice_spoon_view.rotation.x,-.15 if active_hand==0 else 0.0,minf(1.0,delta*10.0))
+		else:
+			food_view.position = food_view.position.move_toward(Vector3(-.29,-.12 if active_hand==0 else -.36,-.74),delta*1.2)
 		drink_view.position.y = move_toward(drink_view.position.y,-.12 if active_hand==1 else -.36,delta*1.2)
 	var order: Dictionary = state.order
 	if not order.is_empty():
