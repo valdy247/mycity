@@ -78,6 +78,7 @@ var rice_doors: Dictionary = {}
 var rice_cabinet_body: StaticBody3D
 var rice_pouring := false
 var rice_lid_tween: Tween
+var rice_lid_hand: Node3D
 const RICE_INGREDIENTS := ["arroz","agua","sal","aceite"]
 const RICE_COOK_SECONDS := 35.0
 var home_windows: Array[Dictionary] = []
@@ -989,6 +990,9 @@ func _switch_interact() -> bool:
 	if key.is_empty(): return false
 	state.home_lights[key] = not bool(state.home_lights.get(key,true))
 	_refresh_light_switch(key)
+	var node: Node3D = home_light_switches[key].node
+	var hand := _attach_interaction_hand(node,Vector3(.03,0,.055))
+	get_tree().create_timer(.25).timeout.connect(hand.queue_free)
 	_save()
 	return true
 
@@ -1445,8 +1449,7 @@ func _rice_action() -> String:
 			return "[E] Servir plato de arroz · %d" % int(recipe.portions)
 		if bool(recipe.lid):
 			return "[E] Cocinar arroz" if recipe.added.size()==4 else "[E] Abrir tapa de la arrocera"
-		if lid_aimed or recipe.added.size()==4: return "[E] Cerrar tapa"
-		return "[E] Arrocera · faltan "+_rice_missing()
+		return "[E] Cerrar tapa" if recipe.added.size()==4 else "[E] Cerrar tapa · faltan "+_rice_missing()
 	if not _free_hands(): return ""
 	if _aim_tool(rice_jug,Vector3(0,.075,0),Vector3(.10,.10,.10)) and "agua" not in recipe.added and float(recipe.remaining)<=0.0 and int(recipe.portions)==0: return "[E] Recoger jarra"
 	for key in rice_pantry:
@@ -1468,9 +1471,8 @@ func _rice_interact() -> bool:
 	var hand := String(recipe.hand)
 	if action.contains("Recoger jarra"): recipe.hand = "jarra"
 	elif action.contains("Llenar jarra"):
-		recipe.hand = "agua"
-		tap_water.show()
-		get_tree().create_timer(.8).timeout.connect(func(): tap_water.hide())
+		_fill_rice_jug_async()
+		return true
 	elif action.contains("Recoger "): recipe.hand = action.trim_prefix("[E] Recoger ")
 	elif action.contains("Devolver "): recipe.hand = ""
 	elif action.contains("Abrir tapa") or action.contains("Abrir arrocera"):
@@ -1501,8 +1503,34 @@ func _rice_interact() -> bool:
 func _set_rice_lid(closed: bool) -> void:
 	state.rice_recipe.lid = closed
 	if is_instance_valid(rice_lid_tween): rice_lid_tween.kill()
+	if is_instance_valid(rice_lid_hand): rice_lid_hand.queue_free()
+	rice_lid_hand = _attach_interaction_hand(rice_lid,Vector3(.042,.068,.16))
 	rice_lid_tween = create_tween()
 	rice_lid_tween.tween_property(rice_lid,"rotation:x",0.0 if closed else -1.65,.35).set_trans(Tween.TRANS_SINE)
+	rice_lid_tween.finished.connect(_clear_rice_lid_hand)
+	_save()
+
+func _clear_rice_lid_hand() -> void:
+	if is_instance_valid(rice_lid_hand): rice_lid_hand.queue_free()
+	rice_lid_hand = null
+
+func _fill_rice_jug_async() -> void:
+	if rice_pouring: return
+	rice_pouring = true
+	var jug := _rental_root(kitchen_tap,Vector3(0,-.10,.17))
+	_draw_rice_ingredient(jug,"jarra")
+	_attach_interaction_hand(jug,Vector3(.066,.075,.025))
+	carried_view.hide()
+	var was_running: bool = tap_water.visible
+	tap_water.show()
+	await get_tree().create_timer(.85).timeout
+	tap_water.visible = was_running
+	jug.queue_free()
+	state.rice_recipe.hand = "agua"
+	rice_pouring = false
+	_refresh_rice_visuals()
+	_refresh_carried()
+	carried_view.show()
 	_save()
 
 func _add_rice_async(key: String) -> void:
