@@ -34,6 +34,8 @@ var garage_market: Callable
 var city_map: Callable
 var carlos_call: Callable
 var carlos_objective: Callable
+var daniel_call: Callable
+var daniel_objective: Callable
 var yordi_call: Callable
 var yordi_objective: Callable
 var street_inventory: Callable
@@ -650,9 +652,12 @@ func mission_objectives() -> Array[String]:
 	if carlos_objective.is_valid():
 		var job := String(carlos_objective.call())
 		if not job.is_empty(): entries.append("02 · Carlos\n"+job)
-	if not adaptation_mode and yordi_objective.is_valid():
+	if daniel_objective.is_valid():
+		var job := String(daniel_objective.call())
+		if not job.is_empty(): entries.append("03 · Daniel\n"+job)
+	if yordi_objective.is_valid() and int(ledger.life_data.get("yordi_ps5",{}).get("stage",0))>0:
 		var job := String(yordi_objective.call())
-		if not job.is_empty(): entries.append("03 · Yordi\n"+job)
+		if not job.is_empty(): entries.append("04 · Yordi\n"+job)
 	return entries
 
 func refresh_mission_tracker(editor: bool = false,full_map: bool = false,diagnostics: bool = false) -> void:
@@ -1263,6 +1268,8 @@ func open_phone_home() -> void:
 	var adaptation: Dictionary = ledger.life_data.get("adaptation",{})
 	if carlos_call.is_valid() and (ledger.stage==4 or bool(adaptation.get("investment_complete",false)) or int(ledger.life_data.get("carlos_paint",{}).get("stage",0))>0):
 		_phone_tile(apps,"Carlos",carlos_call,"contact",Color("#457e91"))
+	if daniel_call.is_valid() and int(ledger.life_data.get("daniel_party",{}).get("stage",0))>0:
+		_phone_tile(apps,"Daniel",daniel_call,"contact",Color("#9871a7"))
 	if yordi_call.is_valid() and int(ledger.life_data.get("yordi_ps5",{}).get("stage",0))>0:
 		_phone_tile(apps,"Yordi",yordi_call,"contact",Color("#527699"))
 	if life!=null: _phone_tile(apps,"Entregas",life.open_supply_market,"bag",Color("#377e73"))
@@ -1332,7 +1339,9 @@ func open_mission_log() -> void:
 	_phone_metric("02 · Carlos",carlos_text if not carlos_text.is_empty() else ("Trabajo completado" if carlos_stage>=5 else "Disponible tras el negocio de Albertico"))
 	var yordi_stage := int(ledger.life_data.get("yordi_ps5",{}).get("stage",0))
 	var yordi_text := String(yordi_objective.call()) if yordi_objective.is_valid() else ""
-	_phone_metric("03 · Yordi",yordi_text if not yordi_text.is_empty() else ("Misión completada" if yordi_stage>=14 else "Pendiente de desbloquear"))
+	var daniel_text := String(daniel_objective.call()) if daniel_objective.is_valid() else ""
+	_phone_metric("03 · Daniel",daniel_text if not daniel_text.is_empty() else ("Misión completada" if int(ledger.life_data.get("daniel_party",{}).get("stage",0))>=3 else "Pendiente de desbloquear"))
+	_phone_metric("04 · Yordi",yordi_text if not yordi_text.is_empty() else ("Misión completada" if yordi_stage>=14 else "Pendiente de desbloquear"))
 	if city_map.is_valid(): _button("Abrir mapa",city_map)
 	_button("Inicio",open_phone_home)
 
@@ -1686,6 +1695,7 @@ func _phone_thread(name_value: String) -> void:
 	if name_value=="Albertico" and ledger.stage==0 and bool(ledger.life_data.get("albertico_invited",false)) and not ledger.albertico_visible():
 		_button("Quedar con Albertico",_meet_albertico)
 	if name_value=="Carlos" and carlos_call.is_valid(): _button("Llamar a Carlos",carlos_call)
+	if name_value=="Daniel" and daniel_call.is_valid(): _button("Llamar a Daniel",daniel_call)
 	if name_value=="Yordi" and yordi_call.is_valid(): _button("Llamar a Yordi",yordi_call)
 	_button("Volver a mensajes",open_messages)
 	phone_scroll.set_deferred("scroll_vertical",100000)
