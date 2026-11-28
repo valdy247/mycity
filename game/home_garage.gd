@@ -184,7 +184,6 @@ var inside := false
 var previous_first := true
 var riding := false
 var market_buyer: Node3D
-var vehicle_wear_clock := 0.0
 var ride_kind := ""
 var ride_speed := 0.0
 var borrowed_body: CharacterBody3D
@@ -466,7 +465,7 @@ func _tick_listing(delta: float) -> void:
 	listing.remaining = maxf(0.0,float(listing.remaining)-delta)
 	if float(listing.remaining)>0.0: return
 	listing.attempt = int(listing.get("attempt",0))+1
-	var discount := maxi(0,12-business.ledger.reputation("Marketplace")/10-int(listing.attempt)*2)
+	var discount := maxi(0,12-floori(float(business.ledger.reputation("Marketplace"))/10.0)-int(listing.attempt)*2)
 	listing.offer = maxi(1,roundi(float(listing.price)*(1.0-float(discount)/100.0)))
 	listing.phase = "offer"
 	business.ledger.add_message("Marketplace","Buenas, ¿todavía tienes "+String(Kit.KITS[kind].name)+"? Te ofrezco "+str(listing.offer)+" CUP. Responde en Marketplace.")
@@ -540,9 +539,29 @@ func _vehicle_handover_near(kind: String) -> bool:
 	if is_instance_valid(body): return not inside and game.player.global_position.distance_to(body.global_position)<4.5
 	return inside and game.player.global_position.distance_to(ROOM+BENCH)<3.5
 
+func _show_market_buyer() -> void:
+	if is_instance_valid(market_buyer): return
+	var at: Vector3 = game.player.global_position
+	for offset in [Vector3(1.7,0,0),Vector3(-1.7,0,0),Vector3(0,0,1.7),Vector3(0,0,-1.7),Vector3(2.2,0,1.2)]:
+		var p: Vector3 = at+offset
+		var hit := get_world_3d().direct_space_state.intersect_ray(PhysicsRayQueryParameters3D.create(p+Vector3.UP,p-Vector3.UP*2.0,2))
+		if hit.is_empty(): continue
+		p.y = float(hit.position.y)+.10
+		if not world.pedestrian_segment_clear(p,p) or not world.pedestrian_space_clear(null,p,.9,false): continue
+		var person := Person.new()
+		add_child(person)
+		person.setup(812+int(state.listing.get("attempt",0)))
+		person.global_position = p
+		person.rotation.y = atan2(at.x-p.x,at.z-p.z)
+		person.social_context = "street"
+		business._label(person,"Comprador",Vector3(0,2,0))
+		market_buyer = person
+		return
+
 func _vehicle_handover() -> void:
 	var listing: Dictionary = state.listing
 	if String(listing.get("phase",""))!="agreed" or not _vehicle_handover_near(String(listing.kind)): return
+	_show_market_buyer()
 	business._open("Comprador","Está bien, me quedo con el vehículo. Aquí tienes los %d CUP. ¿Cerramos el trato?" % int(listing.agreed))
 	business._button("Entregar vehículo y cobrar",_complete_vehicle_sale)
 	business._button("Todavía no",_vehicle_listing_menu)
@@ -570,6 +589,8 @@ func _complete_vehicle_sale() -> void:
 	state.vehicle_level = maxi(int(state.vehicle_level),next)
 	state.project = VEHICLE_ORDER[int(state.vehicle_level)]
 	state.listing = {}
+	if is_instance_valid(market_buyer): market_buyer.queue_free()
+	market_buyer = null
 	business.ledger.cash += price
 	business.ledger.revenue += price
 	business.ledger.change_reputation("Marketplace",4)
@@ -3386,8 +3407,71 @@ func _make_home_bed() -> void:
 	business.close()
 	business._notify("Cama tendida.")
 
+# Advance household timers as elapsed simulation, not giant animation
+# ticks. All resulting state is included in the sleep transaction.
+func _advance_home_sleep(minutes: float) -> void:
+	var seconds := maxf(0.0,minutes)/.4
+	var food: Dictionary = state.home_food
+	if bool(food.heat_on) and not String(food.pan).is_empty():
+		var leftover := maxf(0.0,seconds-float(food.remaining))
+		food.remaining = maxf(0.0,float(food.remaining)-seconds)
+		food.overcook = float(food.overcook)+leftover
+		if float(food.overcook)>=float(HOME_PAN_GRACE.get(String(food.pan),15.0)):
+			food.burned = true
+			business.ledger.add_message("Casa","Dejaste el fogón encendido mientras dormías. La comida se quemó.")
+		_refresh_home_food()
+	var recipe: Dictionary = state.rice_recipe
+	if float(recipe.remaining)>0.0:
+		recipe.remaining = maxf(0.0,float(recipe.remaining)-seconds)
+		if float(recipe.remaining)<=0.0:
+			recipe.portions = 2
+			_refresh_rice_visuals()
+	var machine: Dictionary = state.coffee_machine
+	if String(machine.phase) in ["heating","ready"]:
+		var left := seconds
+		if String(machine.phase)=="heating":
+			var heat := float(machine.remaining)
+			machine.remaining = maxf(0.0,heat-left)
+			left = maxf(0.0,left-heat)
+			if float(machine.remaining)<=0.0:
+				machine.phase = "ready"
+				machine.remaining = COFFEE_SHUTOFF_SECONDS
+		if String(machine.phase)=="ready":
+			machine.remaining = maxf(0.0,float(machine.remaining)-left)
+			if float(machine.remaining)<=0.0:
+				machine.phase = "broken"
+				machine.spill_zones = [0,1,2,3,4,5]
+				machine.dirty = 6
+				business.life.state.coffee_cups = 0
+				business.life.state.coffee_served = false
+				business.ledger.add_message("Casa","La cafetera se rompió porque la dejaste encendida mientras dormías.")
+		_refresh_coffee_machine()
+		_refresh_coffee_visual()
+	for i in range(state.deliveries.size()-1,-1,-1):
+		var delivery: Dictionary = state.deliveries[i]
+		delivery.remaining = maxf(0.0,float(delivery.remaining)-seconds)
+		if float(delivery.remaining)<=0.0:
+			var token := String(delivery.token)
+			state.inventory[token] = int(state.inventory.get(token,0))+1
+			state.deliveries.remove_at(i)
+			business.ledger.add_message("Marketplace","Tu repuesto llegó durante el descanso.")
+	var order: Dictionary = state.paint_order
+	if not order.is_empty():
+		order.remaining = maxf(0.0,float(order.remaining)-seconds)
+		if float(order.remaining)<=0.0:
+			var color := String(order.color)
+			state.paint_stock[color] = int(state.paint_stock.get(color,0))+CAN_CAPACITY
+			state.paint_order = {}
+			_refresh_paint_station()
+			business.ledger.add_message("Marketplace","Tu pintura llegó durante el descanso.")
+	var listing: Dictionary = state.listing
+	if not listing.is_empty() and String(listing.get("phase","waiting"))=="waiting":
+		listing.remaining = maxf(0.0,float(listing.remaining)-seconds)
+
 func _sleep_home() -> void:
 	if not inside or not _free_hands(): return
+	var duration: float = business.life.planned_sleep_minutes()
+	_advance_home_sleep(duration)
 	var message: String = business.life.sleep_at_home()
 	_refresh_furniture("cama")
 	_update_wall_clock()
@@ -4234,6 +4318,9 @@ func tick(delta: float) -> void:
 	elif not inside and has_home_tool():
 		_stop_home_paint()
 	_tick_listing(delta)
+	if is_instance_valid(market_buyer) and (state.listing.is_empty() or not business.modal_open() or market_buyer.global_position.distance_to(game.player.global_position)>8.0):
+		market_buyer.queue_free()
+		market_buyer = null
 	if not game.ambient_city_suspended(): tick_ambient_traffic(delta)
 	marker.position.y = 2.35+sin(Time.get_ticks_msec()*.003)*.12
 	marker.visible = inside and _wheel_pending()
