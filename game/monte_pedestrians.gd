@@ -1,6 +1,7 @@
 extends Node3D
 const World = preload("res://cuba_world.gd")
 const Person = preload("res://street_person.gd")
+const Residents = preload("res://resident_simulation.gd")
 const UrbanBuses = preload("res://urban_buses.gd")
 const MAX_WALKERS := 38
 const CELL := 4.0
@@ -26,6 +27,7 @@ var serial := 200
 var shape := CapsuleShape3D.new()
 var profiles: Dictionary = {}
 var resident_clock := 480.0
+var resident_sim_clock := 0.0
 var home_destinations: Array = []
 var commerce_destinations: Array = []
 var life
@@ -33,7 +35,7 @@ const MAX_PROFILES := 180
 
 func setup(city: World,bus_service: UrbanBuses,city_life = null) -> void:
 	life = city_life
-	if life!=null: resident_clock = float(life.state.minutes)
+	if life!=null: resident_clock = Residents.now(life.state)
 	world = city
 	world.pedestrian_router = self
 	buses = bus_service
@@ -391,18 +393,26 @@ func _restore_profiles() -> void:
 	var workplaces: Dictionary = {}
 	for dest in commerce_destinations: workplaces[String(dest.site)] = dest
 	for key in saved.keys().slice(0,MAX_PROFILES):
+		if not saved[key] is Dictionary: continue
 		var row: Dictionary = saved[key]
 		var home: Dictionary = homes.get(String(row.get("home_id","")),{}).duplicate()
-		if not home.is_empty():
-			var p := graph.get_point_position(int(home.id))
-			if absf(p.x-float(row.get("home_x",INF)))>.5 or absf(p.z-float(row.get("home_z",INF)))>.5: home = {}
-		if home.is_empty(): continue
+		var old := Vector3(float(row.get("home_x",INF)),0,float(row.get("home_z",INF)))
+		if not home.is_empty() and graph.get_point_position(int(home.id)).distance_to(old)>1.0: home = {}
+		# Graph point IDs can change after city edits. Rebind by location.
+		if home.is_empty() and old.is_finite():
+			var best := 25.0
+			for dest in home_destinations:
+				var distance := graph.get_point_position(int(dest.id)).distance_to(old)
+				if distance<best:
+					best = distance
+					home = dest
 		var workplace: Dictionary = workplaces.get(String(row.get("workplace","")),{})
 		var style := int(key)
-		profiles[String(key)] = {"id":"resident_"+String(key),"style":style,"name":String(row.name),"home":home,"workplace":workplace,"money":maxi(0,int(row.money)),"activity":"street","job":String(row.job),"last_work":-1000.0,"last_purchase":-1000.0,"active":false}
+		var profile := row.duplicate(true)
+		profile.merge({"id":"resident_"+String(key),"style":style,"home":home,"workplace":workplace,"activity":"street","active":false},true)
+		Residents.advance(profile,style,resident_clock)
+		profiles[String(key)] = profile
 		serial = maxi(serial,style)
-	# Rewrite only successfully rebound profiles on the next normal save.
-	life.state.resident_profiles = {}
 	for key in profiles: _save_profile(profiles[key])
 
 func _save_profile(profile: Dictionary) -> void:
@@ -411,16 +421,51 @@ func _save_profile(profile: Dictionary) -> void:
 	if not profiles.has(key): return
 	if not life.state.has("resident_profiles"): life.state.resident_profiles = {}
 	var home: Dictionary = profile.home
-	if home.is_empty(): return
-	var p := graph.get_point_position(int(home.id))
 	var workplace: Dictionary = profile.workplace
-	life.state.resident_profiles[key] = {"name":profile.name,"job":profile.job,"money":int(profile.money),"home_id":str(home.id),"home_x":p.x,"home_z":p.z,"workplace":String(workplace.get("site",""))}
+	var row := {}
+	for field in ["name","job","money","personality","hunger","energy","last_simulated","last_paid_day","last_purchase","last_work","relationship","last_greeting","objective","home_id","home_x","home_z"]:
+		if profile.has(field): row[field] = profile[field]
+	if not home.is_empty():
+		var p := graph.get_point_position(int(home.id))
+		row.home_id = str(home.id)
+		row.home_x = p.x
+		row.home_z = p.z
+	row.workplace = String(workplace.get("site",""))
+	life.state.resident_profiles[key] = row
+
+func advance_residents() -> void:
+	if life==null: return
+	resident_clock = Residents.now(life.state)
+	if not initialized:
+		var saved: Dictionary = life.state.get("resident_profiles",{})
+		for key in saved:
+			if saved[key] is Dictionary: Residents.advance(saved[key],int(key),resident_clock)
+		return
+	for key in profiles:
+		var profile: Dictionary = profiles[key]
+		Residents.advance(profile,int(key),resident_clock)
+		_save_profile(profile)
+
+func greet_resident(style: int) -> void:
+	var profile: Dictionary = profiles.get(str(style),{})
+	if profile.is_empty(): return
+	Residents.greet(profile,resident_clock)
+	_save_profile(profile)
+
+func release_resident(style: int) -> void:
+	var profile: Dictionary = profiles.get(str(style),{})
+	if not profile.is_empty():
+		profile.active = false
+		_save_profile(profile)
 
 func _profile_for(style: int,at: Vector3) -> Dictionary:
 	var first_names: Array[String] = ["Rafael","Yunier","Carlos","Maritza","Yanelis","Lidia","Omar","Ernesto","Dailen","Marta","Luis","Alina"]
 	var surnames: Array[String] = ["Pérez","García","Rodríguez","Hernández","Díaz","Martínez"]
 	var key := str(style)
-	if profiles.has(key): return profiles[key]
+	if profiles.has(key):
+		var existing: Dictionary = profiles[key]
+		Residents.advance(existing,style,resident_clock)
+		return existing
 	var home: Dictionary = {}
 	var best := INF
 	for dest in home_destinations:
@@ -433,12 +478,8 @@ func _profile_for(style: int,at: Vector3) -> Dictionary:
 	var workplace: Dictionary = {}
 	if not commerce_destinations.is_empty(): workplace = commerce_destinations[posmod(style,commerce_destinations.size())]
 	var profile := {"id":"resident_"+key,"style":style,"name":first_names[posmod(style,first_names.size())]+" "+surnames[posmod(floori(float(style)/3.0),surnames.size())],"home":home,"workplace":workplace,"money":200+posmod(style*37,800),"activity":"street","job":job,"last_work":-1000.0,"last_purchase":-1000.0}
-	if profiles.size()>=MAX_PROFILES:
-		for old_key in profiles.keys():
-			if not bool(profiles[old_key].get("active",false)):
-				profiles.erase(old_key)
-				if life!=null and life.state.has("resident_profiles"): life.state.resident_profiles.erase(old_key)
-				break
+	Residents.normalize(profile,style,resident_clock)
+	# Never evict known residents to create new identities.
 	if profiles.size()<MAX_PROFILES:
 		profiles[key] = profile
 		_save_profile(profile)
@@ -450,7 +491,10 @@ func _attach_profile(agent: Dictionary) -> void:
 	profile.active = true
 	agent.profile = profile
 	person.set_meta("citizen_name",profile.name)
+	person.set_meta("citizen_id",profile.id)
+	person.set_meta("resident_style",int(profile.style))
 	person.set_meta("resident_job",profile.job)
+	person.set_meta("resident_personality",profile.personality)
 
 func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 	var person: Person = agent.node
@@ -473,7 +517,7 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 	if not profile.is_empty():
 		var home: Dictionary = profile.home
 		# In the evening favor the resident's own doorway if reachable.
-		if (hour>=19.0 or hour<6.0) and not home.is_empty():
+		if String(profile.get("objective","")) in ["descansar","volver a casa"] and not home.is_empty():
 			var home_path := graph.get_point_path(start,int(home.id))
 			if not home_path.is_empty():
 				agent.path = home_path
@@ -483,7 +527,7 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 				profile.activity = "home"
 				person.social_context = "homeward"
 				return true
-		if hour>=7.0 and hour<17.0 and not force_non_bus:
+		if String(profile.get("objective","")) in ["trabajar","estudiar"] and not force_non_bus:
 			var workplace: Dictionary = profile.get("workplace",{})
 			if not workplace.is_empty() and resident_clock-float(profile.last_work)>=180.0:
 				var work_path := PackedVector3Array()
@@ -498,6 +542,8 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 					person.social_context = "workward"
 					return true
 			nearby.sort_custom(func(a,b): return int(String(a.kind)=="shop")>int(String(b.kind)=="shop"))
+	if not profile.is_empty() and String(profile.get("objective",""))=="comer":
+		nearby.sort_custom(func(a,b): return int(String(a.get("business_kind",""))=="cafe")>int(String(b.get("business_kind",""))=="cafe"))
 	# A quarter of residents actively seek a bus stop rather than leaving
 	# all transport demand to random selection among hundreds of doors.
 	if not force_non_bus and posmod(person.style_id,4)==0:
@@ -552,6 +598,18 @@ func _resident_style(at: Vector3) -> int:
 		if home.is_empty(): continue
 		if graph.get_point_position(int(home.id)).distance_squared_to(at)<1225.0:
 			return int(key)
+	if profiles.size()>=MAX_PROFILES:
+		var best := INF
+		var selected := -1
+		for key in profiles:
+			var profile: Dictionary = profiles[key]
+			if bool(profile.get("active",false)): continue
+			var home: Dictionary = profile.home
+			var distance := graph.get_point_position(int(home.id)).distance_squared_to(at) if not home.is_empty() else 1000000.0
+			if distance<best:
+				best = distance
+				selected = int(key)
+		return selected
 	serial += 1
 	return serial
 
@@ -599,6 +657,9 @@ func _populate() -> void:
 		var person := Person.new()
 		add_child(person)
 		var style := _resident_style(p)
+		if style<0:
+			person.queue_free()
+			return
 		person.setup(style,false,true)
 		person.global_position = p
 		var agent := {"node":person,"path":PackedVector3Array(),"index":0,"destination":{},"pause":0.0,"speed":1.12+float(posmod(style,7))*.065}
@@ -673,7 +734,10 @@ func yield_to_runner(runner: Person,target: Vector3) -> void:
 func tick(delta: float) -> void:
 	# Keep monotonic elapsed time, initialized from the saved city clock.
 	if life!=null and life.state.has("day"):
-		resident_clock = float(maxi(0,int(life.state.day)-1))*1440.0+float(life.state.minutes)
+		resident_clock = Residents.now(life.state)
+		if resident_clock-resident_sim_clock>=15.0:
+			resident_sim_clock = resident_clock
+			advance_residents()
 	else: resident_clock += delta
 	if not initialized:
 		if building_graph: return
@@ -746,18 +810,16 @@ func tick(delta: float) -> void:
 				var profile: Dictionary = agent.profile
 				if String(profile.activity)=="work":
 					profile.last_work = resident_clock
-					profile.money = int(profile.money)+35
 					_save_profile(profile)
 					profile.activity = "working"
 					agent.pause = 20.0
 					person.social_context = "worker"
 					continue
-				if life!=null and String(dest.get("business_kind",""))=="cafe" and resident_clock-float(profile.last_purchase)>60.0:
+				if life!=null and float(profile.get("hunger",0.0))>=40.0 and String(dest.get("business_kind",""))=="cafe" and resident_clock-float(profile.last_purchase)>60.0:
 					var spent: int = life.citizen_purchase(String(dest.site),int(profile.money))
 					if spent>0:
-						profile.money = int(profile.money)-spent
+						Residents.purchase(profile,spent,resident_clock)
 						_save_profile(profile)
-						profile.last_purchase = resident_clock
 						person.social_context = "shopping"
 						agent.pause = 5.0
 						continue
