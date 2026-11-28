@@ -17,7 +17,7 @@ var walkers: Array = []
 var next_id := 1
 var initialized := false
 var building_graph := false
-const BUILD_BUDGET_USEC := 4000
+const BUILD_BUDGET_USEC := 1200
 var build_wait := .20
 var elapsed := 0.0
 var population_clock := 0.0
@@ -100,6 +100,11 @@ func _run(a: Vector3,b: Vector3,cost: float) -> void:
 	for i in range(count+1):
 		_add(a.lerp(b,float(i)/float(count)),cost)
 
+func _yield_build_slice() -> void:
+	await get_tree().physics_frame
+	while world.get_parent().ambient_city_suspended():
+		await get_tree().physics_frame
+
 func _build() -> void:
 	var started := Time.get_ticks_msec()
 	var slice_start := Time.get_ticks_usec()
@@ -109,13 +114,13 @@ func _build() -> void:
 		# Approximate strip points are navigation only, never entry doors.
 		_add(strip.door,PORTAL_COST)
 		if Time.get_ticks_usec()-slice_start>=BUILD_BUDGET_USEC:
-			await get_tree().physics_frame
+			await _yield_build_slice()
 			slice_start = Time.get_ticks_usec()
 	# Add the actual clear park paths, not an artificial indoor doorway.
 	for strip in world.park_walkways:
 		_run(strip.a,strip.b,SIDEWALK_COST)
 		if Time.get_ticks_usec()-slice_start>=BUILD_BUDGET_USEC:
-			await get_tree().physics_frame
+			await _yield_build_slice()
 			slice_start = Time.get_ticks_usec()
 	# Extend the existing Monte network into adjoining streets without
 	# building a city-wide physics graph at startup.
@@ -131,7 +136,7 @@ func _build() -> void:
 			adjacent[edge.b_id] = true
 	for edge in world.geography.roads:
 		if Time.get_ticks_usec()-slice_start>=BUILD_BUDGET_USEC:
-			await get_tree().physics_frame
+			await _yield_build_slice()
 			slice_start = Time.get_ticks_usec()
 		if not adjacent.has(edge.a_id) and not adjacent.has(edge.b_id): continue
 		var a: Vector3 = edge.a
@@ -157,7 +162,7 @@ func _build() -> void:
 				if world.street_geometry.point_on_road(curb):
 					_add(curb,ROAD_COST)
 				if Time.get_ticks_usec()-slice_start>=BUILD_BUDGET_USEC:
-					await get_tree().physics_frame
+					await _yield_build_slice()
 					slice_start = Time.get_ticks_usec()
 	if world.home_root!=null:
 		var home := world.home_root
@@ -165,7 +170,7 @@ func _build() -> void:
 		_add(home.to_global(Vector3(1.25,0,2.65)),PORTAL_COST)
 	for id in graph.get_point_ids():
 		if Time.get_ticks_usec()-slice_start>=BUILD_BUDGET_USEC:
-			await get_tree().physics_frame
+			await _yield_build_slice()
 			slice_start = Time.get_ticks_usec()
 		var p := graph.get_point_position(id)
 		for other in _near_ids(p,3.8):
@@ -182,7 +187,7 @@ func _build() -> void:
 	# Bridge gaps at small side streets, only along unobstructed routes.
 	for id in graph.get_point_ids():
 		if Time.get_ticks_usec()-slice_start>=BUILD_BUDGET_USEC:
-			await get_tree().physics_frame
+			await _yield_build_slice()
 			slice_start = Time.get_ticks_usec()
 		if graph.get_point_connections(id).size()>1: continue
 		var p := graph.get_point_position(id)
@@ -231,7 +236,7 @@ func _register_doors() -> void:
 	var used: Dictionary = {}
 	for entry in world.npc_doorways:
 		if Time.get_ticks_usec()-slice_start>=BUILD_BUDGET_USEC:
-			await get_tree().physics_frame
+			await _yield_build_slice()
 			slice_start = Time.get_ticks_usec()
 		var space := get_world_3d().direct_space_state
 		var threshold: Vector3 = entry.threshold
@@ -481,8 +486,10 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 		if hour>=7.0 and hour<17.0 and not force_non_bus:
 			var workplace: Dictionary = profile.get("workplace",{})
 			if not workplace.is_empty() and resident_clock-float(profile.last_work)>=180.0:
-				var work_path := graph.get_point_path(start,int(workplace.id))
-				if work_path.size()>=2 and origin.distance_to(graph.get_point_position(int(workplace.id)))<155.0:
+				var work_path := PackedVector3Array()
+				if origin.distance_to(graph.get_point_position(int(workplace.id)))<155.0:
+					work_path = graph.get_point_path(start,int(workplace.id))
+				if work_path.size()>=2:
 					agent.path = work_path
 					agent.index = 0
 					agent.destination = workplace
@@ -495,7 +502,7 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 	# all transport demand to random selection among hundreds of doors.
 	if not force_non_bus and posmod(person.style_id,4)==0:
 		nearby.sort_custom(func(a,b): return int(String(a.kind)=="bus")>int(String(b.kind)=="bus"))
-	for i in range(mini(nearby.size(),20)):
+	for i in range(mini(nearby.size(),6)):
 		var dest: Dictionary = nearby[i]
 		var path := graph.get_point_path(start,int(dest.id))
 		if path.size()<2: continue
@@ -566,11 +573,15 @@ func _populate() -> void:
 			if agent_has_profile(walkers[i]): walkers[i].profile.active = false
 			person.queue_free()
 			walkers.remove_at(i)
+	if walkers.size()>=MAX_WALKERS: return
 	var candidates := _near_ids(at,100.0)
 	candidates.shuffle()
 	var added := 0
+	var attempts := 0
+	var scanned := 0
 	for id in candidates:
-		if walkers.size()>=MAX_WALKERS or added>=2: break
+		if walkers.size()>=MAX_WALKERS or added>=1 or attempts>=1 or scanned>=80: break
+		scanned += 1
 		if graph.get_point_connections(int(id)).is_empty(): continue
 		# Roadway nodes are for fallback travel, not ordinary population spawns.
 		if graph.get_point_weight_scale(int(id))>=ROAD_COST: continue
@@ -584,6 +595,7 @@ func _populate() -> void:
 				safe = false
 				break
 		if not safe: continue
+		attempts += 1
 		var person := Person.new()
 		add_child(person)
 		var style := _resident_style(p)
