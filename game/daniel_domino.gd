@@ -8,7 +8,7 @@ static func start() -> Dictionary:
 	pool.shuffle()
 	var hands: Array = [[],[],[],[]]
 	for i in range(40): hands[i%4].append(pool[i])
-	var game := {"hands":hands,"left":-1,"right":-1,"turn":0,"passes":0,"done":false,"winner":-1,"moves":0,"log":"Empiezas tú. Coloca una ficha."}
+	var game := {"hands":hands,"left":-1,"right":-1,"turn":0,"passes":0,"done":false,"winner":-1,"moves":0,"chain":[],"log":"Empiezas tú. Coloca una ficha."}
 	return game
 
 static func legal(g: Dictionary,tile: Array,left: bool) -> bool:
@@ -34,14 +34,20 @@ static func play(g: Dictionary,index: int,left: bool) -> bool:
 	if index<0 or index>=hand.size(): return false
 	var tile: Array = hand[index]
 	if not legal(g,tile,left): return false
+	if not g.has("chain"): g.chain = []
 	if int(g.left)<0:
 		g.left = int(tile[0])
 		g.right = int(tile[1])
+		g.chain.append([int(tile[0]),int(tile[1])])
 	else:
 		var end := int(g.left if left else g.right)
 		var other := int(tile[1]) if int(tile[0])==end else int(tile[0])
-		if left: g.left = other
-		else: g.right = other
+		if left:
+			g.left = other
+			g.chain.push_front([other,end])
+		else:
+			g.right = other
+			g.chain.append([end,other])
 	hand.remove_at(index)
 	g.moves = int(g.moves)+1
 	g.passes = 0
