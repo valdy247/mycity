@@ -72,6 +72,9 @@ var home_plate_door: Node3D
 var home_pan: Node3D
 var home_pan_food: Node3D
 var home_pan_heat: MeshInstance3D
+var home_pan_smoke: CPUParticles3D
+var home_pan_save_clock := 0.0
+const HOME_PAN_GRACE := {"carne":20.0,"huevo":12.0}
 var home_food_busy := false
 const HOME_PAN_TIME := {"carne":25.0,"huevo":12.0}
 var rental_storage_doors: Array[Dictionary] = []
@@ -161,6 +164,9 @@ func setup(controller) -> void:
 	# A restored game starts outside; return any kitchen utensil to its shelf.
 	state.rice_recipe.hand = ""
 	if not state.has("home_food"): state.home_food = {"stock":{"carne":8,"huevo":12},"hand":"","pan":"","remaining":0.0,"plate":[]}
+	if not state.home_food.has("heat_on"): state.home_food.heat_on = float(state.home_food.remaining)>0.0
+	if not state.home_food.has("overcook"): state.home_food.overcook = 0.0
+	if not state.home_food.has("burned"): state.home_food.burned = false
 	if String(state.home_food.hand)!="plato": state.home_food.hand = ""
 	if not state.has("coffee_machine"): state.coffee_machine = {"phase":"idle","remaining":0.0,"dirty":0,"rag_held":false,"replacement":false}
 	state.coffee_machine.rag_held = false
@@ -1167,6 +1173,9 @@ func _refresh_carried() -> void:
 		_attach_interaction_hand(carried_view,Vector3(.066,.075,.025) if key in ["jarra","agua"] else Vector3(.045,.055,.025))
 	elif not state.get("waste_hand",{}).is_empty():
 		_make_waste_item(carried_view,state.waste_hand)
+		if String(state.waste_hand.get("kind",""))=="burned_food":
+			carried_view.position = Vector3(.30,-.39,-.59)
+			_attach_interaction_hand(carried_view,Vector3(.045,-.02,.025),false,true)
 		if String(state.waste_hand.get("kind",""))=="broken_coffee":
 			carried_view.position = Vector3(.30,-.39,-.65)
 			_attach_interaction_hand(carried_view,Vector3(.10,.05,.035))
@@ -1934,7 +1943,9 @@ func _build_home_food_fridge() -> void:
 func _build_home_plate_stack(kitchen: Node3D) -> void:
 	home_plate_stack = _rental_root(kitchen,Vector3(.63,1.69,-.23))
 	for i in range(3):
-		_rental_cylinder(home_plate_stack,Vector3(0,float(i)*.021,0),.112,.017,Color("#eee8d8"))
+		var plate := _rental_root(home_plate_stack,Vector3(0,.017+float(i)*.022,0))
+		business.life.draw_home_plate(plate,[],0)
+		plate.scale = Vector3.ONE*.84
 
 func _build_home_pan(kitchen: Node3D) -> void:
 	home_pan = _rental_root(kitchen,Vector3(.39,1.034,.12))
@@ -1961,6 +1972,27 @@ func _build_home_pan(kitchen: Node3D) -> void:
 	home_pan_food = _rental_root(home_pan,Vector3(0,.027,0))
 	home_pan_heat = _rental_cylinder(kitchen,Vector3(.39,1.035,.12),.098,.004,Color("#d96b32"))
 	home_pan_heat.hide()
+	home_pan_smoke = CPUParticles3D.new()
+	home_pan.add_child(home_pan_smoke)
+	home_pan_smoke.position.y = .09
+	home_pan_smoke.amount = 14
+	home_pan_smoke.lifetime = 1.2
+	home_pan_smoke.direction = Vector3.UP
+	home_pan_smoke.spread = 24.0
+	home_pan_smoke.gravity = Vector3(0,.1,0)
+	home_pan_smoke.initial_velocity_min = .16
+	home_pan_smoke.initial_velocity_max = .4
+	var smoke_mesh := SphereMesh.new()
+	smoke_mesh.radius = .035
+	smoke_mesh.height = .07
+	smoke_mesh.radial_segments = 6
+	smoke_mesh.rings = 3
+	var smoke_mat := StandardMaterial3D.new()
+	smoke_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	smoke_mat.albedo_color = Color(.24,.22,.20,.30)
+	smoke_mesh.material = smoke_mat
+	home_pan_smoke.mesh = smoke_mesh
+	home_pan_smoke.emitting = false
 	_refresh_home_food()
 
 func _refresh_home_food() -> void:
@@ -1974,13 +2006,15 @@ func _refresh_home_food() -> void:
 		child.queue_free()
 	var key := String(food.pan)
 	var cooked := float(food.remaining)<=0.0
-	home_pan_heat.visible = not key.is_empty() and not cooked
+	var burned := bool(food.burned)
+	home_pan_heat.visible = bool(food.heat_on)
+	home_pan_smoke.emitting = bool(food.heat_on) and cooked
 	if key=="carne":
 		for i in range(3):
-			_rental_round(home_pan_food,Vector3((float(i)-1.0)*.048,.016,0),Vector3(.051,.03,.065),Color("#805034") if cooked else Color("#a74e46"))
+			_rental_round(home_pan_food,Vector3((float(i)-1.0)*.048,.016,0),Vector3(.051,.03,.065),Color("#28221c") if burned else (Color("#805034") if cooked else Color("#a74e46")))
 	elif key=="huevo":
-		_rental_round(home_pan_food,Vector3.ZERO,Vector3(.145,.012,.120),Color("#eee6d5") if cooked else Color("#b9b3a0"))
-		_rental_round(home_pan_food,Vector3(.02,.009,0),Vector3(.048,.021,.048),Color("#e6a72b"))
+		_rental_round(home_pan_food,Vector3.ZERO,Vector3(.145,.012,.120),Color("#393027") if burned else (Color("#eee6d5") if cooked else Color("#b9b3a0")))
+		_rental_round(home_pan_food,Vector3(.02,.009,0),Vector3(.048,.021,.048),Color("#4f3823") if burned else Color("#e6a72b"))
 
 func _home_shelf_aim(node: Node3D,door: Node3D,body: StaticBody3D,center: Vector3,extent: Vector3) -> bool:
 	if not is_instance_valid(node) or not is_instance_valid(door) or not is_instance_valid(body): return false
@@ -2003,7 +2037,14 @@ func _home_food_action() -> String:
 	var hand := String(food.hand)
 	var pan := String(food.pan)
 	var pan_aim := _aim_tool(home_pan,Vector3(0,.045,0),Vector3(.15,.075,.13))
-	var plate_aim := _home_shelf_aim(home_plate_stack,home_plate_door,rice_cabinet_body,Vector3(0,.025,0),Vector3(.12,.045,.12))
+	var plate_aim := _home_shelf_aim(home_plate_stack,home_plate_door,rice_cabinet_body,Vector3(0,.035,0),Vector3(.13,.055,.13))
+	if pan_aim and not pan.is_empty() and hand in ["","plato"]:
+		if bool(food.heat_on):
+			if bool(food.burned): return "[E] Apagar fogón · comida quemada"
+			if float(food.remaining)>0.0: return "[E] Apagar fogón · cocinando %s (%d s)" % [pan,ceili(float(food.remaining))]
+			return "[E] Apagar fogón · %s listo · %d s antes de quemarse" % [pan,ceili(maxf(0.0,float(HOME_PAN_GRACE.get(pan,15.0))-float(food.overcook)))]
+		if bool(food.burned): return "[E] Recoger comida quemada" if hand.is_empty() and _free_hands() else "[E] Devuelve el plato antes de retirar la comida quemada"
+		if float(food.remaining)>0.0: return "[E] Encender fogón · continuar cocción"
 	if hand=="plato":
 		if _aim_tool(rice_lid,Vector3(0,.02,.15),Vector3(.19,.055,.19)) or _aim_tool(rice_cooker,Vector3(0,.16,0),Vector3(.22,.18,.21)):
 			if int(state.rice_recipe.portions)>0 and bool(state.rice_recipe.lid): return "[E] Abrir arrocera"
@@ -2042,7 +2083,19 @@ func _home_food_interact() -> bool:
 	if home_food_busy: return true
 	var food: Dictionary = state.home_food
 	var hand := String(food.hand)
-	if action=="[E] Recoger plato":
+	if action.begins_with("[E] Apagar fogón"):
+		food.heat_on = false
+		business._notify("Fogón apagado.")
+	elif action.begins_with("[E] Encender fogón"):
+		food.heat_on = true
+	elif action=="[E] Recoger comida quemada":
+		if not _free_hands(): return true
+		state.waste_hand = {"kind":"burned_food","volume":1}
+		food.pan = ""
+		food.remaining = 0.0
+		food.overcook = 0.0
+		food.burned = false
+	elif action=="[E] Recoger plato":
 		food.hand = "plato"
 	elif action=="[E] Devolver plato":
 		food.hand = ""
@@ -2102,12 +2155,18 @@ func _home_food_transfer(key: String,serving: bool) -> void:
 		else:
 			food.pan = ""
 			food.remaining = 0.0
+			food.heat_on = false
+			food.overcook = 0.0
+			food.burned = false
 		business._notify("Añadiste "+key+" al plato. Mira la mesa o hacia tu plato para comer.")
 	else:
 		food.stock[key] = maxi(0,int(food.stock.get(key,0))-1)
 		food.hand = ""
 		food.pan = key
 		food.remaining = float(HOME_PAN_TIME[key])
+		food.heat_on = true
+		food.overcook = 0.0
+		food.burned = false
 		business._notify("Cocinando "+key+"…")
 	home_food_busy = false
 	_refresh_home_food()
@@ -2118,12 +2177,25 @@ func _home_food_transfer(key: String,serving: bool) -> void:
 func _tick_home_pan(delta: float) -> void:
 	if not is_instance_valid(home_pan): return
 	var food: Dictionary = state.home_food
-	if float(food.remaining)<=0.0: return
-	food.remaining = maxf(0.0,float(food.remaining)-delta)
-	if float(food.remaining)<=0.0:
+	if not bool(food.heat_on) or String(food.pan).is_empty(): return
+	home_pan_save_clock += delta
+	if home_pan_save_clock>=5.0:
+		home_pan_save_clock = 0.0
+		_save()
+	if float(food.remaining)>0.0:
+		food.remaining = maxf(0.0,float(food.remaining)-delta)
+		if float(food.remaining)<=0.0:
+			_refresh_home_food()
+			_save()
+			business._notify(String(food.pan).capitalize()+" listo. Apaga el fogón antes de que se queme.")
+		return
+	if bool(food.burned): return
+	food.overcook = float(food.overcook)+delta
+	if float(food.overcook)>=float(HOME_PAN_GRACE.get(String(food.pan),15.0)):
+		food.burned = true
 		_refresh_home_food()
 		_save()
-		business._notify(String(food.pan).capitalize()+" listo. Recoge un plato para servir.")
+		business._notify("¡Se quemó la comida! Apaga el fogón y tira los restos a la basura.")
 
 func _rice_prop_aim(key: String) -> bool:
 	if not rice_pantry.has(key): return false
@@ -3580,6 +3652,10 @@ func _build_waste() -> void:
 	_refresh_waste()
 
 func _make_waste_item(root: Node3D,item: Dictionary) -> void:
+	if String(item.get("kind",""))=="burned_food":
+		for i in range(3):
+			_rental_round(root,Vector3((float(i)-1.0)*.035,.01,0),Vector3(.045,.025,.055),Color("#33291f"))
+		return
 	if String(item.get("kind",""))=="broken_coffee":
 		_draw_moka_model(root,true)
 		return
