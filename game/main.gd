@@ -926,7 +926,7 @@ func _apply_camera_mode() -> void:
 	else:
 		avatar.visible = not first_person
 		arm.spring_length = 0.0 if first_person else (2.15 if city_world != null and (city_world.inside_home or (city_world.bakery != null and city_world.bakery.inside) or (cuba_world != null and cuba_world.current_room>=0)) else 4.5)
-		pivot.position.y = .45 if garage!=null and garage.dining_seated else .65
+		pivot.position.y = .45 if garage!=null and (garage.dining_seated or garage.bath_mode=="sit") else .65
 	if garage!=null and garage.inside and not first_person: arm.spring_length = 2.0
 	_update_player_draw_distance()
 	if reticle != null:
@@ -1094,7 +1094,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 		if event.keycode == KEY_ESCAPE:
 			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		elif event.keycode == KEY_V and player != null and not driving and not (garage!=null and garage.dining_seated):
+		elif event.keycode == KEY_V and player != null and not driving and not (garage!=null and (garage.dining_seated or not garage.bath_mode.is_empty())):
 			if (carlos_mission!=null and carlos_mission.inside) or (yordi_mission!=null and yordi_mission.robbery_active()): return
 			first_person = not first_person
 			_apply_camera_mode()
@@ -2138,6 +2138,11 @@ func _physics_process(delta: float) -> void:
 			return
 		elif _near_van():
 			_enter_van()
+	if garage!=null and not garage.bath_mode.is_empty():
+		player.velocity = Vector3.ZERO
+		message_time = maxf(0.0,message_time-delta)
+		_update_hud()
+		return
 	if garage!=null and garage.dining_seated:
 		player.velocity = Vector3.ZERO
 		if gameplay_input() and control_pressed(KEY_SPACE): garage._stand_from_dining()
