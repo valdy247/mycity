@@ -3,6 +3,13 @@ extends "res://city_world.gd"
 const MapData = preload("res://pilar_map.gd")
 const MapCache = preload("res://city_map_cache.gd")
 const DerivedCache = preload("res://city_derived_cache.gd")
+const CompiledCache = preload("res://city_compiled_cache.gd")
+var compiled_material_ids: Dictionary = {}
+var compiled_materials: Array = []
+var compiled_visual_chunks: Dictionary = {}
+var compiled_stream_clock := 0.0
+const COMPILED_VISUAL_RADIUS := 450.0
+const COMPILED_VISUAL_HIDE_RADIUS := 540.0
 const BUILD_CACHE := "user://mycity_building_plans_v1.bin"
 const UTILITY_CACHE := "user://mycity_utility_plan_v1.bin"
 var derived_key := ""
@@ -392,10 +399,15 @@ func _detail_stream_update(focus: Vector3) -> void:
 		detail_stream_pending.append(candidate.key)
 
 func _process(delta: float) -> void:
-	if not detail_stream_enabled or detail_stream_tiles.is_empty(): return
+	if not detail_stream_enabled: return
 	var camera := get_viewport().get_camera_3d()
 	if not is_instance_valid(camera): return
 	var focus := camera.global_position
+	compiled_stream_clock -= delta
+	if compiled_stream_clock<=0.0:
+		compiled_stream_clock = .25
+		_compiled_update_visuals(focus)
+	if detail_stream_tiles.is_empty(): return
 	detail_stream_clock -= delta
 	if detail_stream_clock<=0.0:
 		detail_stream_clock = .20
@@ -1517,7 +1529,7 @@ func _make_frontages() -> void:
 	_reserve_garage_sites(proposals)
 	# OSM footprints are authoritative. Unmapped land stays open: do not
 	# invent houses between buildings or fill the avenue with fake blocks.
-	_make_mapped_buildings(legacy_anchor)
+	_load_or_compile_buildings(legacy_anchor)
 	print("Alturas OSM: ",height_sources.height," medidas, ",height_sources.levels," por plantas, ",height_sources.estimated," estimadas.")
 	_report_geographic_places()
 	_place_temporary_business()
@@ -2735,6 +2747,288 @@ func _corrected_shop_sign(at: Vector3,normal: Vector3,width: float) -> void:
 	_cube(p,Vector3(w,.37,.07),_mat("alborada_sign_board",Color("#203b58")),angle)
 	var text := _label("ALBORADA",p+normal*.047,minf(.008,w/235.0),angle,Color("#f1eee6"))
 	text.outline_size = 0
+
+# Cache only the static mapped-building phase. The procedural mission
+# premises and the private residence lookup still execute every time.
+func _compiled_key() -> String:
+	if derived_key.is_empty() or OS.get_cmdline_user_args().has("--no-compiled-cache"): return ""
+	var inputs: Array = [derived_key,geography.footprints,map_edits,market_block,market_reservation,stadium_reservation,parks.areas if parks!=null else [],real_facades.selected,geographic_by_building,geographic_rendered,incident_services,detail_stream_enabled]
+	for lot in slots: inputs.append(_lot_polygon(lot))
+	for path in ["res://real_facades.gd","res://city_parks.gd","res://latino_stadium.gd","res://havana_textures.gd","res://city_world.gd","res://city_compiled_cache.gd"]:
+		var digest := FileAccess.get_sha256(path)
+		if digest.is_empty(): return ""
+		inputs.append(digest)
+	return DerivedCache.key_for(inputs)
+
+func _compiled_material_table() -> void:
+	compiled_material_ids.clear()
+	compiled_materials.clear()
+	var base_names: Dictionary = {}
+	for name_value in mats:
+		var base: StandardMaterial3D = mats[name_value]
+		base_names[str(base.get_instance_id())] = String(name_value)
+		_compiled_record_material(base,String(name_value),"")
+	for key in havana_textures.materials:
+		var material: StandardMaterial3D = havana_textures.materials[key]
+		var base_id := String(key).get_slice(":",0)
+		_compiled_record_material(material,String(base_names.get(base_id,"")),String(havana_textures.material_kinds[key]))
+
+func _compiled_record_material(material: StandardMaterial3D,base_key: String,kind: String) -> int:
+	if material==null: return -1
+	var id := material.get_instance_id()
+	if compiled_material_ids.has(id): return int(compiled_material_ids[id])
+	var index := compiled_materials.size()
+	compiled_material_ids[id] = index
+	compiled_materials.append({"key":base_key,"kind":kind,"color":material.albedo_color,"cull":int(material.cull_mode),"roughness":material.roughness,"metallic":material.metallic})
+	return index
+
+func _compiled_id(material: Material) -> int:
+	if material==null: return -1
+	if not material is StandardMaterial3D: return -2
+	return int(compiled_material_ids.get(material.get_instance_id(),-2))
+
+func _compiled_restore_materials(descriptors: Array) -> Array:
+	var result: Array = []
+	for desc in descriptors:
+		var name_value := String(desc.key)
+		var kind := String(desc.kind)
+		var base := _mat(name_value,desc.color) if not name_value.is_empty() else StandardMaterial3D.new()
+		if kind.is_empty():
+			base.albedo_color = desc.color
+			base.cull_mode = int(desc.cull)
+			base.roughness = float(desc.roughness)
+			base.metallic = float(desc.metallic)
+			result.append(base)
+		else:
+			var textured := havana_textures.material(base,kind)
+			textured.cull_mode = int(desc.cull)
+			result.append(textured)
+	return result
+
+func _compiled_assign_owners(node: Node,owner_node: Node) -> void:
+	node.owner = owner_node
+	for child in node.get_children(): _compiled_assign_owners(child,owner_node)
+
+func _compiled_tile(node: Node3D) -> Vector2i:
+	var at := node.position
+	if node is MeshInstance3D and node.mesh is ArrayMesh:
+		at += node.get_aabb().get_center()
+	return Vector2i(floori(at.x/96.0),floori(at.z/96.0))
+
+# Copy only static supported node types, not scripts or live gameplay nodes.
+# Mesh resources are already assembled. Strip materials from the copy and
+# restore shared live materials on load, so quality changes still work.
+func _compiled_copy_node(source: Node3D) -> Node3D:
+	if not (source is StaticBody3D or source is MeshInstance3D or source is MultiMeshInstance3D or source is Label3D): return null
+	var node := source.duplicate(Node.DUPLICATE_GROUPS) as Node3D
+	if node==null: return null
+	if source is MeshInstance3D:
+		var override_id := _compiled_id(source.material_override)
+		if override_id< -1:
+			node.free()
+			return null
+		node.set_meta("compiled_override",override_id)
+		(node as MeshInstance3D).material_override = null
+		if source.mesh is ArrayMesh:
+			var mesh := source.mesh.duplicate() as ArrayMesh
+			var ids := PackedInt32Array()
+			for i in range(mesh.get_surface_count()):
+				var id := _compiled_id(source.mesh.surface_get_material(i))
+				if id< -1:
+					node.free()
+					return null
+				ids.append(id)
+				mesh.surface_set_material(i,null)
+			(node as MeshInstance3D).mesh = mesh
+			node.set_meta("compiled_surfaces",ids)
+	elif source is MultiMeshInstance3D:
+		var id := _compiled_id(source.material_override)
+		if id< -1:
+			node.free()
+			return null
+		node.set_meta("compiled_override",id)
+		(node as MultiMeshInstance3D).material_override = null
+	return node
+
+func _compiled_pack(nodes: Array) -> PackedScene:
+	var root := Node3D.new()
+	root.name = "CompiledBuildings"
+	var tiles: Dictionary = {}
+	for source in nodes:
+		if not source is Node3D:
+			root.free()
+			return null
+		var copy := _compiled_copy_node(source)
+		if copy==null:
+			root.free()
+			return null
+		var tile := _compiled_tile(source)
+		if not tiles.has(tile):
+			var chunk := Node3D.new()
+			chunk.name = "Tile_%d_%d" % [tile.x,tile.y]
+			root.add_child(chunk)
+			chunk.set_meta("compiled_tile",tile)
+			tiles[tile] = chunk
+		var chunk: Node3D = tiles[tile]
+		chunk.add_child(copy)
+		_compiled_assign_owners(chunk,root)
+	var packed := PackedScene.new()
+	var err := packed.pack(root)
+	root.free()
+	return packed if err==OK else null
+
+func _compiled_details_snapshot(tiles: Dictionary) -> Array:
+	var result: Array = []
+	for key in tiles:
+		for item in tiles[key].items:
+			var id := _compiled_id(item.material)
+			if id<0: return []
+			result.append({"tile":key,"origin":item.origin,"material":id,"transforms":item.transforms,"home_level":item.home_level,"detail":true})
+	return result
+
+func _compiled_merge_details(tiles: Dictionary) -> void:
+	for key in tiles:
+		var entry: Dictionary = tiles[key]
+		if not detail_stream_tiles.has(key):
+			detail_stream_tiles[key] = entry
+		else:
+			detail_stream_tiles[key].items.append_array(entry.items)
+	detail_stream_clock = 0.0
+
+func _compiled_scene_valid(root: Node3D,material_count: int) -> bool:
+	for chunk in root.get_children():
+		if not chunk is Node3D or not chunk.get_meta("compiled_tile",null) is Vector2i: return false
+		for node in chunk.get_children():
+			if not (node is StaticBody3D or node is MeshInstance3D or node is MultiMeshInstance3D or node is Label3D): return false
+			var id := int(node.get_meta("compiled_override",-1))
+			if id< -1 or id>=material_count: return false
+			for surface_id in node.get_meta("compiled_surfaces",PackedInt32Array()):
+				if surface_id< -1 or surface_id>=material_count: return false
+	return root.get_child_count()>0
+
+func _compiled_restore(snapshot: Dictionary) -> bool:
+	if snapshot.is_empty(): return false
+	var data: Dictionary = snapshot.data
+	for field in ["materials","details","npc_doors","walkways","kept","landmark_sites"]:
+		if not data.get(field) is Array: return false
+	for field in ["editable","rendered","services","heights"]:
+		if not data.get(field) is Dictionary: return false
+	if int(data.get("mapped",0))<=0: return false
+	var ids: Dictionary = {}
+	for fp in geography.footprints: ids[String(fp.id)] = fp
+	var kept: Array = []
+	for id in data.kept:
+		if not ids.has(id): return false
+		kept.append(ids[id])
+	for item in data.details:
+		if not item is Dictionary or not item.get("tile") is Vector2i or not item.get("transforms") is Array: return false
+		if int(item.get("material",-1))<0 or int(item.material)>=data.materials.size(): return false
+	var packed: PackedScene = snapshot.scene
+	var root := packed.instantiate() as Node3D
+	if root==null: return false
+	if not _compiled_scene_valid(root,data.materials.size()):
+		root.free()
+		return false
+	var materials := _compiled_restore_materials(data.materials)
+	# Add structural nodes and physics immediately; streaming remains visual.
+	# Reparent direct children back to the world for legacy node consumers.
+	for chunk in root.get_children():
+		var tile: Vector2i = chunk.get_meta("compiled_tile")
+		for node in chunk.get_children():
+			if node is MeshInstance3D or node is MultiMeshInstance3D:
+				var id := int(node.get_meta("compiled_override",-1))
+				if id>=0: node.material_override = materials[id]
+				if node is MeshInstance3D and node.mesh is ArrayMesh:
+					var surface_ids: PackedInt32Array = node.get_meta("compiled_surfaces",PackedInt32Array())
+					for i in range(surface_ids.size()):
+						if surface_ids[i]>=0: node.mesh.surface_set_material(i,materials[surface_ids[i]])
+			chunk.remove_child(node)
+			add_child(node)
+			if node is GeometryInstance3D and not node is Label3D:
+				if node.is_in_group("city_detail_batches"): detail_batches += 1
+				else: _compiled_track_visual(tile,node)
+	root.free()
+	for raw in data.details:
+		var key: Vector2i = raw.tile
+		if not detail_stream_tiles.has(key): detail_stream_tiles[key] = {"center":Vector3(float(key.x)*96.0+48.0,0,float(key.y)*96.0+48.0),"items":[],"nodes":[],"next":0}
+		var item: Dictionary = raw.duplicate()
+		item.material = materials[int(raw.material)]
+		detail_stream_tiles[key].items.append(item)
+	editable_buildings = data.editable
+	geographic_rendered = data.rendered
+	incident_services = data.services
+	height_sources = data.heights
+	npc_doorways = data.npc_doors
+	monte_walkways = data.walkways
+	kept_footprints = kept
+	real_facade_sites = data.landmark_sites
+	mapped_buildings = int(data.mapped)
+	market_drawn = bool(data.get("market_drawn",false))
+	detail_stream_clock = 0.0
+	return true
+
+func _compiled_track_visual(tile: Vector2i,node: GeometryInstance3D) -> void:
+	if not detail_stream_enabled: return
+	# Long meshes may cross their nominal tile; retain a generous range.
+	if not compiled_visual_chunks.has(tile): compiled_visual_chunks[tile] = []
+	compiled_visual_chunks[tile].append(node)
+
+func _compiled_update_visuals(focus: Vector3) -> void:
+	for tile in compiled_visual_chunks:
+		var center := Vector3(float(tile.x)*96.0+48.0,0,float(tile.y)*96.0+48.0)
+		var distance := Vector2(center.x-focus.x,center.z-focus.z).length()
+		for node in compiled_visual_chunks[tile]:
+			if not is_instance_valid(node): continue
+			if distance>COMPILED_VISUAL_HIDE_RADIUS and node.visible: node.hide()
+			elif distance<COMPILED_VISUAL_RADIUS and not node.visible: node.show()
+
+func _load_or_compile_buildings(public_anchor: Vector3) -> void:
+	var key := _compiled_key()
+	if key.is_empty():
+		_make_mapped_buildings(public_anchor)
+		return
+	var started := Time.get_ticks_msec()
+	if _compiled_restore(CompiledCache.read(key)):
+		print("MyCity edificios compilados: HIT · ",mapped_buildings," edificios · ",Time.get_ticks_msec()-started," ms")
+		return
+	print("MyCity edificios compilados: MISS")
+	# Separate earlier roads/gameplay structures from the mapped phase.
+	_flush_city_boxes()
+	_flush_monte_columns()
+	_flush_footprints()
+	var earlier_details := detail_stream_tiles
+	detail_stream_tiles = {}
+	# Separate collision bodies so the packed scene owns only the new shapes.
+	var earlier_physics := physics_chunks
+	physics_chunks = {}
+	var first_child := get_child_count()
+	_make_mapped_buildings(public_anchor)
+	_flush_city_boxes()
+	_flush_monte_columns()
+	_flush_footprints()
+	var captured: Array = []
+	for i in range(first_child,get_child_count()): captured.append(get_child(i))
+	for node in captured:
+		if node is GeometryInstance3D and not node is Label3D and not node.is_in_group("city_detail_batches"):
+			_compiled_track_visual(_compiled_tile(node),node)
+	var new_details := detail_stream_tiles
+	detail_stream_tiles = earlier_details
+	_compiled_merge_details(new_details)
+	earlier_physics.merge(physics_chunks,true)
+	physics_chunks = earlier_physics
+	_compiled_material_table()
+	var details := _compiled_details_snapshot(new_details)
+	if details.is_empty() and not new_details.is_empty(): return
+	var packed := _compiled_pack(captured)
+	if packed==null:
+		push_warning("MyCity: geometría no compatible con caché compilada; generación normal conservada.")
+		return
+	var kept: Array = []
+	for fp in kept_footprints: kept.append(String(fp.id))
+	var data := {"materials":compiled_materials,"details":details,"editable":editable_buildings,"rendered":geographic_rendered,"services":incident_services,"heights":height_sources,"npc_doors":npc_doorways,"walkways":monte_walkways,"kept":kept,"landmark_sites":real_facade_sites,"mapped":mapped_buildings,"market_drawn":market_drawn}
+	var save_started := Time.get_ticks_msec()
+	var written := CompiledCache.write(key,packed,data)
+	print("MyCity caché escena compilada: ", "guardada" if written else "no disponible"," · ",Time.get_ticks_msec()-save_started," ms")
 
 func _make_mapped_buildings(public_anchor: Vector3) -> void:
 	var palette: Array[Color] = [Color("#a5b2a5"),Color("#c3b49b"),Color("#a2b8ba"),Color("#b19a88"),Color("#c3bc9d"),Color("#a4a29a"),Color("#b8ad99")]
