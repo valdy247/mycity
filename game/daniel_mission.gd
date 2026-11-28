@@ -24,6 +24,8 @@ var dance_time := 0.0
 var dance_hits := 0
 var dance_attempts := 0
 var dance_active := false
+var rhythm_singing := false
+var exterior_retry := 0.0
 var beat_label: Label
 var next_tap := 0.0
 var smoking := 0.0
@@ -363,7 +365,18 @@ func _domino_menu() -> void:
 		business._button("Volver",business.close)
 		return
 	business._open("Dominó · doble nueve","Tú y Luis contra Mario y Rafa. Extremos: %d | %d\nFichas rivales: %d / %d / %d\n%s" % [int(g.left),int(g.right),g.hands[1].size(),g.hands[2].size(),g.hands[3].size(),String(g.log)])
+	var chain: Array = g.get("chain",[])
+	if not chain.is_empty():
+		var table := Label.new()
+		var tiles: Array[String] = []
+		for tile in chain: tiles.append("%d:%d" % tile)
+		table.text = "Mesa: "+ " | ".join(tiles)
+		table.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		business.content.add_child(table)
 	var hand: Array = g.hands[0]
+	var grid := GridContainer.new()
+	grid.columns = 3
+	business.content.add_child(grid)
 	var playable := false
 	for i in range(hand.size()):
 		var tile: Array = hand[i]
@@ -371,13 +384,20 @@ func _domino_menu() -> void:
 		var right := Domino.legal(g,tile,false)
 		if left:
 			playable = true
-			business._button("%d-%d · izquierda" % tile,_domino_play.bind(i,true))
+			_tile_button(grid,"%d-%d · I" % tile,_domino_play.bind(i,true))
 		if right and int(g.left)!=int(g.right):
 			playable = true
-			business._button("%d-%d · derecha" % tile,_domino_play.bind(i,false))
-		if not left and not right: business._button("%d-%d" % tile,_domino_menu,true)
+			_tile_button(grid,"%d-%d · D" % tile,_domino_play.bind(i,false))
+		if not left and not right: _tile_button(grid,"%d-%d" % tile,_domino_menu,true)
 	business._button("Paso",_domino_pass,playable)
 	business._button("Pausar partida",business.close)
+
+func _tile_button(grid: GridContainer,label_value: String,callback: Callable,disabled_value: bool = false) -> void:
+	var button := Button.new()
+	button.text = label_value
+	button.disabled = disabled_value
+	button.pressed.connect(callback)
+	grid.add_child(button)
 
 func _new_domino() -> void:
 	state.domino = Domino.start()
@@ -398,6 +418,7 @@ func _domino_pass() -> void:
 
 func _start_rhythm(singing: bool) -> void:
 	dance_active = true
+	rhythm_singing = singing
 	dance_time = 0.0
 	dance_hits = 0
 	dance_attempts = 0
@@ -412,9 +433,13 @@ func _start_rhythm(singing: bool) -> void:
 func _period() -> float:
 	return 60.0/float(TEMPOS[track])
 
+func _rhythm_clock() -> float:
+	if is_instance_valid(speaker) and speaker.playing: return speaker.get_playback_position()
+	return dance_time if dance_active else elapsed
+
 func _tap() -> void:
 	if not dance_active or dance_time<next_tap: return
-	var phase := fposmod(dance_time,_period())
+	var phase := fposmod(_rhythm_clock(),_period())
 	if minf(phase,_period()-phase)<.16: dance_hits += 1
 	dance_attempts += 1
 	next_tap = dance_time+_period()*.7
@@ -422,7 +447,7 @@ func _tap() -> void:
 
 func _end_rhythm() -> void:
 	dance_active = false
-	_activity("baile")
+	if dance_attempts>0: _activity("canto" if rhythm_singing else "baile")
 	business._open("¡Qué ritmo!","Aciertos: %d de %d. Sigue practicando cuando quieras." % [dance_hits,dance_attempts])
 	business._button("Volver",business.close)
 
@@ -534,7 +559,11 @@ func tick(delta: float) -> void:
 			open_call()
 	if int(state.stage)>=2 and not inside and _house().is_finite():
 		if game.player.global_position.distance_to(_house())<26.0 and int(state.stage)==2:
-			if exterior.stream==null: _play_track()
+			if exterior.stream==null:
+				exterior_retry -= delta
+				if exterior_retry<=0.0:
+					exterior_retry = 2.0
+					_play_track()
 			elif not exterior.playing: exterior.play()
 		elif exterior.playing: exterior.stop()
 	if not inside: return
@@ -542,7 +571,7 @@ func tick(delta: float) -> void:
 	var period := _period()
 	for entry in dancers:
 		var person: Person = entry.node
-		var phase := elapsed*TAU/period+float(entry.phase)
+		var phase := _rhythm_clock()*TAU/period+float(entry.phase)
 		person.position = Vector3(entry.p)+Vector3(sin(phase)*.13,absf(sin(phase))*.025,cos(phase*.5)*.08)
 		person.rotation.y = sin(phase*.5)*.30
 		for arm in person.arms: arm.rotation.x = -.65+sin(phase)*.38
@@ -551,7 +580,7 @@ func tick(delta: float) -> void:
 		if not business.modal_open() or not is_instance_valid(beat_label): dance_active = false
 		else:
 			dance_time += delta
-			var phase := fposmod(dance_time,period)
+			var phase := fposmod(_rhythm_clock(),period)
 			beat_label.text = ("¡AHORA!" if minf(phase,period-phase)<.16 else "Espera el pulso…")+"   %d/%d" % [dance_hits,dance_attempts]
 	if smoking>0.0:
 		smoking = maxf(0.0,smoking-delta)
