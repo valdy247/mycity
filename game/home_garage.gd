@@ -4080,6 +4080,10 @@ func _install_reward_wheel() -> void:
 	state.gps = {}
 	game.taxis.set_garage_destination(Vector3.ZERO,"")
 	_save()
+	business.show_mission_reward("+Goma de bicicleta","","Bueno... por algo se empieza. Hay que dar gracias a Dios, hay quien tiene menos...","res://audio/carlos/player_wheel_reflection.mp3",_wheel_tutorial_after_reward)
+
+func _wheel_tutorial_after_reward() -> void:
+	if not inside or business.modal_open(): return
 	business._open("Tu primera bicicleta","¡Goma instalada! Las piezas transparentes son las que faltan. Mira la bicicleta y pulsa E para comprar o instalar piezas. Cuando esté completa podrás venderla en Facebook Marketplace y desbloquear un triciclo. También puedes comprar pintura en Facebook o en tiendas de repuestos, traerla a casa y pintar tus paredes.")
 	business._button("Entendido",business.close)
 
