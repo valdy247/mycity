@@ -1908,6 +1908,10 @@ func tick(delta: float) -> void:
 	if business.modal_open() or game.building_mode or (game.city_navigation!=null and game.city_navigation.active): return
 	var stage := _stage()
 	if stage==0:
+		if is_instance_valid(game.daniel_mission):
+			if not game.daniel_mission.completed(): return
+			var completed_day := floori(float(game.daniel_mission.state.get("completed_at",0.0))/1440.0)
+			if int(business.life.state.day)<=completed_day: return
 		if not bool(state.get("replay_ready",false)) and (not bool(game.garage.state.get("wheel_tutorial",false)) or game.carlos_mission._stage()!=5): return
 		if _busy() or not game.garage.inside or not game.garage._free_hands(): return
 		call_clock += delta
