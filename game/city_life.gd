@@ -538,6 +538,8 @@ func _refresh_meal() -> void:
 		var spoon_hand := InteractionHand.new()
 		rice_spoon_view.add_child(spoon_hand)
 		spoon_hand.configure(Vector3(.024,-.005,.012))
+		var dining = business.get_parent().garage
+		if is_instance_valid(dining) and dining.dining_seated: dining._configure_dining_arm(spoon_hand)
 	if avatar_food!=null:
 		_draw_meal(avatar_food,f,int(meal.get("food_bites",0)))
 		_draw_meal(avatar_drink,d,int(meal.get("drink_sips",0)))
@@ -1051,8 +1053,7 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 						var plate: Node3D = dining.dining_plate_prop
 						if is_instance_valid(plate) and (active_hand!=0 or bite_anim>.39):
 							desired = cam.to_local(plate.to_global(Vector3(.06,.10,.12)))
-						if dining.dining_water_busy: rice_spoon_view.hide()
-						else: rice_spoon_view.show()
+						rice_spoon_view.visible = not dining.dining_water_busy and active_hand==0
 					rice_spoon_view.position = InteractionHand.camera_safe_pose(cam,desired,.045)
 			elif not food_model.is_empty():
 				food_view.position = InteractionHand.camera_safe_pose(cam,Vector3(-.29,-.12 if active_hand==0 else -.36,-.74),.13)
