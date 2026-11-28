@@ -30,6 +30,8 @@ var follow_stall := 0.0
 var exit_retry := 0.0
 var hand_tip: MeshInstance3D
 var worker_tip: MeshInstance3D
+var mission_voice: AudioStreamPlayer
+var greeting_tween: Tween
 var game
 var world
 var business
@@ -256,9 +258,63 @@ func _clear_target() -> void:
 
 # Local prerecorded dialogue; no network or runtime TTS required.
 const CALL_AUDIO_DIR := "res://audio/carlos/"
+
+func _scene_clips(names: Array) -> Array:
+	var paths: Array = []
+	for name_value in names:
+		paths.append(CALL_AUDIO_DIR+String(name_value)+".mp3")
+	return paths
+
+func _stop_mission_voice() -> void:
+	if is_instance_valid(mission_voice): mission_voice.stop()
+
+func _mission_line(text_value: String,clip_name: String) -> void:
+	business._notify(text_value)
+	var path := CALL_AUDIO_DIR+clip_name+".mp3"
+	if not ResourceLoader.exists(path): return
+	var clip := load(path) as AudioStream
+	if clip==null: return
+	if not is_instance_valid(mission_voice):
+		mission_voice = AudioStreamPlayer.new()
+		add_child(mission_voice)
+	if mission_voice.playing: return
+	mission_voice.stream = clip
+	mission_voice.play()
+
+func _greeting_pose(pose: float) -> void:
+	if not is_instance_valid(carlos): return
+	carlos.arms[1].rotation.x = pose
+	if game.limb_arms.size()>1: game.limb_arms[1].rotation.x = pose
+
+func _finish_greeting() -> void:
+	if is_instance_valid(carlos):
+		carlos.remove_meta("story_handshake")
+		carlos.arms[1].rotation.x = 0.0
+	if game.limb_arms.size()>1: game.limb_arms[1].rotation.x = 0.0
+	if is_instance_valid(game.avatar): game.avatar.visible = not game.first_person
+
+func _greet_carlos() -> void:
+	if is_instance_valid(greeting_tween): greeting_tween.kill()
+	var face: Vector3 = game.player.global_position-carlos.global_position
+	face.y = 0.0
+	if face.length_squared()>.02:
+		carlos.rotation.y = atan2(face.x,face.z)
+		game.avatar.rotation.y = atan2(-face.x,-face.z)
+	_stop_mission_voice()
+	business.open_story(carlos,"Carlos",["Carlos: Menos mal que viniste. Así me ayudas y te buscas una plata, mano. Vamos, sígueme, que es aquí mismo cerca.","Tú: Dale, vamos."],"Vamos",_meet_carlos,"",_scene_clips(["meet_carlos","meet_player"]))
+	carlos.set_meta("story_handshake",true)
+	if is_instance_valid(business.story_camera) and business.story_camera.active: game.avatar.show()
+	greeting_tween = create_tween()
+	greeting_tween.tween_method(_greeting_pose,0.0,-1.10,.22)
+	for i in range(3):
+		greeting_tween.tween_method(_greeting_pose,-1.10,-.97,.14)
+		greeting_tween.tween_method(_greeting_pose,-.97,-1.23,.14)
+	greeting_tween.tween_method(_greeting_pose,-1.23,0.0,.28)
+	greeting_tween.tween_callback(_finish_greeting)
+
 const CALL_INTRO := [
 	["Carlos","Buen día, te estoy llamando de parte de Albertico. Me dijo que necesitabas buscar dinero.","carlos_intro",5.20],
-	["Tú","Oh, sí, bro, dime, ¿qué hay que hacer?","player_intro",2.80],
+	["Tú","Oh, sí, bro, dime, ¿qué hay que hacer?","player_intro_v2",2.56],
 	["Carlos","Mira, un vecino mío quiere pintar la casa y me hace falta una mano. ¿Estás dentro?","carlos_offer",5.04]
 ]
 const CALL_YES := [
@@ -403,7 +459,7 @@ func objective() -> String:
 	match _stage():
 		1: return "Abre el teléfono (P) y responde a Carlos."
 		2: return "Busca a Carlos en Flores y Estévez. Habla con él (E)."
-		3: return "Ve con Carlos a casa del cliente y entra por la puerta (E)."
+		3: return "Sigue a Carlos a casa del cliente y entra por la puerta (E)."
 		4:
 			if not inside: return "Regresa a casa del cliente. Entra con E."
 			if _finished(): return "Pintura terminada. Habla con el cliente (E) para cobrar."
@@ -488,7 +544,7 @@ func interact() -> bool:
 		if not game.garage._free_hands():
 			business._notify("Deja primero lo que llevas en las manos.")
 			return true
-		business.open_story(carlos,"Carlos",["Carlos: Vamos, es aquí cerca. Te sigo."],"Vamos",_meet_carlos,"Ahora no")
+		_greet_carlos()
 		return true
 	if action.contains("Entrar a casa del cliente"):
 		if not game.garage._free_hands():
@@ -503,11 +559,13 @@ func interact() -> bool:
 
 func _meet_carlos() -> void:
 	if _stage()!=2 or not game.garage._free_hands(): return
+	if is_instance_valid(greeting_tween): greeting_tween.kill()
+	_finish_greeting()
 	business.close()
 	state.stage = 3
 	follow_clock = 0.0
 	follow_stall = 0.0
-	business._notify("Carlos: Vamos, es aquí cerca. Te sigo.")
+	business._notify("Sigue a Carlos hasta la casa del cliente.")
 	_target(customer,"Casa del cliente")
 	_save()
 
@@ -593,7 +651,6 @@ func _make_room() -> void:
 	room.add_child(brush_item)
 	brush_item.position = Vector3(.85,.07,.55)
 	_make_brush(brush_item)
-	_make_brush(brush_item,Vector3(.25,0,.15))
 	brush_item.visible = not bool(state.brush)
 	# Exit marker lies on the entrance wall; paint behind it is still possible.
 	# The progress/exit label above the door is cosmetic, never a collider.
@@ -603,7 +660,11 @@ func _make_room() -> void:
 	carlos.arms[1].add_child(worker_brush)
 	worker_brush.position = Vector3(0,-.51,.045)
 	worker_brush.rotation.x = PI*.5
-	worker_tip = _make_brush(worker_brush)
+	# Keep the wrist animation unchanged; rotate only the brush geometry.
+	var worker_brush_model := Node3D.new()
+	worker_brush.add_child(worker_brush_model)
+	worker_brush_model.rotation.y = PI
+	worker_tip = _make_brush(worker_brush_model)
 	worker_charge = 0
 	worker_phase = "choose"
 	worker_job = {}
@@ -653,6 +714,7 @@ func _update_paint_progress() -> void:
 	paint_progress.text = "SALIR · E    |    %d%% PINTADO" % roundi(100.0*float(correct_tiles)/float(TOTAL))
 
 func _enter() -> void:
+	var first_entry := not bool(state.get("paint_dialogue_seen",false))
 	inside = true
 	previous_first = game.first_person
 	state.stage = 4
@@ -665,8 +727,18 @@ func _enter() -> void:
 	game.pitch = -.20
 	game.pivot.rotation = Vector3(game.pitch,game.yaw,0)
 	game._apply_camera_mode()
-	business._notify("Carlos: Azul para las paredes, amarillo para la puerta. Recoge una brocha y mójala en la lata correcta.")
 	_save()
+	if first_entry and not _finished():
+		_stop_mission_voice()
+		business.open_story(carlos,"Carlos",["Carlos: Mira, el azul para las paredes y el amarillo para la puerta. Él viene cuando terminemos a pagarnos.","Tú: Dale, no hay lío. Está fácil, yo hice algo de pintura en Miami."],"Empezar a pintar",_finish_paint_intro,"",_scene_clips(["paint_carlos","paint_player"]))
+	else:
+		business._notify("Recoge una brocha y mójala en la lata correcta.")
+
+func _finish_paint_intro() -> void:
+	state.paint_dialogue_seen = true
+	_save()
+	business.close()
+	business._notify("Recoge una brocha y mójala en la lata correcta.")
 
 func _exit_aim() -> bool:
 	if not inside: return false
@@ -680,6 +752,7 @@ func _exit_aim() -> bool:
 	return absf(p.x)<.975 and p.y>.05 and p.y<2.10
 
 func _destroy_room() -> void:
+	_stop_mission_voice()
 	if is_instance_valid(hand_tween): hand_tween.kill()
 	if is_instance_valid(hand):
 		hand.hide()
@@ -715,7 +788,7 @@ func _exit() -> void:
 		follow_clock = 0.0
 		follow_path = PackedVector3Array()
 		follow_index = 0
-		business._notify("Carlos: Bueno, dale mano. Nos vemos después. Lleva esa goma al garaje.")
+		_mission_line("Carlos: Lleva eso pa’ tu casa y ármate una bici pa’ que te muevas más rápido.","carlos_farewell")
 		if not world.garage_home_site.is_empty(): game.garage._set_waypoint(world.garage_home_site.door,"Mi garaje")
 	_save()
 
@@ -814,7 +887,7 @@ func _paint() -> void:
 		_animate_hand(Vector3(0,.035,-.12),sin(float(state.charge)*1.8)*.22,.16)
 		if color!=_required(wall) and warning_clock<=0.0:
 			warning_clock = 6.0
-			business._notify("Carlos: ¡Ey, recuerda! Azul para la pared y amarillo para la puerta.")
+			_mission_line("Carlos: ¡Ey, recuerda! Azul para la pared y amarillo para la puerta.","paint_warning")
 
 func _worker_next() -> Dictionary:
 	for wall in [2,0,1,3,4]:
@@ -886,7 +959,7 @@ func _worker_tick(delta: float) -> void:
 			worker_charge -= 1
 			if bool(worker_job.repair) and warning_clock<=0.0:
 				warning_clock = 6.0
-				business._notify("Carlos: Voy a corregir esta parte, mano.")
+				_mission_line("Carlos: Voy a corregir esta parte, mano.","paint_repair")
 		worker_phase = "choose"
 
 func _refresh_client() -> void:
@@ -897,12 +970,13 @@ func _refresh_client() -> void:
 	client.remove_from_group("social_people")
 	client.global_position = ROOM+Vector3(0,0,2.4)
 	business._label(client,"Cliente",Vector3(0,2.03,0))
-	business._notify("Cliente: ¡Quedó buenísima! Ven para pagarte.")
+	_mission_line("Cliente: ¡Quedó buenísima! Ven para pagarte.","client_done")
 	_refresh_hand()
 
 func _payment() -> void:
 	if _stage()!=4 or not _finished(): return
-	business.open_story(client,"Cliente",["Cliente: Asere, me robaron el dinero al salir del cajero. No tengo efectivo.","Cliente: Tengo una goma de bicicleta en buen estado. ¿Te sirve como pago?"],"Aceptar la goma",_accept_wheel,"Ahora no")
+	_stop_mission_voice()
+	business.open_story(client,"Cliente",["Cliente: Asere, me robaron el dinero al salir del cajero. No tengo efectivo.","Cliente: Tengo una goma de bicicleta en buen estado. ¿Te sirve como pago?","Tú: Bueno, sí, qué remedio. A ver qué hago con eso."],"Recibir la goma",_accept_wheel,"",_scene_clips(["client_payment1","client_payment2","player_payment"]))
 
 func _accept_wheel() -> void:
 	if _stage()!=4 or not _finished(): return
@@ -959,7 +1033,8 @@ func _follow(delta: float) -> void:
 		was_vehicle = true
 		exit_retry = 0.0
 		return
-	var target: Vector3 = game.player.global_position-Vector3.UP*.86
+	var player_at: Vector3 = game.player.global_position-Vector3.UP*.86
+	var target: Vector3 = player_at
 	if target.distance_to(customer.p)<7.0: target = customer.p
 	if was_vehicle:
 		exit_retry -= delta
@@ -985,10 +1060,16 @@ func _follow(delta: float) -> void:
 					break
 				if not was_vehicle: break
 		if was_vehicle: return
+	# Carlos leads the first walk and waits when the player falls behind.
+	if _stage()==3:
+		if carlos.global_position.distance_to(player_at)>7.0 or carlos.global_position.distance_to(customer.p)<1.0:
+			carlos.animate(delta,false)
+			return
+		target = customer.p
 	if carlos.global_position.distance_to(customer.p)<1.3 and target.distance_to(customer.p)<6.0:
 		carlos.animate(delta,false)
 		return
-	if carlos.global_position.distance_to(target)<1.9:
+	if carlos.global_position.distance_to(target)<(0.8 if _stage()==3 else 1.9):
 		carlos.animate(delta,false)
 		return
 	follow_clock -= delta
