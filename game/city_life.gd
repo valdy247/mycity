@@ -256,7 +256,7 @@ func advance_sleep_economy(minutes: float) -> void:
 			sale_clock = 0.0
 		supply_clock += step
 		if supply_clock>=5.0:
-			_supply_tick(supply_clock)
+			_supply_tick(supply_clock,false)
 			supply_clock = 0.0
 		economy_clock += step
 		if economy_clock>=60.0:
@@ -975,7 +975,7 @@ func _cafe_needs(cafe: Dictionary) -> Array:
 # Supplier delivery is the fallback for a blocked owner or disconnected
 # pedestrian graph. Still transfers actual crates, debits cash or bounded
 # trade credit and persists inventory; never creates free cafe stock.
-func _supply_tick(delta: float) -> void:
+func _supply_tick(delta: float,persist: bool = true) -> void:
 	var changed := false
 	for id in sites:
 		if not state.cafes.has(id): continue
@@ -998,7 +998,7 @@ func _supply_tick(delta: float) -> void:
 					break
 		if delivered: cafe.supply_wait = 0.0
 		else: cafe.supply_wait = CAFE_DELIVERY_DELAY-10.0
-	if changed: ledger.save_game()
+	if changed and persist: ledger.save_game()
 
 func _owner_depart(agent: Dictionary) -> void:
 	var cafe: Dictionary = state.cafes[agent.site]
