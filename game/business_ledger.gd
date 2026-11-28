@@ -272,7 +272,7 @@ func hire() -> bool:
 	save_game()
 	return true
 
-func sell_one() -> Dictionary:
+func sell_one(persist: bool = true) -> Dictionary:
 	if stage!=4: return {}
 	for key in PRODUCTS:
 		if int(stock.get(key,0))<=0: continue
@@ -292,6 +292,6 @@ func sell_one() -> Dictionary:
 		if int(stock[key])<=maxi(2,floori(float(item.units)*.2)) and not bool(low_alert.get(key,false)):
 			low_alert[key] = true
 			add_message("Albertico","Oye, se está acabando el "+String(item.name).to_lower()+". Quedan "+str(stock[key])+" unidades. Trae otra caja cuando puedas.")
-		save_game()
+		if persist: save_game()
 		return {"product":item.name,"net":price-pay}
 	return {}
