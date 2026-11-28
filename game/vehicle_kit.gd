@@ -4,7 +4,7 @@ const VehicleLights = preload("res://vehicle_lights.gd")
 # and can be shown as a translucent guide until installed.
 const KITS := {
 	"bicicleta":{"name":"Bicicleta","width":.65,"length":1.85,"height":1.15,"speed":7.5,"parts":{"frame":900,"wheel_a":500,"wheel_b":500,"steer":350,"seat":250,"drive":450}},
-	"triciclo":{"name":"Triciclo eléctrico","width":1.25,"length":2.5,"height":1.65,"speed":10.0,"parts":{"frame":1800,"wheel_a":600,"wheel_b":600,"wheel_c":600,"steer":500,"seat":400,"drive":1800,"battery":1500}},
+	"triciclo":{"name":"Triciclo eléctrico","width":1.25,"length":2.5,"height":2.15,"speed":10.0,"parts":{"frame":1800,"wheel_a":600,"wheel_b":600,"wheel_c":600,"steer":500,"seat":400,"drive":1800,"battery":1500}},
 	"moto":{"name":"Moto","width":.85,"length":2.1,"height":1.35,"speed":15.0,"parts":{"frame":2500,"wheel_a":850,"wheel_b":850,"steer":700,"seat":500,"drive":3500,"battery":1000}},
 	"carro":{"name":"Carro","width":1.8,"length":4.1,"height":1.65,"speed":19.0,"parts":{"frame":6000,"wheel_a":1200,"wheel_b":1200,"wheel_c":1200,"wheel_d":1200,"steer":1700,"seat":1000,"drive":7000,"battery":1800}}
 }
@@ -97,6 +97,16 @@ static func _spoked_wheel(root: Node3D,p: Vector3,r: float,width: float,ghost: b
 		var d := Vector3(0,sin(a),cos(a))*r*.74
 		_bar(root,p-d,p+d,.012,silver,ghost)
 
+# Shared triciclo contact points, in vehicle-local metres.
+const TRI_ROOF_Y := 2.06
+const TRI_SEAT_Z := -.08
+const TRI_GRIP_Y := 1.24
+const TRI_GRIP_Z := .45
+const TRI_GRIP_X := .35
+const TRI_FOOT_X := .27
+const TRI_FOOT_Y := .535
+const TRI_FOOT_Z := .16
+
 static func build(root: Node3D,kind: String,installed: Dictionary,all_parts: bool = false) -> void:
 	var spec: Dictionary = KITS[kind]
 	var car := kind=="carro"
@@ -122,13 +132,13 @@ static func build(root: Node3D,kind: String,installed: Dictionary,all_parts: boo
 					_bar(root,Vector3(0,.38,0),Vector3(0,.91,z*.77),.07,paint,ghost)
 					if tri:
 						_box(root,Vector3(0,.65,-.53),Vector3(1.14,.17,.98),paint,ghost)
-						_box(root,Vector3(0,1.48,-.40),Vector3(1.20,.09,1.16),paint,ghost)
+						_box(root,Vector3(0,TRI_ROOF_Y,-.40),Vector3(1.20,.09,1.16),paint,ghost)
 						for x in [-.53,.53]:
-							_bar(root,Vector3(float(x),.67,-.9),Vector3(float(x),1.48,-.9),.06,paint,ghost)
-							_bar(root,Vector3(float(x),.70,-.15),Vector3(float(x),1.48,-.15),.035,paint,ghost)
+							_bar(root,Vector3(float(x),.67,-.9),Vector3(float(x),TRI_ROOF_Y,-.9),.06,paint,ghost)
+							_bar(root,Vector3(float(x),.70,-.15),Vector3(float(x),TRI_ROOF_Y,-.15),.035,paint,ghost)
 							_box(root,Vector3(float(x),.84,-.57),Vector3(.055,.22,.76),paint,ghost)
 						# Bicitaxi-style passenger canopy and lower rear panel.
-						_box(root,Vector3(0,1.54,-.40),Vector3(1.12,.045,1.08),Color("#e1dac4"),ghost)
+						_box(root,Vector3(0,TRI_ROOF_Y+.06,-.40),Vector3(1.12,.045,1.08),Color("#e1dac4"),ghost)
 						_box(root,Vector3(0,.76,-1.015),Vector3(1.04,.24,.055),paint,ghost)
 						_box(root,Vector3(0,.85,.875),Vector3(.34,.43,.055),paint,ghost,-.12)
 					if moto:
@@ -168,6 +178,10 @@ static func build(root: Node3D,kind: String,installed: Dictionary,all_parts: boo
 						# Keep Yordi's mission-specific mirror positions untouched.
 						_box(root,Vector3(0,1.105,.48),Vector3(.13,.03,.09),Color("#303438"),ghost)
 						_box(root,Vector3(0,1.124,.48),Vector3(.085,.012,.06),Color("#91a5a4"),ghost)
+					elif tri:
+						_bar(root,Vector3(0,.35,z),Vector3(0,1.11,z*.77),.06,Color("#b5b9bd"),ghost)
+						_bar(root,Vector3(0,1.11,z*.77),Vector3(0,TRI_GRIP_Y,TRI_GRIP_Z),.05,Color("#b5b9bd"),ghost)
+						_box(root,Vector3(0,TRI_GRIP_Y,TRI_GRIP_Z),Vector3(TRI_GRIP_X*2.0+.10,.055,.07),Color("#343b3c"),ghost)
 					else:
 						_bar(root,Vector3(0,.35,z),Vector3(0,1.11,z*.77),.06,Color("#b5b9bd"),ghost)
 						_box(root,Vector3(0,1.10,z*.77),Vector3(width*.86,.055,.07),Color("#343b3c"),ghost)
@@ -176,7 +190,7 @@ static func build(root: Node3D,kind: String,installed: Dictionary,all_parts: boo
 					_box(root,Vector3(0,.93,-.32),Vector3(.29,.10,.51),Color("#323638"),ghost)
 					_box(root,Vector3(0,.98,-.55),Vector3(.25,.06,.17),Color("#323638"),ghost)
 				else:
-					_box(root,Vector3(0,.93,-.23),Vector3(.55 if car or tri else .24,.11,.45),Color("#323638"),ghost)
+					_box(root,Vector3(0,.93,TRI_SEAT_Z if tri else -.23),Vector3(.55 if car or tri else .24,.11,.45),Color("#323638"),ghost)
 					if tri:
 						_box(root,Vector3(0,.91,-.76),Vector3(.91,.12,.38),Color("#323638"),ghost)
 						_box(root,Vector3(0,1.12,-.96),Vector3(.91,.33,.09),Color("#323638"),ghost)
@@ -194,6 +208,11 @@ static func build(root: Node3D,kind: String,installed: Dictionary,all_parts: boo
 						_bar(root,Vector3(x*.16,.39,0),Vector3(x*.16,.39,x*.15),.025,metal,ghost)
 						_box(root,Vector3(x*.21,.39,x*.15),Vector3(.13,.035,.095),Color("#343b3c"),ghost)
 					_bar(root,Vector3(.067,.36,0),Vector3(.067,.36,-z),.045,Color("#3c4447"),ghost)
+				if tri:
+					for side in [-1.0,1.0]:
+						var x := float(side)
+						_bar(root,Vector3(0,.46,TRI_FOOT_Z),Vector3(x*TRI_FOOT_X,.46,TRI_FOOT_Z),.045,Color("#686d70"),ghost)
+						_box(root,Vector3(x*TRI_FOOT_X,.46,TRI_FOOT_Z),Vector3(.20,.065,.34),Color("#343b3c"),ghost)
 				if moto:
 					_box(root,Vector3(0,.65,.07),Vector3(.24,.12,.20),Color("#555a5d"),ghost)
 					for fin in range(4):
