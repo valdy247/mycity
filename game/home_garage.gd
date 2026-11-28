@@ -1586,7 +1586,8 @@ func _aimed_coffee_spill() -> Dictionary:
 		if not patch.is_visible_in_tree(): continue
 		var extent: Vector2 = entry.extent
 		if not _aim_tool(patch,Vector3(0,.012,0),Vector3(extent.x,.027,extent.y)): continue
-		var distance := game.play_camera.global_position.distance_squared_to(patch.global_position)
+		var cam: Camera3D = game.play_camera
+		var distance: float = cam.global_position.distance_squared_to(patch.global_position)
 		if distance<depth:
 			depth = distance
 			best = entry
