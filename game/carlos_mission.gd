@@ -889,6 +889,10 @@ func _paint() -> void:
 			warning_clock = 6.0
 			_mission_line("Carlos: ¡Ey, recuerda! Azul para la pared y amarillo para la puerta.","paint_warning")
 
+# Carlos owns two full blue walls; the player handles the other two and the door.
+# After finishing his assignment, Carlos still repairs incorrect colors anywhere.
+const WORKER_WALLS := [2,0]
+
 func _worker_next() -> Dictionary:
 	for wall in [2,0,1,3,4]:
 		for y in range(_rows(wall)):
@@ -896,7 +900,7 @@ func _worker_next() -> Dictionary:
 				if _covered(wall,x,y): continue
 				var color := String(state.painted.get(_cell_key(wall,x,y),""))
 				if color==_required(wall): continue
-				if wall==2 or not color.is_empty(): return {"wall":wall,"x":x,"y":y,"color":_required(wall),"repair":not color.is_empty() and color!=_required(wall)}
+				if wall in WORKER_WALLS or not color.is_empty(): return {"wall":wall,"x":x,"y":y,"color":_required(wall),"repair":not color.is_empty() and color!=_required(wall)}
 	return {}
 
 func _worker_position(job: Dictionary) -> Vector3:
