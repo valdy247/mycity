@@ -206,12 +206,81 @@ func planned_sleep_minutes() -> float:
 	var remaining := fposmod(float(alarm)-float(state.minutes),1440.0)
 	return 1440.0 if remaining<.01 else remaining
 
+# Abstract elapsed business time without moving NPCs or spawning buyers.
+# The normal simulation resumes at the new clock time after waking.
+func _economy_step() -> void:
+	for id in state.cafes:
+		var cafe: Dictionary = state.cafes[id]
+		var choices := MENU.keys()
+		choices.shuffle()
+		for key in choices:
+			if not _can_make(String(id),String(key)): continue
+			for ingredient in MENU[key].needs:
+				cafe[ingredient] = int(cafe[ingredient])-int(MENU[key].needs[ingredient])
+			_cafe_sale(cafe,int(MENU[key].price))
+			break
+	# Small independent replenishment, not infinite shelf stock.
+	for id in INITIAL:
+		var inventory: Dictionary = state.supplies[id]
+		var changed := false
+		for key in INITIAL[id]:
+			var before := int(inventory.get(key,0))
+			if before>=int(INITIAL[id][key]): continue
+			inventory[key] = mini(int(INITIAL[id][key]),before+2)
+			changed = true
+		if changed: refresh_supplier(String(id))
+
+func advance_sleep_economy(minutes: float) -> void:
+	var seconds := maxf(0.0,minutes)/GAME_MINUTES_PER_SECOND
+	var remaining := seconds
+	var minute := float(state.minutes)
+	var sales := 0
+	var earned := 0
+	var ledger_step := 3.0 if ledger.adaptation_sales() else 10.0
+	var sale_clock := 0.0
+	# 15-second blocks for the economy, smaller substeps for sale readiness.
+	while remaining>.001:
+		var step := minf(remaining,ledger_step)
+		var current := fposmod(minute,1440.0)
+		if current>=420.0 and current<1080.0 and ledger.stage==4 and ledger.total(ledger.stock)>0:
+			ledger.advance_sales(step)
+			sale_clock += step
+			if sale_clock>=ledger_step:
+				sale_clock -= ledger_step
+				if ledger.sale_ready():
+					var sale := ledger.sell_one(false)
+					if not sale.is_empty():
+						sales += 1
+						earned += int(sale.net)
+		else:
+			sale_clock = 0.0
+		supply_clock += step
+		if supply_clock>=5.0:
+			_supply_tick(supply_clock)
+			supply_clock = 0.0
+		economy_clock += step
+		if economy_clock>=60.0:
+			economy_clock -= 60.0
+			_economy_step()
+		minute += step*GAME_MINUTES_PER_SECOND
+		remaining -= step
+	if sales>0: ledger.add_message("Albertico","Mientras descansabas vendí %d productos. Ingresaron %d CUP." % [sales,earned])
+	var order: Dictionary = state.order
+	if not order.is_empty():
+		order.remaining = maxf(0.0,float(order.remaining)-seconds)
+		if float(order.remaining)<=0.0 and not bool(order.announced):
+			order.announced = true
+			ledger.add_message("Pedido","Tu pedido está listo para recoger.")
+	business._sync_visuals()
+
 func sleep_at_home() -> String:
 	var duration := planned_sleep_minutes()
+	advance_sleep_economy(duration)
 	advance_game_minutes(duration)
 	state.fatigue = maxf(0.0,float(state.fatigue)-duration/FULL_SLEEP_MINUTES*100.0)
 	state.fullness = maxf(0.0,float(state.fullness)-duration*.025)
 	state.coffee_minutes = 0.0
+	state.illness_minutes = maxf(0.0,float(state.get("illness_minutes",0.0))-duration)
 	state.alarm_minute = -1
 	state["bed_unmade"] = true
 	_update_hud()
@@ -715,7 +784,12 @@ func _finish_bite() -> void:
 		state["dirty_food_bites"] = int(state.get("dirty_food_bites",0))+1
 	state.fullness = minf(100.0,float(state.fullness)+gain)
 	if int(meal.food_bites)<=0 and int(meal.drink_sips)<=0:
-		if bool(meal.get("dirty",false)): state["dirty_meals"] = int(state.get("dirty_meals",0))+1
+		if bool(meal.get("dirty",false)):
+			state["dirty_meals"] = int(state.get("dirty_meals",0))+1
+			if int(state.dirty_meals)%3==0:
+				state.illness_minutes = maxf(180.0,float(state.get("illness_minutes",0.0)))
+				state.fatigue = minf(100.0,float(state.fatigue)+10.0)
+				ledger.add_message("Salud","Te sientes mal del estómago. Descansa y lávate las manos antes de comer.")
 		state.meal = {}
 		business._notify("Buen provecho · hambre %d%%" % roundi(100.0-float(state.fullness)))
 	else:
@@ -1026,6 +1100,9 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	var stimulated := minf(passed,float(state.coffee_minutes))
 	state.coffee_minutes = maxf(0.0,float(state.coffee_minutes)-passed)
 	state.fatigue = minf(100.0,float(state.fatigue)+(passed-stimulated*.65)/9.6)
+	if float(state.get("illness_minutes",0.0))>0.0:
+		state.illness_minutes = maxf(0.0,float(state.illness_minutes)-passed)
+		state.fatigue = minf(100.0,float(state.fatigue)+passed*.025)
 	if meal_root!=null:
 		meal_root.visible = not in_vehicle and last_first_person and not state.meal.is_empty()
 		var dining = business.get_parent().garage
@@ -1085,26 +1162,7 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	economy_clock += delta
 	if economy_clock>=60.0:
 		economy_clock = 0.0
-		for id in state.cafes:
-			var cafe: Dictionary = state.cafes[id]
-			var choices := MENU.keys()
-			choices.shuffle()
-			for key in choices:
-				if not _can_make(String(id),String(key)): continue
-				for ingredient in MENU[key].needs:
-					cafe[ingredient] = int(cafe[ingredient])-int(MENU[key].needs[ingredient])
-				_cafe_sale(cafe,int(MENU[key].price))
-				break
-		# Small independent replenishment, not infinite shelf stock.
-		for id in INITIAL:
-			var inventory: Dictionary = state.supplies[id]
-			var changed := false
-			for key in INITIAL[id]:
-				var before := int(inventory.get(key,0))
-				if before>=int(INITIAL[id][key]): continue
-				inventory[key] = mini(int(INITIAL[id][key]),before+2)
-				changed = true
-			if changed: refresh_supplier(String(id))
+		_economy_step()
 		ledger.save_game()
 	save_clock += delta
 	if save_clock>=15.0:
