@@ -204,6 +204,7 @@ func _build() -> void:
 	await _register_doors()
 	for site in world.commerce_sites:
 		var entrance: Vector3 = site.entrance
+		if _road_point(entrance): continue
 		var nearest := _nearest(entrance,7.0)
 		if nearest<0: continue
 		var link := graph.get_point_position(nearest)
@@ -249,6 +250,7 @@ func _register_doors() -> void:
 		var ground := _ground(outside)
 		if ground.is_empty(): continue
 		var p: Vector3 = ground.p
+		if _road_point(p): continue
 		var link := _nearest(p,3.2)
 		if link<0: continue
 		var ray := PhysicsRayQueryParameters3D.create(p+Vector3.UP*1.15,threshold-normal*.30+Vector3.UP*(p.y+1.15),1)
@@ -830,8 +832,13 @@ func tick(delta: float) -> void:
 			person.remove_meta("conversation_until")
 			var current_path: PackedVector3Array = agent.path
 			if float(agent.pause)>0.0 or int(agent.index)>=current_path.size():
+				agent.road_retry = maxf(0.0,float(agent.get("road_retry",0.0))-actor_dt)
+				if float(agent.road_retry)>0.0:
+					person.animate(actor_dt,false)
+					continue
 				agent.pause = 0.0
-				if not _leave_road(agent) and not _choose_route(agent,true):
+				if not _choose_route(agent,true):
+					agent.road_retry = .4
 					agent.pause = .5
 					continue
 		if agent.has("yield_target"):
