@@ -48,6 +48,7 @@ var event_order: Array[String] = []
 var escort: Person
 var guest_nav := AStarGrid2D.new()
 var party_photo: Node3D
+var gathering := "Reunión entre amigos"
 
 func setup(controller) -> void:
 	game = controller
@@ -56,6 +57,8 @@ func setup(controller) -> void:
 	var life: Dictionary = business.ledger.life_data
 	if not life.has("daniel_party"): life.daniel_party = {"stage":0,"activities":{},"drinks":0,"domino":{},"contacts":{},"track":0}
 	state = life.daniel_party
+	if not state.has("gathering"): state.gathering = "Reunión entre amigos"
+	if not state.has("domino_match"): state.domino_match = {"ours":0,"theirs":0,"hands":0}
 	play = PartyPlay.new()
 	add_child(play)
 	play.setup(self)
@@ -148,7 +151,9 @@ func open_call() -> void:
 	if int(state.stage)==0 and not _ready_for_call(): return
 	business._open("Daniel", "Asere, ¿qué bolá? Hace rato que no nos vemos. Llégate a mi casa." if not completed() else "¡Mano! Cuando quieras, ven a jugar dominó o pasar el rato.")
 	if int(state.stage)<2: business._button("Dale, mándame la ubicación",_accept)
-	else: business._button("Marcar casa de Daniel",_mark_home)
+	else:
+		business._button("Marcar casa de Daniel",_mark_home)
+		if completed(): business._button("Organizar otra reunión",_gathering_menu)
 	business._button("Ahora no",business.close)
 
 func _accept() -> void:
@@ -161,6 +166,19 @@ func _accept() -> void:
 	_target()
 	_save()
 	business.close()
+
+func _gathering_menu() -> void:
+	business._open("Volver a compartir","Puedes organizar otras reuniones en casa de Daniel, sin repetir la recompensa de la misión.")
+	for kind in ["Reunión entre amigos","Cumpleaños","Reunión familiar","Torneo de dominó"]:
+		business._button(kind,_schedule_gathering.bind(kind))
+	business._button("Volver",open_call)
+
+func _schedule_gathering(kind: String) -> void:
+	if not completed(): return
+	state.gathering = kind
+	state.gathering_pending = true
+	business.ledger.add_message("Daniel","¡Dale! Organizamos "+kind.to_lower()+" en casa. Ven cuando puedas.")
+	_mark_home()
 
 func _mark_home() -> void:
 	if _find_house(): _target()
@@ -239,6 +257,7 @@ func _enter() -> void:
 	room = Node3D.new()
 	add_child(room)
 	room.position = ROOM
+	gathering = String(state.get("gathering","Reunión entre amigos"))
 	last_phase = -1
 	event_clock = 0.0
 	party_event = ""
@@ -289,6 +308,11 @@ func _enter() -> void:
 	_label("BEBIDAS",Vector3(3,1.75,2.7))
 	_guest(915,Vector3(-3,0,2.8),"Daniel",false).rotation.y = 1.4
 	_label("Daniel",Vector3(-3,2.05,2.8))
+	if gathering=="Cumpleaños":
+		business._box(room,Vector3(3.0,.96,2.7),Vector3(.36,.16,.36),Color("#ead3b0"))
+		for i in range(4): business._box(room,Vector3(2.88+float(i)*.08,1.10,2.7),Vector3(.015,.12,.015),Color("#d67584"))
+		_label("¡Felicidades!",Vector3(0,2.6,-5.4))
+	elif gathering=="Torneo de dominó": _label("Torneo · 100 tantos",Vector3(-3,2.3,-3.0))
 	for i in range(3):
 		var p: Vector3 = [Vector3(-4.1,0,-1.9),Vector3(-3,0,-3.1),Vector3(-3,0,-.7)][i]
 		var guest := _guest(920+i,p,["Mario","Luis","Rafa"][i],false)
@@ -626,6 +650,7 @@ func _exit() -> void:
 	game.first_person = previous_first
 	game._apply_camera_mode()
 	game._update_visual_lighting(true)
+	if completed(): state.gathering_pending = false
 	_save()
 
 func reset() -> bool:
@@ -643,7 +668,7 @@ func tick(delta: float) -> void:
 			business.phone_ring.play()
 			open_call()
 	if int(state.stage)>=2 and not inside and _house().is_finite():
-		if game.player.global_position.distance_to(_house())<26.0 and int(state.stage)==2:
+		if game.player.global_position.distance_to(_house())<26.0 and (int(state.stage)==2 or bool(state.get("gathering_pending",false)) or Leisure.phase(float(business.life.state.minutes))!=4):
 			if exterior.stream==null:
 				exterior_retry -= delta
 				if exterior_retry<=0.0:
@@ -682,7 +707,7 @@ func _refresh_party_phase() -> void:
 	last_phase = phase
 	var count := Leisure.guest_count(minute)
 	# First mission always has a celebration, even if the player arrives early.
-	if not completed(): count = maxi(4,count)
+	if not completed() or bool(state.get("gathering_pending",false)): count = maxi(4,count)
 	for entry in guests:
 		entry.desired = int(entry.slot)<count and not bool(entry.get("left_early",false))
 	if not play.active(): business._notify(Leisure.phase_name(minute))
