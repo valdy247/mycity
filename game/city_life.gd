@@ -21,6 +21,10 @@ var racks: Dictionary = {}
 var agents: Array = []
 var fullness_bar: ProgressBar
 var clock_label: Label
+var sleep_label: Label
+var sleep_bar: ProgressBar
+const GAME_MINUTES_PER_SECOND := .4
+const FULL_SLEEP_MINUTES := 480.0
 var meal_root: Node3D
 var food_view: Node3D
 var drink_view: Node3D
@@ -51,6 +55,11 @@ func setup(mission) -> void:
 	rng.randomize()
 	if not state.has("fullness"): state.fullness = 100.0
 	if not state.has("minutes"): state.minutes = 480.0
+	if not state.has("day"): state.day = 1
+	if not state.has("fatigue"): state.fatigue = 15.0
+	if not state.has("coffee_minutes"): state.coffee_minutes = 0.0
+	if not state.has("coffee_cups"): state.coffee_cups = 0
+	if not state.has("alarm_minute"): state.alarm_minute = -1
 	if not state.has("supplies"): state.supplies = INITIAL.duplicate(true)
 	if business.adaptation_mode and not state.supplies.get("primary",{}).has("aceite"):
 		state.supplies.primary.aceite = 12
@@ -139,13 +148,109 @@ func _make_hud() -> void:
 	clock_label.add_theme_color_override("font_shadow_color",Color.BLACK)
 	clock_label.add_theme_constant_override("shadow_offset_y",2)
 	clock_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	sleep_bar = ProgressBar.new()
+	business.layer.add_child(sleep_bar)
+	sleep_bar.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
+	sleep_bar.offset_left = 12
+	sleep_bar.offset_right = 196
+	sleep_bar.offset_top = -168
+	sleep_bar.offset_bottom = -152
+	sleep_bar.max_value = 100
+	sleep_bar.show_percentage = false
+	sleep_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	sleep_bar.add_theme_stylebox_override("background",bg)
+	var rest_fill := StyleBoxFlat.new()
+	rest_fill.bg_color = Color("#899acb")
+	rest_fill.set_corner_radius_all(6)
+	sleep_bar.add_theme_stylebox_override("fill",rest_fill)
+	sleep_label = Label.new()
+	business.layer.add_child(sleep_label)
+	sleep_label.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
+	sleep_label.offset_left = 12
+	sleep_label.offset_right = 320
+	sleep_label.offset_top = -190
+	sleep_label.offset_bottom = -169
+	sleep_label.add_theme_font_size_override("font_size",12)
+	sleep_label.add_theme_color_override("font_shadow_color",Color.BLACK)
+	sleep_label.add_theme_constant_override("shadow_offset_y",2)
+	sleep_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_update_hud()
 
 func _update_hud() -> void:
 	if fullness_bar==null: return
-	fullness_bar.value = float(state.fullness)
-	var minute := int(state.minutes)%1440
-	clock_label.text = "Saciedad %d%%   ·   %02d:%02d" % [roundi(float(state.fullness)),floori(float(minute)/60.0),minute%60]
+	var hunger := 100.0-float(state.fullness)
+	fullness_bar.value = hunger
+	clock_label.text = "Hambre %d%% · Día %d · %s" % [roundi(hunger),int(state.day),format_time(int(state.minutes))]
+	sleep_bar.value = float(state.fatigue)
+	sleep_label.text = "Sueño %d%%" % roundi(float(state.fatigue))
+	if float(state.coffee_minutes)>0.0: sleep_label.text += " · Café activo"
+
+static func format_time(minute: int) -> String:
+	minute = posmod(minute,1440)
+	var hour := floori(float(minute)/60.0)
+	return "%d:%02d %s" % [12 if hour%12==0 else hour%12,minute%60,"AM" if hour<12 else "PM"]
+
+func advance_game_minutes(amount: float) -> void:
+	var total := float(state.minutes)+maxf(0.0,amount)
+	state.day = int(state.day)+floori(total/1440.0)
+	state.minutes = fposmod(total,1440.0)
+
+func planned_sleep_minutes() -> float:
+	var alarm := int(state.alarm_minute)
+	if alarm<0: return FULL_SLEEP_MINUTES
+	var remaining := fposmod(float(alarm)-float(state.minutes),1440.0)
+	return 1440.0 if remaining<.01 else remaining
+
+func sleep_at_home() -> String:
+	var duration := planned_sleep_minutes()
+	advance_game_minutes(duration)
+	state.fatigue = maxf(0.0,float(state.fatigue)-duration/FULL_SLEEP_MINUTES*100.0)
+	state.fullness = maxf(0.0,float(state.fullness)-duration*.025)
+	state.coffee_minutes = 0.0
+	state.alarm_minute = -1
+	state["bed_unmade"] = true
+	_update_hud()
+	ledger.save_game()
+	return "Despertaste a las "+format_time(int(state.minutes))
+
+func brew_home_coffee() -> bool:
+	if int(state.coffee_cups)>0: return false
+	state.coffee_cups = 4
+	ledger.save_game()
+	return true
+
+func drink_home_coffee() -> bool:
+	if int(state.coffee_cups)<=0: return false
+	state.coffee_cups = int(state.coffee_cups)-1
+	state.coffee_minutes = minf(180.0,float(state.coffee_minutes)+90.0)
+	state.fatigue = maxf(0.0,float(state.fatigue)-5.0)
+	_update_hud()
+	ledger.save_game()
+	return true
+
+func open_alarm() -> void:
+	var current := int(state.alarm_minute)
+	business._open("Alarma","Hora de despertar: "+(format_time(current) if current>=0 else "Sin alarma · 8 horas de sueño"))
+	var hours := SpinBox.new()
+	hours.min_value = 0
+	hours.max_value = 23
+	hours.value = floori(float(current if current>=0 else 360)/60.0)
+	hours.prefix = "Hora (24 h): "
+	business.content.add_child(hours)
+	var minutes := SpinBox.new()
+	minutes.min_value = 0
+	minutes.max_value = 59
+	minutes.value = posmod(current if current>=0 else 360,60)
+	minutes.prefix = "Minutos: "
+	business.content.add_child(minutes)
+	business._button("Guardar alarma",func(): _set_alarm(int(hours.value)*60+int(minutes.value)))
+	business._button("Desactivar alarma",_set_alarm.bind(-1))
+	business._button("Volver",business.open_phone_home)
+
+func _set_alarm(value: int) -> void:
+	state.alarm_minute = value
+	ledger.save_game()
+	open_alarm()
 
 func _person(site: Dictionary,role: String,style: int,local: Vector3) -> Person:
 	var person := Person.new()
@@ -454,9 +559,9 @@ func _finish_bite() -> void:
 	if int(meal.food_bites)<=0 and int(meal.drink_sips)<=0:
 		if bool(meal.get("dirty",false)): state["dirty_meals"] = int(state.get("dirty_meals",0))+1
 		state.meal = {}
-		business._notify("Buen provecho · saciedad %d%%" % roundi(float(state.fullness)))
+		business._notify("Buen provecho · hambre %d%%" % roundi(100.0-float(state.fullness)))
 	else:
-		business._notify("Saciedad %d%% · E para continuar" % roundi(float(state.fullness)))
+		business._notify("Hambre %d%% · E para continuar" % roundi(100.0-float(state.fullness)))
 	_refresh_meal()
 	ledger.save_game()
 
@@ -749,12 +854,18 @@ func _tick_agents(delta: float) -> void:
 func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	if fullness_bar!=null: fullness_bar.visible = not editor
 	if clock_label!=null: clock_label.visible = not editor
+	if sleep_label!=null: sleep_label.visible = not editor
+	if sleep_bar!=null: sleep_bar.visible = not editor
 	if editor: return
 	bite_anim = maxf(0.0,bite_anim-delta)
 	if active_hand>=0 and bite_anim<=0.0: _finish_bite()
-	state.minutes = fmod(float(state.minutes)+delta,1440.0)
+	var passed := delta*GAME_MINUTES_PER_SECOND
+	advance_game_minutes(passed)
 	world.update_utility_lighting(float(state.minutes),delta)
-	state.fullness = maxf(0.0,float(state.fullness)-delta/9.0)
+	state.fullness = maxf(0.0,float(state.fullness)-passed/9.6)
+	var stimulated := minf(passed,float(state.coffee_minutes))
+	state.coffee_minutes = maxf(0.0,float(state.coffee_minutes)-passed)
+	state.fatigue = minf(100.0,float(state.fatigue)+(passed-stimulated*.65)/9.6)
 	if meal_root!=null:
 		meal_root.visible = not in_vehicle and last_first_person and not state.meal.is_empty()
 		food_view.position.y = move_toward(food_view.position.y,-.12 if active_hand==0 else -.36,delta*1.2)
