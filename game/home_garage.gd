@@ -85,6 +85,9 @@ var dining_water_prop: Node3D
 var dining_stand_position := Vector3.ZERO
 var dining_previous_first := true
 var dining_water_busy := false
+var dish_wash_hint: Label
+var dish_washing := false
+var dish_sponge: Node3D
 const HOME_PAN_TIME := {"carne":25.0,"huevo":12.0}
 var rental_storage_doors: Array[Dictionary] = []
 var rental_oil: Node3D
@@ -186,6 +189,8 @@ func setup(controller) -> void:
 		business.life.state.meal = {}
 		business.life._refresh_meal()
 	if not state.home_food.has("table_used_plate"): state.home_food.table_used_plate = not state.home_food.table_plate.is_empty()
+	if not state.home_food.has("plate_dirty"): state.home_food.plate_dirty = false
+	if String(state.home_food.hand)!="plato": state.home_food.plate_dirty = false
 	if not state.home_food.has("heat_on"): state.home_food.heat_on = float(state.home_food.remaining)>0.0
 	if not state.home_food.has("overcook"): state.home_food.overcook = 0.0
 	if not state.home_food.has("burned"): state.home_food.burned = false
@@ -930,6 +935,9 @@ func _decorate_rental_home() -> void:
 	_rental_part(kitchen_tap,Vector3(0,.11,.09),Vector3(.052,.045,.19),Color("#a9b5b5"))
 	tap_water = _rental_cylinder(kitchen_tap,Vector3(0,.005,.17),.014,.19,Color("#9dc5cf"))
 	tap_water.hide()
+	dish_sponge = _rental_root(kitchen,Vector3(-.20,.968,.08))
+	_draw_dish_sponge(dish_sponge)
+	_make_dish_hint()
 	_rental_part(kitchen,Vector3(.55,.975,0),Vector3(.62,.06,.49),Color("#454947"))
 	for x in [.39,.69]:
 		for z in [-.12,.12]:
@@ -1184,7 +1192,8 @@ func _refresh_carried() -> void:
 		if food_key=="plato":
 			carried_view.position.x = -.27
 			business.life.draw_home_plate(carried_view,state.home_food.plate)
-			_attach_interaction_hand(carried_view,Vector3(-.075,-.025,.06),true,true)
+			if bool(state.home_food.plate_dirty): _draw_plate_residue(carried_view)
+			_attach_interaction_hand(carried_view,Vector3(-.105,-.027,.045),true,true)
 		elif food_key=="botella":
 			_draw_home_water(carried_view,3)
 			_attach_interaction_hand(carried_view,Vector3(.048,.09,.025))
@@ -1813,7 +1822,9 @@ func _clean_coffee_async() -> void:
 
 func _physics_process(delta: float) -> void:
 	if not state.is_empty() and state.has("coffee_machine"): _tick_coffee_machine(delta)
-	if not state.is_empty() and state.has("home_food"): _tick_home_pan(delta)
+	if not state.is_empty() and state.has("home_food"):
+		_tick_home_pan(delta)
+		_update_dish_hint()
 
 func _tick_coffee_machine(delta: float) -> void:
 	if not is_instance_valid(coffee_pot): return
@@ -1998,6 +2009,7 @@ func _refresh_dining_table() -> void:
 		business.life.draw_home_plate(dining_plate_prop,food.table_plate,int(food.table_bites))
 	elif bool(food.table_used_plate):
 		business.life.draw_home_plate(dining_plate_prop,[],0)
+		_draw_plate_residue(dining_plate_prop)
 	for child in dining_water_prop.get_children():
 		dining_water_prop.remove_child(child)
 		child.queue_free()
@@ -2026,7 +2038,7 @@ func _dining_action() -> String:
 	if not String(food.hand).is_empty(): return ""
 	if _aim_dining_chair():
 		if _free_hands() or String(business.life.state.meal.get("key","")) in ["plato_casero","arroz_casero"]: return "[E] Sentarse a la mesa"
-	if bool(food.table_used_plate) and food.table_plate.is_empty() and _free_hands() and _aim_tool(dining_plate_prop,Vector3(0,.025,0),Vector3(.15,.04,.15)): return "[E] Recoger plato vacío"
+	if bool(food.table_used_plate) and food.table_plate.is_empty() and _free_hands() and _aim_tool(dining_plate_prop,Vector3(0,.025,0),Vector3(.15,.04,.15)): return "[E] Recoger plato sucio"
 	if int(food.table_water)==0 and _free_hands() and _aim_tool(dining_water_prop,Vector3(0,.11,0),Vector3(.07,.13,.07)): return "[E] Recoger botella vacía"
 	return ""
 
@@ -2044,13 +2056,16 @@ func _dining_interact() -> bool:
 				_refresh_dining_table()
 				_save()
 		if not business.life.state.meal.is_empty(): business.life.interact(game.player.global_position)
-	elif action=="[E] Recoger plato vacío":
+	elif action=="[E] Recoger plato sucio":
 		state.home_food.table_used_plate = false
 		state.home_food.hand = "plato"
 		state.home_food.plate = []
+		state.home_food.plate_dirty = true
+		state.home_food.just_washed = false
 		_refresh_dining_table()
 		_refresh_carried()
 		_save()
+		business._notify("Plato sucio. Llévalo al fregadero y pulsa E para lavarlo.")
 	elif action=="[E] Recoger botella vacía":
 		state.home_food.table_water = -1
 		state.waste_hand = {"kind":"empty_water","volume":1}
@@ -2156,6 +2171,104 @@ func _build_home_food_fridge() -> void:
 		home_food_props[key] = prop
 	_refresh_home_food()
 
+func _draw_dish_sponge(root: Node3D) -> void:
+	_rental_part(root,Vector3(0,.010,0),Vector3(.075,.020,.048),Color("#d9b94b"))
+	_rental_part(root,Vector3(0,.023,0),Vector3(.075,.008,.048),Color("#4d7751"))
+
+func _draw_plate_residue(root: Node3D) -> Node3D:
+	var stains := _rental_root(root,Vector3.ZERO)
+	_rental_round(stains,Vector3(-.026,.009,.018),Vector3(.095,.005,.068),Color("#a67d47"))
+	_rental_round(stains,Vector3(.034,.010,-.026),Vector3(.065,.005,.045),Color("#816044"))
+	for i in range(7):
+		var a := float(i)*2.4
+		_rental_round(stains,Vector3(cos(a)*.051,.014,sin(a)*.041),Vector3(.009,.006,.014),Color("#b8a480"))
+	return stains
+
+func _make_dish_hint() -> void:
+	if is_instance_valid(dish_wash_hint): return
+	dish_wash_hint = Label.new()
+	business.layer.add_child(dish_wash_hint)
+	dish_wash_hint.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+	dish_wash_hint.offset_left = -310
+	dish_wash_hint.offset_right = 310
+	dish_wash_hint.offset_top = -115
+	dish_wash_hint.offset_bottom = -86
+	dish_wash_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	dish_wash_hint.add_theme_font_size_override("font_size",17)
+	dish_wash_hint.add_theme_color_override("font_color",Color("#fff0bd"))
+	dish_wash_hint.add_theme_color_override("font_outline_color",Color.BLACK)
+	dish_wash_hint.add_theme_constant_override("outline_size",5)
+	dish_wash_hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	dish_wash_hint.hide()
+
+func _update_dish_hint() -> void:
+	if not is_instance_valid(dish_wash_hint): return
+	var food: Dictionary = state.home_food
+	var message := ""
+	if inside and not business.modal_open():
+		if dish_washing: message = "Lavando el plato con agua y esponja…"
+		elif String(food.hand)=="plato" and bool(food.plate_dirty):
+			message = "Plato sucio · mira el fregadero y pulsa E para lavar"
+		elif String(food.hand)=="plato" and bool(food.get("just_washed",false)):
+			message = "Plato limpio · abre el armario superior derecho y pulsa E para guardar"
+		elif bool(food.table_used_plate) and food.table_plate.is_empty() and business.life.state.meal.is_empty():
+			message = "Terminaste de comer · levántate con Espacio y recoge el plato sucio" if dining_seated else "Recoge el plato sucio de la mesa y lávalo en el fregadero"
+	if dish_wash_hint.text!=message: dish_wash_hint.text = message
+	dish_wash_hint.visible = not message.is_empty()
+
+func _aim_dish_sink() -> bool:
+	# Target the accessible basin surface and the faucet, not the solid counter.
+	return _aim_tool(kitchen_tap,Vector3(0,.06,.08),Vector3(.09,.16,.14)) or _aim_tool(rental_kitchen,Vector3(-.54,1.015,0),Vector3(.29,.052,.23))
+
+func _wash_plate_async() -> void:
+	if home_food_busy or not inside or not bool(state.home_food.plate_dirty) or String(state.home_food.hand)!="plato": return
+	home_food_busy = true
+	dish_washing = true
+	var was_running: bool = tap_water.visible
+	tap_water.show()
+	dish_sponge.hide()
+	carried_view.hide()
+	# Keep the plate above the sink rim. The left hand grips the edge;
+	# the right holds a sponge and passes over the inner surface.
+	var plate := _rental_root(kitchen_tap,Vector3(0,.045,.19))
+	business.life.draw_home_plate(plate,[],0)
+	var stains := _draw_plate_residue(plate)
+	_attach_interaction_hand(plate,Vector3(-.115,-.026,.035),true,true)
+	var sponge := _rental_root(plate,Vector3(.045,.026,.02))
+	_draw_dish_sponge(sponge)
+	_attach_interaction_hand(sponge,Vector3(.025,.045,.017))
+	var bubbles := _rental_root(plate,Vector3.ZERO)
+	for i in range(10):
+		var a := float(i)*2.4
+		var size := .014+float(i%3)*.006
+		_rental_round(bubbles,Vector3(cos(a)*.065,.024,sin(a)*.055),Vector3(size,size*.55,size),Color("#f4f6ec"))
+	bubbles.hide()
+	var wash := create_tween()
+	for i in range(3):
+		wash.tween_property(sponge,"position",Vector3(-.048,.026,-.036+float(i)*.030),.32)
+		wash.tween_property(sponge,"position",Vector3(.048,.026,-.021+float(i)*.030),.32)
+		if i==0: wash.tween_callback(bubbles.show)
+		if i==1: wash.tween_callback(stains.hide)
+	await wash.finished
+	sponge.hide()
+	bubbles.hide()
+	var rinse := create_tween()
+	rinse.tween_property(plate,"rotation:x",.22,.30)
+	rinse.tween_interval(.45)
+	rinse.tween_property(plate,"rotation:x",0.0,.25)
+	await rinse.finished
+	plate.queue_free()
+	tap_water.visible = was_running
+	dish_sponge.show()
+	state.home_food.plate_dirty = false
+	state.home_food.just_washed = true
+	dish_washing = false
+	home_food_busy = false
+	_refresh_carried()
+	carried_view.show()
+	_save()
+	business._notify("Plato limpio. Guárdalo en el armario superior derecho.")
+
 func _build_home_plate_stack(kitchen: Node3D) -> void:
 	home_plate_stack = _rental_root(kitchen,Vector3(.63,1.69,-.23))
 	for i in range(3):
@@ -2248,12 +2361,17 @@ func _home_shelf_aim(node: Node3D,door: Node3D,body: StaticBody3D,center: Vector
 
 func _home_food_action() -> String:
 	if not inside or not is_instance_valid(home_pan) or dining_seated: return ""
+	if dish_washing: return "[E] Lavando plato…"
 	if home_food_busy: return "[E] Preparando comida…"
 	var food: Dictionary = state.home_food
 	var hand := String(food.hand)
 	var pan := String(food.pan)
 	var pan_aim := _aim_tool(home_pan,Vector3(0,.045,0),Vector3(.15,.075,.13))
 	var plate_aim := _home_shelf_aim(home_plate_stack,home_plate_door,rice_cabinet_body,Vector3(0,.035,0),Vector3(.13,.055,.13))
+	if hand=="plato" and bool(food.plate_dirty):
+		if _aim_dish_sink(): return "[E] Lavar plato sucio"
+		if plate_aim: return "[E] Lava el plato antes de guardarlo"
+		return ""
 	if pan_aim and not pan.is_empty() and hand in ["","plato"]:
 		if bool(food.heat_on):
 			if bool(food.burned): return "[E] Apagar fogón · comida quemada"
@@ -2302,7 +2420,13 @@ func _home_food_interact() -> bool:
 	if home_food_busy: return true
 	var food: Dictionary = state.home_food
 	var hand := String(food.hand)
-	if action.begins_with("[E] Apagar fogón"):
+	if action=="[E] Lavar plato sucio":
+		_wash_plate_async()
+		return true
+	elif action=="[E] Lava el plato antes de guardarlo":
+		business._notify("No puedes guardar un plato sucio. Mira el fregadero y pulsa E.")
+		return true
+	elif action.begins_with("[E] Apagar fogón"):
 		food.heat_on = false
 		business._notify("Fogón apagado.")
 	elif action.begins_with("[E] Encender fogón"):
@@ -2316,8 +2440,16 @@ func _home_food_interact() -> bool:
 		food.burned = false
 	elif action=="[E] Recoger plato":
 		food.hand = "plato"
+		food.plate_dirty = false
+		food.just_washed = false
 	elif action=="[E] Devolver plato":
+		if bool(food.plate_dirty):
+			business._notify("Primero lava el plato en el fregadero.")
+			return true
 		food.hand = ""
+		food.plate_dirty = false
+		food.just_washed = false
+		business._notify("Plato limpio guardado en el armario.")
 	elif action=="[E] Dejar botella de agua en la mesa":
 		food.table_water = 3
 		food.stock.botella = maxi(0,int(food.stock.botella)-1)
@@ -2345,6 +2477,7 @@ func _home_food_interact() -> bool:
 		food.table_bites = 3
 		food.hand = ""
 		food.plate = []
+		food.just_washed = false
 		_refresh_dining_table()
 		business._notify("Plato servido. Busca agua si quieres y siéntate en la silla.")
 	_refresh_home_food()
@@ -2353,7 +2486,7 @@ func _home_food_interact() -> bool:
 	return true
 
 func _home_food_transfer(key: String,serving: bool) -> void:
-	if home_food_busy: return
+	if home_food_busy or (serving and bool(state.home_food.plate_dirty)): return
 	home_food_busy = true
 	var food: Dictionary = state.home_food
 	var destination: Node3D = rice_cooker if key=="arroz" else home_pan
@@ -2515,7 +2648,7 @@ func _set_rice_lid(closed: bool) -> void:
 	state.rice_recipe.lid = closed
 	if is_instance_valid(rice_lid_tween): rice_lid_tween.kill()
 	if is_instance_valid(rice_lid_hand): rice_lid_hand.queue_free()
-	rice_lid_hand = _attach_interaction_hand(rice_lid,Vector3(.042,.068,.16))
+	rice_lid_hand = _attach_interaction_hand(rice_lid,Vector3(.045,.080,.16))
 	rice_lid_tween = create_tween()
 	rice_lid_tween.tween_property(rice_lid,"rotation:x",0.0 if closed else -1.65,.35).set_trans(Tween.TRANS_SINE)
 	rice_lid_tween.finished.connect(_clear_rice_lid_hand)
