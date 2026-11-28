@@ -1637,6 +1637,9 @@ func _daily_find_home() -> bool:
 
 func _daily_init() -> bool:
 	if not is_instance_valid(albertico) or not is_instance_valid(stand) or first_story==null: return false
+	# Wait for the completed-story restoration to select the safe stall.
+	var controller = first_story.game
+	if is_instance_valid(controller.arrival_story) and not controller.arrival_story.has_meta("safe_investment_stall"): return false
 	if not _daily_find_home(): return false
 	daily_stall_pose = stand.global_transform
 	daily_seller_pos = first_story.original_actor
@@ -1647,19 +1650,19 @@ func _daily_init() -> bool:
 	var minute := float(life.state.get("minutes",480.0))
 	var saved: Dictionary = ledger.life_data.get("albertico_daily",{})
 	var old_phase := String(saved.get("phase",""))
-	if old_phase in ["to_home","return","lift","lower","pack","unpack"]:
+	if old_phase in ["to_home","return","lift","lower","pack","unpack","enter","leave"]:
 		var values: Array = saved.get("position",[])
 		if values.size()==3:
 			var p := Vector3(float(values[0]),float(values[1]),float(values[2]))
 			if p.distance_to(daily_stall_pose.origin)<70.0 and world.pedestrian_segment_clear(p,p):
 				albertico.global_position = p
-				if old_phase in ["to_home","return","lift","lower"]:
-					daily_phase = "return" if old_phase in ["return","lower"] else "to_home"
+				if old_phase in ["to_home","return","lift","lower","enter","leave"]:
+					daily_phase = "return" if old_phase in ["return","lower","leave"] else "to_home"
 					stand.global_transform = _daily_carry_pose(p,albertico.rotation.y)
 				else: daily_phase = old_phase
 				_sync_visuals()
 				return true
-	if minute<DAILY_OPEN_PREP or minute>=DAILY_CLOSE:
+	if minute<DAILY_OPEN_PREP or minute>=DAILY_CLOSE or old_phase=="rest":
 		daily_phase = "rest"
 		albertico.global_position = daily_home_entry
 		stand.global_transform = daily_stall_pose
@@ -1704,7 +1707,8 @@ func _daily_walk(target: Vector3,delta: float) -> bool:
 	var next := actor.global_position.move_toward(goal,1.45*delta)
 	var diff := goal-actor.global_position
 	var heading := atan2(diff.x,diff.z)
-	var pose := _daily_carry_pose(next,heading)
+	var next_angle := lerp_angle(actor.rotation.y,heading,minf(1.0,delta*12.0))
+	var pose := _daily_carry_pose(next,next_angle)
 	var can_move := world.pedestrian_segment_clear(actor.global_position,next) and world.pedestrian_space_clear(actor,next,.65) and _daily_carry_clear(pose)
 	if can_move:
 		actor.remove_meta("conversation_until")
@@ -1740,6 +1744,7 @@ func _tick_albertico_daily(delta: float) -> void:
 	match daily_phase:
 		"open":
 			if working: return
+			if modal_open(): return
 			if not auto_unload_id.is_empty() or (first_story!=null and not first_story.fetch_phase.is_empty()): return
 			_release_buyer()
 			_daily_change("pack")
@@ -1766,8 +1771,8 @@ func _tick_albertico_daily(delta: float) -> void:
 			var step := actor.global_position.move_toward(target,1.2*delta)
 			var normal: Vector3 = daily_home.normal
 			actor.rotation.y = atan2(-normal.x,-normal.z)
-			if actor.global_position.distance_to(target)<=.28 or not world.pedestrian_segment_clear(actor.global_position,step):
-				if actor.global_position.distance_to(target)>.80:
+			if actor.global_position.distance_to(target)<=.28 or not world.pedestrian_segment_clear(actor.global_position,step) or not _daily_carry_clear(_daily_carry_pose(step,actor.rotation.y)):
+				if actor.global_position.distance_to(target)>1.05:
 					actor.animate(delta,false)
 					return
 				_daily_change("rest")
@@ -1787,6 +1792,7 @@ func _tick_albertico_daily(delta: float) -> void:
 		"leave":
 			var step := actor.global_position.move_toward(daily_home_approach,1.2*delta)
 			if not world.pedestrian_space_clear(actor,step,.55): return
+			if not _daily_carry_clear(_daily_carry_pose(step,actor.rotation.y)): return
 			actor.walk_to(daily_home_approach,delta,1.2)
 			stand.global_transform = _daily_carry_pose(actor.global_position,actor.rotation.y)
 			for arm in actor.arms: arm.rotation.x = -.95
