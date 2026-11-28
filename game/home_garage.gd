@@ -419,9 +419,24 @@ func _build_interior() -> void:
 		light.light_color = Color("#fff1dc")
 		light.omni_attenuation = 1.1
 		if game.adaptation_mode:
-			light.position.z = 1.2 if float(x)<0 else 0.0
-			light.omni_range = 6.2 if float(x)<0 else 5.2
+			light.position.z = 1.2 if float(x)<0 else -2.35
+			light.omni_range = 6.2 if float(x)<0 else 6.0
+			if float(x)>0:
+				light.position.y = 2.55
+				light.light_energy = 1.45
+				light.omni_attenuation = .90
 			_register_room_light("sala" if float(x)<0 else "garaje",light)
+	if game.adaptation_mode:
+		# Two distributed fixtures share the garage switch. Keep them away
+		# from the ceiling and bathroom partition to illuminate the work area.
+		var garage_fill := OmniLight3D.new()
+		interior.add_child(garage_fill)
+		garage_fill.position = Vector3(3.7,2.55,2.65)
+		garage_fill.omni_range = 6.0
+		garage_fill.light_energy = 1.45
+		garage_fill.light_color = Color("#fff1dc")
+		garage_fill.omni_attenuation = .90
+		_register_room_light("garaje",garage_fill)
 	marker = Node3D.new()
 	interior.add_child(marker)
 	marker.position = BENCH+Vector3.UP*2.35
@@ -639,7 +654,8 @@ func _rental_fixture(parent: Node3D,at: Vector3) -> void:
 	glow.emission_energy_multiplier = .75
 	fixture.material_override = glow
 	var key := _home_room_at(at)
-	home_fixture_materials[key] = glow
+	if not home_fixture_materials.has(key): home_fixture_materials[key] = []
+	home_fixture_materials[key].append(glow)
 	glow.emission_enabled = bool(state.home_lights.get(key,true))
 
 func _rental_wall_frame(parent: Node3D,at: Vector3,angle: float,paint: Color) -> void:
@@ -919,7 +935,7 @@ func _decorate_rental_home() -> void:
 	bedside_glow.omni_range = 2.8
 	bedside_glow.visible = bool(state.get("bedside_light",false))
 	# Domestic light fixtures and a third light in the formerly dark bedroom.
-	for at in [Vector3(-3.7,2.88,1.2),Vector3(3.7,2.88,0),Vector3(-3.9,2.88,-4.0)]:
+	for at in [Vector3(-3.7,2.88,1.2),Vector3(3.7,2.88,-2.35),Vector3(3.7,2.88,2.65),Vector3(-3.9,2.88,-4.0)]:
 		_rental_fixture(decor,at)
 	var bedroom_light := OmniLight3D.new()
 	decor.add_child(bedroom_light)
@@ -1008,7 +1024,8 @@ func _build_rental_bathroom() -> void:
 	_make_light_switch(root,"baño",Vector3(4.06,1.35,-3.75),-PI*.5)
 
 func _register_room_light(key: String,light: OmniLight3D) -> void:
-	home_room_lights[key] = light
+	if not home_room_lights.has(key): home_room_lights[key] = []
+	home_room_lights[key].append(light)
 	if not state.has("home_lights"): state.home_lights = {}
 	light.visible = bool(state.home_lights.get(key,true))
 	light.shadow_enabled = home_shadow_active
@@ -1023,8 +1040,9 @@ func _home_room_at(p: Vector3) -> String:
 func update_home_lighting(day: float,active: bool) -> float:
 	if home_shadow_active!=active:
 		home_shadow_active = active
-		for light in home_room_lights.values():
-			if is_instance_valid(light): light.shadow_enabled = active
+		for group in home_room_lights.values():
+			for light in group:
+				if is_instance_valid(light): light.shadow_enabled = active
 		if is_instance_valid(bedside_glow): bedside_glow.shadow_enabled = active
 	for entry in home_windows:
 		var source: SpotLight3D = entry.daylight_source
@@ -1051,10 +1069,10 @@ func _make_light_switch(root: Node3D,key: String,at: Vector3,angle: float) -> vo
 
 func _refresh_light_switch(key: String) -> void:
 	var on := bool(state.home_lights.get(key,true))
-	var light: OmniLight3D = home_room_lights.get(key)
-	if is_instance_valid(light): light.visible = on
-	var fixture: StandardMaterial3D = home_fixture_materials.get(key)
-	if is_instance_valid(fixture): fixture.emission_enabled = on
+	for light in home_room_lights.get(key,[]):
+		if is_instance_valid(light): light.visible = on
+	for fixture in home_fixture_materials.get(key,[]):
+		if is_instance_valid(fixture): fixture.emission_enabled = on
 	var entry: Dictionary = home_light_switches.get(key,{})
 	if not entry.is_empty():
 		var lever: Node3D = entry.lever
