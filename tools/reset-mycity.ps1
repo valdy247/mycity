@@ -32,5 +32,5 @@ Write-Host 'Partida reiniciada: aeropuerto, 0 CUP, misiones, casa, cafetera, inv
 Write-Host "Respaldo: $backup"
 Write-Host 'Mapa, edificios editados, musica y voces conservados.'
 if (!$NoLaunch) {
-    & godot --path (Join-Path $Repo 'game')
+    & godot --path (Join-Path $Repo 'game') res://airport.tscn -- --new-story
 }
