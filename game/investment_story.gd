@@ -41,6 +41,9 @@ var actor: Person
 var actor_reposition_pending := false
 var clerk: Person
 var cab: Dictionary = {}
+var cab_departure_requested := false
+var cab_departure_active := false
+var cab_departure_retry := 0.0
 var ride_out := true
 var cab_lid: Node3D
 var ride_view: Camera3D
@@ -542,7 +545,7 @@ func _purchase() -> void:
 	_task("Lleva dos cajas al maletero. Albertico carga la de aceite.")
 
 func _rebuild_boxes() -> void:
-	if is_instance_valid(cab_lid): cab_lid.rotation.x = 1.15 if phase in ["load","unload","return"] else 0.0
+	if is_instance_valid(cab_lid): cab_lid.rotation.x = 1.15 if phase in ["load","unload","return"] and not _all_at("stored") else 0.0
 	for key in boxes:
 		if is_instance_valid(boxes[key]): boxes[key].queue_free()
 	boxes.clear()
@@ -585,6 +588,59 @@ func _all_at(where: String) -> bool:
 	for key in KEYS:
 		if String(_box_states().get(key,""))!=where: return false
 	return true
+
+func _request_cab_departure() -> void:
+	if cab.is_empty() or cab_departure_active or cab_departure_requested: return
+	if is_instance_valid(cab_lid):
+		var closing := create_tween()
+		closing.tween_property(cab_lid,"rotation:x",0.0,.45)
+	cab_departure_requested = true
+	cab_departure_retry = 1.0
+
+func _process(delta: float) -> void:
+	if not cab_departure_requested and not cab_departure_active: return
+	if cab.is_empty() or not is_instance_valid(cab.get("body")):
+		cab_departure_requested = false
+		cab_departure_active = false
+		return
+	var service = game.taxis
+	if cab_departure_active:
+		if service.passenger.get("body")==cab.body and service.arrived:
+			service.finish_trip()
+			cab.albertico_reserved = false
+			cab.chapter_side_only = false
+			cab_departure_active = false
+			cab = {}
+			cab_lid = null
+		return
+	cab_departure_retry -= delta
+	if cab_departure_retry>0.0: return
+	cab_departure_retry = 2.0
+	if not service.passenger.is_empty() or not service.selected.is_empty() or service.dialog.visible: return
+	if not (cab.get("yield_path",[]) as Array).is_empty() or not (cab.get("cooperative_path",[]) as Array).is_empty(): return
+	var body: CharacterBody3D = cab.body
+	var road: Dictionary = service._parking_road(body.global_position,body.global_basis.z)
+	if road.is_empty(): return
+	var direction: Vector3 = road.d
+	var start: String = road.next
+	var mouse_mode := Input.mouse_mode
+	for offset in [direction*180.0,direction*100.0,Vector3(140,0,0),Vector3(-140,0,0),Vector3(0,0,140),Vector3(0,0,-140)]:
+		var result: Dictionary = service.router.resolve_point(body.global_position+offset,start)
+		if result.has("error") or float(result.get("distance",0.0))<45.0: continue
+		cab.next_node = start
+		service.selected = cab
+		service.selected_route = result
+		service.trip_confirmed = true
+		if service.prepare_trip():
+			Input.mouse_mode = mouse_mode
+			cab_departure_requested = false
+			cab_departure_active = true
+			return
+		service.selected = {}
+		service.selected_route = {}
+		service.trip_confirmed = false
+		service.dialog.hide()
+	Input.mouse_mode = mouse_mode
 
 func _trunk() -> Vector3:
 	return cab.body.to_global(Vector3(0,.86,-2.5))
@@ -930,9 +986,7 @@ func _finish() -> void:
 	if is_instance_valid(actor): actor.queue_free()
 	if is_instance_valid(table): table.queue_free()
 	if is_instance_valid(cab_lid): cab_lid.rotation.x = 0.0
-	if not cab.is_empty():
-		cab.albertico_reserved = false
-		cab.chapter_side_only = false
+	_request_cab_departure()
 	restore_business(story)
 	game.first_person = old_first
 	game._apply_camera_mode()
@@ -960,7 +1014,7 @@ func _restore() -> void:
 			_set_phase(resume,resume)
 			_rebuild_boxes()
 		"unload":
-			if not _park_cab(false): return
+			if not _all_at("stored") and not _park_cab(false): return
 			if String(_box_states().get("aceite",""))=="stored": _spawn_actor(Vector3(-5.28,110,.87))
 			else:
 				var at: Vector3 = game.yordi_mission._near_ground(_house_out(),null,4.0)
@@ -1106,6 +1160,7 @@ func tick(delta: float) -> void:
 				_mark(target if game.garage.inside else _house_out())
 				story.subtitle.text = "[E] Guardar caja" if game.garage.inside else "[E] Entrar en casa"
 			if _all_at("stored"):
+				_request_cab_departure()
 				if game.garage.inside: _dialogue(10,10,"neighbor")
 				else:
 					_task("Entra a la casa. Albertico terminó de guardar la mercancía.")
