@@ -489,7 +489,9 @@ func _tick_listing(delta: float) -> void:
 	if listing.is_empty(): return
 	var kind := String(listing.kind)
 	if not Kit.KITS.has(kind) or not _complete(kind):
-		_cancel_vehicle_listing()
+		state.listing = {}
+		_save()
+		business._notify("Publicación retirada: vehículo no disponible.")
 		return
 	if not listing.has("phase"): listing.phase = "waiting"
 	if String(listing.phase)!="waiting": return
