@@ -272,6 +272,8 @@ const CALL_NO := [
 	["Tú","Dale.","player_no_end",0.56]
 ]
 var call_generation := 0
+const CALL_DIALOGUE_VERSION := 1
+var call_ring_started := false
 
 func open_call() -> void:
 	if _stage()==0: return
@@ -279,12 +281,14 @@ func open_call() -> void:
 		business._open("Carlos",objective())
 		if _stage()==2:
 			business._button("Confirmar la puerta de Carlos que estoy mirando",_confirm_home)
+		business._button("Escuchar llamada de Carlos",_play_call.bind(CALL_INTRO,0))
 		business._button("Cerrar",business.close)
 		return
 	_play_call(CALL_INTRO,0)
 
 func _play_call(lines: Array,decision: int) -> void:
-	if _stage()!=1: return
+	if _stage()<1: return
+	var starting_stage := _stage()
 	call_generation += 1
 	var generation := call_generation
 	business.phone_mode = true
@@ -299,7 +303,7 @@ func _play_call(lines: Array,decision: int) -> void:
 		if not subtitle.is_visible_in_tree(): voice.stop()
 	)
 	for entry in lines:
-		if generation!=call_generation or not is_instance_valid(subtitle) or not subtitle.is_visible_in_tree() or _stage()!=1: return
+		if generation!=call_generation or not is_instance_valid(subtitle) or not subtitle.is_visible_in_tree() or _stage()!=starting_stage: return
 		subtitle.text = String(entry[0])+": "+String(entry[1])
 		var path := CALL_AUDIO_DIR+String(entry[2])+".mp3"
 		var duration := float(entry[3])
@@ -313,15 +317,20 @@ func _play_call(lines: Array,decision: int) -> void:
 			# Readable subtitles remain available before the optional voice pack is installed.
 			duration = maxf(duration,2.0)
 		await get_tree().create_timer(duration+.25).timeout
-	if generation!=call_generation or not is_instance_valid(subtitle) or not subtitle.is_visible_in_tree() or _stage()!=1: return
+	if generation!=call_generation or not is_instance_valid(subtitle) or not subtitle.is_visible_in_tree() or _stage()!=starting_stage: return
 	voice.stop()
 	match decision:
 		0:
 			business._button("Sí",_call_yes)
 			business._button("No",_call_no)
 		1:
-			_accept()
+			state.call_dialogue_version = CALL_DIALOGUE_VERSION
+			_save()
+			if _stage()==1: _accept()
+			else: business.close()
 		2:
+			state.call_dialogue_version = CALL_DIALOGUE_VERSION
+			_save()
 			business.close()
 
 func _call_yes() -> void:
@@ -996,17 +1005,28 @@ func _follow(delta: float) -> void:
 			follow_stall = 0.0
 
 func tick(delta: float) -> void:
-	if _stage()==0:
-		if business.ledger.stage!=4: return
-		call_wait += delta
-		if call_wait<8.0 or business.modal_open() or game.driving or game.taxi_riding or game.bus_riding or game.garage.inside or game.garage.riding or game.taxis.dialog.visible: return
-		state.stage = 1
-		business.ledger.add_message("Carlos","Llámame. Tengo un trabajo pintando una casa cerca de Flores y Estévez.")
-		_save()
-		business.phone_ring.play()
-		open_call()
-		return
-	if _stage()==1: return
+	# Older saves may already have received or completed the original text call.
+	# Offer the voiced version once without resetting painting, rewards or vehicles.
+	if business.ledger.stage==4 and int(state.get("call_dialogue_version",0))<CALL_DIALOGUE_VERSION and not inside:
+		if business.modal_open() or game.driving or game.taxi_riding or game.bus_riding or game.garage.inside or game.garage.riding or game.taxis.dialog.visible:
+			call_wait = 0.0
+			call_ring_started = false
+		else:
+			call_wait += delta
+			if call_wait>=8.0 and not call_ring_started:
+				call_ring_started = true
+				if is_instance_valid(business.phone_ring): business.phone_ring.play()
+			if call_wait>=9.0:
+				if _stage()==0:
+					state.stage = 1
+					business.ledger.add_message("Carlos","Llámame. Tengo un trabajo pintando una casa cerca de Flores y Estévez.")
+				# Mark the offer at presentation, so declining or closing never
+				# results in an endless incoming-call loop. Manual callback remains.
+				state.call_dialogue_version = CALL_DIALOGUE_VERSION
+				_save()
+				_play_call(CALL_INTRO,0)
+				return
+	if _stage()<=1: return
 	if _stage()==5:
 		if farewell: _farewell_tick(delta)
 		return
