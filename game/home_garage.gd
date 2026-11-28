@@ -2184,7 +2184,7 @@ func tick(delta: float) -> void:
 	elif not inside and has_home_tool():
 		_stop_home_paint()
 	_tick_listing(delta)
-	tick_ambient_traffic(delta)
+	if not game.ambient_city_suspended(): tick_ambient_traffic(delta)
 	marker.position.y = 2.35+sin(Time.get_ticks_msec()*.003)*.12
 	marker.visible = inside and _wheel_pending()
 	_tick_home_paint(delta)
