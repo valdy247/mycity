@@ -996,7 +996,7 @@ func _accept_wheel() -> void:
 	_save()
 	business.close()
 	_refresh_hand()
-	business._notify("MISIÓN CUMPLIDA · Sal de la casa con la goma y vuelve a tu garaje.")
+	business._notify("Goma recibida · Llévala a tu casa e instálala en la bicicleta.")
 	if not world.garage_home_site.is_empty(): game.garage._set_waypoint(world.garage_home_site.door,"Mi garaje")
 	_save()
 
