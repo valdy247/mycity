@@ -684,6 +684,27 @@ func _make_storage_leaf(root: Node3D,x: float,y: float,z: float,w: float,h: floa
 	_register_storage_door(hinge,Vector3(w*.5,h*.5,.02),Vector3(w,h,.10),label_text)
 	return hinge
 
+# The rendered door leaves are not physics bodies. Include their current
+# hinge transform in interaction rays, so they occlude objects behind them.
+func _storage_leaf_depth(entry: Dictionary,origin: Vector3,end: Vector3) -> float:
+	var hinge: Node3D = entry.hinge
+	if not is_instance_valid(hinge) or hinge.is_queued_for_deletion() or not hinge.is_visible_in_tree(): return INF
+	var center: Vector3 = entry.center
+	var size: Vector3 = entry.size
+	var hit: Variant = AABB(center-size*.5,size).intersects_segment(hinge.to_local(origin),hinge.to_local(end))
+	if hit==null: return INF
+	return origin.distance_to(hinge.to_global(Vector3(hit)))
+
+func _door_blocks_target(origin: Vector3,point: Vector3,target: Node3D = null) -> bool:
+	if not inside or not game.adaptation_mode: return false
+	var depth := origin.distance_to(point)
+	for entry in rental_storage_doors:
+		var hinge: Node3D = entry.hinge
+		if not is_instance_valid(hinge): continue
+		if target!=null and (hinge==target or hinge.is_ancestor_of(target)): continue
+		if _storage_leaf_depth(entry,origin,point)<depth-.008: return true
+	return false
+
 func _aimed_storage_door(at: Vector3) -> Dictionary:
 	if not inside or not game.adaptation_mode: return {}
 	var cam: Camera3D = game.play_camera
@@ -692,16 +713,10 @@ func _aimed_storage_door(at: Vector3) -> Dictionary:
 	var best: Dictionary = {}
 	var distance := INF
 	for entry in rental_storage_doors:
-		var hinge: Node3D = entry.hinge
-		if not is_instance_valid(hinge): continue
-		var center: Vector3 = entry.center
-		var size: Vector3 = entry.size
-		var bounds := AABB(center-size*.5,size)
-		var hit = bounds.intersects_segment(hinge.to_local(origin),hinge.to_local(end))
-		if hit==null: continue
-		var p: Vector3 = hinge.to_global(Vector3(hit))
-		var d: float = origin.distance_to(p)
-		if d>=distance or at.distance_to(p)>2.5: continue
+		var d := _storage_leaf_depth(entry,origin,end)
+		if not is_finite(d) or d>=distance: continue
+		var p := origin+(end-origin).normalized()*d
+		if at.distance_to(p)>2.8: continue
 		# The leaf is visual; reject other solid objects in front of it.
 		var ray := PhysicsRayQueryParameters3D.create(origin,origin+(p-origin).normalized()*maxf(.01,d-.10),1|4|8|16|32)
 		ray.exclude = [game.player.get_rid()]
@@ -1218,6 +1233,7 @@ func _aimed_furniture() -> String:
 	ray.exclude = [actor.get_rid()]
 	var hit := get_world_3d().direct_space_state.intersect_ray(ray)
 	if hit.is_empty(): return ""
+	if _door_blocks_target(cam.global_position,Vector3(hit.position)): return ""
 	var obj := hit.collider as Node3D
 	if obj!=null and obj.has_meta("furniture_id") and obj.global_position.distance_to(actor.global_position)<2.6: return String(obj.get_meta("furniture_id"))
 	return ""
@@ -1775,6 +1791,7 @@ func _rice_prop_aim(key: String) -> bool:
 	if hit==null: return false
 	var point: Vector3 = node.to_global(Vector3(hit))
 	if game.player.global_position.distance_to(point)>2.8: return false
+	if _door_blocks_target(start,point,node): return false
 	var ray := PhysicsRayQueryParameters3D.create(start,point,1|2)
 	ray.exclude = [game.player.get_rid(),rice_cabinet_body.get_rid()]
 	return get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
@@ -2159,9 +2176,9 @@ func interact(at: Vector3) -> bool:
 		if absf(ride_speed)<.6: _dismount()
 		return true
 	if inside:
-		if _home_exit_selected(at):
+		if not business.life.state.meal.is_empty(): return business.life.interact(at)
+		elif _home_exit_selected(at):
 			_exit()
-		elif not business.life.state.meal.is_empty(): return business.life.interact(at)
 		elif _coffee_special_interact(): pass
 		elif _switch_interact(): pass
 		elif _rice_interact(): pass
@@ -2927,6 +2944,7 @@ func _aimed_project(at: Vector3) -> bool:
 		var point: Vector3 = part.to_global(hit)
 		depth = minf(depth,origin.distance_to(point))
 	if not is_finite(depth): return false
+	if _door_blocks_target(origin,origin-cam.global_basis.z*depth): return false
 	var ray := PhysicsRayQueryParameters3D.create(origin,origin-cam.global_basis.z*depth,1|4|8|16|32)
 	ray.exclude = [game.player.get_rid()]
 	return get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
@@ -3304,6 +3322,7 @@ func _aim_tool(node: Node3D,center: Vector3,extent: Vector3) -> bool:
 	if hit==null: return false
 	var at := node.to_global(hit)
 	if game.player.global_position.distance_to(at)>3.0: return false
+	if _door_blocks_target(start,at,node): return false
 	var ray := PhysicsRayQueryParameters3D.create(start,at,1|2)
 	ray.exclude = [game.player.get_rid()]
 	return get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
