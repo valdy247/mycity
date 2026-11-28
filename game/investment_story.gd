@@ -273,12 +273,20 @@ func _clean_ratio() -> float:
 		if game.garage.state.floor_marks.has(k): left += 1
 	return 1.0-float(left)/float(maxi(1,dirt_keys.size()))
 
+func _near_story_broom() -> bool:
+	var broom: Node3D = game.garage.resting_broom
+	if not game.garage.inside or not is_instance_valid(broom): return false
+	var at: Vector3 = game.player.global_position
+	var spot: Vector3 = broom.global_position
+	return absf(at.y-spot.y)<1.8 and Vector2(at.x-spot.x,at.z-spot.z).length()<=1.8
+
 func _clean_tick(delta: float) -> void:
 	var broom: Node3D = game.garage.resting_broom
 	if String(game.garage.state.paint_tool)!="broom":
 		_task("Recoge la escoba.")
-		_mark(broom.global_position+Vector3.UP*.8)
-		story.subtitle.text = "[E] Recoger escoba" if game.garage._near_broom(game.player.global_position) else ""
+		if is_instance_valid(broom): _mark(broom.global_position+Vector3.UP*.8)
+		if _near_story_broom():
+			story.subtitle.text = "[E] Recoger escoba" if game.garage._free_hands() else "Necesitas tener las manos libres para recoger la escoba."
 	else:
 		# Use the real sweeping tool and floor ray, not a timed fake completion.
 		game.garage._tick_home_paint(delta)
@@ -1034,11 +1042,17 @@ func _restore() -> void:
 
 func interact() -> void:
 	if cinematic(): return
+	# Mission pickup takes priority over the nearby cabinet interaction.
+	if phase=="clean" and String(game.garage.state.paint_tool)!="broom" and _near_story_broom():
+		if game.garage._free_hands():
+			game.garage._take_home_tool("broom")
+		else:
+			game.business._notify("Necesitas tener las manos libres para recoger la escoba.")
+		return
 	if game.garage.inside and carry.is_empty() and phase in ["clean","unload","neighbor","outbound"]:
 		if game.garage.storage_interact(game.player.global_position): return
 	match phase:
-		"clean":
-			if String(game.garage.state.paint_tool)!="broom" and game.garage._near_broom(game.player.global_position): game.garage._take_home_tool("broom")
+		"clean": pass
 		"return_door":
 			if _near(ENTRY,1.7): _door_return()
 		"outbound","return":
