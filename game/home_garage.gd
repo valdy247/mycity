@@ -2016,7 +2016,8 @@ func _home_food_action() -> String:
 			return "[E] Servir "+pan+" al plato"
 		if plate_aim and food.plate.is_empty(): return "[E] Devolver plato"
 		if not storage_action(game.player.global_position).is_empty(): return ""
-		if not food.plate.is_empty(): return "[E] Comer plato"
+		var cam: Camera3D = game.play_camera
+		if not food.plate.is_empty() and (_aimed_furniture()=="mesa" or cam.global_basis.z.y>.35): return "[E] Comer plato"
 		return ""
 	if hand in ["carne","huevo"]:
 		if pan_aim: return "[E] Cocinar "+hand if pan.is_empty() else "[E] La cazuela está ocupada"
@@ -2086,7 +2087,9 @@ func _home_food_transfer(key: String,serving: bool) -> void:
 	carried_view.hide()
 	var motion := create_tween()
 	motion.tween_property(model,"position",Vector3(.13,.23,.12),.45)
+	if not serving: motion.parallel().tween_property(model,"rotation:z",1.25,.45)
 	motion.tween_interval(.25)
+	if not serving: motion.tween_property(model,"rotation:z",0.0,.20)
 	motion.tween_property(model,"position",Vector3(.24,.36,.14),.35)
 	await motion.finished
 	model.queue_free()
@@ -2099,7 +2102,7 @@ func _home_food_transfer(key: String,serving: bool) -> void:
 		else:
 			food.pan = ""
 			food.remaining = 0.0
-		business._notify("Añadiste "+key+" al plato.")
+		business._notify("Añadiste "+key+" al plato. Mira la mesa o hacia tu plato para comer.")
 	else:
 		food.stock[key] = maxi(0,int(food.stock.get(key,0))-1)
 		food.hand = ""
