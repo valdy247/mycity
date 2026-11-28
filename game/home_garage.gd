@@ -67,6 +67,14 @@ var rental_fridge_doors: Dictionary = {}
 var rental_storage_doors: Array[Dictionary] = []
 var rental_oil: Node3D
 var rental_kitchen: Node3D
+var home_windows: Array[Dictionary] = []
+var bedside_drawer: Node3D
+var coffee_pot: Node3D
+var coffee_cup: Node3D
+var coffee_drink_view: Node3D
+var coffee_busy := false
+var wall_hour_hand: Node3D
+var wall_minute_hand: Node3D
 var furniture_nodes: Dictionary = {}
 var preview: Node3D
 var marker: Node3D
@@ -494,8 +502,10 @@ func _model_rental_furniture(body: Node3D,id: String,size: Vector3) -> void:
 				for z in [-.87,.87]:
 					_rental_part(root,Vector3(float(x),.065,float(z)),Vector3(.09,.13,.09),dark)
 			_rental_part(root,Vector3(0,.37,0),Vector3(1.45,.19,1.94),Color("#d9d5c7"))
-			_rental_part(root,Vector3(0,.49,.31),Vector3(1.46,.06,1.29),Color("#819b9c"))
-			_rental_part(root,Vector3(0,.53,-.28),Vector3(1.46,.045,.18),Color("#a7b8b4"))
+			var unmade := bool(business.life.state.get("bed_unmade",false))
+			var blanket := _rental_part(root,Vector3(.18,.53,.50) if unmade else Vector3(0,.49,.31),Vector3(1.05,.14,.85) if unmade else Vector3(1.46,.06,1.29),Color("#819b9c"))
+			blanket.rotation.y = .18 if unmade else 0.0
+			_rental_part(root,Vector3(.20,.59,.16) if unmade else Vector3(0,.53,-.28),Vector3(.80,.09,.18) if unmade else Vector3(1.46,.045,.18),Color("#a7b8b4"))
 			for x in [-.35,.35]:
 				_rental_round(root,Vector3(float(x),.55,-.68),Vector3(.62,.18,.40),Color("#eee9d8"))
 			_rental_part(root,Vector3(0,.53,-.95),Vector3(1.50,.87,.085),wood)
@@ -523,17 +533,29 @@ func _rental_window(parent: Node3D,at: Vector3,angle: float,width: float) -> voi
 	daylight.emission = Color("#a1bcc3")
 	daylight.emission_energy_multiplier = .38
 	pane.material_override = daylight
+	var window_id := str(home_windows.size())
+	var saved: Dictionary = state.get("window_states",{}).get(window_id,{})
+	var window_open := bool(saved.get("window",false))
+	var curtains_open := bool(saved.get("curtain",true))
+	var slats: Array[Node3D] = []
 	for i in range(8):
 		var slat := _rental_part(root,Vector3(0,-.49+float(i)*.14,.112),Vector3(width,.115,.047),Color("#b5c5c3"))
-		slat.rotation.x = -.30
+		slat.rotation.x = -1.22 if window_open else -.30
+		slats.append(slat)
 	for x in [-width*.5,width*.5,0.0]:
 		_rental_part(root,Vector3(float(x),0,.14),Vector3(.042,1.17,.06),Color("#66797a"))
 	_rental_part(root,Vector3(0,-.66,.17),Vector3(width+.23,.065,.28),Color("#b9af98"))
 	_rental_part(root,Vector3(0,.74,.24),Vector3(width+.48,.045,.05),Color("#78634f"))
+	var curtains: Array[Node3D] = []
 	for side in [-1.0,1.0]:
-		for k in range(5):
-			var fold := _rental_part(root,Vector3(float(side)*(width*.5+.03-float(k)*.065),-.01,.22+float(k%2)*.045),Vector3(.085,1.46,.06),Color("#ded3bd").darkened(float(k%2)*.035))
-			fold.rotation.z = float(side)*.035
+		var curtain := _rental_root(root,Vector3(float(side)*width*.25,0,.22))
+		for k in range(9):
+			var fold := _rental_part(curtain,Vector3(-width*.25+width*.5*(float(k)+.5)/9.0,-.01,float(k%2)*.045),Vector3(width*.5/9.0+.018,1.46,.06),Color("#ded3bd").darkened(float(k%2)*.035))
+			fold.rotation.z = float(side)*.015
+		curtain.scale.x = .30 if curtains_open else 1.0
+		curtain.position.x = float(side)*width*(.45 if curtains_open else .25)
+		curtains.append(curtain)
+	home_windows.append({"root":root,"width":width,"slats":slats,"curtains":curtains,"window":window_open,"curtain":curtains_open,"id":window_id})
 
 func _rental_fixture(parent: Node3D,at: Vector3) -> void:
 	_rental_cylinder(parent,at+Vector3.UP*.08,.13,.07,Color("#aaa38e"))
@@ -771,8 +793,19 @@ func _decorate_rental_home() -> void:
 	# Bedside shelf and small lamp do not alter the movable bed.
 	var bedside := _rental_root(decor,Vector3(-6.40,0,-4.60))
 	_solid(bedside,Vector3(0,.31,0),Vector3(.54,.62,.46),Color("#82694e"))
-	_rental_part(bedside,Vector3(0,.39,.24),Vector3(.45,.20,.035),Color("#9b8062"))
-	_rental_part(bedside,Vector3(0,.40,.27),Vector3(.14,.04,.04),Color("#c4b18f"))
+	# A real hollow drawer, with a moving front and a bottom.
+	var bedside_body: Node3D = bedside.get_child(0)
+	bedside_body.get_child(0).hide()
+	_rental_part(bedside,Vector3(0,.05,0),Vector3(.54,.10,.46),Color("#82694e"))
+	_rental_part(bedside,Vector3(0,.59,0),Vector3(.54,.06,.46),Color("#82694e"))
+	_rental_part(bedside,Vector3(0,.31,-.21),Vector3(.54,.52,.04),Color("#82694e"))
+	for x in [-.25,.25]: _rental_part(bedside,Vector3(float(x),.31,0),Vector3(.04,.52,.46),Color("#82694e"))
+	bedside_drawer = _rental_root(bedside,Vector3(0,.39,0))
+	_rental_part(bedside_drawer,Vector3(0,0,.24),Vector3(.45,.20,.035),Color("#9b8062"))
+	_rental_part(bedside_drawer,Vector3(0,.01,.27),Vector3(.14,.04,.04),Color("#c4b18f"))
+	_rental_part(bedside_drawer,Vector3(0,-.085,0),Vector3(.43,.03,.43),Color("#8a6d51"))
+	for x in [-.21,.21]: _rental_part(bedside_drawer,Vector3(float(x),-.025,0),Vector3(.025,.14,.43),Color("#8a6d51"))
+	_rental_part(bedside_drawer,Vector3(0,-.025,-.20),Vector3(.43,.14,.025),Color("#8a6d51"))
 	_rental_cylinder(bedside,Vector3(0,.65,0),.11,.045,Color("#81715b"))
 	_rental_cylinder(bedside,Vector3(0,.79,0),.025,.24,Color("#81715b"))
 	_rental_round(bedside,Vector3(0,.95,0),Vector3(.34,.29,.34),Color("#e2cba3"))
@@ -799,8 +832,12 @@ func _decorate_rental_home() -> void:
 	var clock := _rental_root(decor,Vector3(-.20,2.37,3.00),-PI*.5)
 	_rental_cylinder(clock,Vector3.ZERO,.20,.05,Color("#765c45")).rotation.x = PI*.5
 	_rental_cylinder(clock,Vector3(0,0,.033),.177,.025,Color("#e8e2d1")).rotation.x = PI*.5
-	_rental_part(clock,Vector3(.035,.025,.055),Vector3(.11,.016,.009),Color("#44423a")).rotation.z = .65
-	_rental_part(clock,Vector3(0,.058,.055),Vector3(.014,.13,.009),Color("#44423a")).rotation.z = -.25
+	wall_hour_hand = _rental_root(clock,Vector3(0,0,.055))
+	_rental_part(wall_hour_hand,Vector3(0,.052,0),Vector3(.018,.105,.009),Color("#44423a"))
+	wall_minute_hand = _rental_root(clock,Vector3(0,0,.064))
+	_rental_part(wall_minute_hand,Vector3(0,.073,0),Vector3(.014,.146,.009),Color("#44423a"))
+	_build_home_coffee(kitchen)
+	_update_wall_clock()
 
 func _build_rental_bathroom() -> void:
 	var root := _rental_root(interior,Vector3.ZERO)
@@ -1074,10 +1111,151 @@ func _home_exit_selected(at: Vector3) -> bool:
 	if game.adaptation_mode: return aimed_rental_exit(at)
 	return at.distance_to(ROOM+Vector3(-.7,.86,5.25))<1.55
 
+func _build_home_coffee(kitchen: Node3D) -> void:
+	coffee_pot = _rental_root(kitchen,Vector3(.72,.965,-.22))
+	_rental_cylinder(coffee_pot,Vector3(0,.075,0),.083,.15,Color("#aab0ad"))
+	_rental_cylinder(coffee_pot,Vector3(0,.17,0),.055,.08,Color("#777e7b"))
+	_rental_cylinder(coffee_pot,Vector3(0,.245,0),.085,.10,Color("#aab0ad"))
+	_rental_part(coffee_pot,Vector3(.10,.19,0),Vector3(.07,.15,.035),Color("#393b39"))
+	_rental_part(coffee_pot,Vector3(0,.305,0),Vector3(.035,.035,.035),Color("#393b39"))
+	coffee_cup = _rental_root(kitchen,Vector3(.03,.965,.12))
+	_rental_cylinder(coffee_cup,Vector3(0,.045,0),.045,.09,Color("#eee5d4"))
+	_rental_cylinder(coffee_cup,Vector3(0,.092,0),.035,.005,Color("#593723"))
+	_rental_part(coffee_cup,Vector3(.05,.045,0),Vector3(.035,.055,.02),Color("#eee5d4"))
+
+func _update_wall_clock() -> void:
+	if not is_instance_valid(wall_hour_hand) or business.life==null: return
+	var minute: float = float(business.life.state.minutes)
+	wall_hour_hand.rotation.z = -TAU*minute/720.0
+	wall_minute_hand.rotation.z = -TAU*minute/60.0
+
+func _domestic_target() -> Dictionary:
+	if not inside or not game.adaptation_mode: return {}
+	if not String(state.held_furniture).is_empty() or not String(state.paint_tool).is_empty(): return {}
+	for entry in home_windows:
+		var root: Node3D = entry.root
+		var width: float = entry.width
+		for curtain in entry.curtains:
+			if _aim_tool(curtain,Vector3.ZERO,Vector3(width*.25,.74,.12)): return {"kind":"curtain","window":entry}
+		if _aim_tool(root,Vector3(0,0,.12),Vector3(width*.5,.58,.12)): return {"kind":"window","window":entry}
+	if _aim_tool(bedside_drawer,Vector3(0,0,.25),Vector3(.24,.12,.10)): return {"kind":"drawer"}
+	if _aim_tool(coffee_pot,Vector3(0,.15,0),Vector3(.14,.17,.12)): return {"kind":"brew"}
+	if _aim_tool(coffee_cup,Vector3(0,.05,0),Vector3(.09,.07,.09)): return {"kind":"drink"}
+	if _aimed_furniture()=="cama": return {"kind":"bed"}
+	return {}
+
+func domestic_action() -> String:
+	var target := _domestic_target()
+	match String(target.get("kind","")):
+		"curtain": return "[E] "+("Cerrar cortinas" if bool(target.window.curtain) else "Abrir cortinas")
+		"window": return "[E] "+("Cerrar ventana" if bool(target.window.window) else "Abrir ventana")
+		"drawer": return "[E] "+("Cerrar cajón" if bedside_drawer.position.z>.15 else "Abrir cajón")
+		"brew": return "[E] Preparar café" if int(business.life.state.coffee_cups)==0 else "Cafetera · %d tazas restantes" % int(business.life.state.coffee_cups)
+		"drink": return "[E] Tomar café · %d/4" % int(business.life.state.coffee_cups)
+		"bed": return "[E] Cama · Dormir / tender / mover"
+	return ""
+
+func domestic_interact() -> bool:
+	var target := _domestic_target()
+	match String(target.get("kind","")):
+		"curtain","window":
+			var entry: Dictionary = target.window
+			var kind: String = target.kind
+			entry[kind] = not bool(entry[kind])
+			var tween := create_tween().set_parallel(true)
+			if kind=="window":
+				for slat in entry.slats: tween.tween_property(slat,"rotation:x",-1.22 if entry.window else -.30,.35)
+			else:
+				for i in range(entry.curtains.size()):
+					var curtain: Node3D = entry.curtains[i]
+					var side := -1.0 if i==0 else 1.0
+					tween.tween_property(curtain,"scale:x",.30 if entry.curtain else 1.0,.45)
+					tween.tween_property(curtain,"position:x",side*float(entry.width)*(.45 if entry.curtain else .25),.45)
+			if not state.has("window_states"): state.window_states = {}
+			state.window_states[entry.id] = {"window":entry.window,"curtain":entry.curtain}
+			_save()
+		"drawer":
+			var goal := 0.0 if bedside_drawer.position.z>.15 else .30
+			var tween := create_tween()
+			tween.tween_property(bedside_drawer,"position:z",goal,.30)
+		"brew": _brew_coffee_async()
+		"drink": _drink_coffee_async()
+		"bed": _bed_menu()
+		_: return false
+	return true
+
+func _brew_coffee_async() -> void:
+	if coffee_busy: return
+	if not _free_hands(): return
+	if int(business.life.state.coffee_cups)>0:
+		business._notify("Todavía queda café en la cafetera.")
+		return
+	coffee_busy = true
+	business._notify("Preparando una colada…")
+	await get_tree().create_timer(3.0).timeout
+	coffee_busy = false
+	if business.life.brew_home_coffee(): business._notify("Café listo · 4 tazas.")
+
+func _drink_coffee_async() -> void:
+	if coffee_busy or not _free_hands(): return
+	if not business.life.drink_home_coffee():
+		business._notify("No queda café. Prepara una colada.")
+		return
+	coffee_busy = true
+	coffee_drink_view = Node3D.new()
+	game.play_camera.add_child(coffee_drink_view)
+	coffee_drink_view.position = Vector3(.27,-.45,-.65)
+	_rental_cylinder(coffee_drink_view,Vector3.ZERO,.055,.11,Color("#eee5d4"))
+	_rental_cylinder(coffee_drink_view,Vector3(0,.057,0),.043,.006,Color("#593723"))
+	var sip := create_tween()
+	sip.tween_property(coffee_drink_view,"position",Vector3(.08,-.14,-.40),.45)
+	sip.tween_interval(.7)
+	sip.tween_property(coffee_drink_view,"position",Vector3(.27,-.45,-.65),.45)
+	await sip.finished
+	if is_instance_valid(coffee_drink_view): coffee_drink_view.queue_free()
+	coffee_busy = false
+	business._notify("Café tomado · %d tazas restantes." % int(business.life.state.coffee_cups))
+
+func _bed_menu() -> void:
+	var life = business.life
+	var wake := int(float(life.state.minutes)+life.planned_sleep_minutes())
+	business._open("Cama","Despertarás a las "+life.format_time(wake)+". Puedes cambiar la alarma en el móvil.")
+	business._button("Dormir",_sleep_home,not _free_hands())
+	business._button("Tender la cama",_make_home_bed,not bool(life.state.get("bed_unmade",false)))
+	business._button("Mover cama",_take_bed,not _free_hands())
+	business._button("Cerrar",business.close)
+
+func _take_bed() -> void:
+	if not _free_hands() or not furniture_nodes.has("cama"): return
+	state.held_furniture = "cama"
+	_refresh_furniture("cama")
+	_refresh_carried()
+	_save()
+	business.close()
+
+func _make_home_bed() -> void:
+	business.life.state.bed_unmade = false
+	_refresh_furniture("cama")
+	_save()
+	business.close()
+	business._notify("Cama tendida.")
+
+func _sleep_home() -> void:
+	if not inside or not _free_hands(): return
+	var message: String = business.life.sleep_at_home()
+	_refresh_furniture("cama")
+	_update_wall_clock()
+	game._update_visual_lighting(true)
+	business._open("Descanso",message+".")
+	business._button("Levantarse",business.close)
+	_save()
+
 func action_text(at: Vector3) -> String:
 	if riding: return "Frenando para bajar" if ride_exit_requested else "[E] Bajar"
 	if inside:
 		if _home_exit_selected(at): return "[E] Salir de casa"
+		var domestic := domestic_action()
+		if not domestic.is_empty(): return domestic
 		var storage := storage_action(at)
 		if not storage.is_empty(): return storage
 		var waste_action := _waste_action(at)
@@ -1108,6 +1286,7 @@ func interact(at: Vector3) -> bool:
 		if _home_exit_selected(at):
 			_exit()
 		elif not business.life.state.meal.is_empty(): return false
+		elif domestic_interact(): pass
 		elif storage_interact(at): pass
 		elif _waste_interact(at): pass
 		elif _house_tool_interact(at): pass
@@ -1791,6 +1970,7 @@ func _traffic_tick(delta: float) -> void:
 		elif not Bypass.safe_step(body,d,advance,angle,delta): entry.speed = 0.0
 
 func tick(delta: float) -> void:
+	if inside: _update_wall_clock()
 	# Repair stale room state from older saves/mission teleports. Never move
 	# the player here; just restore the house tools to their proper place.
 	if inside and absf(game.player.global_position.y-ROOM.y)>12.0:
