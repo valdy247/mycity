@@ -1735,13 +1735,40 @@ func _nearest_bin(at: Vector3) -> Dictionary:
 	return game.monte_services.nearest_disposal_site(at)
 
 func rental_entry_near(at: Vector3) -> bool:
-	if world.garage_home_site.is_empty() or inside: return false
-	var door: Vector3 = world.garage_home_site.door
-	# Logical entrance: no exact mesh ray or carried object required.
-	var basis: Basis = world.garage_home_site.basis
+	if world.garage_home_site.is_empty() or inside or not is_instance_valid(game.play_camera): return false
+	var site: Dictionary = world.garage_home_site
+	var door: Vector3 = site.door
+	var basis: Basis = site.basis
 	var offset := at-door
-	# Include the sidewalk approach when facade collision prevents reaching the threshold.
-	return absf(offset.y)<3.0 and (Vector2(offset.x,offset.z).length()<=3.5 or (absf(offset.dot(basis.x))<=2.6 and offset.dot(basis.z)>=-1.0 and offset.dot(basis.z)<=5.0))
+	# Preserve the accessible sidewalk approach, but proximity alone must
+	# never activate the portal. Select the actual doorway with the reticle.
+	if absf(offset.y)>=3.0: return false
+	if not (Vector2(offset.x,offset.z).length()<=3.5 or (absf(offset.dot(basis.x))<=2.6 and offset.dot(basis.z)>=-1.0 and offset.dot(basis.z)<=5.0)): return false
+	var cam: Camera3D = game.play_camera
+	var origin := cam.global_position
+	var direction := -cam.global_transform.basis.z
+	var inverse := basis.inverse()
+	var local_origin := inverse*(origin-door)
+	var local_direction := inverse*direction
+	if local_direction.z>=-.001: return false
+	var depth := -local_origin.z/local_direction.z
+	if depth<=0.0 or depth>8.0: return false
+	var hit := local_origin+local_direction*depth
+	var half_width := float(site.get("door_width",1.15))*.5
+	if absf(hit.x)>half_width or hit.y<.03 or hit.y>2.20: return false
+	# Albertico has no physics collider. His visible body still blocks
+	# selection of a doorway behind him, regardless of trading hours.
+	if is_instance_valid(business.albertico) and business.albertico.is_visible_in_tree():
+		var end := origin+direction*depth
+		for child in business.albertico.find_children("*","MeshInstance3D",true,false):
+			var part := child as MeshInstance3D
+			if not is_instance_valid(part) or not part.is_visible_in_tree(): continue
+			if is_instance_valid(business.arrow) and business.arrow.is_ancestor_of(part): continue
+			if part.get_aabb().intersects_segment(part.to_local(origin),part.to_local(end))!=null: return false
+	# The facade itself is intentionally excluded at the doorway plane.
+	var ray := PhysicsRayQueryParameters3D.create(origin,origin+direction*maxf(.01,depth-.18),1|4|8|16|32)
+	ray.exclude = [game.player.get_rid()]
+	return get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
 
 func _aimed_home(at: Vector3) -> bool:
 	if game.adaptation_mode: return rental_entry_near(at)
