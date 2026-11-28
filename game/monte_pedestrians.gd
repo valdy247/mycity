@@ -550,10 +550,10 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 	var origin := graph.get_point_position(start)
 	for dest in destinations:
 		if force_non_bus and String(dest.kind)=="bus": continue
-		if not _destination_available(int(dest.id),person): continue
 		var p := graph.get_point_position(int(dest.id))
 		var dist := origin.distance_to(p)
 		if dist<8.0 or dist>155.0: continue
+		if not _destination_available(int(dest.id),person): continue
 		if String(dest.kind)=="bus":
 			var stop: Dictionary = dest.stop
 			if stop.queue.size()>=4: continue
@@ -828,9 +828,12 @@ func tick(delta: float) -> void:
 		person.phone_idle = not on_road and float(agent.pause)>0.0 and not bool(agent.get("indoors",false)) and distance_sq<900.0
 		if on_road and not bool(agent.get("indoors",false)):
 			person.remove_meta("conversation_until")
-			if float(agent.pause)>0.0 or int(agent.index)>=(agent.path as PackedVector3Array).size():
+			var current_path: PackedVector3Array = agent.path
+			if float(agent.pause)>0.0 or int(agent.index)>=current_path.size():
 				agent.pause = 0.0
-				if not _leave_road(agent): _choose_route(agent,true)
+				if not _leave_road(agent) and not _choose_route(agent,true):
+					agent.pause = .5
+					continue
 		if agent.has("yield_target"):
 			var safe: Vector3 = agent.yield_target
 			var step := person.global_position.move_toward(safe,1.8*actor_dt)
@@ -903,7 +906,8 @@ func tick(delta: float) -> void:
 		var p: Vector3 = path[index]
 		# Recheck the live scene: walkers use scripted movement rather than
 		# CharacterBody3D, so never advance into a new obstacle.
-		var step := person.global_position.move_toward(p,maxf(.12,float(agent.speed)*actor_dt))
+		var crossing_speed := float(agent.speed)*(1.25 if on_road else 1.0)
+		var step := person.global_position.move_toward(p,maxf(.12,crossing_speed*actor_dt))
 		# Always sweep the actual next step; the longer preview only needs
 		# refreshing when the waypoint changes or every quarter second.
 		var preview_due := int(agent.get("preview_index",-1))!=index or float(agent.get("preview_wait",0.0))<=0.0
@@ -950,5 +954,5 @@ func tick(delta: float) -> void:
 				if disconnected: graph.connect_points(from_id,to_id,true)
 			continue
 		agent["blocked_time"] = 0.0
-		if person.walk_to(p,actor_dt,float(agent.speed)*(1.25 if on_road else 1.0)):
+		if person.walk_to(p,actor_dt,crossing_speed):
 			agent.index = index+1
