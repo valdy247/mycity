@@ -167,12 +167,12 @@ func setup(builder: Builder) -> void:
 	parks.build()
 	park_sites = parks.sites
 	park_walkways = parks.walkways
-	var wear := RoadWear.new()
-	add_child(wear)
-	wear.build(geography,street_geometry)
-	_make_corner_plaques()
-	_make_utility_network()
 	_make_signal_visuals()
+	# The street network and mission buildings are required immediately; cosmetic infrastructure is not.
+	if bool(get_tree().get_meta("mycity_adaptation",false)) or OS.get_cmdline_user_args().has("--replay-home-arrival"):
+		_build_late_infrastructure.call_deferred()
+	else:
+		_build_infrastructure_now()
 	var frontage_ms := Time.get_ticks_msec()
 	_flush_city_boxes()
 	_flush_monte_columns()
@@ -180,6 +180,32 @@ func setup(builder: Builder) -> void:
 	print("MyCity carga (ms): calles=",street_ms-start_ms,", edificios=",frontage_ms-street_ms,", mallas=",Time.get_ticks_msec()-frontage_ms)
 	print("Pilar-Atarés: ",slots.size()," generated facade lots, ",service_count," game services, ",residents.size()," citizens; ",mapped_buildings," OSM building footprints; ",plaque_count," corner plaques.")
 	# Real-world source attribution is visible in HUD via main.gd.
+
+func _build_infrastructure_now() -> void:
+	var wear := RoadWear.new()
+	add_child(wear)
+	wear.build(geography,street_geometry)
+	_make_corner_plaques()
+	_make_utility_network()
+
+func _build_late_infrastructure() -> void:
+	# Allow the arrival camera and player to render before adding street decoration.
+	await get_tree().create_timer(8.0).timeout
+	if not is_inside_tree(): return
+	var started := Time.get_ticks_msec()
+	var wear := RoadWear.new()
+	add_child(wear)
+	wear.build(geography,street_geometry)
+	await get_tree().process_frame
+	if not is_inside_tree(): return
+	await _make_corner_plaques(true)
+	if not is_inside_tree(): return
+	await _make_utility_network(true)
+	if not is_inside_tree(): return
+	_flush_city_boxes()
+	var controller = get_parent()
+	set_graphics_quality(int(controller.graphics_quality))
+	print("MyCity carga progresiva (ms): mobiliario urbano=",Time.get_ticks_msec()-started)
 
 # One static body per spatial tile instead of thousands of shapes on a
 # single city-wide body. Broad-phase queries can reject distant tiles.
@@ -530,7 +556,8 @@ func _utility_chain_poles(chain: Dictionary,metal: StandardMaterial3D,wire: Stan
 		preferred = chosen_side
 	return found
 
-func _make_utility_network() -> void:
+func _make_utility_network(progressive: bool = false) -> void:
+	var slice_started := Time.get_ticks_msec()
 	var metal := _mat("utility_concrete",Color("#77786e"))
 	var wire := _mat("utility_wire",Color("#343b3d"))
 	utility_lens = _mat("utility_lens",Color("#e9dfc4"))
@@ -558,6 +585,10 @@ func _make_utility_network() -> void:
 	var ends: Dictionary = {}
 	var no_support := 0
 	for chain in chains:
+		if progressive and Time.get_ticks_msec()-slice_started>=5:
+			await get_tree().process_frame
+			if not is_inside_tree(): return
+			slice_started = Time.get_ticks_msec()
 		var ids := _utility_chain_poles(chain,metal,wire)
 		if ids.is_empty():
 			no_support += 1
@@ -569,6 +600,10 @@ func _make_utility_network() -> void:
 	# Build a small connected network at each intersection instead of
 	# pairing two independent branches of a four-way crossing.
 	for node in ends:
+		if progressive and Time.get_ticks_msec()-slice_started>=5:
+			await get_tree().process_frame
+			if not is_inside_tree(): return
+			slice_started = Time.get_ticks_msec()
 		var ids: Array = ends[node]
 		var joined: Array = []
 		if not ids.is_empty(): joined.append(ids[0])
@@ -591,6 +626,10 @@ func _make_utility_network() -> void:
 	# Some tiny connecting road segments have no usable curb themselves.
 	# Connect their neighboring supports across the segment when safe.
 	for chain in chains:
+		if progressive and Time.get_ticks_msec()-slice_started>=5:
+			await get_tree().process_frame
+			if not is_inside_tree(): return
+			slice_started = Time.get_ticks_msec()
 		if float(chain.length)>18.0: continue
 		var left: Array = ends.get(String(chain.start),[])
 		var right: Array = ends.get(String(chain.end),[])
@@ -612,6 +651,10 @@ func _make_utility_network() -> void:
 		for id in String(key).split(":"):
 			degrees[int(id)] = true
 	for id in range(utility_poles.size()):
+		if progressive and Time.get_ticks_msec()-slice_started>=5:
+			await get_tree().process_frame
+			if not is_inside_tree(): return
+			slice_started = Time.get_ticks_msec()
 		if degrees.has(id): continue
 		var p: Vector3 = utility_poles[id].p
 		var candidates := _utility_near(p,30.0)
@@ -3323,11 +3366,16 @@ func _plaque_layer(p: Vector3,normal: Vector3,width: float,height: float,materia
 			st.set_normal(normal)
 			st.add_vertex(p+tangent*float(v.x)+Vector3.UP*float(v.y))
 
-func _make_corner_plaques() -> void:
+func _make_corner_plaques(progressive: bool = false) -> void:
+	var slice_started := Time.get_ticks_msec()
 	var white := _mat("street_plaque_white",Color("#e8e9e5"))
 	var black := _mat("street_plaque_border",Color("#151f2b"))
 	var concrete := _mat("street_plaque_post",Color("#797c72"))
 	for node_id in geography.junctions:
+		if progressive and Time.get_ticks_msec()-slice_started>=5:
+			await get_tree().process_frame
+			if not is_inside_tree(): return
+			slice_started = Time.get_ticks_msec()
 		var incident: Array = geography.junctions[node_id]
 		var unique: Dictionary = {}
 		for road in incident:
