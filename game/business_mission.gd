@@ -1255,6 +1255,8 @@ func open_phone_home() -> void:
 	if life!=null: _phone_tile(apps,"Contactos",life.open_contacts,"contact",Color("#3d6dba"))
 	if life!=null: _phone_tile(apps,"Alarma",life.open_alarm,"clock",Color("#786aa5"))
 	_phone_tile(apps,"Mi negocio",open_business_summary,"business",Color("#b77a38"))
+	_phone_tile(apps,"Trabajos",open_neighborhood_jobs,"business",Color("#527d65"))
+	_phone_tile(apps,"Reputación",open_reputation,"contact",Color("#5c728d"))
 	# Keep a manual callback available even if the automatic incoming call
 	# has not fired yet; Carlos checks the investment prerequisite himself.
 	var adaptation: Dictionary = ledger.life_data.get("adaptation",{})
@@ -1331,6 +1333,113 @@ func open_mission_log() -> void:
 	var yordi_text := String(yordi_objective.call()) if yordi_objective.is_valid() else ""
 	_phone_metric("03 · Yordi",yordi_text if not yordi_text.is_empty() else ("Misión completada" if yordi_stage>=14 else "Pendiente de desbloquear"))
 	if city_map.is_valid(): _button("Abrir mapa",city_map)
+	_button("Inicio",open_phone_home)
+
+# No upfront cost: neighborhood errands remain available when broke.
+# Jobs use existing shop entrances and the same phone/GPS as the city.
+func _job_sites() -> Array:
+	var result: Array = []
+	for site in world.commerce_sites:
+		if site.has("entrance"): result.append(site)
+	if not world.garage_home_site.is_empty():
+		result.append({"id":"home","name":"Mi casa","contact":"Vecino","entrance":world.garage_home_site.door})
+	return result
+
+func _job_site(id: String) -> Dictionary:
+	for site in _job_sites():
+		if String(site.id)==id: return site
+	return {}
+
+func _job_near(site: Dictionary) -> bool:
+	if site.is_empty() or not is_instance_valid(player): return false
+	var controller = get_parent()
+	if controller.driving or controller.taxi_riding or controller.bus_riding or controller.garage.riding: return false
+	var at: Vector3 = site.entrance
+	return player.global_position.distance_to(at)<5.0
+
+func open_neighborhood_jobs() -> void:
+	var job: Dictionary = ledger.life_data.get("neighborhood_job",{})
+	_open("Trabajos del barrio","Mandados sin inversión inicial. Recoge el encargo y entrégalo; no cobras hasta terminar.")
+	if not job.is_empty():
+		var collecting := String(job.phase)=="collect"
+		var site := _job_site(String(job.origin if collecting else job.destination))
+		if site.is_empty():
+			_button("Cancelar encargo · lugar no disponible",_cancel_neighborhood_job)
+		else:
+			var label_value := ("Recoger en " if collecting else "Entregar en ")+String(site.name)
+			_button(label_value+" · %d CUP" % int(job.pay),_advance_neighborhood_job,not _job_near(site))
+			_button("Marcar en GPS",_job_gps)
+			_button("Cancelar encargo",_cancel_neighborhood_job)
+	else:
+		var sites := _job_sites()
+		for i in range(mini(3,sites.size())):
+			var from: Dictionary = sites[i]
+			if sites.size()<2: break
+			var destination: Dictionary = sites[(i+1)%sites.size()]
+			var distance: float = Vector3(from.entrance).distance_to(Vector3(destination.entrance))
+			var pay := clampi(roundi(160.0+distance*.65),180,450)
+			pay += roundi(float(pay)*float(ledger.reputation(String(from.contact))-50)*.002)
+			_button("%s → %s · %d CUP" % [from.name,destination.name,pay],_accept_neighborhood_job.bind(String(from.id),String(destination.id),pay))
+		if sites.size()<2: _button("No hay rutas disponibles todavía",open_neighborhood_jobs,true)
+	_button("Inicio",open_phone_home)
+
+func _accept_neighborhood_job(origin: String,destination: String,pay: int) -> void:
+	if not ledger.life_data.get("neighborhood_job",{}).is_empty() or origin==destination or pay<=0: return
+	if _job_site(origin).is_empty() or _job_site(destination).is_empty(): return
+	ledger.life_data.neighborhood_job = {"origin":origin,"destination":destination,"pay":pay,"phase":"collect"}
+	ledger.save_game()
+	open_neighborhood_jobs()
+
+func _job_gps() -> void:
+	var job: Dictionary = ledger.life_data.get("neighborhood_job",{})
+	if job.is_empty(): return
+	var site := _job_site(String(job.origin if String(job.phase)=="collect" else job.destination))
+	if site.is_empty(): return
+	get_parent().garage._set_waypoint(site.entrance,String(site.name)+" · Encargo")
+	ledger.save_game()
+	close()
+
+func _advance_neighborhood_job() -> void:
+	var job: Dictionary = ledger.life_data.get("neighborhood_job",{})
+	if job.is_empty(): return
+	var collecting := String(job.phase)=="collect"
+	var site := _job_site(String(job.origin if collecting else job.destination))
+	if not _job_near(site): return
+	if collecting:
+		job.phase = "deliver"
+		ledger.save_game()
+		_notify("Encargo recogido. Llévalo a "+String(_job_site(String(job.destination)).get("name","su destino"))+".")
+		open_neighborhood_jobs()
+		return
+	var pay := int(job.pay)
+	ledger.life_data.neighborhood_job = {}
+	ledger.cash += pay
+	ledger.revenue += pay
+	var origin := _job_site(String(job.origin))
+	ledger.change_reputation(String(origin.get("contact","Vecino")),3)
+	ledger.life_data.neighborhood_jobs_done = int(ledger.life_data.get("neighborhood_jobs_done",0))+1
+	ledger.add_message("Trabajos","Encargo entregado. Ganaste %d CUP." % pay)
+	ledger.save_game()
+	show_mission_reward("+%d CUP" % pay,"Mandado del barrio")
+	close()
+
+func _cancel_neighborhood_job() -> void:
+	var job: Dictionary = ledger.life_data.get("neighborhood_job",{})
+	if String(job.get("phase",""))=="deliver":
+		var origin := _job_site(String(job.origin))
+		ledger.change_reputation(String(origin.get("contact","Vecino")),-2)
+	ledger.life_data.neighborhood_job = {}
+	ledger.save_game()
+	open_neighborhood_jobs()
+
+func open_reputation() -> void:
+	_open("Reputación","La confianza aumenta al cumplir los encargos y los acuerdos. Las misiones originales conservan sus premios.")
+	var names: Array = ["Albertico","Carlos","Marketplace"]
+	for site in _job_sites():
+		var label_value := String(site.contact)
+		if not names.has(label_value): names.append(label_value)
+	for person in names:
+		_phone_metric(String(person),"%d / 100" % ledger.reputation(String(person)))
 	_button("Inicio",open_phone_home)
 
 func open_business_summary() -> void:
