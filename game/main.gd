@@ -156,8 +156,13 @@ func _notification(what: int) -> void:
 	business.ledger.save_game()
 
 func _ready() -> void:
-	adaptation_mode = bool(get_tree().get_meta("mycity_adaptation",false)) or OS.get_cmdline_user_args().has("--replay-home-arrival")
 	var args := OS.get_cmdline_user_args()
+	var fresh := args.has("--new-story")
+	if fresh and not bool(get_tree().get_meta("mycity_new_story_initialized",false)):
+		get_tree().change_scene_to_file.call_deferred("res://airport.tscn")
+		return
+	adaptation_mode = bool(get_tree().get_meta("mycity_adaptation",false)) or fresh or args.has("--replay-home-arrival")
+	print("MyCity HISTORIA: modo=", "adaptación" if adaptation_mode else "clásico", " | datos=",OS.get_user_data_dir())
 	mobile_mode = OS.has_feature("android") or OS.has_feature("ios") or args.has("--touch-controls")
 	if OS.has_feature("web"):
 		var coarse = JavaScriptBridge.eval("window.matchMedia('(pointer: coarse)').matches",true)
@@ -354,6 +359,7 @@ func _ready() -> void:
 			arrival_story = ArrivalStory.new()
 			add_child(arrival_story)
 			arrival_story.setup(self)
+			print("MyCity HISTORIA: llegada=",arrival_story.phase," | paso=",arrival_story.state.get("step",0)," | Albertico=",business.ledger.stage," | saldo=",business.ledger.cash)
 			if get_tree().has_meta("mycity_city_load_started"):
 				print("MyCity carga (ms): inicialización ciudad y llegada=",Time.get_ticks_msec()-int(get_tree().get_meta("mycity_city_load_started")))
 				get_tree().remove_meta("mycity_city_load_started")
