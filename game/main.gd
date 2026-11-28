@@ -905,9 +905,8 @@ func _input(event: InputEvent) -> void:
 		return
 	# In free play the home portal must not depend on mouse capture or legacy mission input.
 	if adaptation_mode and player!=null and garage!=null and not driving and not taxi_riding and not bus_riding and not garage.riding and not touch_blocked() and (arrival_story==null or not arrival_story.active()) and event is InputEventKey and event.pressed and not event.echo and (event.keycode==KEY_E or event.physical_keycode==KEY_E):
-		if garage.rental_entry_near(player.global_position) or (garage.inside and player.global_position.distance_to(Vector3(-.7,110.86,5.25))<2.2):
-			if garage.inside: garage._exit()
-			else: garage._enter()
+		if garage.rental_entry_near(player.global_position) or (garage.inside and garage.action_text(player.global_position).begins_with("[E]")):
+			garage.interact(player.global_position)
 			interact_requested = false
 			_update_hud()
 			get_viewport().set_input_as_handled()
@@ -1554,7 +1553,7 @@ func _update_hud() -> void:
 		status.text += "\nW/S: acelerar y retroceder | Shift: turbo | A/D: girar | Espacio: frenar\nE: salir detenido | R: reiniciar | Esc: liberar mouse"
 	else:
 		status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
-		var action: String = garage.action_text(player.global_position) if adaptation_mode and garage!=null and garage.rental_entry_near(player.global_position) else ""
+		var action: String = garage.action_text(player.global_position) if adaptation_mode and garage!=null and (garage.inside or garage.rental_entry_near(player.global_position)) else ""
 		if action.is_empty() and not adaptation_mode and business!=null and business.first_story!=null: action = business.first_story.action_text()
 		if action.is_empty() and yordi_mission!=null: action = yordi_mission.action_text()
 		if action.is_empty() and carlos_mission!=null: action = carlos_mission.action_text()
@@ -1618,7 +1617,7 @@ func _update_compact_hud() -> void:
 	elif driving:
 		lines.append("%d km/h · [Shift] Turbo · [E] Bajar detenido" % roundi(absf(drive_speed)*3.6))
 	else:
-		var action: String = garage.action_text(player.global_position) if adaptation_mode and garage!=null and garage.rental_entry_near(player.global_position) else ""
+		var action: String = garage.action_text(player.global_position) if adaptation_mode and garage!=null and (garage.inside or garage.rental_entry_near(player.global_position)) else ""
 		if action.is_empty() and not adaptation_mode and business!=null and business.first_story!=null: action = business.first_story.action_text()
 		if action.is_empty() and yordi_mission!=null: action = yordi_mission.action_text()
 		if action.is_empty() and carlos_mission!=null: action = carlos_mission.action_text()
@@ -2032,7 +2031,7 @@ func _physics_process(delta: float) -> void:
 			elif not _safe_exit():
 				exit_message = "No hay espacio para salir. Mueve la van."
 				message_time = 2.0
-		elif adaptation_mode and garage!=null and garage.rental_entry_near(player.global_position):
+		elif adaptation_mode and garage!=null and (garage.rental_entry_near(player.global_position) or (garage.inside and garage.action_text(player.global_position).begins_with("[E]"))):
 			garage.interact(player.global_position)
 			player.velocity = Vector3.ZERO
 			_update_hud()
