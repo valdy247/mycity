@@ -514,7 +514,7 @@ func _refresh_meal() -> void:
 	if not f.is_empty():
 		var food_hand := InteractionHand.new()
 		food_view.add_child(food_hand)
-		food_hand.configure(Vector3(-.07,-.022,.06) if f=="arroz" else Vector3(-.06,-.035,.035),true,f=="arroz")
+		food_hand.configure(Vector3(-.095,-.025,.065) if f=="arroz" else Vector3(-.06,-.035,.035),true,f=="arroz")
 	if not d.is_empty():
 		var drink_hand := InteractionHand.new()
 		drink_view.add_child(drink_hand)
@@ -576,50 +576,94 @@ func start_found_meal(key: String,dirty: bool) -> bool:
 	return true
 
 func draw_home_plate(root: Node3D,ingredients: Array,bites: int = 3) -> void:
+	# A ceramic dinner plate with a recessed center, raised rim and foot.
+	var profile: Array[Vector2] = [Vector2(0,-.015),Vector2(.078,-.015),Vector2(.084,-.009),Vector2(.108,-.005),Vector2(.140,.014),Vector2(.142,.021),Vector2(.136,.024),Vector2(.111,.014),Vector2(.087,.003),Vector2(0,.003)]
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i in range(profile.size()-1):
+		for j in range(32):
+			var a := TAU*float(j)/32.0
+			var b := TAU*float(j+1)/32.0
+			var lo: Vector2 = profile[i]
+			var hi: Vector2 = profile[i+1]
+			var p := Vector3(cos(a)*lo.x,lo.y,sin(a)*lo.x)
+			var q := Vector3(cos(b)*lo.x,lo.y,sin(b)*lo.x)
+			var u := Vector3(cos(a)*hi.x,hi.y,sin(a)*hi.x)
+			var v := Vector3(cos(b)*hi.x,hi.y,sin(b)*hi.x)
+			var color := Color("#557c88") if i==5 else Color("#f3eee2")
+			for vertex in [p,q,u,q,v,u]:
+				surface.set_color(color)
+				surface.add_vertex(vertex)
+	surface.generate_normals()
 	var plate := MeshInstance3D.new()
-	var plate_mesh := CylinderMesh.new()
-	plate_mesh.top_radius = .137
-	plate_mesh.bottom_radius = .112
-	plate_mesh.height = .018
-	plate.mesh = plate_mesh
-	plate.material_override = business._mat(Color("#eee8d8"))
+	plate.mesh = surface.commit()
+	var ceramic := StandardMaterial3D.new()
+	ceramic.vertex_color_use_as_albedo = true
+	ceramic.roughness = .29
+	ceramic.cull_mode = BaseMaterial3D.CULL_DISABLED
+	plate.material_override = ceramic
+	plate.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	root.add_child(plate)
-	for i in range(clampi(bites,0,3)):
-		if "arroz" in ingredients:
-			var rice := MeshInstance3D.new()
-			var mound := SphereMesh.new()
-			mound.radius = .048
-			mound.height = .035
-			mound.radial_segments = 12
-			mound.rings = 5
-			rice.mesh = mound
-			rice.material_override = business._mat(Color("#eee5c9"))
-			root.add_child(rice)
-			rice.position = Vector3(-.045,.024,(float(i)-1.0)*.050)
-		if "carne" in ingredients:
-			var meat: MeshInstance3D = business._box(root,Vector3(.055,.025,(float(i)-1.0)*.046),Vector3(.065,.030,.042),Color("#805034"))
-			meat.rotation.y = float(i)*.30
-		if "huevo" in ingredients:
-			var white := MeshInstance3D.new()
-			var egg := SphereMesh.new()
-			egg.radius = .044
-			egg.height = .012
-			egg.radial_segments = 12
-			egg.rings = 4
-			white.mesh = egg
-			white.material_override = business._mat(Color("#f0e8d7"))
-			root.add_child(white)
-			white.position = Vector3(.055,.021,(float(i)-1.0)*.044)
-			var yolk := MeshInstance3D.new()
-			var yolk_mesh := SphereMesh.new()
-			yolk_mesh.radius = .020
-			yolk_mesh.height = .014
-			yolk_mesh.radial_segments = 10
-			yolk_mesh.rings = 4
-			yolk.mesh = yolk_mesh
-			yolk.material_override = business._mat(Color("#e6a72b"))
-			white.add_child(yolk)
-			yolk.position.y = .008
+	var count := clampi(bites,0,3)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 7319
+	if "arroz" in ingredients and count>0:
+		# A single irregular mound covered with small rice grains, not three balls.
+		var center := Vector3(-.047,.018,0) if ingredients.size()>1 else Vector3(0,.018,0)
+		_home_food_oval(root,center,Vector3(.105,.031,.055+.027*count),Color("#e9dfbd"))
+		var grains := MultiMesh.new()
+		grains.transform_format = MultiMesh.TRANSFORM_3D
+		grains.use_colors = true
+		var grain := SphereMesh.new()
+		grain.radius = .5
+		grain.height = 1.0
+		grain.radial_segments = 6
+		grain.rings = 3
+		var grain_mat := StandardMaterial3D.new()
+		grain_mat.vertex_color_use_as_albedo = true
+		grain.material = grain_mat
+		grains.mesh = grain
+		grains.instance_count = 26*count
+		for i in range(grains.instance_count):
+			var a := rng.randf_range(0,TAU)
+			var r := sqrt(rng.randf())
+			var offset := Vector3(cos(a)*.048*r,.009+.014*(1.0-r*r),sin(a)*(.021+.013*count)*r)
+			var basis := Basis(Vector3.UP,rng.randf_range(0,TAU)).scaled(Vector3(.0035,.0025,.008))
+			grains.set_instance_transform(i,Transform3D(basis,center+offset))
+			grains.set_instance_color(i,Color("#f2e7c9").lerp(Color("#c7b98e"),rng.randf_range(0,.30)))
+		var detail := MultiMeshInstance3D.new()
+		detail.multimesh = grains
+		detail.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		root.add_child(detail)
+	if "carne" in ingredients:
+		for i in range(count):
+			var center := Vector3(.048,.020,(float(i)-1.0)*.045)
+			var meat := _home_food_oval(root,center,Vector3(.064,.027,.048),Color("#78472e"))
+			meat.rotation.y = float(i)*.67
+			for j in range(2):
+				var mark := _home_food_oval(root,center+Vector3(.003+float(j)*.015,.012,0),Vector3(.005,.003,.032),Color("#4b2d21"))
+				mark.rotation.y = meat.rotation.y
+	if "huevo" in ingredients and count>0:
+		var center := Vector3(.045,.013,0) if ingredients.size()>1 else Vector3(0,.013,0)
+		var fraction := float(count)/3.0
+		_home_food_oval(root,center,Vector3(.095,.013,.115*fraction),Color("#f5eedb"))
+		_home_food_oval(root,center+Vector3(-.015,.003,-.012),Vector3(.065,.014,.075*fraction),Color("#fff4db"))
+		_home_food_oval(root,center+Vector3(.012,.010,0),Vector3(.043,.018,.044*fraction),Color("#e9a42a"))
+
+func _home_food_oval(root: Node3D,at: Vector3,size: Vector3,paint: Color) -> MeshInstance3D:
+	var part := MeshInstance3D.new()
+	var mesh := SphereMesh.new()
+	mesh.radius = .5
+	mesh.height = 1.0
+	mesh.radial_segments = 12
+	mesh.rings = 5
+	part.mesh = mesh
+	part.material_override = business._mat(paint)
+	part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	root.add_child(part)
+	part.position = at
+	part.scale = size
+	return part
 
 func start_home_plate(ingredients: Array) -> bool:
 	if ingredients.is_empty() or not state.meal.is_empty() or not ledger.carry.is_empty(): return false
