@@ -170,6 +170,8 @@ func _ready() -> void:
 	var male_voices := DisplayServer.tts_get_voices_for_language("es")
 	if male_voices.size()>1: protagonist_voice_id = male_voices[1]
 	_sync()
+	# Warm CPU-only city data before the baggage sequence, including resumed games.
+	_start_city_warmup()
 	if progress.stage==2: _migration_line("handover")
 	elif progress.stage==3: _migration_line("thanks")
 	if progress.stage==Progress.COMPLETE: _seat_player()
@@ -2028,7 +2030,7 @@ func _tick_departure(delta: float) -> void:
 		cinema_fade.color.a = move_toward(cinema_fade.color.a,1.0,delta*1.6)
 		if cinema_fade.color.a>=.99: chapter_title.show()
 		if departure_title_clock>=2.0: chapter_loading.show()
-		if departure_title_clock>=3.0 and _poll_city_warmup():
+		if departure_title_clock>=2.2 and _poll_city_warmup():
 			entering_adaptation = true
 			if not replay_departure:
 				progress.ride_finished = true
