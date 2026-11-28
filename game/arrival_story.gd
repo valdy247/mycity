@@ -788,7 +788,7 @@ func investment_finished() -> void:
 	game._update_hud()
 
 func _process(_delta: float) -> void:
-	if phase in ["morning","done"] and not departure_record.is_empty() and service.passenger.get("body")==cab and service.arrived:
+	if phase in ["morning","investment","done"] and not departure_record.is_empty() and service.passenger.get("body")==cab and service.arrived:
 		var record: Dictionary = service.passenger
 		service.finish_trip()
 		service.taxis.append(record)

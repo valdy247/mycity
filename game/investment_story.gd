@@ -5,7 +5,7 @@ const Person = preload("res://street_person.gd")
 const Bypass = preload("res://traffic_bypass.gd")
 const KEYS := ["pollo","huevos","aceite"]
 const ENTRY := Vector3(-.7,110.86,4.85)
-const FRIDGE := Vector3(-5.34,110.86,3.65)
+const FRIDGE := Vector3(-5.28,110.86,.87)
 const OIL := Vector3(-5.38,110.86,-.65)
 const TABLE_ROOM := Vector3(60,110,0)
 const LINES := [
@@ -41,6 +41,14 @@ var actor: Person
 var clerk: Person
 var cab: Dictionary = {}
 var ride_out := true
+var cab_lid: Node3D
+var ride_view: Camera3D
+var ride_driver: Person
+var actor_scale := Vector3.ONE
+var helper_elapsed := 0.0
+var helper_path: PackedVector3Array = PackedVector3Array()
+var helper_index := 0
+var helper_goal := Vector3.INF
 var marker: Label3D
 var carry := ""
 var held: Node3D
@@ -106,7 +114,7 @@ func _set(value: String,checkpoint: String = "") -> void:
 
 func _task(value: String) -> void:
 	var extra := ""
-	if bool(state.get("investment_paid",false)):
+	if bool(state.get("suitcase_sale_paid",false)):
 		extra = "\n%d CUP disponibles" % int(ledger.cash)
 		if int(state.get("taxi_escrow",0))>0: extra += " · Reserva taxi: 20.000 CUP"
 	story.objective.text = "CAPÍTULO 1 · LA ADAPTACIÓN\n"+value+extra
@@ -181,6 +189,9 @@ func _talk_tick(delta: float) -> void:
 		_set("thinking")
 		return
 	if line<int(state.dialogue_end):
+		if line==1 and is_instance_valid(money_prop):
+			money_prop.queue_free()
+			money_prop = null
 		if line==12: _make_money()
 		_say(line+1)
 		return
@@ -190,6 +201,8 @@ func _after_dialogue() -> void:
 	match after_talk:
 		"clean": _set("clean","clean")
 		"outbound":
+			if is_instance_valid(money_prop): money_prop.queue_free()
+			money_prop = null
 			_set("outbound","outbound")
 			_task("Sal de casa con Albertico y sube al taxi.")
 		"load": _purchase()
@@ -308,11 +321,13 @@ func _berths(site: Dictionary) -> Array:
 			var side := Vector3(-direction.z,0,direction.x)
 			if side.dot(door-center)<=0.0: continue
 			var offset: float = data.lane_distance(edge,1.90,true)
-			var berth: Vector3 = world.street_geometry.safe_stop_on_edge(start,finish,center+side*offset,4.8,1.9)
-			if not world.street_geometry.intersection_clear_for_stop(berth,4.8,1.9): continue
-			if not Bypass._on_road(world.street_geometry,berth,direction,1.9,4.8): continue
-			if berth.distance_to(door)>32.0: continue
-			result.append({"p":berth,"d":direction,"entry":entry,"exit":exit_id,"point":berth-side*offset,"rank":berth.distance_to(pin)})
+			for shift in [0.0,-6.0,6.0,-12.0,12.0]:
+				var requested := center+direction*float(shift)+side*offset
+				var berth: Vector3 = world.street_geometry.safe_stop_on_edge(start,finish,requested,4.8,1.9)
+				if not world.street_geometry.intersection_clear_for_stop(berth,4.8,1.9): continue
+				if not Bypass._on_road(world.street_geometry,berth,direction,1.9,4.8): continue
+				if berth.distance_to(door)>32.0: continue
+				result.append({"p":berth,"d":direction,"entry":entry,"exit":exit_id,"point":berth-side*offset,"rank":berth.distance_to(pin)})
 	result.sort_custom(func(a,b): return float(a.rank)<float(b.rank))
 	return result
 
@@ -332,8 +347,41 @@ func _park_cab(shop: bool) -> bool:
 		body.add_to_group("traffic_parked")
 		cab = {"body":body,"next_node":option.exit,"path":[],"index":0,"speed":0.0,"blocked":0.0,"goal":"","label":"","note":"","albertico_reserved":true,"chapter_side_only":true}
 		game.taxis.taxis.append(cab)
+		_build_cabin(body)
 		return true
 	return false
+
+func _build_cabin(body: CharacterBody3D) -> void:
+	for child in body.get_children():
+		if child is MeshInstance3D or child is Label3D: child.hide()
+	var visual := Node3D.new()
+	body.add_child(visual)
+	# Reuse the actual airport cabin, with doors and a hollow trunk, but keep
+	# its old arrival-story references intact.
+	var previous_lid: Node3D = story.lid
+	var previous_door: Node3D = story.door
+	var previous_other: Node3D = story.opposite_door
+	story._car_shell(visual,Color("#d6ad47"),true)
+	cab_lid = story.lid
+	story.lid = previous_lid
+	story.door = previous_door
+	story.opposite_door = previous_other
+	story._box(visual,Vector3(0,1.75,-.1),Vector3(.54,.18,.30),Color("#ead16e"))
+	story._label3(visual,"TAXI",Vector3(0,1.75,.061),.003,Color("#222222"))
+	ride_driver = Person.new()
+	body.add_child(ride_driver)
+	ride_driver.setup(933)
+	ride_driver.remove_from_group("social_people")
+	ride_driver.remove_from_group("pedestrian_spacing")
+	_seat(ride_driver,Vector3(.39,.17,.19))
+
+func _seat(person: Person,at: Vector3) -> void:
+	person.position = at
+	person.rotation = Vector3.ZERO
+	person.scale = Vector3.ONE*.74
+	for leg in person.limbs: leg.rotation.x = -1.45
+	for knee in person.knees: knee.rotation.x = 1.35
+	for arm in person.arms: arm.rotation.x = -1.15
 
 func _start_ride(outbound: bool) -> void:
 	if cab.is_empty() or not game.taxis.passenger.is_empty(): return
@@ -345,24 +393,42 @@ func _start_ride(outbound: bool) -> void:
 		game.taxis.trip_confirmed = true
 		if not game.taxis.prepare_trip(): continue
 		ride_out = outbound
-		actor.hide()
+		if is_instance_valid(cab_lid): cab_lid.rotation.x = 0.0
+		actor_scale = actor.scale
+		actor.reparent(cab.body,false)
+		_seat(actor,Vector3(-.37,.22,-.67))
+		for arm in actor.arms: arm.rotation.x = -.10
 		game._start_taxi_ride()
-		game.play_camera.make_current()
+		ride_view = Camera3D.new()
+		cab.body.add_child(ride_view)
+		ride_view.position = Vector3(.25,1.42,-.77)
+		ride_view.rotation = Vector3(-.06,PI,0)
+		ride_view.fov = 82
+		ride_view.far = 320
+		ride_view.make_current()
 		_set("ride")
 		_task("Viaje con Albertico")
 		return
 	game.taxis.close_dialog()
 	story.subtitle.text = "No hay una ruta segura a esa acera. Pulsa E para volver a intentar."
 
-func _ride_tick() -> void:
+func _ride_tick(delta: float) -> void:
 	if game.taxis.passenger.is_empty(): return
 	game.player.global_position = cab.body.global_position+Vector3.UP*.8
 	if not game.taxis.arrived: return
 	# The service prioritizes the curb side and will wait for a safe exit.
-	retry += 1.0
-	if retry<8.0: return
+	retry += delta
+	if retry<.20: return
 	retry = 0.0
 	if not game._leave_taxi(): return
+	if is_instance_valid(ride_view): ride_view.queue_free()
+	game.play_camera.make_current()
+	actor.reparent(self,true)
+	actor.scale = actor_scale
+	actor.rotation.x = 0.0
+	for leg in actor.limbs: leg.rotation.x = 0.0
+	for knee in actor.knees: knee.rotation.x = 0.0
+	for arm in actor.arms: arm.rotation.x = 0.0
 	var at: Vector3 = game.yordi_mission._near_ground(game.player.global_position-Vector3.UP*.86,actor,4.0)
 	if at.is_finite(): _spawn_actor(at)
 	else: _spawn_actor(game.player.global_position-Vector3.UP*.86+Vector3(.9,0,0))
@@ -374,6 +440,7 @@ func _ride_tick() -> void:
 	else:
 		_dialogue(9,9,"unload")
 		state.investment_stage = "unload"
+		if is_instance_valid(cab_lid): cab_lid.rotation.x = 1.15
 		_save()
 
 func _shop_clerk() -> Person:
@@ -402,6 +469,7 @@ func _purchase() -> void:
 	_task("Lleva dos cajas al maletero. Albertico carga la de aceite.")
 
 func _rebuild_boxes() -> void:
+	if is_instance_valid(cab_lid): cab_lid.rotation.x = 1.15 if phase in ["load","unload","return"] else 0.0
 	for key in boxes:
 		if is_instance_valid(boxes[key]): boxes[key].queue_free()
 	boxes.clear()
@@ -412,15 +480,16 @@ func _rebuild_boxes() -> void:
 			var node: Node3D = game.business._crate(game.business.crate_rack,Vector3(-.56+float(i)*.56,.17,0),key)
 			boxes[key] = node
 		elif location=="taxi" and not cab.is_empty():
-			var node: Node3D = game.business._crate(cab.body,Vector3(-.50+float(i)*.50,.95,-1.6),key)
+			var node: Node3D = game.business._crate(cab.body,Vector3(-.50+float(i)*.50,.76,-1.65),key)
 			node.scale = Vector3.ONE*.90
 			boxes[key] = node
 		elif location=="stored":
-			# Only oil is kept outside the fridge, in the kitchen shelf.
 			if key=="aceite":
 				var node: Node3D = game.business._crate(game.garage.interior,Vector3(-6.35,1.47,.52),key)
 				boxes[key] = node
+			else: legacy.show_rental_stock(key,false)
 	if not carry.is_empty() and boxes.has(carry): boxes[carry].hide()
+	if is_instance_valid(helper_box) and boxes.has("aceite"): boxes["aceite"].hide()
 
 func _take(key: String) -> void:
 	carry = key
@@ -430,7 +499,9 @@ func _take(key: String) -> void:
 
 func _deposit(where: String) -> void:
 	if carry.is_empty(): return
-	_box_states()[carry] = where
+	var key := carry
+	_box_states()[key] = where
+	if where=="stored" and key!="aceite": legacy.show_rental_stock(key)
 	carry = ""
 	if is_instance_valid(held): held.queue_free()
 	held = null
@@ -459,24 +530,66 @@ func _actor_follow(delta: float) -> void:
 	if actor.global_position.distance_to(at)>2.5: _follow(delta,at,1.9)
 	else: actor.animate(delta,false)
 
+func _helper_trunk_ground() -> Vector3:
+	var body: CharacterBody3D = cab.body
+	for x in [-1.55,-2.25,-3.0,-4.0,1.55,2.25]:
+		var candidate: Vector3 = game.yordi_mission._ground(body.to_global(Vector3(float(x),0,-2.1)),false)
+		if candidate.is_finite(): return candidate
+	return Vector3.INF
+
+func _helper_walk(delta: float,target: Vector3,inside_house: bool = false) -> bool:
+	if not target.is_finite(): return false
+	if actor.global_position.distance_to(target)<.85: return true
+	if inside_house:
+		# A known free corridor around the sofa and dining table.
+		if helper_path.is_empty():
+			helper_path = PackedVector3Array([Vector3(-2.35,110,3.9),Vector3(-2.35,110,.35),Vector3(-5.32,110,.35),target])
+			helper_index = 0
+		if helper_index>=helper_path.size(): return true
+		if actor.walk_to(helper_path[helper_index],delta,1.8): helper_index += 1
+		return helper_index>=helper_path.size()
+	if not helper_goal.is_finite() or helper_goal.distance_to(target)>.5:
+		helper_goal = target
+		helper_path = PackedVector3Array()
+		helper_index = 0
+	if helper_path.is_empty():
+		helper_path = legacy._local_path(actor.global_position,target)
+		helper_index = 0
+	if helper_path.is_empty(): return _follow(delta,target,1.0)
+	if helper_index>=helper_path.size(): return true
+	var next := helper_path[helper_index]
+	var step := actor.global_position.move_toward(next,2.2*delta)
+	if world.pedestrian_segment_clear(actor.global_position,step) and world.pedestrian_space_clear(actor,step,.5):
+		if actor.walk_to(next,delta,2.2): helper_index += 1
+	else: actor.animate(delta,false)
+	return helper_index>=helper_path.size()
+
+func _clear_helper_path() -> void:
+	helper_path = PackedVector3Array()
+	helper_index = 0
+	helper_goal = Vector3.INF
+
 func _helper_tick(delta: float,unloading: bool) -> void:
 	var key := "aceite"
 	var from := "taxi" if unloading else "shelf"
 	var dest := "stored" if unloading else "taxi"
-	if String(_box_states().get(key,""))!=from or cab.is_empty(): return
-	if not is_instance_valid(actor): return
-	var at: Vector3 = actor.global_position
-	if unloading and game.garage.inside and actor.global_position.y<70.0:
-		actor.global_position = Vector3(-.7,110,4.45)
-	if unloading and actor.global_position.y>70.0 and not game.garage.inside: return
+	if String(_box_states().get(key,""))!=from or cab.is_empty() or not is_instance_valid(actor): return
 	helper_clock += delta
+	helper_elapsed += delta
 	if helper_stage.is_empty():
-		var target: Vector3 = _trunk()-Vector3.UP*.86 if unloading else Vector3(world.food_factory.pickup)-Vector3.UP*.86
-		if unloading and game.garage.inside: target = Vector3(-1.7,110,4.0)
-		# Let him lift the visible box at the corresponding pickup point.
-		if not _follow(delta,target,1.4): return
+		var target: Vector3 = _helper_trunk_ground() if unloading else Vector3(world.food_factory.pickup)-Vector3.UP*.86
+		if not _helper_walk(delta,target): 
+			# If local traffic blocks him, retry from a verified nearby ground
+			# point off camera rather than locking the entire chapter.
+			if helper_elapsed<24.0 or not target.is_finite(): return
+			var safe: Vector3 = game.yordi_mission._near_ground(target,actor,2.5)
+			if not safe.is_finite(): return
+			if game.player.global_position.distance_to(safe)<5.0: return
+			actor.global_position = safe
 		helper_stage = "lift"
 		helper_clock = 0.0
+		helper_elapsed = 0.0
+		_clear_helper_path()
 		return
 	if helper_stage=="lift":
 		var bend := sin(clampf(helper_clock/.9,0,1)*PI)*.33
@@ -490,16 +603,23 @@ func _helper_tick(delta: float,unloading: bool) -> void:
 		actor.carried = helper_box
 		helper_stage = "carry"
 		helper_clock = 0.0
+		helper_elapsed = 0.0
 		return
 	if unloading:
-		if not game.garage.inside: return
-		if not _follow(delta,Vector3(OIL)-Vector3.UP*.86,1.2): return
+		if actor.global_position.y<70.0:
+			if not _helper_walk(delta,_house_out()): return
+			actor.global_position = Vector3(-.7,110,4.45)
+			_clear_helper_path()
+			return
+		if not _helper_walk(delta,OIL-Vector3.UP*.86,true): return
 	else:
-		if not _follow(delta,_trunk()-Vector3.UP*.86,1.4): return
+		if not _helper_walk(delta,_helper_trunk_ground()): return
 	if is_instance_valid(helper_box): helper_box.queue_free()
 	actor.carried = null
 	helper_box = null
 	helper_stage = ""
+	helper_elapsed = 0.0
+	_clear_helper_path()
 	_box_states()[key] = dest
 	_save()
 	_rebuild_boxes()
@@ -507,13 +627,13 @@ func _helper_tick(delta: float,unloading: bool) -> void:
 func _toggle_home() -> bool:
 	if game.garage.inside and _near(ENTRY,1.8):
 		game.garage._exit()
-		if not game.garage.inside:
+		if not game.garage.inside and (phase!="unload" or _all_at("stored")):
 			var at: Vector3 = game.yordi_mission._near_ground(_house_out(),actor,4.0)
 			if at.is_finite(): _spawn_actor(at)
 		return true
 	if not game.garage.inside and story._house_near():
 		game.garage._enter()
-		if game.garage.inside: _spawn_actor(Vector3(-.7,110,4.45))
+		if game.garage.inside and (phase!="unload" or _all_at("stored")): _spawn_actor(Vector3(-.7,110,4.45))
 		return true
 	return false
 
@@ -527,6 +647,10 @@ func _money() -> void:
 func _make_money() -> void:
 	if not is_instance_valid(actor): return
 	_money()
+	var goal := money_prop.transform
+	money_prop.global_position = game.play_camera.global_position-game.play_camera.global_basis.z*.65+Vector3.DOWN*.28
+	var tween := create_tween()
+	tween.tween_property(money_prop,"transform",goal,.85).set_trans(Tween.TRANS_SINE)
 
 func _enter_neighbor() -> void:
 	if neighbor.is_empty(): return
@@ -576,6 +700,11 @@ static func restore_business(parent_story) -> void:
 	business.stand.rotation.y = basis.get_euler().y
 	business.albertico.global_position = at-basis.z*.65
 	business.albertico.rotation.y = basis.get_euler().y
+	if business.first_story!=null:
+		business.first_story.original_actor = business.albertico.global_position
+		business.first_story.original_angle = business.albertico.rotation.y
+		for key in ["pollo","huevos"]:
+			if int(business.ledger.stock.get(key,0))>0: business.first_story.show_rental_stock(key,false)
 	business._sync_visuals()
 
 func _finish() -> void:
@@ -586,7 +715,9 @@ func _finish() -> void:
 		ledger.stage = 4
 		ledger.expenses += int(state.get("taxi_escrow",0))
 		state.taxi_escrow = 0
-		state.taxi_payment_pending = false
+		# The player has entrusted the payment; don't claim the first driver
+		# has physically collected it until a later collection scene.
+		state.taxi_payment_pending = true
 		state.taxi_money_with_albertico = true
 		state.investment_complete = true
 		state.investment_stage = "done"
@@ -594,6 +725,7 @@ func _finish() -> void:
 		_save()
 	if is_instance_valid(actor): actor.queue_free()
 	if is_instance_valid(table): table.queue_free()
+	if is_instance_valid(cab_lid): cab_lid.rotation.x = 0.0
 	if not cab.is_empty():
 		cab.albertico_reserved = false
 		cab.chapter_side_only = false
@@ -625,7 +757,11 @@ func _restore() -> void:
 			_rebuild_boxes()
 		"unload":
 			if not _park_cab(false): return
-			_spawn_actor(Vector3(-.7,110,4.45))
+			if String(_box_states().get("aceite",""))=="stored": _spawn_actor(Vector3(-5.28,110,.87))
+			else:
+				var at: Vector3 = game.yordi_mission._near_ground(_house_out(),null,4.0)
+				if not at.is_finite(): return
+				_spawn_actor(at)
 			_set("unload","unload")
 			_rebuild_boxes()
 		"neighbor","table_room","table_carry","finish":
@@ -684,7 +820,9 @@ func tick(delta: float) -> void:
 	else: game.player.velocity = Vector3.ZERO
 	match phase:
 		"boot":
-			if clock>.4: _restore()
+			if clock>.4:
+				clock = 0.0
+				_restore()
 		"dialogue": _talk_tick(delta)
 		"thinking":
 			if is_instance_valid(clerk):
@@ -714,6 +852,7 @@ func tick(delta: float) -> void:
 			if actor.walk_to(Vector3(-.7,110,4.1),delta,1.3):
 				game.garage.set_guest_door(false)
 				_credit()
+				_money()
 				_dialogue(1,5,"outbound")
 		"outbound","return":
 			if game.garage.inside:
@@ -731,7 +870,7 @@ func tick(delta: float) -> void:
 					_mark(cab.body.global_position+Vector3.UP*1.9)
 					story.subtitle.text = "[E] Subir al taxi" if _near(cab.body.global_position+Vector3.UP*.86,4.0) else ""
 				else: _task("Esperando una parada segura para el taxi.")
-		"ride": _ride_tick()
+		"ride": _ride_tick(delta)
 		"shop":
 			_actor_follow(delta)
 			_mark(Vector3(world.food_factory.counter)+Vector3.UP*.7)
@@ -758,7 +897,11 @@ func tick(delta: float) -> void:
 				var target: Vector3 = OIL if carry=="aceite" else FRIDGE
 				_mark(target if game.garage.inside else _house_out())
 				story.subtitle.text = "[E] Guardar caja" if game.garage.inside else "[E] Entrar en casa"
-			if _all_at("stored"): _dialogue(10,10,"neighbor")
+			if _all_at("stored"):
+				if game.garage.inside: _dialogue(10,10,"neighbor")
+				else:
+					_task("Entra a la casa. Albertico terminó de guardar la mercancía.")
+					_mark(_house_out())
 		"neighbor":
 			if game.garage.inside:
 				_mark(ENTRY)

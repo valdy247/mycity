@@ -1541,7 +1541,8 @@ func _merchant_ready() -> bool:
 
 func _start_buyer() -> void:
 	if is_instance_valid(buyer) or not is_trading_hour() or not _merchant_ready() or ledger.total(ledger.stock)<=0 or world.pedestrian_router==null: return
-	var trip: Dictionary = world.pedestrian_router.call("take_street_customer",stand.global_position,world.business_frontage.global_transform.basis,recent_customers)
+	var frontage: Basis = stand.global_transform.basis if adaptation_mode else world.business_frontage.global_transform.basis
+	var trip: Dictionary = world.pedestrian_router.call("take_street_customer",stand.global_position,frontage,recent_customers)
 	if trip.is_empty(): return
 	buyer_agent = trip.agent
 	buyer = buyer_agent.node

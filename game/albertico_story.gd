@@ -21,7 +21,10 @@ var helper_recovered := false
 var cargo_marker: Node3D
 const ROOM := Vector3(60,110,0)
 const FRIDGE := Vector3(-5.8,110,3.6)
-const RENTAL_FRIDGE := Vector3(-6.30,110,3.65)
+const RENTAL_FRIDGE := Vector3(-6.30,110,.87)
+var rental_fridge_doors: Dictionary = {}
+var rental_fridge_goods: Dictionary = {}
+var rental_fridge_tween: Tween
 const RENTAL_OIL := Vector3(-6.35,110,-.65)
 var game
 var business
@@ -539,23 +542,62 @@ func _make_fridge() -> void:
 	fridge = Node3D.new()
 	game.garage.interior.add_child(fridge)
 	fridge.global_position = RENTAL_FRIDGE if game.adaptation_mode else FRIDGE
-	if game.adaptation_mode:
-		fridge.rotation.y = PI*.5
-		var body := StaticBody3D.new()
-		fridge.add_child(body)
-		body.position.y = .88
-		body.collision_layer = 1
-		body.collision_mask = 0
-		var col := CollisionShape3D.new()
-		var shape := BoxShape3D.new()
-		shape.size = Vector3(.70,1.76,.65)
-		col.shape = shape
-		body.add_child(col)
-	business._box(fridge,Vector3(0,.88,0),Vector3(.70,1.76,.65),Color("#d7d9d6"))
-	business._box(fridge,Vector3(0,1.43,.34),Vector3(.68,.58,.035),Color("#e8e9e5"))
-	business._box(fridge,Vector3(0,.55,.34),Vector3(.68,1.06,.035),Color("#e8e9e5"))
-	for y in [.85,1.40]:
-		business._box(fridge,Vector3(.23,float(y),.37),Vector3(.035,.15,.04),Color("#535c60"))
+	if not game.adaptation_mode:
+		business._box(fridge,Vector3(0,.88,0),Vector3(.70,1.76,.65),Color("#d7d9d6"))
+		business._box(fridge,Vector3(0,1.43,.34),Vector3(.68,.58,.035),Color("#e8e9e5"))
+		business._box(fridge,Vector3(0,.55,.34),Vector3(.68,1.06,.035),Color("#e8e9e5"))
+		for y in [.85,1.40]:
+			business._box(fridge,Vector3(.23,float(y),.37),Vector3(.035,.15,.04),Color("#535c60"))
+		return
+	fridge.rotation.y = PI*.5
+	var body := StaticBody3D.new()
+	fridge.add_child(body)
+	body.position.y = .92
+	body.collision_layer = 1
+	body.collision_mask = 0
+	var col := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(.74,1.84,.69)
+	col.shape = shape
+	body.add_child(col)
+	var ivory := Color("#e6e4d9")
+	var inside := Color("#cad4d0")
+	for x in [-.345,.345]:
+		business._box(fridge,Vector3(float(x),.92,0),Vector3(.05,1.84,.68),ivory)
+	business._box(fridge,Vector3(0,.92,-.31),Vector3(.68,1.84,.05),inside)
+	for y in [.055,.44,.84,1.22,1.81]:
+		business._box(fridge,Vector3(0,float(y),0),Vector3(.69,.055,.64),inside)
+	for key in ["pollo","huevos"]:
+		var top := key=="pollo"
+		var hinge := Node3D.new()
+		fridge.add_child(hinge)
+		hinge.position = Vector3(-.36,1.23 if top else .09,.35)
+		var height := .58 if top else 1.11
+		business._box(hinge,Vector3(.36,height*.5,0),Vector3(.72,height,.055),ivory)
+		business._box(hinge,Vector3(.64,height*.75,.043),Vector3(.036,.16,.045),Color("#666d68"))
+		rental_fridge_doors[key] = hinge
+
+func show_rental_stock(key: String,animate_door: bool = true) -> void:
+	if not game.adaptation_mode or not rental_fridge_doors.has(key): return
+	if not is_instance_valid(rental_fridge_goods.get(key)):
+		var goods := Node3D.new()
+		fridge.add_child(goods)
+		goods.position = Vector3(0,1.40 if key=="pollo" else .94,-.07)
+		for x in [-.18,.18]:
+			var color := Color("#e8d5be") if key=="pollo" else Color("#b19b79")
+			business._box(goods,Vector3(float(x),0,0),Vector3(.28,.15,.38),color)
+			if key=="huevos":
+				for egg in range(3):
+					business._box(goods,Vector3(float(x)-.09+float(egg)*.09,.085,0),Vector3(.065,.07,.06),Color("#eee3d0"))
+		rental_fridge_goods[key] = goods
+	if not animate_door: return
+	if is_instance_valid(rental_fridge_tween): rental_fridge_tween.kill()
+	for door_node in rental_fridge_doors.values(): door_node.rotation.y = 0.0
+	var hinge: Node3D = rental_fridge_doors[key]
+	rental_fridge_tween = create_tween()
+	rental_fridge_tween.tween_property(hinge,"rotation:y",-1.45,.38)
+	rental_fridge_tween.tween_interval(.85)
+	rental_fridge_tween.tween_property(hinge,"rotation:y",0.0,.40)
 
 func _store_cold() -> bool:
 	if ledger.carry.is_empty(): return false
@@ -563,6 +605,7 @@ func _store_cold() -> bool:
 	if active() and (_phase()!="cold" or not key in REQUIRED): return false
 	if game.adaptation_mode and ledger.stage==4:
 		if ledger.deliver():
+			show_rental_stock(key)
 			business._sync_visuals()
 			business._notify("Mercancía guardada para Albertico.")
 			return true

@@ -566,7 +566,7 @@ func _decorate_rental_home() -> void:
 	for y in [.28,1.10,1.92]:
 		_rental_part(guest_door,Vector3(.60,float(y),-.064),Vector3(.87,.065,.035),Color("#83654f"))
 	# Simple jalousies, curtains and wall decoration, away from the doorway.
-	_rental_window(decor,Vector3(-6.76,1.83,1.50),PI*.5,1.60)
+	_rental_window(decor,Vector3(-6.76,1.83,3.25),PI*.5,1.60)
 	_rental_window(decor,Vector3(-4.45,1.78,-5.76),0.0,1.45)
 	# Keep the east window clear of the bathroom partition and mirror.
 	_rental_window(decor,Vector3(6.76,2.0,2.35),-PI*.5,1.50)
@@ -578,7 +578,7 @@ func _decorate_rental_home() -> void:
 	for i in range(12):
 		_rental_part(decor,Vector3(-4.45,.025,1.24+float(i)*.198),Vector3(2.58,.007,.055),Color("#807968").lightened(float(i%3)*.05))
 	# Fixed kitchen counter against west wall, leaving the existing
-	# refrigerator at (-5.8, 3.6) and all paths to it intact.
+	# refrigerator is alongside this counter, with the door facing the room.
 	var kitchen := _rental_root(decor,Vector3(-6.34,0,-.65),PI*.5)
 	_solid(kitchen,Vector3(0,.44,0),Vector3(2.0,.88,.66),Color("#a39b82"))
 	_rental_part(kitchen,Vector3(0,.91,0),Vector3(2.08,.09,.72),Color("#777d76"))
@@ -1764,7 +1764,7 @@ func _build_house_tools() -> void:
 	var visual := MeshInstance3D.new()
 	visual.mesh = quad
 	interior.add_child(visual)
-	visual.position = Vector3(0,.036,0)
+	visual.position = Vector3(0,.052 if game.adaptation_mode else .036,0)
 	visual.rotation.x = -PI*.5
 	visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var mat := StandardMaterial3D.new()
