@@ -313,7 +313,7 @@ func _greet_carlos() -> void:
 	greeting_tween.tween_callback(_finish_greeting)
 
 const CALL_INTRO := [
-	["Carlos","Buen día, te estoy llamando de parte de Albertico. Me dijo que necesitabas buscar dinero.","carlos_intro",5.20],
+	["Carlos","Buen día, te estoy llamando de parte de Odalis. Me dijo que necesitabas buscar dinero.","carlos_intro",5.20],
 	["Tú","Oh, sí, bro, dime, ¿qué hay que hacer?","player_intro_v2",2.56],
 	["Carlos","Mira, un vecino mío quiere pintar la casa y me hace falta una mano. ¿Estás dentro?","carlos_offer",5.04]
 ]
