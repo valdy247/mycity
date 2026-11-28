@@ -27,8 +27,7 @@ static func advance(row: Dictionary,style: int,at: float) -> void:
 	var last_day := floori(at/DAY)
 	for day in range(first_day,last_day+1):
 		var shift_end := float(day)*DAY+1020.0
-		var shift_start := float(day)*DAY+420.0
-		if String(row.get("job",""))!="estudio" and previous<=shift_start and at>=shift_end and int(row.last_paid_day)<day:
+		if String(row.get("job",""))!="estudio" and previous<shift_end and at>=shift_end and int(row.last_paid_day)<day:
 			row.money = mini(1000000,int(row.money)+120+posmod(style,5)*20)
 			row.last_paid_day = day
 		# Sleeping restores energy, but hunger continues to advance.
