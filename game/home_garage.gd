@@ -203,6 +203,7 @@ func setup(controller) -> void:
 	game.play_camera.add_child(carried_view)
 	carried_view.position = Vector3(.30,-.35,-.88)
 	_refresh_carried()
+	_refresh_carried()
 	waypoint = Node3D.new()
 	add_child(waypoint)
 	business._box(waypoint,Vector3(0,.22,0),Vector3(.13,.40,.13),Color("#f0c85f"))
@@ -1249,6 +1250,35 @@ func _place_furniture() -> void:
 	_refresh_carried()
 	_save()
 
+func _near_coffee_market(at: Vector3) -> bool:
+	if not game.adaptation_mode or inside or absf(at.y)>3.0: return false
+	var poly: PackedVector2Array = world.market_block
+	if poly.size()<3: return false
+	var p := Vector2(at.x,at.z)
+	for i in range(poly.size()):
+		var edge := Geometry2D.get_closest_point_to_segment(p,poly[i],poly[(i+1)%poly.size()])
+		if p.distance_to(edge)<=3.5: return true
+	return false
+
+func _coffee_market_menu() -> void:
+	var needed := _coffee_machine_phase()=="missing" and not bool(state.coffee_machine.replacement)
+	var clean := int(state.coffee_machine.dirty)==0
+	business._open("Mercado de Cuatro Caminos · Hogar","Cafetera cubana de una taza · %d CUP. Lleva el repuesto a casa y colócalo en el fogón." % COFFEE_REPLACEMENT_PRICE)
+	if not clean: business._button("Primero limpia la cocina",func(): pass,true)
+	business._button("Comprar cafetera · %d CUP" % COFFEE_REPLACEMENT_PRICE,_buy_coffee_replacement,not needed or not clean or not _free_hands() or business.ledger.cash<COFFEE_REPLACEMENT_PRICE)
+	business._button("Cerrar",business.close)
+
+func _buy_coffee_replacement() -> void:
+	if not _near_coffee_market(game.player.global_position) or _coffee_machine_phase()!="missing" or int(state.coffee_machine.dirty)>0 or not _free_hands(): return
+	if business.ledger.cash<COFFEE_REPLACEMENT_PRICE: return
+	state.coffee_machine.replacement = true
+	if not business.ledger.spend(COFFEE_REPLACEMENT_PRICE):
+		state.coffee_machine.replacement = false
+		return
+	_refresh_carried()
+	business.close()
+	business._notify("Cafetera comprada. Llévala a casa y pulsa E mirando el fogón.")
+
 func _vendor_at(at: Vector3) -> Dictionary:
 	for site in world.parts_sites:
 		var c: Vector3 = site.center
@@ -1630,10 +1660,34 @@ func _break_coffee_machine() -> void:
 	business.life.state.coffee_cups = 0
 	business.life.state.coffee_served = false
 	_play_coffee_sound(coffee_burst_sound)
+	_coffee_burst_visual()
 	_refresh_coffee_machine()
 	_refresh_coffee_visual()
 	_save()
 	business._notify("¡La cafetera explotó! Tira los restos y limpia la cocina con el trapo.")
+
+func _coffee_burst_visual() -> void:
+	var puff := CPUParticles3D.new()
+	coffee_stains.add_child(puff)
+	puff.position = Vector3(0,.20,0)
+	puff.amount = 20
+	puff.lifetime = .65
+	puff.one_shot = true
+	puff.explosiveness = 1.0
+	puff.direction = Vector3.UP
+	puff.spread = 85.0
+	puff.gravity = Vector3(0,-2.0,0)
+	puff.initial_velocity_min = .5
+	puff.initial_velocity_max = 1.5
+	var mesh := SphereMesh.new()
+	mesh.radius = .025
+	mesh.height = .05
+	mesh.radial_segments = 6
+	mesh.rings = 3
+	mesh.material = business._mat(Color("#64412a"))
+	puff.mesh = mesh
+	puff.emitting = true
+	get_tree().create_timer(1.2).timeout.connect(puff.queue_free)
 
 func _refresh_tv_screen() -> void:
 	if not is_instance_valid(television_screen): return
@@ -2087,6 +2141,7 @@ func action_text(at: Vector3) -> String:
 		if not _aimed_home(at): return "Lleva la basura a un basurero de la calle"
 	if not String(state.held_furniture).is_empty() and not _nearest_bin(at).is_empty(): return "[E] Desechar mueble"
 	if _aimed_home(at): return "[E] Entrar a la casa alquilada" if game.adaptation_mode else "[E] Entrar a mi casa"
+	if _near_coffee_market(at): return "[E] Mercado · artículos de cocina"
 	if not _vendor_at(at).is_empty(): return "[E] Comprar repuestos"
 	for kind in owned:
 		var body: CharacterBody3D = owned[kind]
@@ -2150,6 +2205,9 @@ func interact(at: Vector3) -> bool:
 			return true
 	if _aimed_home(at):
 		_enter()
+		return true
+	if _near_coffee_market(at):
+		_coffee_market_menu()
 		return true
 	var site := _vendor_at(at)
 	if not site.is_empty():
@@ -2815,7 +2873,7 @@ func tick(delta: float) -> void:
 		waypoint.global_position = waypoint_point+Vector3.UP*(2.7+sin(Time.get_ticks_msec()*.003)*.15)
 	if carried_view!=null:
 		carried_view.visible = not rice_pouring and not coffee_cleaning and not riding and not game.driving and not game.taxi_riding and not game.bus_riding
-		if inside and carried_view.visible and (not String(state.rice_recipe.hand).is_empty() or bool(state.coffee_machine.rag_held) or bool(state.coffee_machine.replacement)) and not coffee_cleaning:
+		if carried_view.visible and (not String(state.rice_recipe.hand).is_empty() or bool(state.coffee_machine.rag_held) or bool(state.coffee_machine.replacement)) and not coffee_cleaning:
 			carried_view.position = InteractionHand.camera_safe_pose(game.play_camera,Vector3(.33,-.36,-.58),.15)
 	for i in range(state.deliveries.size()-1,-1,-1):
 		var delivery: Dictionary = state.deliveries[i]
