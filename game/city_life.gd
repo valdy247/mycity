@@ -189,6 +189,8 @@ func _update_hud() -> void:
 	sleep_bar.value = energy
 	sleep_label.text = "Energía %d%%" % roundi(energy)
 	if float(state.coffee_minutes)>0.0: sleep_label.text += " · Café activo"
+	if float(state.get("illness_minutes",0.0))>0.0: sleep_label.text += " · Malestar"
+	elif float(state.get("overfull_minutes",0.0))>0.0: sleep_label.text += " · Pesadez"
 
 static func format_time(minute: int) -> String:
 	minute = posmod(minute,1440)
@@ -218,6 +220,10 @@ func _economy_step(minute: float = -1.0,day_number: int = -1) -> void:
 			_pay_cafe_wage(cafe,day_number)
 			if not bool(cafe.management.get("staff",false)) or int(cafe.management.get("wage_due",0))>0: continue
 		if not open_now: continue
+		# Breakfast/lunch/evening demand is higher than mid-afternoon.
+		var hour := fposmod(minute,1440.0)/60.0
+		var demand := .92 if (hour<9.5 or (hour>=11.0 and hour<14.0) or hour>=17.0) else .57
+		if rng.randf()>demand: continue
 		var choices := MENU.keys()
 		choices.shuffle()
 		for key in choices:
@@ -288,6 +294,7 @@ func sleep_at_home() -> String:
 	state.fullness = maxf(0.0,float(state.fullness)-duration*.025)
 	state.coffee_minutes = 0.0
 	state.illness_minutes = maxf(0.0,float(state.get("illness_minutes",0.0))-duration)
+	state.overfull_minutes = maxf(0.0,float(state.get("overfull_minutes",0.0))-duration)
 	state.alarm_minute = -1
 	state["bed_unmade"] = true
 	_update_hud()
@@ -793,6 +800,8 @@ func _finish_bite() -> void:
 	active_hand = -1
 	if bool(meal.get("dirty",false)):
 		state["dirty_food_bites"] = int(state.get("dirty_food_bites",0))+1
+	if float(state.fullness)+gain>108.0:
+		state.overfull_minutes = maxf(25.0,float(state.get("overfull_minutes",0.0)))
 	state.fullness = minf(100.0,float(state.fullness)+gain)
 	if int(meal.food_bites)<=0 and int(meal.drink_sips)<=0:
 		if bool(meal.get("dirty",false)):
@@ -1014,6 +1023,8 @@ func _managed_cafe_menu(id: String) -> void:
 func _near_managed_cafe(id: String) -> bool:
 	if not sites.has(id): return false
 	var at: Vector3 = sites[id].entrance
+	var controller = business.get_parent()
+	if controller.driving or controller.taxi_riding or controller.bus_riding or controller.garage.riding: return false
 	return business.player.global_position.distance_to(at)<5.0
 
 func _buy_cafe(id: String) -> void:
@@ -1219,6 +1230,7 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	var stimulated := minf(passed,float(state.coffee_minutes))
 	state.coffee_minutes = maxf(0.0,float(state.coffee_minutes)-passed)
 	state.fatigue = minf(100.0,float(state.fatigue)+(passed-stimulated*.65)/9.6)
+	state.overfull_minutes = maxf(0.0,float(state.get("overfull_minutes",0.0))-passed)
 	if float(state.get("illness_minutes",0.0))>0.0:
 		state.illness_minutes = maxf(0.0,float(state.illness_minutes)-passed)
 		state.fatigue = minf(100.0,float(state.fatigue)+passed*.025)
