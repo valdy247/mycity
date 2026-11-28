@@ -686,9 +686,11 @@ func _update_visual_lighting(force: bool = false) -> void:
 	var indoors := is_instance_valid(player) and player.global_position.y>70.0
 	if garage!=null and garage.inside: indoors = true
 	if carlos_mission!=null and carlos_mission.inside: indoors = true
+	var rental_home: bool = adaptation_mode and is_instance_valid(garage) and garage.inside and is_instance_valid(player) and player.global_position.y>70.0
+	if not rental_home and is_instance_valid(garage) and garage.home_shadow_active: garage.update_home_lighting(0.0,false)
 	# Update the sky in small time buckets instead of rebuilding its radiance every frame.
 	var bucket := floori(minute/5.0)
-	if not force and bucket==sky_minute and indoors==sky_indoor: return
+	if not force and not rental_home and bucket==sky_minute and indoors==sky_indoor: return
 	sky_minute = bucket
 	sky_indoor = indoors
 	var day := smoothstep(360.0,480.0,minute)*(1.0-smoothstep(1020.0,1140.0,minute))
@@ -714,6 +716,9 @@ func _update_visual_lighting(force: bool = false) -> void:
 	if indoors:
 		visual_environment.ambient_light_color = Color("#e8e2d5")
 		visual_environment.ambient_light_energy = .70
+		if rental_home:
+			visual_environment.ambient_light_color = Color("#c5d2dd").lerp(Color("#e9e3d5"),day)
+			visual_environment.ambient_light_energy = garage.update_home_lighting(day,true)
 	visual_environment.fog_enabled = graphics_quality==2 and not indoors
 	visual_environment.fog_light_color = horizon
 	visual_environment.fog_density = lerpf(.0017,.0011,day)
