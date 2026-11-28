@@ -2822,6 +2822,11 @@ func _compiled_copy_node(source: Node3D) -> Node3D:
 	if not (source is StaticBody3D or source is MeshInstance3D or source is MultiMeshInstance3D or source is Label3D): return null
 	var node := source.duplicate(Node.DUPLICATE_GROUPS) as Node3D
 	if node==null: return null
+	# Runtime groups are not saved by PackedScene unless persistent.
+	for group_name in ["city_shadow_batches","city_detail_batches"]:
+		if source.is_in_group(group_name):
+			if node.is_in_group(group_name): node.remove_from_group(group_name)
+			node.add_to_group(group_name,true)
 	if source is MeshInstance3D:
 		var override_id := _compiled_id(source.material_override)
 		if override_id< -1:
@@ -2867,11 +2872,12 @@ func _compiled_pack(nodes: Array) -> PackedScene:
 			var chunk := Node3D.new()
 			chunk.name = "Tile_%d_%d" % [tile.x,tile.y]
 			root.add_child(chunk)
+			chunk.owner = root
 			chunk.set_meta("compiled_tile",tile)
 			tiles[tile] = chunk
 		var chunk: Node3D = tiles[tile]
 		chunk.add_child(copy)
-		_compiled_assign_owners(chunk,root)
+		_compiled_assign_owners(copy,root)
 	var packed := PackedScene.new()
 	var err := packed.pack(root)
 	root.free()
@@ -2971,16 +2977,21 @@ func _compiled_track_visual(tile: Vector2i,node: GeometryInstance3D) -> void:
 	if not detail_stream_enabled: return
 	# Long meshes may cross their nominal tile; retain a generous range.
 	if not compiled_visual_chunks.has(tile): compiled_visual_chunks[tile] = []
-	compiled_visual_chunks[tile].append(node)
+	var bounds := node.get_aabb()
+	var margin := Vector2(bounds.size.x,bounds.size.z).length()*.5
+	compiled_visual_chunks[tile].append({"node":node,"margin":margin})
 
 func _compiled_update_visuals(focus: Vector3) -> void:
 	for tile in compiled_visual_chunks:
 		var center := Vector3(float(tile.x)*96.0+48.0,0,float(tile.y)*96.0+48.0)
 		var distance := Vector2(center.x-focus.x,center.z-focus.z).length()
-		for node in compiled_visual_chunks[tile]:
+		# Keep large/cross-tile meshes safe, including landmark roof lines.
+		for entry in compiled_visual_chunks[tile]:
+			var node: GeometryInstance3D = entry.node
 			if not is_instance_valid(node): continue
-			if distance>COMPILED_VISUAL_HIDE_RADIUS and node.visible: node.hide()
-			elif distance<COMPILED_VISUAL_RADIUS and not node.visible: node.show()
+			var margin: float = entry.margin
+			if distance>COMPILED_VISUAL_HIDE_RADIUS+margin and node.visible: node.hide()
+			elif distance<COMPILED_VISUAL_RADIUS+margin and not node.visible: node.show()
 
 func _load_or_compile_buildings(public_anchor: Vector3) -> void:
 	var key := _compiled_key()
