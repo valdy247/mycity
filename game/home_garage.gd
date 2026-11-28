@@ -411,6 +411,37 @@ func _vehicle_service_menu(kind: String) -> void:
 		business._button(("Recargar batería" if kind=="triciclo" else "Repostar")+" · %d CUP" % charge,_service_vehicle.bind(kind,true),_vehicle_energy(kind)>=99.9 or away or _listed(kind) or business.ledger.cash<charge)
 	business._button("Volver",_project_menu)
 
+func _at_vehicle_workshop(kind: String) -> bool:
+	if inside or riding or _listed(kind) or not _complete(kind): return false
+	var site := _vendor_at(game.player.global_position)
+	var body: Node3D = owned.get(kind)
+	if site.is_empty() or not is_instance_valid(body): return false
+	var road: Vector3 = site.road
+	return body.global_position.distance_to(road)<18.0
+
+func _workshop_menu(kind: String) -> void:
+	if not _at_vehicle_workshop(kind): return
+	var condition := _vehicle_condition(kind)
+	var price := maxi(1,ceili(float(Kit.total(kind))*(100.0-condition)*.003))
+	business._open("Taller · "+String(Kit.KITS[kind].name),"Estado: %d%%" % roundi(condition)+("\nEnergía: %d%%" % roundi(_vehicle_energy(kind)) if kind!="bicicleta" else ""))
+	business._button("Reparar · %d CUP" % price,_workshop_service.bind(kind,false),condition>=99.9 or business.ledger.cash<price)
+	if kind!="bicicleta":
+		var charge := _vehicle_charge_price(kind)
+		business._button(("Recargar" if kind=="triciclo" else "Repostar")+" · %d CUP" % charge,_workshop_service.bind(kind,true),_vehicle_energy(kind)>=99.9 or business.ledger.cash<charge)
+	business._button("Cerrar",business.close)
+
+func _workshop_service(kind: String,energy: bool) -> void:
+	if not _at_vehicle_workshop(kind): return
+	if energy and (kind=="bicicleta" or _vehicle_energy(kind)>=99.9): return
+	if not energy and _vehicle_condition(kind)>=99.9: return
+	var price := _vehicle_charge_price(kind) if energy else maxi(1,ceili(float(Kit.total(kind))*(100.0-_vehicle_condition(kind))*.003))
+	if business.ledger.cash<price: return
+	if energy: state.vehicle_energy[kind] = 100.0
+	else: state.vehicle_condition[kind] = 100.0
+	business.ledger.change_reputation("Ernesto" if String(_vendor_at(game.player.global_position).id)=="parts_taller" else "Yoyi",1)
+	business.ledger.spend(price)
+	_workshop_menu(kind)
+
 func _vehicle_charge_price(kind: String) -> int:
 	return maxi(1,ceili((100.0-_vehicle_energy(kind))*(.5 if kind=="triciclo" else 2.0)))
 
@@ -3779,6 +3810,9 @@ func _vendor_menu(site: Dictionary) -> void:
 		var key := String(split[1])
 		if String(_seller(kind,key).get("id",""))==String(site.id):
 			business._button("Comprar "+String(Kit.PART_NAMES[key])+" · %d CUP" % int(Kit.KITS[kind].parts[key]),_buy_part.bind(kind,key),not _free_hands() or business.ledger.cash<int(Kit.KITS[kind].parts[key]))
+	for kind in owned:
+		if _at_vehicle_workshop(String(kind)):
+			business._button("Mantenimiento · "+String(Kit.KITS[kind].name),_workshop_menu.bind(String(kind)))
 	business._button("Comprar pintura",_paint_shop.bind(true))
 	business._button("Cerrar",business.close)
 
