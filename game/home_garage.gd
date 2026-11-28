@@ -1064,9 +1064,9 @@ func _build_rental_bathroom() -> void:
 	var wall := Color("#dedbd0")
 	var tile := Color("#d5ddd7")
 	# Bathroom in the unused northeast corner. Entrance faces west.
-	_solid(root,Vector3(5.45,1.5,-3.35),Vector3(2.65,3,.13),wall)
-	_solid(root,Vector3(4.15,1.5,-5.26),Vector3(.13,3,.95),wall)
-	_solid(root,Vector3(4.15,1.5,-3.60),Vector3(.13,3,.50),wall)
+	_solid(root,Vector3(5.45,1.5,-3.35),Vector3(2.65,3,.13),wall).set_meta("broom_support_wall",true)
+	_solid(root,Vector3(4.15,1.5,-5.26),Vector3(.13,3,.95),wall).set_meta("broom_support_wall",true)
+	_solid(root,Vector3(4.15,1.5,-3.60),Vector3(.13,3,.50),wall).set_meta("broom_support_wall",true)
 	_solid(root,Vector3(4.15,2.65,-4.42),Vector3(.15,.70,1.17),wall)
 	# Real colliding leaf, hinged inward. The player cannot walk through it.
 	bath_door = _rental_root(root,Vector3(4.22,0,-4.74),clampf(float(state.bathroom.door),0.0,PI*.5))
@@ -1584,6 +1584,9 @@ func _enter() -> void:
 	game._update_visual_lighting(true)
 
 func _exit() -> void:
+	if String(state.get("paint_tool",""))=="broom":
+		business._notify("Apoya la escoba contra una pared antes de salir.")
+		return
 	if not bath_mode.is_empty(): return
 	if dining_seated:
 		_stand_from_dining()
@@ -4124,6 +4127,13 @@ func _build_house_tools() -> void:
 	resting_broom.position = BROOM_POS
 	resting_broom.rotation = Vector3(.10,0,0)
 	_make_broom_model(resting_broom)
+	var saved_broom: Dictionary = state.get("broom_placement",{})
+	var coords: Array = saved_broom.get("position",[])
+	if coords.size()==3:
+		var saved_pos := Vector3(float(coords[0]),float(coords[1]),float(coords[2]))
+		if saved_pos.is_finite() and absf(saved_pos.x)<6.8 and absf(saved_pos.z)<5.8 and absf(saved_pos.y)<.2:
+			resting_broom.position = saved_pos
+			resting_broom.rotation = Vector3(-.145,float(saved_broom.get("yaw",0.0)),0)
 	floor_image = Image.create(FLOOR_COLS*3,FLOOR_ROWS*3,false,Image.FORMAT_RGBA8)
 	floor_image.fill(Color(0,0,0,0))
 	floor_texture = ImageTexture.create_from_image(floor_image)
@@ -4428,10 +4438,77 @@ func _aim_can() -> String:
 		if can.visible and _aim_tool(can,Vector3.ZERO,Vector3(.23,.19,.23)): return String(color)
 	return ""
 
-func _near_broom(at: Vector3) -> bool:
-	if not is_instance_valid(resting_broom): return false
-	var p := resting_broom.global_position
-	return Vector2(p.x-at.x,p.z-at.z).length()<1.35
+# Select the visible wall, then solve a grounded leaning pose below the aim.
+func _broom_wall_pose() -> Dictionary:
+	if not inside or not is_instance_valid(resting_broom): return {}
+	var cam: Camera3D = game.play_camera
+	var origin := cam.global_position
+	var space := get_world_3d().direct_space_state
+	var ray := PhysicsRayQueryParameters3D.create(origin,origin-cam.global_basis.z*3.0,1|2|4|8|16|32)
+	ray.exclude = [game.player.get_rid()]
+	var hit := space.intersect_ray(ray)
+	if hit.is_empty(): return {}
+	var wall: Object = hit.collider
+	if not wall.has_meta("home_paint_wall") and not wall.has_meta("broom_support_wall"): return {}
+	var normal: Vector3 = hit.normal
+	if absf(normal.y)>.12: return {}
+	normal.y = 0.0
+	normal = normal.normalized()
+	var point: Vector3 = hit.position
+	if _door_blocks_target(origin,point): return {}
+	# Leave the exit doorway and its approach free.
+	if is_instance_valid(guest_door) and AABB(Vector3(-.26,-.1,-.32),Vector3(1.72,2.5,.64)).has_point(guest_door.to_local(Vector3(point.x,ROOM.y+1.0,point.z))): return {}
+	var base := Vector3(point.x,ROOM.y,point.z)+normal*.255
+	if game.player.global_position.distance_to(base+Vector3.UP*.7)>3.0: return {}
+	# Find the actual floor beneath the bristles.
+	var down := PhysicsRayQueryParameters3D.create(base+Vector3.UP*.28,base-Vector3.UP*.15,2)
+	var floor_hit := space.intersect_ray(down)
+	if floor_hit.is_empty() or Vector3(floor_hit.normal).y<.8: return {}
+	base.y = maxf(float(floor_hit.position.y),ROOM.y+.052)
+	# Confirm that the top of the handle really has the same wall behind it.
+	var support := base+Vector3.UP*1.38
+	var support_ray := PhysicsRayQueryParameters3D.create(support,support-normal*.33,1)
+	support_ray.exclude = [game.player.get_rid()]
+	var top_hit := space.intersect_ray(support_ray)
+	if top_hit.is_empty() or top_hit.collider!=wall: return {}
+	var angle := atan2(normal.x,normal.z)
+	var pose := Transform3D(Basis(Vector3.UP,angle)*Basis(Vector3.RIGHT,-.145),base)
+	# Test the actual broom head and handle separately, leaving only a tiny
+	# clearance at the wall. Reject furniture, the player and solid doors.
+	for part in [
+		[Vector3(0,.115,0),Vector3(.40,.20,.18)],
+		[Vector3(0,.74,0),Vector3(.058,1.34,.058)]]:
+		var shape := BoxShape3D.new()
+		shape.size = part[1]
+		var query := PhysicsShapeQueryParameters3D.new()
+		query.shape = shape
+		query.collision_mask = 1|4|8|16|32
+		query.transform = pose*Transform3D(Basis.IDENTITY,Vector3(part[0]))
+		if not space.intersect_shape(query,1).is_empty(): return {}
+	# Also reject visual-only cabinet doors at the broom's position.
+	for entry in rental_storage_doors:
+		var hinge: Node3D = entry.hinge
+		if not is_instance_valid(hinge): continue
+		var center: Vector3 = entry.center
+		var size: Vector3 = entry.size
+		var bounds := AABB(center-size*.5,size).grow(.09)
+		for height in [.14,.45,.75,1.05,1.36]:
+			if bounds.has_point(hinge.to_local(pose*Vector3(0,float(height),0))): return {}
+	return {"position":base,"yaw":angle}
+
+func _place_broom_at_wall() -> bool:
+	var candidate := _broom_wall_pose()
+	if candidate.is_empty():
+		business._notify("Busca una pared libre y apunta hacia ella para apoyar la escoba.")
+		return false
+	var point: Vector3 = candidate.position
+	var local := paint_station.to_local(point)
+	resting_broom.position = local
+	resting_broom.rotation = Vector3(-.145,float(candidate.yaw),0)
+	state.broom_placement = {"position":[local.x,local.y,local.z],"yaw":float(candidate.yaw)}
+	_stop_home_paint()
+	business._notify("Escoba apoyada contra la pared.")
+	return true
 
 func _house_tool_action(at: Vector3) -> String:
 	var tool := String(state.paint_tool)
@@ -4443,8 +4520,8 @@ func _house_tool_action(at: Vector3) -> String:
 		if _aim_tool(resting_brush,Vector3.ZERO,Vector3(.38,.14,.28)): return "[E] Dejar brocha sobre el papel"
 		return "Clic izquierdo: pintar · [X] Guardar brocha" if int(state.paint_charge)>0 else "Moja la brocha en un cubo de pintura · [X] Guardar"
 	if tool=="broom":
-		if _near_broom(at) or _aim_tool(resting_broom,Vector3(0,.65,0),Vector3(.30,.75,.25)): return "[E] Dejar escoba"
-		return "Clic izquierdo: barrer · [X] Guardar escoba"
+		if not _broom_wall_pose().is_empty(): return "[E] Apoyar escoba en la pared"
+		return "[E] Busca una pared libre · Clic izquierdo: barrer"
 	if not _free_hands(): return ""
 	if _aim_tool(resting_brush,Vector3.ZERO,Vector3(.27,.12,.24)): return "[E] Recoger brocha"
 	if _aim_tool(resting_broom,Vector3(0,.72,0),Vector3(.23,.73,.13)): return "[E] Recoger escoba"
@@ -4463,7 +4540,8 @@ func _house_tool_interact(at: Vector3) -> bool:
 	elif action.contains("Recoger brocha"): _take_home_tool("brush")
 	elif action.contains("Recoger escoba"): _take_home_tool("broom")
 	elif action.contains("Embarrar"): _dip_home_brush(_aim_can())
-	elif action.contains("Dejar brocha") or action.contains("Dejar escoba"): _stop_home_paint()
+	elif String(state.paint_tool)=="broom": _place_broom_at_wall()
+	elif action.contains("Dejar brocha"): _stop_home_paint()
 	return true
 
 func _take_home_tool(tool: String) -> void:
@@ -4548,8 +4626,11 @@ func has_home_tool() -> bool:
 func return_home_tool() -> bool:
 	if not has_home_tool(): return false
 	var tool := String(state.paint_tool)
+	if tool=="broom" and inside:
+		_place_broom_at_wall()
+		return true
 	_stop_home_paint()
-	business._notify("Escoba devuelta a su esquina." if tool=="broom" else "Brocha devuelta al papel.")
+	business._notify("Brocha devuelta al papel." if tool=="brush" else "Escoba devuelta a su última ubicación.")
 	return true
 
 func _stop_home_paint() -> void:
