@@ -2908,7 +2908,10 @@ func _compiled_scene_valid(root: Node3D,material_count: int) -> bool:
 			if not (node is StaticBody3D or node is MeshInstance3D or node is MultiMeshInstance3D or node is Label3D): return false
 			var id := int(node.get_meta("compiled_override",-1))
 			if id< -1 or id>=material_count: return false
-			for surface_id in node.get_meta("compiled_surfaces",PackedInt32Array()):
+			var surface_ids: Variant = node.get_meta("compiled_surfaces",PackedInt32Array())
+			if not surface_ids is PackedInt32Array: return false
+			if node is MeshInstance3D and node.mesh is ArrayMesh and surface_ids.size()!=node.mesh.get_surface_count(): return false
+			for surface_id in surface_ids:
 				if surface_id< -1 or surface_id>=material_count: return false
 	return root.get_child_count()>0
 
@@ -2920,6 +2923,10 @@ func _compiled_restore(snapshot: Dictionary) -> bool:
 	for field in ["editable","rendered","services","heights"]:
 		if not data.get(field) is Dictionary: return false
 	if int(data.get("mapped",0))<=0: return false
+	for desc in data.materials:
+		if not desc is Dictionary or not desc.get("color") is Color: return false
+		for field in ["key","kind","cull","roughness","metallic"]:
+			if not desc.has(field): return false
 	var ids: Dictionary = {}
 	for fp in geography.footprints: ids[String(fp.id)] = fp
 	var kept: Array = []
