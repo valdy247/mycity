@@ -933,6 +933,7 @@ func _exit() -> void:
 	game.pivot.rotation = Vector3(game.pitch,game.yaw,0)
 	game.first_person = previous_first
 	game._apply_camera_mode()
+	if game.adaptation_mode: game.begin_home_exit_loading()
 
 func _aimed_furniture() -> String:
 	var cam: Camera3D = game.play_camera
