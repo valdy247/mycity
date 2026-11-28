@@ -32,6 +32,8 @@ var arrival_story: ArrivalStory
 var garage: HomeGarage
 const CarlosMission = preload("res://carlos_mission.gd")
 var carlos_mission: CarlosMission
+const DanielMission = preload("res://daniel_mission.gd")
+var daniel_mission: DanielMission
 const YordiMission = preload("res://yordi_mission.gd")
 var yordi_mission: YordiMission
 const CityNavigation = preload("res://city_navigation.gd")
@@ -261,6 +263,7 @@ func _ready() -> void:
 		business.phone_position = func() -> Vector3:
 			if driving: return van.global_position
 			if garage!=null and garage.inside and not cuba_world.garage_home_site.is_empty(): return cuba_world.garage_home_site.door
+			if daniel_mission!=null and daniel_mission.inside: return daniel_mission._house()
 			if carlos_mission!=null and carlos_mission.inside and not carlos_mission.customer.is_empty(): return carlos_mission.customer.p
 			return player.global_position
 		business.phone_destination = func() -> Dictionary:
@@ -303,6 +306,11 @@ func _ready() -> void:
 		carlos_mission.setup(self)
 		business.carlos_call = carlos_mission.open_call
 		business.carlos_objective = carlos_mission.objective
+		daniel_mission = DanielMission.new()
+		add_child(daniel_mission)
+		daniel_mission.setup(self)
+		business.daniel_call = daniel_mission.open_call
+		business.daniel_objective = daniel_mission.objective
 		yordi_mission = YordiMission.new()
 		add_child(yordi_mission)
 		yordi_mission.setup(self)
@@ -847,7 +855,11 @@ func begin_home_exit_loading() -> void:
 	label.add_theme_font_size_override("font_size",25)
 	_finish_home_exit_loading.call_deferred()
 
+func _yordi_enabled() -> bool:
+	return yordi_mission!=null and (not adaptation_mode or (daniel_mission!=null and daniel_mission.completed()) or yordi_mission._stage()>0)
+
 func ambient_city_suspended() -> bool:
+	if is_instance_valid(daniel_mission) and daniel_mission.inside: return true
 	return adaptation_mode and is_instance_valid(garage) and garage.inside and is_instance_valid(player) and player.global_position.y>70.0 and not home_exit_loading and (arrival_story==null or not arrival_story.active())
 
 func _record_city_cost(key: String,started: int) -> void:
@@ -1532,6 +1544,7 @@ func _face_cuba_home() -> void:
 
 func _reset_player() -> void:
 	if business!=null and business.first_story!=null and business.first_story.reset_checkpoint(): return
+	if daniel_mission!=null and daniel_mission.reset(): return
 	if yordi_mission!=null and yordi_mission.checkpoint_reset(): return
 	if carlos_mission!=null: carlos_mission.reset()
 	if garage!=null: garage.reset()
@@ -1629,7 +1642,8 @@ func _update_hud() -> void:
 		status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
 		var action: String = garage.action_text(player.global_position) if adaptation_mode and garage!=null and (garage.inside or garage.rental_entry_near(player.global_position)) else ""
 		if action.is_empty() and not adaptation_mode and business!=null and business.first_story!=null: action = business.first_story.action_text()
-		if action.is_empty() and yordi_mission!=null: action = yordi_mission.action_text()
+		if action.is_empty() and daniel_mission!=null: action = daniel_mission.action_text()
+		if action.is_empty() and _yordi_enabled(): action = yordi_mission.action_text()
 		if action.is_empty() and carlos_mission!=null: action = carlos_mission.action_text()
 		if action.is_empty() and backpack!=null: action = backpack.action_text()
 		if action.is_empty(): action = _albertico_action()
@@ -1693,7 +1707,8 @@ func _update_compact_hud() -> void:
 	else:
 		var action: String = garage.action_text(player.global_position) if adaptation_mode and garage!=null and (garage.inside or garage.rental_entry_near(player.global_position)) else ""
 		if action.is_empty() and not adaptation_mode and business!=null and business.first_story!=null: action = business.first_story.action_text()
-		if action.is_empty() and yordi_mission!=null: action = yordi_mission.action_text()
+		if action.is_empty() and daniel_mission!=null: action = daniel_mission.action_text()
+		if action.is_empty() and _yordi_enabled(): action = yordi_mission.action_text()
 		if action.is_empty() and carlos_mission!=null: action = carlos_mission.action_text()
 		if action.is_empty() and backpack!=null: action = backpack.action_text()
 		if action.is_empty(): action = _albertico_action()
@@ -1943,7 +1958,8 @@ func _physics_process(delta: float) -> void:
 	if _hold_story_input(): return
 	if carlos_mission!=null and not building_mode: carlos_mission.tick(delta)
 	if _hold_story_input(): return
-	if not adaptation_mode and yordi_mission!=null and not building_mode: yordi_mission.tick(delta)
+	if daniel_mission!=null and not building_mode: daniel_mission.tick(delta)
+	if _yordi_enabled() and not building_mode and (daniel_mission==null or not daniel_mission.inside): yordi_mission.tick(delta)
 	if _hold_story_input(): return
 	if not adaptation_mode and incidents!=null and not building_mode and not business.modal_open(): incidents.tick(delta)
 	if backpack!=null and not building_mode: backpack.tick(delta)
@@ -2116,7 +2132,11 @@ func _physics_process(delta: float) -> void:
 			return
 		elif not adaptation_mode and business!=null and business.first_story!=null and business.first_story.carrying_table():
 			return
-		elif not adaptation_mode and yordi_mission!=null and yordi_mission.interact():
+		elif daniel_mission!=null and daniel_mission.interact():
+			player.velocity = Vector3.ZERO
+			_update_hud()
+			return
+		elif _yordi_enabled() and yordi_mission.interact():
 			player.velocity = Vector3.ZERO
 			_update_hud()
 			return
@@ -2216,6 +2236,9 @@ func _physics_process(delta: float) -> void:
 					life_state.fullness = maxf(0.0,fullness-delta*.025)
 			if float(life_state.get("illness_minutes",0.0))>0.0: speed *= .90
 			if float(life_state.get("overfull_minutes",0.0))>0.0 and sprinting: speed *= .92
+		if business!=null and business.life!=null:
+			var alcohol := float(business.life.state.get("party_alcohol",0.0))
+			speed *= lerpf(1.0,.65,alcohol/100.0)
 		if business!=null and business.first_story!=null and business.first_story.carrying_table(): speed = 2.1
 		if city_world != null and city_world.family_home != null and city_world.family_home.pool_inside:
 			speed = 2.0
