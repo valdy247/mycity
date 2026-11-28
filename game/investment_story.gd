@@ -44,6 +44,10 @@ var cab: Dictionary = {}
 var ride_out := true
 var cab_lid: Node3D
 var ride_view: Camera3D
+var ride_look := Vector2.ZERO
+const RETURN_TAXI_FARE := 1000
+var fare_notice: Label
+var fare_notice_left := 0.0
 var ride_driver: Person
 var actor_scale := Vector3.ONE
 var helper_elapsed := 0.0
@@ -95,6 +99,20 @@ func setup(parent_story) -> void:
 	marker.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	marker.no_depth_test = true
 	marker.hide()
+	fare_notice = Label.new()
+	story.objective.get_parent().add_child(fare_notice)
+	fare_notice.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	fare_notice.offset_left = -350
+	fare_notice.offset_right = -24
+	fare_notice.offset_top = 110
+	fare_notice.offset_bottom = 174
+	fare_notice.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	fare_notice.add_theme_font_size_override("font_size",22)
+	fare_notice.add_theme_color_override("font_color",Color("#ffb4a8"))
+	fare_notice.add_theme_color_override("font_outline_color",Color.BLACK)
+	fare_notice.add_theme_constant_override("outline_size",6)
+	fare_notice.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	fare_notice.hide()
 	resume = String(state.get("investment_stage","clean"))
 	dirt_keys = state.get("investment_dirt",[])
 	neighbor = legacy._find_neighbor()
@@ -124,6 +142,11 @@ func cinematic() -> bool:
 	return phase not in ["clean","return_door","outbound","shop","load","return","unload","neighbor","table_room","table_carry","done"]
 
 func handle_look(relative: Vector2) -> void:
+	if phase=="ride" and is_instance_valid(ride_view):
+		ride_look.x = clampf(ride_look.x-relative.x*.003,-1.85,1.85)
+		ride_look.y = clampf(ride_look.y-relative.y*.003,-.60,.35)
+		ride_view.rotation = Vector3(ride_look.y,PI+ride_look.x,0)
+		return
 	if cinematic(): return
 	game.yaw -= relative.x*.003
 	game.pitch = clampf(game.pitch-relative.y*.003,-1.35,.50)
@@ -428,18 +451,23 @@ func _start_ride(outbound: bool) -> void:
 		if is_instance_valid(cab_lid): cab_lid.rotation.x = 0.0
 		actor_scale = actor.scale
 		actor.reparent(cab.body,false)
-		_seat(actor,Vector3(-.37,.22,-.67))
+		_seat(actor,Vector3(-.38,.12,-.72))
+		actor_reposition_pending = false
+		actor.show()
 		for arm in actor.arms: arm.rotation.x = -.10
 		game._start_taxi_ride()
 		ride_view = Camera3D.new()
 		cab.body.add_child(ride_view)
-		ride_view.position = Vector3(.25,1.42,-.77)
-		ride_view.rotation = Vector3(-.06,PI,0)
-		ride_view.fov = 82
+		# Rear bench: player and Albertico have independent seat positions.
+		ride_view.position = Vector3(.36,1.34,-.72)
+		ride_look = Vector2(0,-.03)
+		ride_view.rotation = Vector3(ride_look.y,PI,0)
+		ride_view.near = .045
+		ride_view.fov = 70
 		ride_view.far = 320
 		ride_view.make_current()
 		_set_phase("ride")
-		_task("Viaje con Albertico")
+		_task("Viaje con Albertico · Mueve el mouse para mirar")
 		return
 	game.taxis.close_dialog()
 	story.subtitle.text = "No hay una ruta segura a esa acera. Pulsa E para volver a intentar."
@@ -470,8 +498,17 @@ func _ride_tick(delta: float) -> void:
 		_set_phase("shop","shop")
 		_task("Entra en la MIPYME y habla con el vendedor.")
 	else:
-		_dialogue(9,9,"unload")
+		# Persist the fare and arrival checkpoint together, so a reload cannot charge twice.
 		state.investment_stage = "unload"
+		if not bool(state.get("investment_return_taxi_paid",false)):
+			ledger.cash -= RETURN_TAXI_FARE
+			ledger.expenses += RETURN_TAXI_FARE
+			state.investment_return_taxi_paid = true
+			fare_notice.text = "Taxi: -1.000 CUP\nSaldo: %d CUP" % int(ledger.cash)
+			fare_notice_left = 6.0
+			fare_notice.show()
+		_dialogue(9,9,"unload")
+		_task("Llegaste a casa con Albertico.")
 		if is_instance_valid(cab_lid): cab_lid.rotation.x = 1.15
 		_save()
 
@@ -846,6 +883,9 @@ func interact() -> void:
 
 func tick(delta: float) -> void:
 	clock += delta
+	if fare_notice_left>0.0:
+		fare_notice_left = maxf(0.0,fare_notice_left-delta)
+		if fare_notice_left<=0.0: fare_notice.hide()
 	speech_left = maxf(0.0,speech_left-delta)
 	marker.hide()
 	if not cinematic(): _walk(delta)
