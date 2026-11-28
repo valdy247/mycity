@@ -196,8 +196,8 @@ func _build_late_infrastructure() -> void:
 	await get_tree().create_timer(8.0).timeout
 	if not is_inside_tree(): return
 	var controller = get_parent()
-	# Do expensive scene assembly in the interior or under the exit cover.
-	while not infrastructure_ready and not infrastructure_building and is_instance_valid(controller.garage) and not controller.garage.inside and not controller.home_exit_loading:
+	# Do expensive scene assembly only behind the loading screen, never during live play.
+	while not infrastructure_ready and not infrastructure_building and not controller.home_exit_loading:
 		await get_tree().create_timer(.5).timeout
 		if not is_inside_tree(): return
 	await prepare_exit_infrastructure()
