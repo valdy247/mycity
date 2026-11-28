@@ -9,7 +9,7 @@ const LINES := [
 	["Tú","Qué día más largo... Voy a descansar un rato.",3.6],
 	["Tú","¿Quién será a esta hora?",2.3],
 	["Albertico","Buen día, mi socio. Yo soy Albertico, el vecino de al frente. ¿Tú eres familia de Odalis?",5.6],
-	["Tú","No, ella me alquiló esto aquí. La contacté desde Miami. Es que me deportaron, brother.",5.6],
+	["Tú","Ah, sí, ya Odalis me habló de usted. No somos familia. Ella me alquiló esto desde Miami. Es que me deportaron, brother.",8.0],
 	["Albertico","Coño, qué mal, caballo.",2.2],
 	["Tú","No, tranquilo, todo bien... Oye, ¿tú sabes de alguien que quiera comprar unas cosas que traje pa' vender?",6.2],
 	["Albertico","Tranquilo, dame eso a mí. Yo vengo en la tarde con la plata.",4.5],
