@@ -59,6 +59,7 @@ func setup(mission) -> void:
 	if not state.has("fatigue"): state.fatigue = 15.0
 	if not state.has("coffee_minutes"): state.coffee_minutes = 0.0
 	if not state.has("coffee_cups"): state.coffee_cups = 0
+	state.coffee_cups = clampi(int(state.coffee_cups),0,1)
 	if not state.has("coffee_served"): state.coffee_served = false
 	if not state.has("alarm_minute"): state.alarm_minute = -1
 	if not state.has("supplies"): state.supplies = INITIAL.duplicate(true)
@@ -217,7 +218,7 @@ func sleep_at_home() -> String:
 
 func brew_home_coffee() -> bool:
 	if int(state.coffee_cups)>0: return false
-	state.coffee_cups = 4
+	state.coffee_cups = 1
 	state.coffee_served = false
 	ledger.save_game()
 	return true
