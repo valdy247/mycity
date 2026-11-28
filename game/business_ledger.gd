@@ -62,14 +62,23 @@ var low_alert: Dictionary = {}
 var sales_clock := 0.0
 var life_data: Dictionary = {}
 
-func load_game() -> void:
-	if not persistence_enabled: return
-	if not FileAccess.file_exists(save_path): return
-	var f := FileAccess.open(save_path,FileAccess.READ)
-	if f==null: return
+func _read_save(path: String) -> Dictionary:
+	if not FileAccess.file_exists(path): return {}
+	var f := FileAccess.open(path,FileAccess.READ)
+	if f==null: return {}
 	var value: Variant = JSON.parse_string(f.get_as_text())
 	f.close()
-	if not value is Dictionary: return
+	if not value is Dictionary or not value.has("cash") or not value.has("city_life"): return {}
+	if not value.city_life is Dictionary or not value.cash is float and not value.cash is int: return {}
+	return value
+
+func load_game() -> void:
+	if not persistence_enabled: return
+	var value := _read_save(save_path)
+	if value.is_empty():
+		value = _read_save(save_path+".bak")
+		if not value.is_empty(): push_warning("MyCity: partida recuperada de la copia de seguridad.")
+	if value.is_empty(): return
 	cash = maxi(0,int(value.get("cash",10000)))
 	var life: Variant = value.get("city_life",{})
 	life_data = life if life is Dictionary else {}
@@ -126,6 +135,12 @@ func save_game() -> void:
 	if error!=OK:
 		push_warning("MyCity: escritura de partida incompleta; se conserva la anterior.")
 		return
+	# Preserve the last valid snapshot; do not overwrite it with corrupt data.
+	if not _read_save(save_path).is_empty():
+		var backup_temp := save_path+".bak.tmp"
+		if DirAccess.copy_absolute(save_path,backup_temp)==OK:
+			if DirAccess.rename_absolute(backup_temp,save_path+".bak")!=OK:
+				DirAccess.remove_absolute(backup_temp)
 	if DirAccess.rename_absolute(temp,save_path)!=OK:
 		push_warning("MyCity: no se pudo reemplazar la partida; se conserva el archivo temporal.")
 
@@ -136,6 +151,14 @@ func spend(amount: int) -> bool:
 	expenses += amount
 	save_game()
 	return true
+
+# Bounded, persistent social trust. No effect on existing mission rewards.
+func reputation(person: String) -> int:
+	return clampi(int(life_data.get("reputation",{}).get(person,50)),0,100)
+
+func change_reputation(person: String,amount: int) -> void:
+	if not life_data.has("reputation"): life_data.reputation = {}
+	life_data.reputation[person] = clampi(reputation(person)+amount,0,100)
 
 func total(counts: Dictionary) -> int:
 	var result := 0
