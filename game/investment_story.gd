@@ -560,10 +560,8 @@ func _rebuild_boxes() -> void:
 			node.scale = Vector3.ONE*.90
 			boxes[key] = node
 		elif location=="stored":
-			if key=="aceite":
-				var node: Node3D = game.business._crate(game.garage.interior,Vector3(-6.35,1.47,.52),key)
-				boxes[key] = node
-			else: legacy.show_rental_stock(key,false)
+			if key!="aceite": legacy.show_rental_stock(key,false)
+	game.garage.show_rental_oil(String(_box_states().get("aceite",""))=="stored")
 	if not carry.is_empty() and boxes.has(carry): boxes[carry].hide()
 	if is_instance_valid(helper_box) and boxes.has("aceite"): boxes["aceite"].hide()
 
@@ -1029,6 +1027,8 @@ func _restore() -> void:
 
 func interact() -> void:
 	if cinematic(): return
+	if game.garage.inside and carry.is_empty() and phase in ["clean","unload","neighbor","outbound"]:
+		if game.garage.storage_interact(game.player.global_position): return
 	match phase:
 		"clean":
 			if String(game.garage.state.paint_tool)!="broom" and game.garage._near_broom(game.player.global_position): game.garage._take_home_tool("broom")
@@ -1180,6 +1180,10 @@ func tick(delta: float) -> void:
 		"table_carry":
 			_table_tick(delta)
 			story.subtitle.text = "[E] Instalar mesa" if game.player.global_position.y<70.0 and _near(_stall_position()+Vector3.UP*.86,2.1) else ""
+
+	if not cinematic() and game.garage.inside and carry.is_empty() and phase in ["clean","unload","neighbor","outbound"]:
+		var storage: String = game.garage.storage_action(game.player.global_position)
+		if not storage.is_empty(): story.subtitle.text = storage
 
 	# Final guard after scripted moves, checkpoint restoration and helper actions.
 	if phase!="ride" and is_instance_valid(actor) and not actor.is_queued_for_deletion() and (actor_reposition_pending or (actor.visible and _actor_overlaps_player(actor.global_position))):
