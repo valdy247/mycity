@@ -222,7 +222,7 @@ func _economy_step(minute: float = -1.0,day_number: int = -1) -> void:
 	var open_now := fposmod(minute,1440.0)>=420.0 and fposmod(minute,1440.0)<1200.0
 	# Local background customers share a limited demand pool. Shuffling
 	# avoids permanently preferring the first café in the dictionary.
-	var candidates := state.cafes.keys()
+	var candidates: Array = state.cafes.keys()
 	candidates.shuffle()
 	var remaining_customers := 1 if candidates.size()>0 else 0
 	if candidates.size()>2: remaining_customers += floori(float(candidates.size())/3.0)
