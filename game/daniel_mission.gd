@@ -89,16 +89,17 @@ func _find_house() -> bool:
 			f.close()
 	for entry in world.npc_doorways:
 		if String(entry.get("kind",""))!="home": continue
-		var normal: Vector3 = entry.normal
-		var point: Vector3 = entry.threshold+normal*.85
-		if world.street_geometry.point_on_road(point): continue
-		var distance := origin.distance_to(point)
-		if distance<35.0 or distance>350.0: continue
-		if not game.carlos_mission.customer.is_empty() and point.distance_to(Vector3(game.carlos_mission.customer.get("p",Vector3.INF)))<12.0: continue
-		var hit := get_world_3d().direct_space_state.intersect_ray(PhysicsRayQueryParameters3D.create(point+Vector3.UP*2,point-Vector3.UP*2,2))
-		if hit.is_empty(): continue
-		point.y = float(hit.position.y)+.03
-		if not world.pedestrian_segment_clear(point,point): continue
+		var door: Vector3 = entry.threshold
+		var distance := origin.distance_to(door)
+		if preferred.is_finite():
+			if door.distance_to(preferred)>40.0: continue
+		elif distance<35.0 or distance>350.0: continue
+		if not game.carlos_mission.customer.is_empty():
+			var customer_point: Vector3 = game.carlos_mission.customer.get("p",Vector3.INF)
+			if door.distance_to(customer_point)<12.0: continue
+		var site: Dictionary = game.carlos_mission._door_data(entry)
+		if site.is_empty(): continue
+		var point: Vector3 = site.p
 		var score := point.distance_to(preferred) if preferred.is_finite() else absf(distance-125.0)
 		if score<best:
 			best = score
