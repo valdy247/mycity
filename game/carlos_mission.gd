@@ -988,6 +988,7 @@ func _accept_wheel() -> void:
 		business._notify("Libera las manos para recibir la goma.")
 		return
 	state.stage = 5
+	business.ledger.change_reputation("Carlos",8)
 	game.garage._refresh_preview()
 	state.brush = false
 	state.charge = 0
