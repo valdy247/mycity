@@ -50,7 +50,7 @@ func _render(startup: bool) -> void:
 	info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	actions.add_child(info)
 	if confirming:
-		info.text = "Reiniciar dinero, inventario y misiones.\nTus edificios y mapa se conservan. Se crea una copia de respaldo."
+		info.text = "Reiniciar dinero, inventario, casa, cafetera y todas las misiones.\nTus edificios y mapa se conservan. Se crea una copia de respaldo."
 		_button("Confirmar nueva partida",_new_game)
 		_button("Cancelar",func(): confirming = false; _render(false))
 	else:
@@ -83,7 +83,10 @@ func _recover() -> void:
 func _new_game() -> void:
 	var suffix := "."+str(Time.get_unix_time_from_system()).replace(".","_")+".bak"
 	var copied: Array[String] = []
-	var files: Array = ADAPTATION_FILES if game.adaptation_mode else SAVE_FILES
+	var files: Array[String] = []
+	for base in SAVE_FILES+ADAPTATION_FILES:
+		for ending in ["",".bak",".tmp",".bak.tmp"]:
+			files.append(String(base)+ending)
 	for path in files:
 		if not FileAccess.file_exists(path): continue
 		if DirAccess.copy_absolute(path,path+suffix)!=OK:
@@ -102,11 +105,9 @@ func _new_game() -> void:
 func _reload() -> void:
 	var tree := get_tree()
 	var error: Error
-	if game.adaptation_mode:
-		tree.remove_meta("mycity_adaptation")
-		error = tree.change_scene_to_file("res://airport.tscn")
-	else:
-		error = tree.reload_current_scene()
+	if tree.has_meta("mycity_adaptation"): tree.remove_meta("mycity_adaptation")
+	if tree.has_meta("mycity_warmed_map"): tree.remove_meta("mycity_warmed_map")
+	error = tree.change_scene_to_file("res://airport.tscn")
 	tree.paused = false
 	if error!=OK:
 		if game.business!=null: game.business.ledger.persistence_enabled = true
