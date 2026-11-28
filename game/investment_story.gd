@@ -49,6 +49,7 @@ var cab_lid: Node3D
 var ride_view: Camera3D
 var ride_look := Vector2.ZERO
 const RETURN_TAXI_FARE := 1000
+const SUITCASE_SALE_REWARD := 150000
 var fare_notice: Label
 var fare_notice_left := 0.0
 var ride_driver: Person
@@ -337,7 +338,7 @@ func _door_return() -> void:
 
 func _credit() -> void:
 	if not bool(state.get("suitcase_sale_paid",false)):
-		ledger.cash += 150000
+		ledger.cash += SUITCASE_SALE_REWARD
 		state.suitcase_sale_paid = true
 		state.albertico_sale_pending = false
 		_save()
@@ -966,7 +967,8 @@ static func restore_business(parent_story) -> void:
 	business._sync_visuals()
 
 func _finish() -> void:
-	if not bool(state.get("investment_complete",false)):
+	var newly_completed := not bool(state.get("investment_complete",false))
+	if newly_completed:
 		for key in KEYS:
 			ledger.stock[key] = int(ledger.product(key).units)
 			ledger.low_alert[key] = false
@@ -990,7 +992,11 @@ func _finish() -> void:
 	game._apply_camera_mode()
 	_set_phase("done")
 	story.investment_finished()
-	game.business._notify("MISIÓN COMPLETADA · Mi primera inversión")
+	if newly_completed:
+		if bool(state.get("suitcase_sale_paid",false)):
+			game.business.show_mission_reward("+150.000 CUP","Mi primera inversión · dinero recibido por la venta de las maletas")
+		else:
+			game.business.show_mission_reward("Mi primera inversión","Negocio con Albertico establecido")
 
 func _restore() -> void:
 	match resume:
