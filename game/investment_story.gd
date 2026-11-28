@@ -103,7 +103,7 @@ func setup(parent_story) -> void:
 func _save() -> void:
 	story._save()
 
-func _set(value: String,checkpoint: String = "") -> void:
+func _set_phase(value: String,checkpoint: String = "") -> void:
 	phase = value
 	clock = 0.0
 	retry = 0.0
@@ -169,7 +169,7 @@ func _say(i: int) -> void:
 	else: print("MyCity: falta grabación ",path)
 
 func _dialogue(start: int,last: int,next: String) -> void:
-	_set("dialogue")
+	_set_phase("dialogue")
 	state.dialogue_end = last
 	after_talk = next
 	story.objective.text = ""
@@ -186,7 +186,7 @@ func _talk_tick(delta: float) -> void:
 			speaker.arms[1].rotation.x = -.30+.10*sin(clock*5.0)
 	if speech_left>0.0: return
 	if line==7:
-		_set("thinking")
+		_set_phase("thinking")
 		return
 	if line<int(state.dialogue_end):
 		if line==1 and is_instance_valid(money_prop):
@@ -199,18 +199,18 @@ func _talk_tick(delta: float) -> void:
 
 func _after_dialogue() -> void:
 	match after_talk:
-		"clean": _set("clean","clean")
+		"clean": _set_phase("clean","clean")
 		"outbound":
 			if is_instance_valid(money_prop): money_prop.queue_free()
 			money_prop = null
-			_set("outbound","outbound")
+			_set_phase("outbound","outbound")
 			_task("Sal de casa con Albertico y sube al taxi.")
 		"load": _purchase()
 		"unload":
-			_set("unload","unload")
+			_set_phase("unload","unload")
 			_task("Descarga las cajas y guárdalas en la cocina.")
 		"neighbor":
-			_set("neighbor","neighbor")
+			_set_phase("neighbor","neighbor")
 			_task("Sigue a Albertico hasta su casa.")
 		"finish": _finish()
 
@@ -255,7 +255,7 @@ func _clean_tick(delta: float) -> void:
 			state.investment_stage = "return_door"
 			game.business.life.state.minutes = fposmod(float(game.business.life.state.minutes)+120.0,1440.0)
 			_save()
-			_set("two_hours")
+			_set_phase("two_hours")
 
 func _spawn_actor(at: Vector3) -> void:
 	if not is_instance_valid(actor):
@@ -271,7 +271,7 @@ func _door_return() -> void:
 	_spawn_actor(Vector3(-.7,110,5.5))
 	game.garage.set_guest_door(true)
 	game.player.global_position = Vector3(-.7,110.86,3.3)
-	_set("enter_actor")
+	_set_phase("enter_actor")
 
 func _credit() -> void:
 	if not bool(state.get("suitcase_sale_paid",false)):
@@ -406,7 +406,7 @@ func _start_ride(outbound: bool) -> void:
 		ride_view.fov = 82
 		ride_view.far = 320
 		ride_view.make_current()
-		_set("ride")
+		_set_phase("ride")
 		_task("Viaje con Albertico")
 		return
 	game.taxis.close_dialog()
@@ -435,7 +435,7 @@ func _ride_tick(delta: float) -> void:
 	game.first_person = true
 	game._apply_camera_mode()
 	if ride_out:
-		_set("shop","shop")
+		_set_phase("shop","shop")
 		_task("Entra en la MIPYME y habla con el vendedor.")
 	else:
 		_dialogue(9,9,"unload")
@@ -455,7 +455,7 @@ func _box_states() -> Dictionary:
 func _purchase() -> void:
 	if not bool(state.get("investment_paid",false)):
 		if ledger.cash<133000:
-			_set("shop","shop")
+			_set_phase("shop","shop")
 			_task("No hay suficiente dinero para la compra y la reserva del taxi.")
 			return
 		ledger.cash -= 133000
@@ -464,7 +464,7 @@ func _purchase() -> void:
 		state.investment_paid = true
 		for key in KEYS: _box_states()[key] = "shelf"
 		_save()
-	_set("load","load")
+	_set_phase("load","load")
 	_rebuild_boxes()
 	_task("Lleva dos cajas al maletero. Albertico carga la de aceite.")
 
@@ -658,13 +658,13 @@ func _enter_neighbor() -> void:
 	table = legacy.table
 	game.player.global_position = TABLE_ROOM+Vector3(0,.86,1.6)
 	_spawn_actor(TABLE_ROOM+Vector3(.9,0,.3))
-	_set("table_room","table_room")
+	_set_phase("table_room","table_room")
 	_task("Recoge la mesa con Albertico.")
 
 func _lift_table() -> void:
 	carry_table = true
 	if is_instance_valid(table): table.reparent(self,true)
-	_set("table_carry","table_carry")
+	_set_phase("table_carry","table_carry")
 
 func _table_tick(delta: float) -> void:
 	if not is_instance_valid(table): return
@@ -732,7 +732,7 @@ func _finish() -> void:
 	restore_business(story)
 	game.first_person = old_first
 	game._apply_camera_mode()
-	_set("done")
+	_set_phase("done")
 	story.investment_finished()
 	game.business._notify("MISIÓN COMPLETADA · Mi primera inversión")
 
@@ -740,12 +740,12 @@ func _restore() -> void:
 	match resume:
 		"clean":
 			if not game.garage.inside: game.garage._enter()
-			if _clean_ratio()>=.80: _set("return_door","return_door")
+			if _clean_ratio()>=.80: _set_phase("return_door","return_door")
 			else: _dialogue(0,0,"clean")
-		"return_door": _set("return_door","return_door")
+		"return_door": _set_phase("return_door","return_door")
 		"outbound":
 			_spawn_actor(Vector3(-.7,110,3.7))
-			_set("outbound","outbound")
+			_set_phase("outbound","outbound")
 		"shop","load","return":
 			if world.food_factory.is_empty(): return
 			if not _park_cab(true): return
@@ -753,7 +753,7 @@ func _restore() -> void:
 			var f: Dictionary = world.food_factory
 			game.player.global_position = Vector3(f.center)+Basis(f.basis)*Vector3(0,.96,3.55)
 			_spawn_actor(Vector3(f.center)+Basis(f.basis)*Vector3(.4,.1,3.2))
-			_set(resume,resume)
+			_set_phase(resume,resume)
 			_rebuild_boxes()
 		"unload":
 			if not _park_cab(false): return
@@ -762,12 +762,12 @@ func _restore() -> void:
 				var at: Vector3 = game.yordi_mission._near_ground(_house_out(),null,4.0)
 				if not at.is_finite(): return
 				_spawn_actor(at)
-			_set("unload","unload")
+			_set_phase("unload","unload")
 			_rebuild_boxes()
 		"neighbor","table_room","table_carry","finish":
 			_spawn_actor(Vector3(-.7,110,4.45))
-			_set("neighbor","neighbor")
-		_: _set("return_door","return_door")
+			_set_phase("neighbor","neighbor")
+		_: _set_phase("return_door","return_door")
 
 func interact() -> void:
 	if cinematic(): return
@@ -831,7 +831,7 @@ func tick(delta: float) -> void:
 				clerk.rotation.y += sin(clock*2.0)*delta*.12
 				_face(clerk.global_position+Vector3.UP*1.45)
 			if clock>=3.0:
-				_set("dialogue")
+				_set_phase("dialogue")
 				_say(8)
 		"clean": _clean_tick(delta)
 		"two_hours":
@@ -841,7 +841,7 @@ func tick(delta: float) -> void:
 				story.title.show()
 			else: story.title.hide()
 			if clock>3.4:
-				_set("return_door","return_door")
+				_set_phase("return_door","return_door")
 				if is_instance_valid(story.morning): story.morning._play_effect(story.morning.knock)
 		"return_door":
 			_task("Abre la puerta. Albertico ha vuelto.")
@@ -886,7 +886,7 @@ func tick(delta: float) -> void:
 			else:
 				_mark(_trunk())
 				story.subtitle.text = "[E] Cargar caja en el taxi"
-			if _all_at("taxi"): _set("return","return")
+			if _all_at("taxi"): _set_phase("return","return")
 		"unload":
 			_helper_tick(delta,true)
 			if carry.is_empty() and not _all_at("stored"):
