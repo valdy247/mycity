@@ -1478,7 +1478,7 @@ func _refresh_carried() -> void:
 		var food_key := String(state.home_food.hand)
 		carried_view.position = Vector3(.30,-.39,-.59)
 		if food_key=="plato":
-			carried_view.position.x = -.27
+			carried_view.position = Vector3(-.21,-.16,-.66)
 			business.life.draw_home_plate(carried_view,state.home_food.plate)
 			if bool(state.home_food.plate_dirty): _draw_plate_residue(carried_view)
 			_attach_interaction_hand(carried_view,Vector3(-.105,-.027,.045),true,true)
@@ -3986,7 +3986,7 @@ func tick(delta: float) -> void:
 		if carried_view.visible and (not String(state.rice_recipe.hand).is_empty() or bool(state.coffee_machine.rag_held) or bool(state.coffee_machine.replacement)) and not coffee_cleaning:
 			carried_view.position = InteractionHand.camera_safe_pose(game.play_camera,Vector3(.33,-.36,-.58),.15)
 		if carried_view.visible and not String(state.home_food.hand).is_empty():
-			var desired := Vector3(-.27,-.39,-.59) if String(state.home_food.hand)=="plato" else Vector3(.30,-.39,-.59)
+			var desired := Vector3(-.21,-.16,-.66) if String(state.home_food.hand)=="plato" else Vector3(.30,-.39,-.59)
 			carried_view.position = InteractionHand.camera_safe_pose(game.play_camera,desired,.16)
 	for i in range(state.deliveries.size()-1,-1,-1):
 		var delivery: Dictionary = state.deliveries[i]
