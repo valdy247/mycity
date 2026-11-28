@@ -133,7 +133,7 @@ func _web_map_error() -> void:
 	label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 func _ready() -> void:
-	adaptation_mode = bool(get_tree().get_meta("mycity_adaptation",false))
+	adaptation_mode = bool(get_tree().get_meta("mycity_adaptation",false)) or OS.get_cmdline_user_args().has("--replay-home-arrival")
 	var args := OS.get_cmdline_user_args()
 	mobile_mode = OS.has_feature("android") or OS.has_feature("ios") or args.has("--touch-controls")
 	if OS.has_feature("web"):

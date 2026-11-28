@@ -640,11 +640,21 @@ func prepare_trip() -> bool:
 		if entry.distance_to(target)>4.0:
 			waypoints.append({"p":entry+direction*2.0+lane_offset,"node":""})
 		var berth := streets.safe_stop_on_edge(entry,exit_point,target+geography.lane_offset(entry,exit_point,dims.x,true),dims.z,dims.x)
-		waypoints.append({"p":berth,"node":""})
+		if result.has("story_berth"):
+			# The story chose the directed house-side curb, not a geocoded corner.
+			berth = Vector3(result.story_berth)
+			var final_approach := berth-direction*5.0
+			if not streets.intersection_clear_for_stop(berth,dims.z,dims.x): return false
+			if not TrafficBypass._on_road(streets,berth,direction,dims.x,dims.z): return false
+			if (final_approach-entry).dot(direction)>dims.z*.5 and TrafficBypass._on_road(streets,final_approach,direction,dims.x,dims.z):
+				waypoints.append({"p":final_approach,"node":"","parking_approach":true})
+			waypoints.append({"p":berth,"node":"","parking_approach":true})
+		else:
+			waypoints.append({"p":berth,"node":""})
 	if not _ensure_safe_arrival(waypoints,ids,result,body):
 		_show_selection({"error":"No hay una parada segura junto a ese destino. Elige una calle cercana."})
 		return false
-	if dims.z>=4.0: _parallel_arrival(waypoints,dims)
+	if dims.z>=4.0 and not result.has("story_berth"): _parallel_arrival(waypoints,dims)
 	selected.path = _smooth_route(waypoints,body.global_position,dims.x)
 	stop_requested = false
 	selected.index = 0

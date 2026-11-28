@@ -13,6 +13,11 @@ var service
 var world
 var state: Dictionary
 var home: Dictionary
+var house_arrow: Label3D
+var arrow_clock := 0.0
+const ARRIVAL_STOP_REVISION := 2
+const ARRIVAL_PIN_LAT := 23.1223870
+const ARRIVAL_PIN_LON := -82.3669249
 var phase := "initial"
 var cab: CharacterBody3D
 var driver: Person
@@ -82,6 +87,14 @@ func setup(controller) -> void:
 	if home.is_empty():
 		_fail("No se encontró la casa existente en el mapa.")
 		return
+	_make_house_arrow()
+	# Explicit arrival test resets only this mission's luggage/fare checkpoint.
+	if OS.get_cmdline_user_args().has("--replay-home-arrival"):
+		state.step = 0
+		dropped = [false,false]
+		state.fare_scene_done = false
+		state.fare_lines_completed = 0
+		state.taxi_payment_pending = false
 	# Older completion flags did not certify the full farewell sequence.
 	# Preserve the bags and balance, but replay the pending fare on resume.
 	var replay_fare := OS.get_cmdline_user_args().has("--replay-fare")
@@ -103,7 +116,7 @@ func setup(controller) -> void:
 	game.reticle.hide()
 	game.business.layer.hide()
 	game.map_credit.hide()
-	if int(state.get("step",0))==1:
+	if int(state.get("step",0))==1 and int(state.get("arrival_stop_revision",0))==ARRIVAL_STOP_REVISION:
 		_resume_arrival()
 	else:
 		_begin_ride()
@@ -182,14 +195,83 @@ func _make_engine() -> void:
 	engine.stream = audio
 	engine.volume_db = -26.0
 
+func _make_house_arrow() -> void:
+	house_arrow = Label3D.new()
+	add_child(house_arrow)
+	house_arrow.text = "▼"
+	house_arrow.font_size = 96
+	house_arrow.pixel_size = .012
+	house_arrow.modulate = Color("#ffd146")
+	house_arrow.outline_modulate = Color("#30240c")
+	house_arrow.outline_size = 12
+	house_arrow.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	house_arrow.no_depth_test = true
+	house_arrow.hide()
+
+func _update_house_arrow(delta: float) -> void:
+	if not is_instance_valid(house_arrow): return
+	arrow_clock += delta
+	house_arrow.visible = phase=="unload" and not game.garage.inside and not (dropped[0] and dropped[1])
+	if house_arrow.visible:
+		house_arrow.global_position = Vector3(home.door)+Vector3.UP*(3.3+sin(arrow_clock*3.0)*.18)
+
+func _house_side_routes() -> Array:
+	var data = world.geography
+	var pin: Vector3 = data.project(ARRIVAL_PIN_LAT,ARRIVAL_PIN_LON)
+	var door_at: Vector3 = home.door
+	var frontage: Dictionary = home.get("edge",{})
+	var street_name := String(frontage.get("name",""))
+	var options: Array = []
+	var seen: Dictionary = {}
+	# Use the clicked location as the longitudinal target, but use the
+	# residential doorway to choose the correct curb and legal direction.
+	var edges: Array = data.roads_near(pin,35.0)
+	if not frontage.is_empty(): edges.append(frontage)
+	for edge in edges:
+		if not bool(edge.get("driveable",false)): continue
+		if not street_name.is_empty() and String(edge.get("name",""))!=street_name: continue
+		var aid := String(edge.a_id)
+		var bid := String(edge.b_id)
+		var key := aid+":"+bid
+		if seen.has(key): continue
+		seen[key] = true
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		var center := Geometry3D.get_closest_point_to_segment(pin,a,b)
+		if center.distance_to(pin)>18.0 or center.distance_to(door_at)>28.0: continue
+		for order in [0,1]:
+			var entry := aid if order==0 else bid
+			var exit_id := bid if order==0 else aid
+			if not data.graph.get(entry,[]).has(exit_id): continue
+			var start: Vector3 = data.points[entry]
+			var finish: Vector3 = data.points[exit_id]
+			var d := (finish-start).normalized()
+			var side := Vector3(-d.z,0,d.x)
+			if side.dot(door_at-center)<=0.0: continue
+			var width := 1.90
+			var offset: float = data.lane_distance(edge,width,true)
+			var berth: Vector3 = world.street_geometry.safe_stop_on_edge(start,finish,center+side*offset,4.80,width)
+			if not world.street_geometry.intersection_clear_for_stop(berth,4.80,width): continue
+			if not world.street_geometry.point_on_road(berth): continue
+			if berth.distance_to(door_at)>28.0: continue
+			for item in service.taxis:
+				var ids: Array[String] = service.router.path(String(item.next_node),entry)
+				if ids.is_empty(): continue
+				var route: Dictionary = {"id":exit_id,"path":ids,"label":"Casa alquilada","note":"","point":berth-side*offset,"distance":service.router.route_length(ids)+start.distance_to(berth),"partial":true,"entry":entry,"exit":exit_id,"story_berth":berth}
+				var score := berth.distance_to(pin)*12.0+berth.distance_to(door_at)+absf(float(route.distance)-200.0)*.015
+				options.append({"item":item,"route":route,"score":score})
+	return options
+
 func _begin_ride() -> void:
 	var goal: Vector3 = home.get("road",home.door)
-	var candidates: Array = []
-	for item in service.taxis:
-		var route: Dictionary = service.router.resolve_point(goal,String(item.next_node))
-		if route.has("error") or not route.has("path"): continue
-		var dist := float(route.get("distance",0.0))
-		candidates.append({"item":item,"route":route,"score":absf(dist-340.0)+(500.0 if dist<170.0 else 0.0)})
+	var candidates: Array = _house_side_routes()
+	if candidates.is_empty():
+		push_warning("MyCity: no legal house-side stop near selected GPS; using safe nearby road.")
+		for item in service.taxis:
+			var route: Dictionary = service.router.resolve_point(goal,String(item.next_node))
+			if route.has("error") or not route.has("path"): continue
+			var dist := float(route.get("distance",0.0))
+			candidates.append({"item":item,"route":route,"score":absf(dist-340.0)+(500.0 if dist<170.0 else 0.0)})
 	candidates.sort_custom(func(a,b): return float(a.score)<float(b.score))
 	for candidate in candidates:
 		service.selected = candidate.item
@@ -325,6 +407,7 @@ func _arrive() -> void:
 	cab.remove_from_group("traffic_parked")
 	cab.set_meta("traffic_servicing",true)
 	state.step = 1
+	state.arrival_stop_revision = ARRIVAL_STOP_REVISION
 	state.cab = [at.x,at.y,at.z,angle]
 	state.exit = [exit.position.x,exit.position.y,exit.position.z]
 	_save()
@@ -372,6 +455,7 @@ func _exit_cab(at: Vector3) -> void:
 	lid.rotation.x = 1.15
 	trunk_open = true
 	phase = "unload"
+	_update_house_arrow(0.0)
 	fade.color = Color(0,0,0,0)
 	title.hide()
 	game.business.layer.show()
@@ -439,6 +523,7 @@ func interact() -> void:
 func _begin_fare() -> void:
 	if phase!="unload" or not dropped[0] or not dropped[1]: return
 	phase = "wallet"
+	if is_instance_valid(house_arrow): house_arrow.hide()
 	state.step = 1
 	state.fare_scene_done = false
 	state.fare_lines_completed = 0
@@ -639,6 +724,7 @@ func handle_look(relative: Vector2) -> void:
 		game.pivot.rotation = Vector3(game.pitch,game.yaw,0)
 
 func tick(delta: float) -> void:
+	_update_house_arrow(delta)
 	match phase:
 		"approach":
 			game.player.global_position = cab.global_position+Vector3.UP

@@ -3971,7 +3971,24 @@ func _make_signal_visuals() -> void:
 			var lenses: Array[MeshInstance3D] = []
 			for i in range(3):
 				lenses.append(_signal_part(root,Vector3(0,3.25-float(i)*.22,.121),Vector3(.15,.15,.035),Color("#33383a")))
-			signal_visuals.append({"junction":junction,"direction":direction,"lenses":lenses,"last":-1})
+			signal_visuals.append({"junction":junction,"direction":direction,"lenses":lenses,"last":-1,"root":root})
+	# Remove only the post selected in the editor screenshot, not the
+	# intersection's remaining signals or its traffic-control logic.
+	var unwanted := geography.project(23.1223870,-82.3669249)
+	var best_index := -1
+	var best_distance := 8.0
+	for i in range(signal_visuals.size()):
+		var root: Node3D = signal_visuals[i].root
+		var distance := root.global_position.distance_to(unwanted)
+		if distance<best_distance:
+			best_distance = distance
+			best_index = i
+	if best_index>=0:
+		var root: Node3D = signal_visuals[best_index].root
+		root.hide()
+		root.queue_free()
+		signal_visuals.remove_at(best_index)
+		print("MyCity: removed selected traffic signal post near rental house.")
 	_update_signal_visuals(1.0)
 
 func _update_signal_visuals(delta: float) -> void:
