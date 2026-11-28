@@ -1020,10 +1020,20 @@ func _aimed_home(at: Vector3) -> bool:
 	ray.exclude = [game.player.get_rid()]
 	return get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
 
+func aimed_rental_exit(at: Vector3) -> bool:
+	if not inside: return false
+	if at.distance_to(ROOM+Vector3(-.7,.86,5.25))>2.2: return false
+	# Select the actual door leaf, not the surrounding floor or nearby tools.
+	return _aim_tool(guest_door,Vector3(.60,1.10,0),Vector3(.62,1.12,.105))
+
+func _home_exit_selected(at: Vector3) -> bool:
+	if game.adaptation_mode: return aimed_rental_exit(at)
+	return at.distance_to(ROOM+Vector3(-.7,.86,5.25))<1.55
+
 func action_text(at: Vector3) -> String:
 	if riding: return "Frenando para bajar" if ride_exit_requested else "[E] Bajar"
 	if inside:
-		if at.distance_to(ROOM+Vector3(-.7,.86,5.25))<1.55: return "[E] Salir de casa"
+		if _home_exit_selected(at): return "[E] Salir de casa"
 		var storage := storage_action(at)
 		if not storage.is_empty(): return storage
 		var waste_action := _waste_action(at)
@@ -1051,7 +1061,7 @@ func interact(at: Vector3) -> bool:
 		if absf(ride_speed)<.6: _dismount()
 		return true
 	if inside:
-		if at.distance_to(ROOM+Vector3(-.7,.86,5.25))<1.55:
+		if _home_exit_selected(at):
 			_exit()
 		elif not business.life.state.meal.is_empty(): return false
 		elif storage_interact(at): pass
@@ -2207,7 +2217,7 @@ func _house_tool_action(at: Vector3) -> String:
 		return "Clic izquierdo: barrer · [X] Guardar escoba"
 	if not _free_hands(): return ""
 	if _aim_tool(resting_brush,Vector3.ZERO,Vector3(.27,.12,.24)): return "[E] Recoger brocha"
-	if _near_broom(at) or _aim_tool(resting_broom,Vector3(0,.65,0),Vector3(.30,.75,.25)): return "[E] Recoger escoba"
+	if _aim_tool(resting_broom,Vector3(0,.72,0),Vector3(.23,.73,.13)): return "[E] Recoger escoba"
 	return ""
 
 func _house_tool_interact(at: Vector3) -> bool:
