@@ -176,6 +176,13 @@ func setup(controller) -> void:
 	if not state.home_food.has("table_plate"): state.home_food.table_plate = []
 	if not state.home_food.has("table_bites"): state.home_food.table_bites = 3
 	if not state.home_food.has("table_water"): state.home_food.table_water = -1
+	# A saved meal resumes on the table, not in the hands outside the house.
+	var saved_meal: Dictionary = business.life.state.get("meal",{})
+	if game.adaptation_mode and String(saved_meal.get("key","")) in ["plato_casero","arroz_casero"]:
+		state.home_food.table_plate = saved_meal.get("ingredients",["arroz"]).duplicate()
+		state.home_food.table_bites = int(saved_meal.get("food_bites",3))
+		business.life.state.meal = {}
+		business.life._refresh_meal()
 	if not state.home_food.has("heat_on"): state.home_food.heat_on = float(state.home_food.remaining)>0.0
 	if not state.home_food.has("overcook"): state.home_food.overcook = 0.0
 	if not state.home_food.has("burned"): state.home_food.burned = false
@@ -3299,6 +3306,7 @@ func _dismount(force: bool = false) -> void:
 	if borrowed and game.yordi_mission!=null: game.yordi_mission.on_manual_bike_exit(force)
 
 func reset() -> void:
+	if dining_seated: _stand_from_dining(true)
 	_stop_home_paint()
 	if riding: _dismount(true)
 	inside = false
