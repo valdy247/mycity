@@ -803,7 +803,7 @@ func _decorate_rental_home() -> void:
 	_rental_part(kitchen,Vector3(.25,.44,-.31),Vector3(2.5,.82,.04),wood)
 	for x in [-.98,-.325,.325,.98,1.48]:
 		_rental_part(kitchen,Vector3(float(x),.44,0),Vector3(.04,.82,.66),wood)
-	_rental_part(kitchen,Vector3(.25,.91,0),Vector3(2.58,.09,.72),Color("#777d76"))
+	_solid(kitchen,Vector3(.25,.91,0),Vector3(2.58,.09,.72),Color("#777d76"))
 	for x in [-.65,0.0,.65]:
 		var leaf := _make_storage_leaf(kitchen,float(x),.46,.345,.59,.66,"armario inferior",Color("#c9bda1"))
 		if absf(float(x))<.01: rice_doors["arroz"] = leaf
@@ -1558,7 +1558,8 @@ func _clear_rice_lid_hand() -> void:
 func _fill_rice_jug_async() -> void:
 	if rice_pouring: return
 	rice_pouring = true
-	var jug := _rental_root(kitchen_tap,Vector3(0,-.10,.17))
+	# Keep the jug and grip above the countertop rather than inside it.
+	var jug := _rental_root(kitchen_tap,Vector3(0,-.085,.25))
 	_draw_rice_ingredient(jug,"jarra")
 	_attach_interaction_hand(jug,Vector3(.066,.075,.025))
 	carried_view.hide()
@@ -1578,12 +1579,12 @@ func _add_rice_async(key: String) -> void:
 	if rice_pouring: return
 	rice_pouring = true
 	var recipe: Dictionary = state.rice_recipe
-	var ingredient := _rental_root(rice_cooker,Vector3(.22,.45,.02))
+	var ingredient := _rental_root(rice_cooker,Vector3(.24,.52,.12))
 	_draw_rice_ingredient(ingredient,key)
 	_attach_interaction_hand(ingredient,Vector3(.066,.075,.025) if key=="agua" else Vector3(.045,.055,.025))
 	carried_view.hide()
 	var pour := create_tween()
-	pour.tween_property(ingredient,"position",Vector3(.09,.42,0),.35)
+	pour.tween_property(ingredient,"position",Vector3(.10,.49,.05),.35)
 	pour.parallel().tween_property(ingredient,"rotation:z",1.8,.35)
 	await pour.finished
 	var color := Color("#eae2c8")
@@ -1723,8 +1724,8 @@ func _serve_coffee_async() -> void:
 	var origin: Vector3 = coffee_pot.position
 	var hand := _attach_interaction_hand(coffee_pot,Vector3(.122,.194,.025))
 	var lift := create_tween()
-	lift.tween_property(coffee_pot,"position",origin+Vector3.UP*.18,.30)
-	lift.tween_property(coffee_pot,"position",Vector3(.285,1.15,.12),.45)
+	lift.tween_property(coffee_pot,"position",origin+Vector3.UP*.34,.30)
+	lift.tween_property(coffee_pot,"position",Vector3(.285,1.28,.15),.45)
 	lift.tween_property(coffee_pot,"rotation:z",1.25,.35)
 	await lift.finished
 	coffee_stream.show()
@@ -1736,7 +1737,7 @@ func _serve_coffee_async() -> void:
 	coffee_stream.hide()
 	var back := create_tween()
 	back.tween_property(coffee_pot,"rotation:z",0.0,.35)
-	back.tween_property(coffee_pot,"position",origin+Vector3.UP*.18,.45)
+	back.tween_property(coffee_pot,"position",origin+Vector3.UP*.34,.45)
 	back.tween_property(coffee_pot,"position",origin,.30)
 	await back.finished
 	hand.queue_free()
@@ -1744,6 +1745,10 @@ func _serve_coffee_async() -> void:
 	_refresh_coffee_visual()
 	coffee_busy = false
 	business._notify("Taza servida · apunta a la taza y pulsa E para beber.")
+
+func _coffee_safe_pose(at: Vector3) -> void:
+	if is_instance_valid(coffee_drink_view):
+		coffee_drink_view.position = InteractionHand.camera_safe_pose(game.play_camera,at,.09)
 
 func _drink_coffee_async() -> void:
 	if coffee_busy or not _free_hands() or not bool(business.life.state.coffee_served): return
@@ -1758,11 +1763,11 @@ func _drink_coffee_async() -> void:
 	liquid.show()
 	var sip := create_tween()
 	for i in range(3):
-		sip.tween_property(coffee_drink_view,"position",Vector3(.065,-.115,-.27),.34)
+		sip.tween_method(_coffee_safe_pose,Vector3(.27,-.35,-.52),Vector3(.065,-.115,-.27),.34)
 		sip.parallel().tween_property(coffee_drink_view,"rotation:x",.60,.34)
 		sip.tween_interval(.35)
 		sip.tween_property(liquid,"position:y",.045-float(i+1)*.010,.14)
-		sip.tween_property(coffee_drink_view,"position",Vector3(.27,-.35,-.52),.30)
+		sip.tween_method(_coffee_safe_pose,Vector3(.065,-.115,-.27),Vector3(.27,-.35,-.52),.30)
 		sip.parallel().tween_property(coffee_drink_view,"rotation:x",0.0,.30)
 		sip.tween_interval(.15)
 	await sip.finished
@@ -2558,7 +2563,10 @@ func tick(delta: float) -> void:
 	if waypoint!=null:
 		waypoint.visible = waypoint_active and not inside
 		waypoint.global_position = waypoint_point+Vector3.UP*(2.7+sin(Time.get_ticks_msec()*.003)*.15)
-	if carried_view!=null: carried_view.visible = not rice_pouring and not riding and not game.driving and not game.taxi_riding and not game.bus_riding
+	if carried_view!=null:
+		carried_view.visible = not rice_pouring and not riding and not game.driving and not game.taxi_riding and not game.bus_riding
+		if inside and carried_view.visible and not String(state.rice_recipe.hand).is_empty():
+			carried_view.position = InteractionHand.camera_safe_pose(game.play_camera,Vector3(.33,-.36,-.58),.15)
 	for i in range(state.deliveries.size()-1,-1,-1):
 		var delivery: Dictionary = state.deliveries[i]
 		delivery.remaining = float(delivery.remaining)-delta
