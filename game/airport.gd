@@ -138,11 +138,23 @@ var footstep_variant := 0
 const AIRPORT_SAMPLE_RATE := 16000
 const AIRPORT_ANNOUNCEMENTS := ["Atención, pasajeros. Comprueben sus etiquetas antes de retirar el equipaje.","Bienvenidos al Aeropuerto Internacional José Martí. Mantengan despejadas las zonas de circulación.","Se recuerda a los pasajeros que deben mantener sus pertenencias consigo en todo momento."]
 
+const NewGameReset = preload("res://new_game_reset.gd")
+
 func _ready() -> void:
+	var tree := get_tree()
+	var fresh := OS.get_cmdline_user_args().has("--new-story")
+	if fresh and not bool(tree.get_meta("mycity_new_story_initialized",false)):
+		var result := NewGameReset.reset()
+		if not bool(result.ok):
+			OS.alert(String(result.error),"MyCity: no se pudo reiniciar")
+			tree.quit(1)
+			return
+		tree.set_meta("mycity_new_story_initialized",true)
+		if tree.has_meta("mycity_adaptation"): tree.remove_meta("mycity_adaptation")
 	mobile = OS.has_feature("android") or OS.has_feature("ios") or OS.get_cmdline_user_args().has("--touch-controls")
 	progress.load_game()
 	# Explicit QA entry point: replay only the taxi prologue, never delete saves.
-	replay_departure = OS.get_cmdline_user_args().has("--replay-airport-ride")
+	replay_departure = not fresh and OS.get_cmdline_user_args().has("--replay-airport-ride")
 	if replay_departure:
 		progress.stage = Progress.COMPLETE
 		progress.ride_finished = false
@@ -2033,7 +2045,9 @@ func _tick_departure(delta: float) -> void:
 				progress.ride_finished = true
 				progress.save_game()
 			var tree := get_tree()
+			if tree.has_meta("mycity_classic_explicit"): tree.remove_meta("mycity_classic_explicit")
 			tree.set_meta("mycity_adaptation",true)
+			print("MyCity HISTORIA: aeropuerto terminado; iniciando llegada a la casa.")
 			tree.set_meta("mycity_city_load_started",Time.get_ticks_msec())
 			if not city_warm_data.is_empty(): tree.set_meta("mycity_warmed_map",city_warm_data)
 			if city_scene_requested and ResourceLoader.load_threaded_get_status("res://main.tscn")==ResourceLoader.THREAD_LOAD_LOADED:
@@ -2230,7 +2244,8 @@ func _make_hud() -> void:
 	actions.add_child(title)
 	_button(actions,"Continuar",_toggle_menu)
 	_button(actions,"Reiniciar misión del aeropuerto",_restart)
-	_button(actions,"Ciudad anterior (modo clásico)",_legacy)
+	if not OS.get_cmdline_user_args().has("--new-story"):
+		_button(actions,"Ciudad anterior (modo clásico)",_legacy)
 	menu.hide()
 	if mobile:
 		var controls := HBoxContainer.new()
@@ -2273,7 +2288,9 @@ func _restart() -> void:
 	else: _notice("No se pudo reiniciar la misión.")
 
 func _legacy() -> void:
-	get_tree().remove_meta("mycity_adaptation")
+	if OS.get_cmdline_user_args().has("--new-story"): return
+	get_tree().set_meta("mycity_classic_explicit",true)
+	if get_tree().has_meta("mycity_adaptation"): get_tree().remove_meta("mycity_adaptation")
 	get_tree().change_scene_to_file("res://main.tscn")
 
 func _exit_tree() -> void:
