@@ -75,6 +75,8 @@ var rice_jug: Node3D
 var rice_pantry: Dictionary = {}
 var rice_doors: Dictionary = {}
 var rice_cabinet_body: StaticBody3D
+var rice_pouring := false
+var rice_lid_tween: Tween
 const RICE_INGREDIENTS := ["arroz","agua","sal","aceite"]
 const RICE_COOK_SECONDS := 35.0
 var home_windows: Array[Dictionary] = []
@@ -1332,7 +1334,7 @@ func _build_rice_kitchen(kitchen: Node3D) -> void:
 	_draw_rice_ingredient(rice_jug,"jarra")
 	_refresh_rice_visuals()
 
-func _refresh_rice_visuals() -> void:
+func _refresh_rice_visuals(update_lid: bool = true) -> void:
 	if not is_instance_valid(rice_cooker): return
 	var recipe: Dictionary = state.rice_recipe
 	var hand := String(recipe.hand)
@@ -1340,7 +1342,7 @@ func _refresh_rice_visuals() -> void:
 		var prop: Node3D = rice_pantry[key]
 		prop.visible = int(recipe.stock.get(key,0))>0 and hand!=String(key)
 	rice_jug.visible = hand not in ["jarra","agua"]
-	rice_lid.rotation.x = 0.0 if bool(recipe.lid) else -1.65
+	if update_lid: rice_lid.rotation.x = 0.0 if bool(recipe.lid) else -1.65
 	rice_contents.visible = not recipe.added.is_empty() or int(recipe.portions)>0 or float(recipe.remaining)>0.0
 	rice_contents.material_override = business._mat(Color("#eae2c8") if "arroz" in recipe.added or int(recipe.portions)>0 else Color("#9ebdc2"))
 	rice_indicator.material_override = business._mat(Color("#df5536") if float(recipe.remaining)>0.0 else (Color("#70b977") if int(recipe.portions)>0 else Color("#6d7066")))
@@ -1365,6 +1367,7 @@ func _rice_action() -> String:
 	if not inside or not is_instance_valid(rice_cooker): return ""
 	var recipe: Dictionary = state.rice_recipe
 	var hand := String(recipe.hand)
+	if rice_pouring: return "[E] Añadiendo ingrediente…"
 	var aimed := _aim_tool(rice_cooker,Vector3(0,.16,0),Vector3(.22,.18,.21))
 	if not hand.is_empty():
 		if hand=="jarra" and _aim_tool(kitchen_tap,Vector3(0,.06,.08),Vector3(.13,.21,.16)): return "[E] Llenar jarra de agua"
@@ -1395,6 +1398,7 @@ func _rice_missing() -> String:
 func _rice_interact() -> bool:
 	var action := _rice_action()
 	if action.is_empty(): return false
+	if rice_pouring: return true
 	var recipe: Dictionary = state.rice_recipe
 	var hand := String(recipe.hand)
 	if action.contains("Recoger jarra"): recipe.hand = "jarra"
@@ -1404,14 +1408,16 @@ func _rice_interact() -> bool:
 		get_tree().create_timer(.8).timeout.connect(func(): tap_water.hide())
 	elif action.contains("Recoger "): recipe.hand = action.trim_prefix("[E] Recoger ")
 	elif action.contains("Devolver "): recipe.hand = ""
-	elif action.contains("Abrir tapa") or action.contains("Abrir arrocera"): recipe.lid = false
+	elif action.contains("Abrir tapa") or action.contains("Abrir arrocera"):
+		_set_rice_lid(false)
+		return true
 	elif action.contains("Añadir "):
-		if hand in RICE_INGREDIENTS and hand not in recipe.added and float(recipe.remaining)<=0.0 and int(recipe.portions)==0:
-			recipe.added.append(hand)
-			if hand!="agua": recipe.stock[hand] = maxi(0,int(recipe.stock.get(hand,0))-1)
-			recipe.hand = ""
-			business._notify("Añadiste "+hand+" · "+("ingredientes completos" if recipe.added.size()==4 else "faltan "+_rice_missing()))
-	elif action.contains("Cerrar tapa"): recipe.lid = true
+		if hand in RICE_INGREDIENTS and hand not in recipe.added and float(recipe.remaining)<=0.0 and int(recipe.portions)==0 and not bool(recipe.lid):
+			_add_rice_async(hand)
+		return true
+	elif action.contains("Cerrar tapa"):
+		_set_rice_lid(true)
+		return true
 	elif action=="[E] Cocinar arroz":
 		if recipe.added.size()==4 and bool(recipe.lid):
 			recipe.remaining = RICE_COOK_SECONDS
@@ -1426,6 +1432,41 @@ func _rice_interact() -> bool:
 	_refresh_carried()
 	_save()
 	return true
+
+func _set_rice_lid(closed: bool) -> void:
+	state.rice_recipe.lid = closed
+	if is_instance_valid(rice_lid_tween): rice_lid_tween.kill()
+	rice_lid_tween = create_tween()
+	rice_lid_tween.tween_property(rice_lid,"rotation:x",0.0 if closed else -1.65,.35).set_trans(Tween.TRANS_SINE)
+	_save()
+
+func _add_rice_async(key: String) -> void:
+	if rice_pouring: return
+	rice_pouring = true
+	var recipe: Dictionary = state.rice_recipe
+	var ingredient := _rental_root(rice_cooker,Vector3(.22,.45,.02))
+	_draw_rice_ingredient(ingredient,key)
+	carried_view.hide()
+	var pour := create_tween()
+	pour.tween_property(ingredient,"position",Vector3(.09,.42,0),.35)
+	pour.parallel().tween_property(ingredient,"rotation:z",1.8,.35)
+	await pour.finished
+	var color := Color("#eae2c8")
+	if key=="agua": color = Color("#8ab6cc")
+	elif key=="aceite": color = Color("#d3ae50")
+	var stream := _rental_cylinder(rice_cooker,Vector3(0,.335,0),.012,.14,color)
+	await get_tree().create_timer(.50).timeout
+	stream.queue_free()
+	ingredient.queue_free()
+	recipe.added.append(key)
+	if key!="agua": recipe.stock[key] = maxi(0,int(recipe.stock.get(key,0))-1)
+	recipe.hand = ""
+	rice_pouring = false
+	_refresh_rice_visuals(false)
+	_refresh_carried()
+	carried_view.show()
+	_save()
+	business._notify("Añadiste "+key+" · "+("ingredientes completos" if recipe.added.size()==4 else "faltan "+_rice_missing()))
 
 func _tick_rice(delta: float) -> void:
 	if not is_instance_valid(rice_cooker): return
@@ -2374,7 +2415,7 @@ func tick(delta: float) -> void:
 	if waypoint!=null:
 		waypoint.visible = waypoint_active and not inside
 		waypoint.global_position = waypoint_point+Vector3.UP*(2.7+sin(Time.get_ticks_msec()*.003)*.15)
-	if carried_view!=null: carried_view.visible = not riding and not game.driving and not game.taxi_riding and not game.bus_riding
+	if carried_view!=null: carried_view.visible = not rice_pouring and not riding and not game.driving and not game.taxi_riding and not game.bus_riding
 	for i in range(state.deliveries.size()-1,-1,-1):
 		var delivery: Dictionary = state.deliveries[i]
 		delivery.remaining = float(delivery.remaining)-delta
