@@ -1,4 +1,5 @@
 extends Node3D
+const InteractionHand = preload("res://interaction_hand.gd")
 const Kit = preload("res://vehicle_kit.gd")
 const MapView = preload("res://taxi_map.gd")
 const Person = preload("res://street_person.gd")
@@ -94,6 +95,8 @@ var wall_hour_hand: Node3D
 var wall_minute_hand: Node3D
 var bedside_lamp: Node3D
 var bedside_glow: OmniLight3D
+var home_light_switches: Dictionary = {}
+var home_room_lights: Dictionary = {}
 var television: Node3D
 var television_screen: MeshInstance3D
 var kitchen_tap: Node3D
@@ -395,6 +398,9 @@ func _build_interior() -> void:
 		light.light_energy = 1.15 if game.adaptation_mode else 1.6
 		light.light_color = Color("#fff1dc")
 		light.omni_attenuation = 1.1
+		if game.adaptation_mode:
+			light.omni_range = 6.5 if float(x)<0 else 5.5
+			_register_room_light("sala" if float(x)<0 else "garaje",light)
 	marker = Node3D.new()
 	interior.add_child(marker)
 	marker.position = BENCH+Vector3.UP*2.35
@@ -868,6 +874,10 @@ func _decorate_rental_home() -> void:
 	bedroom_light.light_energy = .85
 	bedroom_light.omni_range = 5.0
 	bedroom_light.omni_attenuation = 1.25
+	_register_room_light("dormitorio",bedroom_light)
+	_make_light_switch(decor,"sala",Vector3(-1.65,1.35,5.67),PI)
+	_make_light_switch(decor,"dormitorio",Vector3(-2.80,1.35,-2.19),0.0)
+	_make_light_switch(decor,"garaje",Vector3(.04,1.35,2.60),PI*.5)
 	# Garage remains a usable workspace; only wall storage is decorative.
 	var storage := _rental_root(decor,Vector3(6.43,0,-.5),-PI*.5)
 	_rental_part(storage,Vector3(0,1.67,-.19),Vector3(2.2,.72,.04),Color("#9b8c70"))
@@ -940,12 +950,60 @@ func _build_rental_bathroom() -> void:
 	light.omni_range = 3.8
 	light.light_energy = .9
 	light.light_color = Color("#fff1dd")
+	_register_room_light("baño",light)
+	_make_light_switch(root,"baño",Vector3(4.06,1.35,-3.75),-PI*.5)
 
-func _refresh_carried() -> void:
+func _register_room_light(key: String,light: OmniLight3D) -> void:
+	home_room_lights[key] = light
+	if not state.has("home_lights"): state.home_lights = {}
+	light.visible = bool(state.home_lights.get(key,true))
+
+func _make_light_switch(root: Node3D,key: String,at: Vector3,angle: float) -> void:
+	var node := _rental_root(root,at,angle)
+	_rental_part(node,Vector3.ZERO,Vector3(.09,.135,.025),Color("#d4c9b2"))
+	var lever := _rental_part(node,Vector3(0,0,.022),Vector3(.037,.068,.025),Color("#f1e8d5"))
+	home_light_switches[key] = {"node":node,"lever":lever}
+	_refresh_light_switch(key)
+
+func _refresh_light_switch(key: String) -> void:
+	var on := bool(state.home_lights.get(key,true))
+	var light: OmniLight3D = home_room_lights.get(key)
+	if is_instance_valid(light): light.visible = on
+	var entry: Dictionary = home_light_switches.get(key,{})
+	if not entry.is_empty():
+		var lever: Node3D = entry.lever
+		lever.rotation.x = -.32 if on else .32
+
+func _aim_light_switch() -> String:
+	for key in home_light_switches:
+		if _aim_tool(home_light_switches[key].node,Vector3(0,0,.025),Vector3(.07,.09,.035)): return String(key)
+	return ""
+
+func _switch_action() -> String:
+	var key := _aim_light_switch()
+	if key.is_empty(): return ""
+	return "[E] "+("Apagar" if bool(state.home_lights.get(key,true)) else "Encender")+" luz · "+key
+
+func _switch_interact() -> bool:
+	var key := _aim_light_switch()
+	if key.is_empty(): return false
+	state.home_lights[key] = not bool(state.home_lights.get(key,true))
+	_refresh_light_switch(key)
+	_save()
+	return true
+
+func _attach_interaction_hand(root: Node3D,grip: Vector3,left: bool = false,under: bool = false) -> Node3D:
+	var hand := InteractionHand.new()
+	root.add_child(hand)
+	hand.configure(grip,left,under)
+	return hand
+
+func _refresh_carried() -> void: -> void:
 	if carried_view==null: return
 	for child in carried_view.get_children():
 		carried_view.remove_child(child)
 		child.queue_free()
+	carried_view.position = Vector3(.30,-.35,-.88)
 	var id := String(state.held_furniture)
 	if FURNITURE.has(id):
 		if game.adaptation_mode:
@@ -958,7 +1016,10 @@ func _refresh_carried() -> void:
 			model.rotation.y = -.25
 		else: business._box(carried_view,Vector3.ZERO,Vector3(.50,.36,.44),FURNITURE[id].color)
 	elif not String(state.rice_recipe.hand).is_empty():
-		_draw_rice_ingredient(carried_view,String(state.rice_recipe.hand))
+		carried_view.position = Vector3(.33,-.36,-.58)
+		var key := String(state.rice_recipe.hand)
+		_draw_rice_ingredient(carried_view,key)
+		_attach_interaction_hand(carried_view,Vector3(.066,.075,.025) if key in ["jarra","agua"] else Vector3(.045,.055,.025))
 	elif not state.get("waste_hand",{}).is_empty():
 		_make_waste_item(carried_view,state.waste_hand)
 	elif not String(state.paint_carry).is_empty():
@@ -1369,18 +1430,22 @@ func _rice_action() -> String:
 	var hand := String(recipe.hand)
 	if rice_pouring: return "[E] Añadiendo ingrediente…"
 	var aimed := _aim_tool(rice_cooker,Vector3(0,.16,0),Vector3(.22,.18,.21))
+	var lid_aimed := _aim_tool(rice_lid,Vector3(0,.02,.15),Vector3(.19,.055,.19))
 	if not hand.is_empty():
 		if hand=="jarra" and _aim_tool(kitchen_tap,Vector3(0,.06,.08),Vector3(.13,.21,.16)): return "[E] Llenar jarra de agua"
-		if hand!="jarra" and aimed: return "[E] Añadir "+hand if not bool(recipe.lid) else "[E] Abrir tapa de la arrocera"
+		if hand!="jarra" and (aimed or lid_aimed): return "[E] Añadir "+hand if not bool(recipe.lid) else "[E] Abrir tapa de la arrocera"
 		if hand in ["jarra","agua"] and _aim_tool(rice_jug,Vector3(0,.075,0),Vector3(.10,.10,.10)): return "[E] Devolver jarra"
 		if hand in ["arroz","sal","aceite"] and _rice_prop_aim(hand): return "[E] Devolver "+hand
 		return ""
-	if aimed:
+	if aimed or lid_aimed:
 		if float(recipe.remaining)>0.0: return "[E] Arroz cocinándose · %d s" % ceili(float(recipe.remaining))
-		if int(recipe.portions)>0: return "[E] Abrir arrocera" if bool(recipe.lid) else "[E] Servir plato de arroz · %d" % int(recipe.portions)
+		if int(recipe.portions)>0:
+			if bool(recipe.lid): return "[E] Abrir arrocera"
+			if lid_aimed: return "[E] Cerrar tapa"
+			return "[E] Servir plato de arroz · %d" % int(recipe.portions)
 		if bool(recipe.lid):
 			return "[E] Cocinar arroz" if recipe.added.size()==4 else "[E] Abrir tapa de la arrocera"
-		if recipe.added.size()==4: return "[E] Cerrar tapa"
+		if lid_aimed or recipe.added.size()==4: return "[E] Cerrar tapa"
 		return "[E] Arrocera · faltan "+_rice_missing()
 	if not _free_hands(): return ""
 	if _aim_tool(rice_jug,Vector3(0,.075,0),Vector3(.10,.10,.10)) and "agua" not in recipe.added and float(recipe.remaining)<=0.0 and int(recipe.portions)==0: return "[E] Recoger jarra"
@@ -1446,6 +1511,7 @@ func _add_rice_async(key: String) -> void:
 	var recipe: Dictionary = state.rice_recipe
 	var ingredient := _rental_root(rice_cooker,Vector3(.22,.45,.02))
 	_draw_rice_ingredient(ingredient,key)
+	_attach_interaction_hand(ingredient,Vector3(.066,.075,.025) if key=="agua" else Vector3(.045,.055,.025))
 	carried_view.hide()
 	var pour := create_tween()
 	pour.tween_property(ingredient,"position",Vector3(.09,.42,0),.35)
@@ -1584,6 +1650,7 @@ func _serve_coffee_async() -> void:
 	coffee_busy = true
 	coffee_phase = "Sirviendo café…"
 	var origin: Vector3 = coffee_pot.position
+	var hand := _attach_interaction_hand(coffee_pot,Vector3(.122,.194,.025))
 	var lift := create_tween()
 	lift.tween_property(coffee_pot,"position",origin+Vector3.UP*.18,.30)
 	lift.tween_property(coffee_pot,"position",Vector3(.285,1.15,.12),.45)
@@ -1601,6 +1668,7 @@ func _serve_coffee_async() -> void:
 	back.tween_property(coffee_pot,"position",origin+Vector3.UP*.18,.45)
 	back.tween_property(coffee_pot,"position",origin,.30)
 	await back.finished
+	hand.queue_free()
 	business.life.serve_home_coffee()
 	_refresh_coffee_visual()
 	coffee_busy = false
@@ -1613,8 +1681,9 @@ func _drink_coffee_async() -> void:
 	coffee_cup.hide()
 	coffee_drink_view = Node3D.new()
 	game.play_camera.add_child(coffee_drink_view)
-	coffee_drink_view.position = Vector3(.20,-.29,-.46)
+	coffee_drink_view.position = Vector3(.27,-.35,-.52)
 	var liquid := _make_coffee_cup(coffee_drink_view)
+	_attach_interaction_hand(coffee_drink_view,Vector3(.065,.035,.018))
 	liquid.show()
 	var sip := create_tween()
 	for i in range(3):
@@ -1622,7 +1691,7 @@ func _drink_coffee_async() -> void:
 		sip.parallel().tween_property(coffee_drink_view,"rotation:x",.60,.34)
 		sip.tween_interval(.35)
 		sip.tween_property(liquid,"position:y",.045-float(i+1)*.010,.14)
-		sip.tween_property(coffee_drink_view,"position",Vector3(.20,-.29,-.46),.30)
+		sip.tween_property(coffee_drink_view,"position",Vector3(.27,-.35,-.52),.30)
 		sip.parallel().tween_property(coffee_drink_view,"rotation:x",0.0,.30)
 		sip.tween_interval(.15)
 	await sip.finished
@@ -1672,6 +1741,8 @@ func action_text(at: Vector3) -> String:
 	if inside:
 		if not business.life.state.meal.is_empty(): return "[E] Comer / beber"
 		if _home_exit_selected(at): return "[E] Salir de casa"
+		var light_action := _switch_action()
+		if not light_action.is_empty(): return light_action
 		var rice_action := _rice_action()
 		if not rice_action.is_empty(): return rice_action
 		var domestic := domestic_action()
@@ -1706,6 +1777,7 @@ func interact(at: Vector3) -> bool:
 		if _home_exit_selected(at):
 			_exit()
 		elif not business.life.state.meal.is_empty(): return business.life.interact(at)
+		elif _switch_interact(): pass
 		elif _rice_interact(): pass
 		elif not String(state.rice_recipe.hand).is_empty():
 			if storage_interact(at): return true
