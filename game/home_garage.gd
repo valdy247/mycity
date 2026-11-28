@@ -907,7 +907,10 @@ func rental_entry_near(at: Vector3) -> bool:
 	if world.garage_home_site.is_empty() or inside: return false
 	var door: Vector3 = world.garage_home_site.door
 	# Logical entrance: no exact mesh ray or carried object required.
-	return absf(at.y-door.y)<2.6 and Vector2(at.x-door.x,at.z-door.z).length()<=3.5
+	var basis: Basis = world.garage_home_site.basis
+	var offset := at-door
+	# Include the sidewalk approach when facade collision prevents reaching the threshold.
+	return absf(offset.y)<3.0 and absf(offset.dot(basis.x))<=2.6 and offset.dot(basis.z)>=-1.0 and offset.dot(basis.z)<=5.0
 
 func _aimed_home(at: Vector3) -> bool:
 	if game.adaptation_mode: return rental_entry_near(at)
