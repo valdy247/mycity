@@ -61,6 +61,7 @@ var unread := 0
 var low_alert: Dictionary = {}
 var sales_clock := 0.0
 var life_data: Dictionary = {}
+var last_saved_json := ""
 
 func _read_save(path: String) -> Dictionary:
 	if not FileAccess.file_exists(path): return {}
@@ -76,9 +77,15 @@ func load_game() -> void:
 	if not persistence_enabled: return
 	var value := _read_save(save_path)
 	if value.is_empty():
+		# An interrupted atomic rename can leave a complete newer temp file.
+		value = _read_save(save_path+".tmp")
+		if not value.is_empty(): push_warning("MyCity: partida recuperada de la escritura temporal.")
+	if value.is_empty():
 		value = _read_save(save_path+".bak")
 		if not value.is_empty(): push_warning("MyCity: partida recuperada de la copia de seguridad.")
 	if value.is_empty(): return
+	# The next save repairs a recovered primary rather than skipping it.
+	if not _read_save(save_path).is_empty(): last_saved_json = JSON.stringify(value)
 	cash = maxi(0,int(value.get("cash",10000)))
 	var life: Variant = value.get("city_life",{})
 	life_data = life if life is Dictionary else {}
@@ -122,13 +129,15 @@ func _counts(value: Variant) -> Dictionary:
 func save_game() -> void:
 	if not persistence_enabled: return
 	var data := {"cash":cash,"stage":stage,"pending":pending,"carry":carry,"cargo":cargo,"stock":stock,"sold":sold,"revenue":revenue,"wages":wages,"expenses":expenses,"messages":messages,"unread":unread,"low_alert":low_alert,"city_life":life_data}
+	var encoded := JSON.stringify(data)
+	if encoded==last_saved_json and FileAccess.file_exists(save_path): return
 	# Write beside the live save, then replace it only after a complete write.
 	var temp := save_path+".tmp"
 	var f := FileAccess.open(temp,FileAccess.WRITE)
 	if f==null:
 		push_warning("MyCity: no se pudo abrir guardado temporal.")
 		return
-	f.store_string(JSON.stringify(data))
+	f.store_string(encoded)
 	f.flush()
 	var error := f.get_error()
 	f.close()
@@ -143,6 +152,8 @@ func save_game() -> void:
 				DirAccess.remove_absolute(backup_temp)
 	if DirAccess.rename_absolute(temp,save_path)!=OK:
 		push_warning("MyCity: no se pudo reemplazar la partida; se conserva el archivo temporal.")
+		return
+	last_saved_json = encoded
 
 # City purchases share the same wallet and save transaction as missions.
 func spend(amount: int) -> bool:
