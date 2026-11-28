@@ -579,7 +579,7 @@ func _build_rental_fridge() -> void:
 		_rental_part(rental_fridge,Vector3(0,float(y),0),Vector3(.75,.035,.65),lining)
 	_rental_part(rental_fridge,Vector3(0,.038,0),Vector3(.72,.075,.65),edge)
 	for key in ["pollo","huevos"]:
-		var top := key=="pollo"
+		var top: bool = String(key)=="pollo"
 		var hinge := _rental_root(rental_fridge,Vector3(-.412,1.29 if top else .10,.375))
 		var height := .57 if top else 1.14
 		_rental_part(hinge,Vector3(.412,height*.5,0),Vector3(.815,height,.08),edge)
