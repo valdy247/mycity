@@ -1052,8 +1052,8 @@ func _new_van_body(position_world: Vector3) -> CharacterBody3D:
 func _tick_deferred_vehicles(delta: float) -> void:
 	if not is_instance_valid(player) or not is_instance_valid(monte_services): return
 	deferred_vehicles_clock += minf(delta,.1)
-	if deferred_vehicles_clock<8.0: return
-	if arrival_story!=null and arrival_story.phase=="approach" and arrival_story.fade.color.a>.1: return
+	if deferred_vehicles_clock<12.0: return
+	if arrival_story!=null and arrival_story.phase in ["approach","arrival"]: return
 	if not deferred_vehicles_requested:
 		deferred_vehicles_requested = true
 		if not ResourceLoader.exists(CITY_PATH):
@@ -1077,7 +1077,7 @@ func _tick_deferred_vehicles(delta: float) -> void:
 			deferred_vehicles_done = true
 			return
 	# Prefer an indoor moment, but don't wait forever if the player stays outside.
-	if deferred_vehicles_clock<20.0 and (garage==null or not garage.inside): return
+	if deferred_vehicles_clock<30.0 and (garage==null or not garage.inside): return
 	deferred_vehicles_done = true
 	var started := Time.get_ticks_msec()
 	var source := deferred_vehicles_ready.instantiate()
@@ -1495,7 +1495,8 @@ func _update_hud() -> void:
 		status.text += "\nW/S: acelerar y retroceder | Shift: turbo | A/D: girar | Espacio: frenar\nE: salir detenido | R: reiniciar | Esc: liberar mouse"
 	else:
 		status.text = title + "\nWASD / flechas: caminar | Mouse: mirar | Espacio: saltar\nShift: correr | R: regresar | Esc: liberar mouse"
-		var action: String = business.first_story.action_text() if business!=null and business.first_story!=null else ""
+		var action: String = garage.action_text(player.global_position) if adaptation_mode and garage!=null and garage.rental_entry_near(player.global_position) else ""
+		if action.is_empty() and not adaptation_mode and business!=null and business.first_story!=null: action = business.first_story.action_text()
 		if action.is_empty() and yordi_mission!=null: action = yordi_mission.action_text()
 		if action.is_empty() and carlos_mission!=null: action = carlos_mission.action_text()
 		if action.is_empty() and backpack!=null: action = backpack.action_text()
@@ -1558,7 +1559,8 @@ func _update_compact_hud() -> void:
 	elif driving:
 		lines.append("%d km/h · [Shift] Turbo · [E] Bajar detenido" % roundi(absf(drive_speed)*3.6))
 	else:
-		var action: String = business.first_story.action_text() if business!=null and business.first_story!=null else ""
+		var action: String = garage.action_text(player.global_position) if adaptation_mode and garage!=null and garage.rental_entry_near(player.global_position) else ""
+		if action.is_empty() and not adaptation_mode and business!=null and business.first_story!=null: action = business.first_story.action_text()
 		if action.is_empty() and yordi_mission!=null: action = yordi_mission.action_text()
 		if action.is_empty() and carlos_mission!=null: action = carlos_mission.action_text()
 		if action.is_empty() and backpack!=null: action = backpack.action_text()
@@ -1971,11 +1973,16 @@ func _physics_process(delta: float) -> void:
 			elif not _safe_exit():
 				exit_message = "No hay espacio para salir. Mueve la van."
 				message_time = 2.0
-		elif business!=null and business.first_story!=null and business.first_story.interact():
+		elif adaptation_mode and garage!=null and garage.rental_entry_near(player.global_position):
+			garage.interact(player.global_position)
 			player.velocity = Vector3.ZERO
 			_update_hud()
 			return
-		elif business!=null and business.first_story!=null and business.first_story.carrying_table():
+		elif not adaptation_mode and business!=null and business.first_story!=null and business.first_story.interact():
+			player.velocity = Vector3.ZERO
+			_update_hud()
+			return
+		elif not adaptation_mode and business!=null and business.first_story!=null and business.first_story.carrying_table():
 			return
 		elif not adaptation_mode and yordi_mission!=null and yordi_mission.interact():
 			player.velocity = Vector3.ZERO
