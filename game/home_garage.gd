@@ -1509,8 +1509,8 @@ func domestic_action() -> String:
 		"tap": return "[E] "+("Cerrar grifo" if tap_water.visible else "Abrir grifo")
 		"brew":
 			if int(business.life.state.coffee_cups)==0: return "[E] Preparar colada"
-			if bool(business.life.state.coffee_served): return "Café servido · %d/4 tazas" % int(business.life.state.coffee_cups)
-			return "[E] Servir café · %d/4 tazas" % int(business.life.state.coffee_cups)
+			if bool(business.life.state.coffee_served): return "Café servido · 1 taza"
+			return "[E] Servir café · 1 taza"
 		"drink":
 			if bool(business.life.state.coffee_served): return "[E] Tomar café"
 			if int(business.life.state.coffee_cups)>0: return "[E] Servir una taza"
@@ -1576,7 +1576,7 @@ func _brew_coffee_async() -> void:
 	coffee_busy = false
 	if business.life.brew_home_coffee():
 		_refresh_coffee_visual()
-		business._notify("Colada lista · 4 tazas. Pulsa E en la cafetera para servir.")
+		business._notify("Colada lista · 1 taza. Pulsa E en la cafetera para servir.")
 
 func _serve_coffee_async() -> void:
 	if coffee_busy or not _free_hands(): return
@@ -1631,7 +1631,7 @@ func _drink_coffee_async() -> void:
 	coffee_cup.show()
 	_refresh_coffee_visual()
 	coffee_busy = false
-	business._notify("Café tomado · +5 de energía · %d tazas restantes." % int(business.life.state.coffee_cups))
+	business._notify("Café tomado · hasta +5 de energía. Prepara otra colada cuando quieras.")
 
 func _bed_menu() -> void:
 	var life = business.life
