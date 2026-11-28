@@ -6,6 +6,12 @@ var wrist := Vector3.ZERO
 var skin: StandardMaterial3D
 var nails: StandardMaterial3D
 var fingers: Node3D
+var arm_anchor: Node3D
+var anchor_shoulder := Vector3.ZERO
+var anchor_elbow := Vector3.ZERO
+var upper_arm: MeshInstance3D
+var elbow_joint: MeshInstance3D
+var sleeve: MeshInstance3D
 
 func configure(grip: Vector3,left: bool = false,under: bool = false) -> void:
 	side = -1.0 if left else 1.0
@@ -143,6 +149,62 @@ static func camera_safe_pose(camera: Camera3D,desired: Vector3,radius: float) ->
 	# No free pose: retract behind the near plane rather than draw through a solid.
 	return Vector3(desired.x*.15,-.06,.20)
 
+# For fixed world interactions, use body-relative joints instead of
+# shortening the arm toward a moving camera.
+func configure_body_arm(anchor: Node3D,shoulder: Vector3,elbow: Vector3,shirt_material: Material) -> void:
+	arm_anchor = anchor
+	anchor_shoulder = shoulder
+	anchor_elbow = elbow
+	upper_arm = _arm_piece(.035,.046,skin)
+	elbow_joint = _oval(self,Vector3.ZERO,Vector3(.074,.074,.074),skin)
+	sleeve = _arm_piece(.049,.055,shirt_material)
+	upper_arm.hide()
+	elbow_joint.hide()
+	sleeve.hide()
+
+func _arm_piece(top: float,bottom: float,mat: Material) -> MeshInstance3D:
+	var node := MeshInstance3D.new()
+	var mesh := CylinderMesh.new()
+	mesh.top_radius = top
+	mesh.bottom_radius = bottom
+	mesh.height = 1.0
+	mesh.radial_segments = 12
+	node.mesh = mesh
+	node.material_override = mat
+	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(node)
+	return node
+
+func _place_arm_segment(part: MeshInstance3D,tip: Vector3,base: Vector3) -> void:
+	var axis := (tip-base).normalized()
+	var x := axis.cross(Vector3.BACK if absf(axis.z)<.95 else Vector3.RIGHT).normalized()
+	var z := x.cross(axis).normalized()
+	var basis := Basis(x,axis,z).scaled_local(Vector3(1.0,tip.distance_to(base)+.014,1.0))
+	part.global_transform = Transform3D(basis,tip.lerp(base,.5))
+
+func _arm_segment_clear(camera: Camera3D,from: Vector3,to: Vector3,radius: float) -> bool:
+	var space := camera.get_world_3d().direct_space_state
+	var q := _sphere_query(from,radius,camera)
+	if not space.intersect_shape(q,1).is_empty(): return false
+	q.motion = to-from
+	var result := space.cast_motion(q)
+	return result.size()>0 and result[0]>=.985
+
+func _pose_body_arm(camera: Camera3D,wrist_world: Vector3) -> void:
+	var shoulder := arm_anchor.to_global(anchor_shoulder)
+	var elbow := arm_anchor.to_global(anchor_elbow)
+	var clear := fingers.visible and _arm_segment_clear(camera,wrist_world,elbow,.028) and _arm_segment_clear(camera,elbow,shoulder,.036)
+	forearm.visible = clear
+	upper_arm.visible = clear
+	elbow_joint.visible = clear
+	sleeve.visible = clear
+	fingers.visible = clear
+	if not clear: return
+	_place_arm_segment(forearm,wrist_world,elbow)
+	_place_arm_segment(upper_arm,elbow,shoulder)
+	elbow_joint.global_position = elbow
+	_place_arm_segment(sleeve,elbow.lerp(shoulder,.52),shoulder)
+
 func _physics_process(_delta: float) -> void:
 	if not is_visible_in_tree() or not is_instance_valid(forearm): return
 	var camera := get_viewport().get_camera_3d()
@@ -151,6 +213,9 @@ func _physics_process(_delta: float) -> void:
 	var wrist_world := to_global(wrist)
 	var grip_query := _sphere_query(to_global(Vector3(side*.032,0,.012)),.032,camera)
 	fingers.visible = space.intersect_shape(grip_query,1).is_empty()
+	if is_instance_valid(arm_anchor):
+		_pose_body_arm(camera,wrist_world)
+		return
 	var shoulder := camera.to_global(Vector3(side*.32,-.46,.03))
 	var direction := shoulder-wrist_world
 	if direction.length_squared()<.0001 or not fingers.visible:
