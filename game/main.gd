@@ -1753,6 +1753,10 @@ func _aimed_person() -> Node3D:
 func _greet_person() -> bool:
 	var person := _aimed_person()
 	if person==null: return false
+	if cuba_world!=null and person.global_position.y<5.0 and cuba_world.street_geometry.point_on_road(person.global_position) and not person.has_meta("incident_role"):
+		exit_message = "Deja que termine de cruzar la calle."
+		message_time = 2.0
+		return true
 	if social_cooldown>0.0: return true
 	var female := bool(person.get_meta("female",false))
 	var context := String(person.get_meta("social_context","street"))
