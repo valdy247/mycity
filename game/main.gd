@@ -866,10 +866,11 @@ func _finish_home_exit_loading() -> void:
 	await get_tree().process_frame
 	if not is_inside_tree(): return
 	if cuba_world!=null: await cuba_world.prepare_exit_infrastructure()
-	# Allow nearby pedestrians and traffic to settle while the cover is visible.
-	while Time.get_ticks_msec()-started<5000:
-		await get_tree().process_frame
-		if not is_inside_tree(): return
+	# The cover lasts only for real infrastructure preparation and a rendered
+	# exterior frame. There is no minimum artificial loading duration.
+	if not is_inside_tree(): return
+	await RenderingServer.frame_post_draw
+	if not is_inside_tree(): return
 	if is_instance_valid(home_exit_layer): home_exit_layer.queue_free()
 	home_exit_layer = null
 	home_exit_loading = false
