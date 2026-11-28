@@ -6,6 +6,7 @@ const Planner = preload("res://urban_bus_routes.gd")
 const TrafficBypass = preload("res://traffic_bypass.gd")
 const StreetPerson = preload("res://street_person.gd")
 var alight_handler: Callable
+var resident_release_handler: Callable
 signal stop_priority(stop: Dictionary,bus: CharacterBody3D)
 var horn_stream: AudioStreamWAV
 var pedestrian_world: Node
@@ -1119,6 +1120,7 @@ func tick(delta: float,boost_requested: bool = false) -> void:
 				_walk_waiting(person,target,elapsed)
 			person.visible = near
 			if float(entry.time)<=0.0:
+				if resident_release_handler.is_valid() and person is StreetPerson: resident_release_handler.call((person as StreetPerson).style_id)
 				person.queue_free()
 				departing.remove_at(i)
 		stop.cooldown = maxf(0.0,float(stop.cooldown)-elapsed)
