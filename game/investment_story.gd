@@ -63,6 +63,8 @@ var helper_box: Node3D
 var helper_stage := ""
 var helper_clock := 0.0
 var waiting_clock := 0.0
+var neighbor_exit_path := PackedVector3Array()
+var neighbor_exit_index := 0
 var table: Node3D
 var carry_table := false
 var money_prop: Node3D
@@ -719,10 +721,53 @@ func _helper_tick(delta: float,unloading: bool) -> void:
 	_rebuild_boxes()
 	_wait_naturally(delta)
 
+func _neighbor_lead(delta: float) -> void:
+	if not is_instance_valid(actor) or not actor.visible: return
+	if actor.global_position.y>70.0:
+		# Reverse the same kitchen corridor used to carry the oil, avoiding the sofa.
+		if neighbor_exit_path.is_empty():
+			neighbor_exit_path = PackedVector3Array()
+			if actor.global_position.x< -3.0:
+				neighbor_exit_path.append(Vector3(-5.32,110,.35))
+				neighbor_exit_path.append(Vector3(-2.35,110,.35))
+			neighbor_exit_path.append(Vector3(-2.35,110,3.9))
+			neighbor_exit_path.append(Vector3(-.7,110,4.95))
+			neighbor_exit_index = 0
+		if neighbor_exit_index<neighbor_exit_path.size():
+			var goal: Vector3 = neighbor_exit_path[neighbor_exit_index]
+			var step: Vector3 = actor.global_position.move_toward(goal,1.8*delta)
+			if _actor_overlaps_player(step):
+				_wait_naturally(delta)
+				return
+			if actor.walk_to(goal,delta,1.8): neighbor_exit_index += 1
+			return
+		# The interior is a separate world: transfer only at the logical doorway.
+		game.garage.set_guest_door(true)
+		var basis: Basis = story.home.basis
+		var outside: Vector3 = _house_out()
+		for offset in [Vector2(1.65,.55),Vector2(-1.65,.55),Vector2(0,2.2),Vector2(2.5,1.0),Vector2(-2.5,1.0)]:
+			var point: Vector3 = game.yordi_mission._ground(outside+basis.x*offset.x+basis.z*offset.y)
+			if not point.is_finite() or _actor_overlaps_player(point,1.45): continue
+			if not world.pedestrian_space_clear(actor,point,.7,false): continue
+			_spawn_actor(point)
+			game.garage.set_guest_door(false)
+			return
+		_wait_naturally(delta)
+		return
+	if game.garage.inside or neighbor.is_empty():
+		_wait_naturally(delta)
+		return
+	var player_at: Vector3 = game.player.global_position-Vector3.UP*.86
+	if actor.global_position.distance_to(player_at)>7.0:
+		_wait_naturally(delta)
+		return
+	var destination: Vector3 = Vector3(neighbor.door)+Vector3(neighbor.normal)*1.0
+	if _follow(delta,destination,1.0): _wait_naturally(delta)
+
 func _toggle_home() -> bool:
 	if game.garage.inside and _near(ENTRY,1.8):
 		game.garage._exit()
-		if not game.garage.inside and (phase!="unload" or _all_at("stored")):
+		if not game.garage.inside and phase!="neighbor" and (phase!="unload" or _all_at("stored")):
 			var at: Vector3 = game.yordi_mission._near_ground(_house_out(),actor,4.0)
 			if at.is_finite(): _spawn_actor(at)
 		return true
@@ -1001,13 +1046,13 @@ func tick(delta: float) -> void:
 					_task("Entra a la casa. Albertico terminó de guardar la mercancía.")
 					_mark(_house_out())
 		"neighbor":
+			_neighbor_lead(delta)
 			if game.garage.inside:
 				_mark(ENTRY)
-				story.subtitle.text = "[E] Salir"
+				story.subtitle.text = "[E] Salir" if _near(ENTRY,1.8) else "Sigue a Albertico hacia la puerta."
 			elif not neighbor.is_empty():
-				_follow(delta,Vector3(neighbor.door),1.2)
 				_mark(Vector3(neighbor.door)+Vector3.UP)
-				story.subtitle.text = "[E] Entrar a casa de Albertico"
+				story.subtitle.text = "[E] Entrar a casa de Albertico" if _near(Vector3(neighbor.door)+Vector3.UP*.86,2.2) else "Sigue a Albertico."
 			else: _task("No se encontró una puerta vecina accesible.")
 		"table_room":
 			_mark(table.global_position+Vector3.UP)
