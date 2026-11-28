@@ -1115,6 +1115,7 @@ func open_phone_home() -> void:
 	content.add_child(apps)
 	_phone_tile(apps,"Mensajes",open_messages,"message",Color("#247a63"),ledger.unread)
 	if life!=null: _phone_tile(apps,"Contactos",life.open_contacts,"contact",Color("#3d6dba"))
+	if life!=null: _phone_tile(apps,"Alarma",life.open_alarm,"clock",Color("#786aa5"))
 	_phone_tile(apps,"Mi negocio",open_business_summary,"business",Color("#b77a38"))
 	if carlos_call.is_valid() and int(ledger.life_data.get("carlos_paint",{}).get("stage",0))>0:
 		_phone_tile(apps,"Carlos",carlos_call,"contact",Color("#457e91"))
@@ -1338,6 +1339,7 @@ func _phone_icon(key: String,color: Color) -> Texture2D:
 	if phone_icons.has(cache_key): return phone_icons[cache_key]
 	var paths := {
 		"message":"<path d='M12 13h24v17H22l-7 6v-6h-3z'/><path d='M18 20h12M18 25h8'/>",
+		"clock":"<circle cx='24' cy='24' r='12'/><path d='M24 16v9l6 3M15 11l-4 4M33 11l4 4'/>",
 		"contact":"<circle cx='24' cy='17' r='6'/><path d='M13 35v-3a11 11 0 0 1 22 0v3z'/>",
 		"business":"<path d='M12 35h24M15 31V22M23 31V14M31 31V18'/><path d='M13 17l9-6 8 2 6-5'/>",
 		"shop":"<path d='M12 20h24l-3-9H15zM15 20v16h18V20M20 36V25h8v11'/>",
