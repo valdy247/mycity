@@ -1369,41 +1369,58 @@ func _make_demo_van() -> void:
 	_box(driver_door, "DriverWindow", Vector3(0, 1.04, -0.68), Vector3(0.08, 0.47, 1.35), glass)
 
 func _make_cartoon_avatar() -> void:
-	var skin := _material(Color(0.84, 0.56, 0.36))
-	var shirt := _material(Color(0.08, 0.46, 0.94))
-	var jeans := _material(Color(0.10, 0.18, 0.34))
-	var shoes := _material(Color(0.09, 0.10, 0.13))
-	var hair := _material(Color(0.14, 0.085, 0.045))
-	var eye := _material(Color(0.06, 0.07, 0.10))
-	var eye_white := _material(Color(0.98, 0.98, 0.98))
-	# Capsule collision remains the same. All limbs are purely visual.
-	_sphere(avatar, "Shirt", Vector3(0, 0.05, 0), Vector3(0.58, 0.64, 0.35), shirt)
-	_sphere(avatar, "Hip", Vector3(0, -0.23, 0), Vector3(0.44, 0.25, 0.30), jeans)
-	_sphere(avatar, "Neck", Vector3(0,.36,0),Vector3(.19,.20,.19),skin)
-	_sphere(avatar, "Head", Vector3(0, 0.53, 0), Vector3(0.48, 0.52, 0.44), skin)
-	_sphere(avatar, "Hair", Vector3(0, 0.72, -0.035), Vector3(0.49, 0.22, 0.45), hair)
-	for side in [-1, 1]:
-		_sphere(avatar, "Ear", Vector3(side * 0.235, 0.53, 0), Vector3(0.075, 0.11, 0.08), skin)
-		_sphere(avatar, "EyeWhite", Vector3(side * 0.096, 0.57, 0.194), Vector3(0.080, 0.055, 0.036), eye_white)
-		_sphere(avatar, "Eye", Vector3(side * 0.096, 0.57, 0.213), Vector3(0.033, 0.042, 0.020), eye)
-		_sphere(avatar, "Brow",Vector3(side*.096,.623,.193),Vector3(.087,.018,.019),hair)
+	# Consistent protagonist: young man, light skin, short brown hair,
+	# plain blue T-shirt, dark jeans and everyday sneakers.
+	var skin := _material(Color("#e6bfa3"))
+	var shirt := _material(Color("#52748a"))
+	var jeans := _material(Color("#34465b"))
+	var shoes := _material(Color("#353b42"))
+	var hair := _material(Color("#64432d"))
+	var eye := _material(Color("#49382b"))
+	var pupil := _material(Color("#252323"))
+	var eye_white := _material(Color("#eee9e2"))
+	# Keep all interaction anchors and the collision capsule unchanged.
+	if avatar_sphere_mesh==null:
+		avatar_sphere_mesh = SphereMesh.new()
+		avatar_sphere_mesh.radius = .5
+		avatar_sphere_mesh.height = 1.0
+		avatar_sphere_mesh.radial_segments = 20
+		avatar_sphere_mesh.rings = 10
+	_sphere(avatar,"Shirt",Vector3(0,.055,0),Vector3(.47,.60,.29),shirt)
+	_sphere(avatar,"Chest",Vector3(0,.185,.012),Vector3(.49,.34,.29),shirt)
+	_sphere(avatar,"Waist",Vector3(0,-.17,0),Vector3(.36,.26,.27),shirt)
+	_sphere(avatar,"Hip",Vector3(0,-.265,0),Vector3(.38,.22,.28),jeans)
+	_sphere(avatar,"Neck",Vector3(0,.365,0),Vector3(.135,.19,.14),skin)
+	_sphere(avatar,"Head",Vector3(0,.56,0),Vector3(.285,.39,.30),skin)
+	_sphere(avatar,"Jaw",Vector3(0,.465,.036),Vector3(.24,.21,.24),skin)
+	_sphere(avatar,"Hair",Vector3(0,.722,-.025),Vector3(.30,.135,.30),hair)
+	var fringe := _sphere(avatar,"HairFringe",Vector3(.045,.705,.091),Vector3(.20,.075,.13),hair)
+	fringe.rotation.z = -.16
+	for side in [-1,1]:
+		_sphere(avatar,"HairSide",Vector3(side*.126,.65,-.025),Vector3(.065,.13,.19),hair)
+		_sphere(avatar,"Ear",Vector3(side*.144,.55,.006),Vector3(.047,.086,.060),skin)
+		_sphere(avatar,"EyeWhite",Vector3(side*.056,.588,.144),Vector3(.061,.030,.017),eye_white)
+		_sphere(avatar,"Iris",Vector3(side*.056,.588,.153),Vector3(.024,.024,.011),eye)
+		_sphere(avatar,"Pupil",Vector3(side*.056,.588,.159),Vector3(.012,.016,.006),pupil)
+		var brow := _sphere(avatar,"Brow",Vector3(side*.056,.619,.142),Vector3(.064,.012,.014),hair)
+		brow.rotation.z = float(side)*-.10
 		var shoulder := Node3D.new()
 		avatar.add_child(shoulder)
-		shoulder.position = Vector3(side * 0.255, 0.21, 0)
+		shoulder.position = Vector3(side*.235,.22,0)
 		limb_arms.append(shoulder)
-		_sphere(shoulder, "Sleeve", Vector3(side*.015, -0.065, 0), Vector3(0.19, 0.28, 0.21), shirt)
-		_sphere(shoulder, "Arm", Vector3(0, -0.30, 0), Vector3(0.13, 0.33, 0.15), skin)
-		_sphere(shoulder, "Hand", Vector3(0, -0.46, 0), Vector3(0.17, 0.18, 0.16), skin)
+		_sphere(shoulder,"Sleeve",Vector3(side*.012,-.075,0),Vector3(.165,.24,.17),shirt)
+		_sphere(shoulder,"Arm",Vector3(0,-.285,0),Vector3(.105,.34,.115),skin)
+		_sphere(shoulder,"Hand",Vector3(0,-.46,0),Vector3(.105,.145,.09),skin)
 		var hip := Node3D.new()
 		avatar.add_child(hip)
-		hip.position = Vector3(side * 0.13, -0.23, 0)
+		hip.position = Vector3(side*.112,-.25,0)
 		limb_legs.append(hip)
-		_sphere(hip, "Leg", Vector3(0, -0.23, 0), Vector3(0.22, 0.48, 0.23), jeans)
-		var footwear := _sphere(hip, "Shoe", Vector3(0, -0.46, 0.075), Vector3(0.22, 0.16, 0.35), shoes)
+		_sphere(hip,"Leg",Vector3(0,-.23,0),Vector3(.185,.51,.19),jeans)
+		var footwear := _sphere(hip,"Shoe",Vector3(0,-.46,.065),Vector3(.18,.13,.28),shoes)
 		footwear.mesh = Shoe.mesh()
 		footwear.material_override = Shoe.material(shoes)
-	_sphere(avatar, "Nose", Vector3(0, 0.51, 0.218), Vector3(0.065, 0.085, 0.065), skin)
-	_sphere(avatar, "Mouth", Vector3(0,.43,.204),Vector3(.085,.022,.015),_material(Color("#925b49")))
+	_sphere(avatar,"Nose",Vector3(0,.548,.152),Vector3(.046,.069,.058),skin)
+	_sphere(avatar,"Mouth",Vector3(0,.479,.151),Vector3(.065,.012,.012),_material(Color("#996e5c")))
 
 func _animate_avatar(delta: float, speed: float) -> void:
 	var moving := speed > 0.1 and player.is_on_floor()
