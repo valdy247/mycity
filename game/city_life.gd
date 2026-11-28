@@ -214,12 +214,18 @@ func _economy_step(minute: float = -1.0,day_number: int = -1) -> void:
 	if minute<0.0: minute = float(state.minutes)
 	if day_number<0: day_number = int(state.day)
 	var open_now := fposmod(minute,1440.0)>=420.0 and fposmod(minute,1440.0)<1200.0
-	for id in state.cafes:
+	# Local background customers share a limited demand pool. Shuffling
+	# avoids permanently preferring the first café in the dictionary.
+	var candidates := state.cafes.keys()
+	candidates.shuffle()
+	var remaining_customers := 1 if candidates.size()>0 else 0
+	if candidates.size()>2: remaining_customers += floori(float(candidates.size())/3.0)
+	for id in candidates:
 		var cafe: Dictionary = state.cafes[id]
 		if cafe.has("management"):
 			_pay_cafe_wage(cafe,day_number)
 			if not bool(cafe.management.get("staff",false)) or int(cafe.management.get("wage_due",0))>0: continue
-		if not open_now: continue
+		if not open_now or remaining_customers<=0: continue
 		# Breakfast/lunch/evening demand is higher than mid-afternoon.
 		var hour := fposmod(minute,1440.0)/60.0
 		var demand := .92 if (hour<9.5 or (hour>=11.0 and hour<14.0) or hour>=17.0) else .57
@@ -231,6 +237,7 @@ func _economy_step(minute: float = -1.0,day_number: int = -1) -> void:
 			for ingredient in MENU[key].needs:
 				cafe[ingredient] = int(cafe[ingredient])-int(MENU[key].needs[ingredient])
 			_cafe_sale(cafe,int(MENU[key].price))
+			remaining_customers -= 1
 			break
 	# Small independent replenishment, not infinite shelf stock.
 	for id in INITIAL:
@@ -456,6 +463,7 @@ func action_text(at: Vector3) -> String:
 	var order: Dictionary = state.order
 	if not order.is_empty() and String(order.site)==String(site.id):
 		return "[E] Recoger pedido" if float(order.remaining)<=0.0 else "Preparando tu pedido…"
+	if not _cafe_open(String(site.id)): return "Cafetería cerrada · 7 AM a 8 PM"
 	if not ledger.carry.is_empty(): return "[E] Ofrecer caja · "+String(site.name)
 	return "[E] Ver menú · "+String(site.name)
 
@@ -485,11 +493,11 @@ func interact(at: Vector3) -> bool:
 			ledger.save_game()
 			business._notify("Buen provecho. Pulsa E para comer o beber.")
 		return true
-	if not ledger.carry.is_empty():
-		_offer_delivery(id)
-		return true
 	if not _cafe_open(id):
 		business._notify("Cafetería cerrada. Horario: 7 AM a 8 PM; los pedidos pagados se conservan.")
+		return true
+	if not ledger.carry.is_empty():
+		_offer_delivery(id)
 		return true
 	_menu(id)
 	return true
@@ -501,7 +509,7 @@ func _delivery_price(key: String) -> int:
 	return roundi(float(ledger.product(key).cost)*1.12)
 
 func _delivery_available(id: String,key: String) -> bool:
-	if not state.cafes.has(id) or not CAFE_INGREDIENTS.has(key): return false
+	if not state.cafes.has(id) or not _cafe_open(id) or not CAFE_INGREDIENTS.has(key): return false
 	var cafe: Dictionary = state.cafes[id]
 	return int(cafe.get(key,0))<5 and int(cafe.cash)>=_cafe_cost(key) and float(cafe.get("delivery_cooldown",0.0))<=0.0
 
@@ -798,6 +806,9 @@ func _finish_bite() -> void:
 	else:
 		meal.drink_sips = maxi(0,int(meal.drink_sips)-1)
 	active_hand = -1
+	var controller = business.get_parent()
+	if is_instance_valid(controller.garage) and bool(controller.garage.state.get("bathroom",{}).get("hands_dirty",false)) and active_hand==-1:
+		meal.dirty = true
 	if bool(meal.get("dirty",false)):
 		state["dirty_food_bites"] = int(state.get("dirty_food_bites",0))+1
 	if float(state.fullness)+gain>108.0:
@@ -815,7 +826,6 @@ func _finish_bite() -> void:
 	else:
 		business._notify("Hambre %d%% · E para continuar" % roundi(100.0-float(state.fullness)))
 	_refresh_meal()
-	var controller = business.get_parent()
 	if key in ["arroz_casero","plato_casero"] and is_instance_valid(controller.garage): controller.garage._refresh_dining_table()
 	ledger.save_game()
 
@@ -953,7 +963,7 @@ func _cafe_cost(key: String) -> int:
 # Visiting residents consume actual ingredients and pay from their profile.
 # Returns the price only when a sale succeeded.
 func citizen_purchase(id: String,budget: int) -> int:
-	if not state.cafes.has(id) or not _clerk_present(id): return 0
+	if not state.cafes.has(id) or not _cafe_open(id) or not _clerk_present(id): return 0
 	var cafe: Dictionary = state.cafes[id]
 	var keys := MENU.keys()
 	keys.shuffle()
