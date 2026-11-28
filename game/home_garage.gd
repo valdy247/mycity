@@ -98,6 +98,8 @@ var bedside_lamp: Node3D
 var bedside_glow: OmniLight3D
 var home_light_switches: Dictionary = {}
 var home_room_lights: Dictionary = {}
+var home_fixture_materials: Dictionary = {}
+var home_shadow_active := false
 var television: Node3D
 var television_screen: MeshInstance3D
 var kitchen_tap: Node3D
@@ -355,6 +357,9 @@ func _solid(root: Node3D,p: Vector3,size: Vector3,color: Color,layer: int = 1) -
 	root.add_child(body)
 	body.position = p
 	var visual: MeshInstance3D = business._box(body,Vector3.ZERO,size,color)
+	# Only structural walls cast indoor shadows, not thousands of furniture details.
+	if game.adaptation_mode and size.y>=.65 and maxf(size.x,size.z)>=.45 and minf(size.x,size.z)<=.21:
+		visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	# Give the existing home and client's room real tiled floors without
 	# introducing any new meshes, collision shapes or paintable cells.
 	if layer==2 and size.x>=5.0 and size.z>=5.0 and game.cuba_world!=null:
@@ -400,7 +405,8 @@ func _build_interior() -> void:
 		light.light_color = Color("#fff1dc")
 		light.omni_attenuation = 1.1
 		if game.adaptation_mode:
-			light.omni_range = 6.5 if float(x)<0 else 5.5
+			light.position.z = 1.2 if float(x)<0 else 0.0
+			light.omni_range = 6.2 if float(x)<0 else 5.2
 			_register_room_light("sala" if float(x)<0 else "garaje",light)
 	marker = Node3D.new()
 	interior.add_child(marker)
@@ -592,7 +598,7 @@ func _rental_window(parent: Node3D,at: Vector3,angle: float,width: float) -> voi
 		curtain.scale.x = .30 if curtains_open else 1.0
 		curtain.position.x = float(side)*width*(.45 if curtains_open else .25)
 		curtains.append(curtain)
-	home_windows.append({"root":root,"width":width,"slats":slats,"curtains":curtains,"window":window_open,"curtain":curtains_open,"id":window_id})
+	home_windows.append({"root":root,"width":width,"slats":slats,"curtains":curtains,"window":window_open,"curtain":curtains_open,"id":window_id,"pane_material":daylight,"room":_home_room_at(at)})
 
 func _rental_fixture(parent: Node3D,at: Vector3) -> void:
 	_rental_cylinder(parent,at+Vector3.UP*.08,.13,.07,Color("#aaa38e"))
@@ -603,6 +609,9 @@ func _rental_fixture(parent: Node3D,at: Vector3) -> void:
 	glow.emission = Color("#fff0d1")
 	glow.emission_energy_multiplier = .75
 	fixture.material_override = glow
+	var key := _home_room_at(at)
+	home_fixture_materials[key] = glow
+	glow.emission_enabled = bool(state.home_lights.get(key,true))
 
 func _rental_wall_frame(parent: Node3D,at: Vector3,angle: float,paint: Color) -> void:
 	var root := _rental_root(parent,at,angle)
@@ -958,6 +967,35 @@ func _register_room_light(key: String,light: OmniLight3D) -> void:
 	home_room_lights[key] = light
 	if not state.has("home_lights"): state.home_lights = {}
 	light.visible = bool(state.home_lights.get(key,true))
+	light.shadow_enabled = home_shadow_active
+	light.shadow_bias = .10
+	light.shadow_normal_bias = .6
+
+func _home_room_at(p: Vector3) -> String:
+	if p.x>4.05 and p.z< -3.30: return "baño"
+	if p.x<0.0 and p.z< -2.30: return "dormitorio"
+	return "sala" if p.x<0.0 else "garaje"
+
+func update_home_lighting(day: float,active: bool) -> float:
+	if home_shadow_active!=active:
+		home_shadow_active = active
+		for light in home_room_lights.values():
+			if is_instance_valid(light): light.shadow_enabled = active
+		if is_instance_valid(bedside_glow): bedside_glow.shadow_enabled = active
+	if not active: return 0.0
+	var room := _home_room_at(game.player.global_position-ROOM)
+	var daylight := 0.0
+	for entry in home_windows:
+		var transmission := (1.0 if bool(entry.window) else .58)*(1.0 if bool(entry.curtain) else .07)
+		var pane: StandardMaterial3D = entry.pane_material
+		pane.emission_enabled = day>.025
+		pane.emission_energy_multiplier = .38*day
+		if String(entry.room)==room: daylight = maxf(daylight,transmission*day)
+	# At night an unlit room is nearly black. Daylight depends on its own window.
+	# A small bounce term keeps lit rooms readable without lighting the whole house.
+	var bounce := .035 if bool(state.home_lights.get(room,true)) else 0.0
+	if room=="dormitorio" and is_instance_valid(bedside_glow) and bedside_glow.visible: bounce = maxf(bounce,.025)
+	return .009+daylight*.24+bounce
 
 func _make_light_switch(root: Node3D,key: String,at: Vector3,angle: float) -> void:
 	var node := _rental_root(root,at,angle)
@@ -970,6 +1008,8 @@ func _refresh_light_switch(key: String) -> void:
 	var on := bool(state.home_lights.get(key,true))
 	var light: OmniLight3D = home_room_lights.get(key)
 	if is_instance_valid(light): light.visible = on
+	var fixture: StandardMaterial3D = home_fixture_materials.get(key)
+	if is_instance_valid(fixture): fixture.emission_enabled = on
 	var entry: Dictionary = home_light_switches.get(key,{})
 	if not entry.is_empty():
 		var lever: Node3D = entry.lever
@@ -990,6 +1030,7 @@ func _switch_interact() -> bool:
 	if key.is_empty(): return false
 	state.home_lights[key] = not bool(state.home_lights.get(key,true))
 	_refresh_light_switch(key)
+	game._update_visual_lighting(true)
 	var node: Node3D = home_light_switches[key].node
 	var hand := _attach_interaction_hand(node,Vector3(.03,0,.055))
 	get_tree().create_timer(.25).timeout.connect(hand.queue_free)
@@ -1630,6 +1671,7 @@ func domestic_interact() -> bool:
 					tween.tween_property(curtain,"position:x",side*float(entry.width)*(.45 if entry.curtain else .25),.45)
 			if not state.has("window_states"): state.window_states = {}
 			state.window_states[entry.id] = {"window":entry.window,"curtain":entry.curtain}
+			game._update_visual_lighting(true)
 			_save()
 		"drawer":
 			var goal := 0.0 if bedside_drawer.position.z>.15 else .30
@@ -1638,6 +1680,7 @@ func domestic_interact() -> bool:
 		"lamp":
 			bedside_glow.visible = not bedside_glow.visible
 			state.bedside_light = bedside_glow.visible
+			game._update_visual_lighting(true)
 			_save()
 		"tv":
 			state.tv_on = not bool(state.get("tv_on",false))
