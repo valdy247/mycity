@@ -772,6 +772,7 @@ func _speak_story() -> void:
 		if not is_instance_valid(story_clip_player):
 			story_clip_player = AudioStreamPlayer.new()
 			add_child(story_clip_player)
+			story_clip_player.finished.connect(_advance_local_story)
 		story_clip_player.stream = clip
 		story_clip_player.play()
 		return
@@ -779,6 +780,10 @@ func _speak_story() -> void:
 	var parts := story_line_parts(String(story_lines[story_index]),story_title)
 	DisplayServer.tts_speak(parts[1],story_voice_id,75,1.0,1.0,0,true)
 	story_voice_playing = true
+
+func _advance_local_story() -> void:
+	if story_active and not story_clip_paths.is_empty() and story_index<story_lines.size():
+		_next_story()
 
 func _toggle_story_voice() -> void:
 	if not story_active: return
@@ -816,7 +821,7 @@ func _render_story() -> void:
 	next.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	next.pressed.connect(_confirm_story if final_page else _next_story)
 	row.add_child(next)
-	if not final_page:
+	if not final_page and story_clip_paths.is_empty():
 		var skip := Button.new()
 		skip.text = "Omitir diálogo"
 		skip.pressed.connect(_skip_story)
