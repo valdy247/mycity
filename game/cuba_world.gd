@@ -529,15 +529,16 @@ func _utility_beam(a: Vector3,b: Vector3,thickness: float,mat: StandardMaterial3
 	var basis := Basis.looking_at(-d.normalized(),up).scaled_local(Vector3(thickness,thickness,d.length()+.025))
 	box_groups[key].transforms.append(Transform3D(basis,at-origin))
 
-func _utility_register(p: Vector3,outward: Vector3,metal: StandardMaterial3D) -> int:
-	for id in _utility_near(p,1.3):
-		var old: Vector3 = utility_poles[int(id)].p
-		if old.distance_to(p)<1.3: return int(id)
+func _utility_register(p: Vector3,outward: Vector3,metal: StandardMaterial3D,prepared: bool = false) -> int:
+	if not prepared:
+		for id in _utility_near(p,1.3):
+			var old: Vector3 = utility_poles[int(id)].p
+			if old.distance_to(p)<1.3: return int(id)
 	var id := utility_poles.size()
 	var head := p-outward*.94+Vector3.UP*6.20
 	var contact_a := p+outward*.32+Vector3.UP*6.37
 	var contact_b := p-outward*.32+Vector3.UP*6.37
-	utility_poles.append({"p":p,"a":contact_a,"b":contact_b,"lamp":head})
+	utility_poles.append({"p":p,"out":outward,"a":contact_a,"b":contact_b,"lamp":head})
 	var cell := _utility_cell(p)
 	if not utility_cells.has(cell): utility_cells[cell] = []
 	utility_cells[cell].append(id)
@@ -562,7 +563,7 @@ func _utility_span_clear(a: Vector3,b: Vector3) -> bool:
 		if not _utility_open(a.lerp(b,float(i)/float(steps))): return false
 	return true
 
-func _utility_connect(i: int,j: int,wire: StandardMaterial3D) -> bool:
+func _utility_connect(i: int,j: int,wire: StandardMaterial3D,prepared: bool = false) -> bool:
 	if i<0 or j<0 or i==j: return false
 	var key := str(mini(i,j))+":"+str(maxi(i,j))
 	if utility_links.has(key): return true
@@ -577,7 +578,7 @@ func _utility_connect(i: int,j: int,wire: StandardMaterial3D) -> bool:
 		var swap := c
 		c = d
 		d = swap
-	if not _utility_span_clear(a,c) or not _utility_span_clear(b,d): return false
+	if not prepared and (not _utility_span_clear(a,c) or not _utility_span_clear(b,d)): return false
 	for pair in [[a,c],[b,d]]:
 		var start: Vector3 = pair[0]
 		var finish: Vector3 = pair[1]
@@ -666,13 +667,26 @@ func _utility_chain_poles(chain: Dictionary,metal: StandardMaterial3D,wire: Stan
 		preferred = chosen_side
 	return found
 
-func _make_utility_network() -> void:
-	var metal := _mat("utility_concrete",Color("#77786e"))
-	var wire := _mat("utility_wire",Color("#343b3d"))
-	utility_lens = _mat("utility_lens",Color("#e9dfc4"))
-	utility_lens.emission = Color("#ffda94")
-	utility_lens.emission_energy_multiplier = 1.35
-	utility_lens.emission_enabled = false
+# Reuse the validated network only when all curb/footprint/lot constraints
+# are identical. Preserve the pole order for the existing light pool.
+func _utility_cache_key() -> String:
+	if derived_key.is_empty(): return ""
+	var lots: Array = []
+	for lot in slots: lots.append(_lot_polygon(lot))
+	return DerivedCache.key_for([derived_key,geography.footprints,lots,market_block])
+
+func _valid_utility_plan(plan: Dictionary) -> bool:
+	if not plan.get("poles") is Array or not plan.get("links") is Array: return false
+	if plan.poles.is_empty() or plan.poles.size()>100000 or plan.links.size()>300000: return false
+	for pole in plan.poles:
+		if not pole is Dictionary or not pole.get("p") is Vector3 or not pole.get("out") is Vector3: return false
+		if not pole.p.is_finite() or not pole.out.is_finite() or absf(pole.out.length()-1.0)>.01: return false
+	for link in plan.links:
+		if not link is Vector2i: return false
+		if link.x<0 or link.y<0 or link.x>=plan.poles.size() or link.y>=plan.poles.size() or link.x==link.y: return false
+	return true
+
+func _generate_utility_network(metal: StandardMaterial3D,wire: StandardMaterial3D) -> void:
 	var edges: Array = []
 	var incidents: Dictionary = {}
 	for edge in geography.roads:
@@ -756,6 +770,33 @@ func _make_utility_network() -> void:
 			if int(other)==id or p.distance_squared_to(utility_poles[int(other)].p)>900.0: continue
 			if _utility_connect(id,int(other),wire): break
 	print("Red eléctrica: ",utility_poles.size()," postes / luminarias, ",utility_links.size()," tramos conectados; ",no_support," cadenas sin emplazamiento seguro.")
+
+
+func _make_utility_network() -> void:
+	var metal := _mat("utility_concrete",Color("#77786e"))
+	var wire := _mat("utility_wire",Color("#343b3d"))
+	utility_lens = _mat("utility_lens",Color("#e9dfc4"))
+	utility_lens.emission = Color("#ffda94")
+	utility_lens.emission_energy_multiplier = 1.35
+	utility_lens.emission_enabled = false
+	var key := _utility_cache_key()
+	var plan := DerivedCache.read(UTILITY_CACHE,key)
+	if _valid_utility_plan(plan):
+		for pole in plan.poles:
+			_utility_register(pole.p,pole.out,metal,true)
+		for link in plan.links:
+			var pair: Vector2i = link
+			_utility_connect(pair.x,pair.y,wire,true)
+		print("MyCity infraestructura cache: HIT · ",utility_poles.size()," postes y ",utility_links.size()," tramos.")
+	else:
+		_generate_utility_network(metal,wire)
+		if not key.is_empty():
+			var links: Array = []
+			for name_value in utility_links:
+				var pair := String(name_value).split(":")
+				links.append(Vector2i(int(pair[0]),int(pair[1])))
+			DerivedCache.write(UTILITY_CACHE,key,{"poles":utility_poles,"links":links})
+		print("MyCity infraestructura cache: MISS.")
 	# A small reusable pool, not thousands of active lights at once.
 	for i in range(8):
 		var lamp := OmniLight3D.new()
