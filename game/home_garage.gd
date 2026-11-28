@@ -612,7 +612,22 @@ func _rental_window(parent: Node3D,at: Vector3,angle: float,width: float) -> voi
 		curtain.scale.x = .30 if curtains_open else 1.0
 		curtain.position.x = float(side)*width*(.45 if curtains_open else .25)
 		curtains.append(curtain)
-	home_windows.append({"root":root,"width":width,"slats":slats,"curtains":curtains,"window":window_open,"curtain":curtains_open,"id":window_id,"pane_material":daylight,"room":_home_room_at(at)})
+	# Window light is a stationary source facing into the room. It does not
+	# depend on the room occupied by the player or on the camera direction.
+	var window_light := SpotLight3D.new()
+	root.add_child(window_light)
+	window_light.position = Vector3(0,.12,.32)
+	window_light.rotation = Vector3(-.20,PI,0)
+	window_light.spot_range = 7.2
+	window_light.spot_angle = 62.0
+	window_light.spot_attenuation = 1.15
+	window_light.spot_angle_attenuation = .75
+	window_light.light_color = Color("#dce9f6")
+	window_light.light_energy = 0.0
+	window_light.shadow_bias = .10
+	window_light.shadow_normal_bias = .6
+	window_light.hide()
+	home_windows.append({"root":root,"width":width,"slats":slats,"curtains":curtains,"window":window_open,"curtain":curtains_open,"id":window_id,"pane_material":daylight,"room":_home_room_at(at),"daylight_source":window_light})
 
 func _rental_fixture(parent: Node3D,at: Vector3) -> void:
 	_rental_cylinder(parent,at+Vector3.UP*.08,.13,.07,Color("#aaa38e"))
@@ -1011,20 +1026,21 @@ func update_home_lighting(day: float,active: bool) -> float:
 		for light in home_room_lights.values():
 			if is_instance_valid(light): light.shadow_enabled = active
 		if is_instance_valid(bedside_glow): bedside_glow.shadow_enabled = active
-	if not active: return 0.0
-	var room := _home_room_at(game.player.global_position-ROOM)
-	var daylight := 0.0
 	for entry in home_windows:
-		var transmission := (1.0 if bool(entry.window) else .58)*(1.0 if bool(entry.curtain) else .07)
+		var source: SpotLight3D = entry.daylight_source
+		if not is_instance_valid(source): continue
+		var transmission := (1.0 if bool(entry.window) else .72)*(1.0 if bool(entry.curtain) else .07)
+		var strength := day*transmission
 		var pane: StandardMaterial3D = entry.pane_material
-		pane.emission_enabled = day>.025
+		pane.emission_enabled = active and day>.025
 		pane.emission_energy_multiplier = .38*day
-		if String(entry.room)==room: daylight = maxf(daylight,transmission*day)
-	# At night an unlit room is nearly black. Daylight depends on its own window.
-	# A small bounce term keeps lit rooms readable without lighting the whole house.
-	var bounce := .035 if bool(state.home_lights.get(room,true)) else 0.0
-	if room=="dormitorio" and is_instance_valid(bedside_glow) and bedside_glow.visible: bounce = maxf(bounce,.025)
-	return .009+daylight*.24+bounce
+		var visible_light := active and strength>.006
+		if source.visible!=visible_light: source.visible = visible_light
+		if source.shadow_enabled!=visible_light: source.shadow_enabled = visible_light
+		source.light_energy = 1.65*strength
+	# Constant low ambient for the entire interior. All room differences
+	# are produced by fixed local lights, window transmission and shadows.
+	return .009 if active else 0.0
 
 func _make_light_switch(root: Node3D,key: String,at: Vector3,angle: float) -> void:
 	var node := _rental_root(root,at,angle)
@@ -1177,6 +1193,7 @@ func _enter() -> void:
 	game.pitch = -.12
 	game.pivot.rotation = Vector3(game.pitch,game.yaw,0)
 	game._apply_camera_mode()
+	game._update_visual_lighting(true)
 
 func _exit() -> void:
 	if not String(state.rice_recipe.hand).is_empty():
