@@ -100,6 +100,7 @@ var coffee_burst_sound: AudioStreamWAV
 var coffee_alert_clock := 0.0
 var coffee_save_clock := 0.0
 var coffee_stains: Node3D
+var coffee_spill_patches: Array[Dictionary] = []
 var coffee_broken_prop: Node3D
 var coffee_rag: Node3D
 var coffee_cleaning := false
@@ -152,6 +153,11 @@ func setup(controller) -> void:
 	state.rice_recipe.hand = ""
 	if not state.has("coffee_machine"): state.coffee_machine = {"phase":"idle","remaining":0.0,"dirty":0,"rag_held":false,"replacement":false}
 	state.coffee_machine.rag_held = false
+	# Migrate old saves without bringing back stains the player already cleaned.
+	if not state.coffee_machine.has("spill_zones"):
+		var remaining := clampi(int(state.coffee_machine.get("dirty",0)),0,3)
+		state.coffee_machine.spill_zones = []
+		for i in range(remaining): state.coffee_machine.spill_zones.append(i)
 	for key in {"house":false,"project":"", "projects":{},"inventory":{},"deliveries":[],"part":"","furniture":{},"held_furniture":"","parked":{},"trash":[]}.keys():
 		if not state.has(key):
 			var defaults := {"house":false,"project":"","projects":{},"inventory":{},"deliveries":[],"part":"","furniture":{},"held_furniture":"","parked":{},"trash":[]}
@@ -1474,10 +1480,13 @@ func _build_home_coffee(kitchen: Node3D) -> void:
 	coffee_rag = _rental_root(kitchen,Vector3(-.28,.982,.25))
 	_draw_coffee_rag(coffee_rag)
 	coffee_stains = _rental_root(kitchen,Vector3(.69,1.043,-.12))
-	for i in range(3):
-		var patch := _rental_root(coffee_stains,Vector3((float(i)-1.0)*.14,0,.12))
-		for j in range(5):
-			var drop := _rental_round(patch,Vector3(sin(float(j)*2.4)*.05,0,cos(float(j)*2.4)*.047),Vector3(.065+float(j%3)*.012,.004,.048),Color("#50301c"))
+	# Coffee splashes stay attached to the actual surfaces, not suspended in air.
+	_add_coffee_spill(kitchen,Vector3(.55,1.008,.0),Vector2(.24,.20),false,"fogón",0)
+	_add_coffee_spill(kitchen,Vector3(.09,.959,.23),Vector2(.28,.105),false,"meseta",1)
+	_add_coffee_spill(kitchen,Vector3(1.15,.959,.25),Vector2(.29,.085),false,"meseta",2)
+	_add_coffee_spill(kitchen,Vector3(.70,1.34,-.449),Vector2(.42,.27),true,"pared",3)
+	_add_coffee_spill(kitchen,Vector3(.65,.042,.80),Vector2(.46,.29),false,"piso",4)
+	_add_coffee_spill(kitchen,Vector3(-.09,.043,1.12),Vector2(.31,.23),false,"piso",5)
 	coffee_machine_audio = AudioStreamPlayer3D.new()
 	coffee_pot.add_child(coffee_machine_audio)
 	coffee_machine_audio.max_distance = 18.0
@@ -1530,6 +1539,59 @@ func _build_home_coffee(kitchen: Node3D) -> void:
 	_refresh_coffee_visual()
 	_refresh_coffee_machine()
 
+func _add_coffee_spill(kitchen: Node3D,at: Vector3,extent: Vector2,vertical: bool,label_text: String,id: int) -> void:
+	var patch := _rental_root(coffee_stains,Vector3.ZERO)
+	patch.position = coffee_stains.to_local(kitchen.to_global(at))
+	if vertical: patch.rotation.x = PI*.5
+	# One mesh per dirty zone: irregular puddles, small scattered droplets and
+	# elongated drips on vertical surfaces, with no extra collision bodies.
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 1931+id*79
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i in range(29):
+		var center := Vector2.ZERO
+		var radius := Vector2(extent.x*.56,extent.y*.55)
+		if i>0:
+			center = Vector2(rng.randf_range(-extent.x*.82,extent.x*.82),rng.randf_range(-extent.y*.75,extent.y*.75))
+			var size := rng.randf_range(.012,.043)
+			radius = Vector2(minf(size,extent.x*.13),minf(size*(rng.randf_range(1.7,3.0) if vertical else rng.randf_range(.5,1.3)),extent.y*.24))
+		var shade := Color("#4a2918").lerp(Color("#815134"),rng.randf_range(0.0,.60))
+		var outline := PackedVector3Array()
+		for k in range(10):
+			var angle := TAU*float(k)/10.0
+			var jitter := rng.randf_range(.73,1.18)
+			outline.append(Vector3(clampf(center.x+cos(angle)*radius.x*jitter,-extent.x,extent.x),.001+float(i)*.00008,clampf(center.y+sin(angle)*radius.y*jitter,-extent.y,extent.y)))
+		for k in range(10):
+			for vertex in [Vector3(center.x,.001+float(i)*.00008,center.y),outline[k],outline[(k+1)%10]]:
+				surface.set_color(shade)
+				surface.add_vertex(vertex)
+	surface.generate_normals()
+	var material := StandardMaterial3D.new()
+	material.vertex_color_use_as_albedo = true
+	material.roughness = .62
+	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var mesh := MeshInstance3D.new()
+	mesh.mesh = surface.commit()
+	mesh.material_override = material
+	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	patch.add_child(mesh)
+	coffee_spill_patches.append({"id":id,"node":patch,"extent":extent,"label":label_text,"vertical":vertical})
+
+func _aimed_coffee_spill() -> Dictionary:
+	var best: Dictionary = {}
+	var depth := INF
+	for entry in coffee_spill_patches:
+		var patch: Node3D = entry.node
+		if not patch.is_visible_in_tree(): continue
+		var extent: Vector2 = entry.extent
+		if not _aim_tool(patch,Vector3(0,.012,0),Vector3(extent.x,.027,extent.y)): continue
+		var distance := game.play_camera.global_position.distance_squared_to(patch.global_position)
+		if distance<depth:
+			depth = distance
+			best = entry
+	return best
+
 func _draw_coffee_rag(root: Node3D) -> void:
 	_rental_part(root,Vector3.ZERO,Vector3(.13,.018,.09),Color("#b9936e")).rotation.y = .16
 	_rental_part(root,Vector3(.015,.013,-.007),Vector3(.10,.012,.07),Color("#d3b38b")).rotation.y = -.12
@@ -1574,8 +1636,8 @@ func _refresh_coffee_machine() -> void:
 	coffee_heat.visible = phase in ["heating","ready"]
 	coffee_steam.emitting = phase=="ready" or (phase=="heating" and float(state.coffee_machine.remaining)<=3.0)
 	coffee_rag.visible = not bool(state.coffee_machine.rag_held)
-	for i in range(coffee_stains.get_child_count()):
-		coffee_stains.get_child(i).visible = i<int(state.coffee_machine.dirty)
+	for entry in coffee_spill_patches:
+		entry.node.visible = int(entry.id) in state.coffee_machine.spill_zones
 
 func _coffee_stove_aimed() -> bool:
 	if _aim_tool(coffee_pot,Vector3(0,.15,0),Vector3(.18,.18,.15)): return true
@@ -1587,7 +1649,8 @@ func _coffee_special_action() -> String:
 	if coffee_cleaning: return "[E] Limpiando la cocina…"
 	if bool(state.coffee_machine.rag_held):
 		if _aim_tool(coffee_rag,Vector3.ZERO,Vector3(.10,.04,.08)): return "[E] Devolver trapo"
-		if int(state.coffee_machine.dirty)>0 and (_aim_tool(coffee_stains,Vector3(0,.015,.12),Vector3(.30,.10,.22)) or _coffee_stove_aimed()): return "[E] Limpiar mancha de café"
+		var spill := _aimed_coffee_spill()
+		if not spill.is_empty(): return "[E] Limpiar mancha de café · "+String(spill.label)
 		return ""
 	if bool(state.coffee_machine.replacement):
 		if _coffee_stove_aimed(): return "[E] Colocar cafetera nueva" if int(state.coffee_machine.dirty)==0 else "[E] Limpia el fogón antes de colocar la cafetera"
@@ -1651,25 +1714,29 @@ func _coffee_special_interact() -> bool:
 
 func _clean_coffee_async() -> void:
 	if coffee_cleaning or not bool(state.coffee_machine.rag_held) or int(state.coffee_machine.dirty)<=0: return
+	var entry := _aimed_coffee_spill()
+	if entry.is_empty(): return
 	coffee_cleaning = true
-	var patch := int(state.coffee_machine.dirty)-1
-	var rag := _rental_root(coffee_stains,Vector3((float(patch)-1.0)*.14,.05,.12))
+	var patch: Node3D = entry.node
+	var extent: Vector2 = entry.extent
+	var rag := _rental_root(patch,Vector3(-extent.x*.65,.045,0))
 	_draw_coffee_rag(rag)
 	_attach_interaction_hand(rag,Vector3(.065,0,.025))
 	carried_view.hide()
 	var wipe := create_tween()
 	for i in range(3):
-		wipe.tween_property(rag,"position:z",.19,.18)
-		wipe.tween_property(rag,"position:z",.065,.18)
+		wipe.tween_property(rag,"position",Vector3(extent.x*.65,.045,-extent.y*.52+float(i)*extent.y*.5),.28)
+		wipe.tween_property(rag,"position",Vector3(-extent.x*.65,.045,-extent.y*.30+float(i)*extent.y*.5),.28)
 	await wipe.finished
 	rag.queue_free()
-	state.coffee_machine.dirty = maxi(0,int(state.coffee_machine.dirty)-1)
+	state.coffee_machine.spill_zones.erase(int(entry.id))
+	state.coffee_machine.dirty = state.coffee_machine.spill_zones.size()
 	coffee_cleaning = false
 	_refresh_coffee_machine()
 	_refresh_carried()
 	carried_view.show()
 	_save()
-	business._notify("Cocina limpia." if int(state.coffee_machine.dirty)==0 else "Sigue limpiando las manchas.")
+	business._notify("Cocina limpia." if int(state.coffee_machine.dirty)==0 else "Quedan %d zonas sucias." % int(state.coffee_machine.dirty))
 
 func _physics_process(delta: float) -> void:
 	if not state.is_empty() and state.has("coffee_machine"): _tick_coffee_machine(delta)
@@ -1709,7 +1776,8 @@ func _tick_coffee_machine(delta: float) -> void:
 func _break_coffee_machine() -> void:
 	state.coffee_machine.phase = "broken"
 	state.coffee_machine.remaining = 0.0
-	state.coffee_machine.dirty = 3
+	state.coffee_machine.spill_zones = [0,1,2,3,4,5]
+	state.coffee_machine.dirty = state.coffee_machine.spill_zones.size()
 	business.life.state.coffee_cups = 0
 	business.life.state.coffee_served = false
 	_play_coffee_sound(coffee_burst_sound)
@@ -1723,12 +1791,12 @@ func _coffee_burst_visual() -> void:
 	var puff := CPUParticles3D.new()
 	coffee_stains.get_parent().add_child(puff)
 	puff.position = coffee_stains.position+Vector3(0,.20,0)
-	puff.amount = 20
-	puff.lifetime = .65
+	puff.amount = 44
+	puff.lifetime = .95
 	puff.one_shot = true
 	puff.explosiveness = 1.0
 	puff.direction = Vector3.UP
-	puff.spread = 85.0
+	puff.spread = 100.0
 	puff.gravity = Vector3(0,-2.0,0)
 	puff.initial_velocity_min = .5
 	puff.initial_velocity_max = 1.5
