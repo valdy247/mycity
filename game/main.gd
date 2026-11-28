@@ -24,6 +24,8 @@ var deferred_vehicles_clock := 0.0
 var deferred_vehicles_requested := false
 var deferred_vehicles_done := false
 var deferred_vehicles_ready: PackedScene
+var home_exit_loading := false
+var home_exit_layer: CanvasLayer
 var arrival_story: ArrivalStory
 var garage: HomeGarage
 const CarlosMission = preload("res://carlos_mission.gd")
@@ -356,6 +358,7 @@ func touch_blocked() -> bool:
 	return (is_instance_valid(game_menu) and game_menu.menu_open) or building_mode or (business!=null and (business.modal_open() or business.story_active)) or (taxis!=null and taxis.dialog.visible) or (city_navigation!=null and city_navigation.active) or (street_market!=null and not street_market.active.is_empty())
 
 func gameplay_input() -> bool:
+	if home_exit_loading: return false
 	if mobile_mode: return not touch_blocked()
 	return Input.mouse_mode==Input.MOUSE_MODE_CAPTURED
 
@@ -367,6 +370,7 @@ func primary_held() -> bool:
 	return Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
 
 func touch_action(key: Key) -> void:
+	if home_exit_loading: return
 	if arrival_story!=null and arrival_story.active():
 		if key==KEY_E: arrival_story.interact()
 		return
@@ -380,6 +384,7 @@ func touch_action(key: Key) -> void:
 		_unhandled_input(event)
 
 func touch_look(relative: Vector2) -> void:
+	if home_exit_loading: return
 	if arrival_story!=null and arrival_story.active():
 		arrival_story.handle_look(relative)
 		return
@@ -797,6 +802,48 @@ func _update_vehicle_lights() -> void:
 
 var mission_tracker_clock := 0.0
 
+func begin_home_exit_loading() -> void:
+	if home_exit_loading or not adaptation_mode: return
+	home_exit_loading = true
+	interact_requested = false
+	context_requested = false
+	cargo_requested = false
+	reset_requested = false
+	player.velocity = Vector3.ZERO
+	home_exit_layer = CanvasLayer.new()
+	home_exit_layer.layer = 120
+	add_child(home_exit_layer)
+	var cover := ColorRect.new()
+	home_exit_layer.add_child(cover)
+	cover.color = Color("#111419")
+	cover.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var label := Label.new()
+	cover.add_child(label)
+	label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	label.text = "LA HABANA\nPreparando la ciudad…"
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.add_theme_font_size_override("font_size",25)
+	_finish_home_exit_loading.call_deferred()
+
+func _finish_home_exit_loading() -> void:
+	var started := Time.get_ticks_msec()
+	# Render the outdoor view behind the cover to warm visibility and materials.
+	_update_visual_lighting(true)
+	await RenderingServer.frame_post_draw
+	await get_tree().process_frame
+	if not is_inside_tree(): return
+	if cuba_world!=null: await cuba_world.prepare_exit_infrastructure()
+	# Allow nearby pedestrians and traffic to settle while the cover is visible.
+	while Time.get_ticks_msec()-started<5000:
+		await get_tree().process_frame
+		if not is_inside_tree(): return
+	if is_instance_valid(home_exit_layer): home_exit_layer.queue_free()
+	home_exit_layer = null
+	home_exit_loading = false
+	player.velocity = Vector3.ZERO
+	print("MyCity: transición exterior (ms)=",Time.get_ticks_msec()-started)
+
 func _process(delta: float) -> void:
 	if adaptation_mode and not deferred_vehicles_done:
 		_tick_deferred_vehicles(delta)
@@ -853,6 +900,9 @@ func _open_city_map() -> void:
 	city_navigation.open()
 
 func _input(event: InputEvent) -> void:
+	if home_exit_loading:
+		get_viewport().set_input_as_handled()
+		return
 	# In free play the home portal must not depend on mouse capture or legacy mission input.
 	if adaptation_mode and player!=null and garage!=null and not driving and not taxi_riding and not bus_riding and not garage.riding and not touch_blocked() and (arrival_story==null or not arrival_story.active()) and event is InputEventKey and event.pressed and not event.echo and (event.keycode==KEY_E or event.physical_keycode==KEY_E):
 		if garage.rental_entry_near(player.global_position) or (garage.inside and player.global_position.distance_to(Vector3(-.7,110.86,5.25))<2.2):
@@ -1086,7 +1136,7 @@ func _tick_deferred_vehicles(delta: float) -> void:
 			deferred_vehicles_done = true
 			return
 	# Prefer an indoor moment, but don't wait forever if the player stays outside.
-	if deferred_vehicles_clock<30.0 and (garage==null or not garage.inside): return
+	if not home_exit_loading and (garage==null or not garage.inside): return
 	deferred_vehicles_done = true
 	var started := Time.get_ticks_msec()
 	var source := deferred_vehicles_ready.instantiate()
