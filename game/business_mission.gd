@@ -1259,6 +1259,7 @@ func open_phone_home() -> void:
 	_phone_tile(apps,"Mensajes",open_messages,"message",Color("#247a63"),ledger.unread)
 	if life!=null: _phone_tile(apps,"Contactos",life.open_contacts,"contact",Color("#3d6dba"))
 	if life!=null: _phone_tile(apps,"Vecinos",life.open_known_neighbors,"contact",Color("#4b827b"))
+	if life!=null: _phone_tile(apps,"Bienestar",life.open_wellbeing,"contact",Color("#b69256"))
 	if life!=null: _phone_tile(apps,"Alarma",life.open_alarm,"clock",Color("#786aa5"))
 	_phone_tile(apps,"Mi negocio",open_business_summary,"business",Color("#b77a38"))
 	_phone_tile(apps,"Trabajos",open_neighborhood_jobs,"business",Color("#527d65"))
