@@ -424,8 +424,8 @@ func _save_profile(profile: Dictionary) -> void:
 	var key := str(int(profile.style))
 	if not profiles.has(key): return
 	if not life.state.has("resident_profiles"): life.state.resident_profiles = {}
-	var home: Dictionary = profile.home
-	var workplace: Dictionary = profile.workplace
+	var home: Dictionary = profile.get("home",{})
+	var workplace: Dictionary = profile.get("workplace",{})
 	var row := {}
 	for field in ["name","job","money","personality","hunger","energy","last_simulated","last_paid_day","last_purchase","last_work","relationship","last_greeting","objective","home_id","home_x","home_z"]:
 		if profile.has(field): row[field] = profile[field]
@@ -563,7 +563,7 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 	nearby.shuffle()
 	var profile: Dictionary = agent.get("profile",{})
 	if not profile.is_empty():
-		var home: Dictionary = profile.home
+		var home: Dictionary = profile.get("home",{})
 		# In the evening favor the resident's own doorway if reachable.
 		if String(profile.get("objective","")) in ["descansar","volver a casa"] and not home.is_empty() and _destination_available(int(home.id),person):
 			var home_path := graph.get_point_path(start,int(home.id))
@@ -577,7 +577,7 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 				return true
 		if String(profile.get("objective","")) in ["trabajar","estudiar"] and not force_non_bus:
 			var workplace: Dictionary = profile.get("workplace",{})
-			if not workplace.is_empty() and _destination_available(int(workplace.id),person) and resident_clock-float(profile.last_work)>=180.0:
+			if not workplace.is_empty() and _destination_available(int(workplace.id),person) and resident_clock-float(profile.get("last_work",-1000.0))>=180.0:
 				var work_path := PackedVector3Array()
 				if origin.distance_to(graph.get_point_position(int(workplace.id)))<155.0:
 					work_path = graph.get_point_path(start,int(workplace.id))
@@ -644,7 +644,7 @@ func _resident_style(at: Vector3) -> int:
 	for key in profiles:
 		var profile: Dictionary = profiles[key]
 		if bool(profile.get("active",false)): continue
-		var home: Dictionary = profile.home
+		var home: Dictionary = profile.get("home",{})
 		if home.is_empty(): continue
 		if graph.get_point_position(int(home.id)).distance_squared_to(at)<1225.0:
 			return int(key)
@@ -654,7 +654,7 @@ func _resident_style(at: Vector3) -> int:
 		for key in profiles:
 			var profile: Dictionary = profiles[key]
 			if bool(profile.get("active",false)): continue
-			var home: Dictionary = profile.home
+			var home: Dictionary = profile.get("home",{})
 			var distance := graph.get_point_position(int(home.id)).distance_squared_to(at) if not home.is_empty() else 1000000.0
 			if distance<best:
 				best = distance
