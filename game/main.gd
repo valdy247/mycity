@@ -140,6 +140,17 @@ func _web_map_error() -> void:
 	bg.add_child(label)
 	label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
+# Normal desktop shutdown must persist the latest wallet, clock and
+# actual vehicle location rather than waiting for the periodic save.
+func _notification(what: int) -> void:
+	if what!=NOTIFICATION_WM_CLOSE_REQUEST: return
+	if not is_instance_valid(business): return
+	if is_instance_valid(garage) and garage.riding and not garage.riding_borrowed():
+		var kind: String = garage.ride_kind
+		if is_instance_valid(garage.owned.get(kind)):
+			garage._store_park(kind)
+	business.ledger.save_game()
+
 func _ready() -> void:
 	adaptation_mode = bool(get_tree().get_meta("mycity_adaptation",false)) or OS.get_cmdline_user_args().has("--replay-home-arrival")
 	var args := OS.get_cmdline_user_args()
