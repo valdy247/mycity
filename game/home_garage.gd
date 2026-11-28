@@ -64,6 +64,9 @@ var interior: Node3D
 const RENTAL_FRIDGE_LOCAL := Vector3(-6.29,0,1.0)
 var rental_fridge: Node3D
 var rental_fridge_doors: Dictionary = {}
+var rental_storage_doors: Array[Dictionary] = []
+var rental_oil: Node3D
+var rental_kitchen: Node3D
 var furniture_nodes: Dictionary = {}
 var preview: Node3D
 var marker: Node3D
@@ -586,7 +589,69 @@ func _build_rental_fridge() -> void:
 		_rental_part(hinge,Vector3(.412,height*.5,.037),Vector3(.79,height-.018,.062),ivory)
 		_rental_part(hinge,Vector3(.70,height*.72,.085),Vector3(.045,.22,.058),Color("#626b68"))
 		rental_fridge_doors[key] = hinge
+		_register_storage_door(hinge,Vector3(.412,height*.5,.05),Vector3(.82,height,.13),"congelador" if top else "refrigerador")
 	print("MyCity: refrigerador de cocina creado en ",rental_fridge.global_position)
+
+func _register_storage_door(hinge: Node3D,center: Vector3,size: Vector3,label_text: String) -> void:
+	rental_storage_doors.append({"hinge":hinge,"center":center,"size":size,"label":label_text,"tween":null})
+
+func _make_storage_leaf(root: Node3D,x: float,y: float,z: float,w: float,h: float,label_text: String,paint: Color) -> void:
+	var hinge := _rental_root(root,Vector3(x-w*.5,y-h*.5,z))
+	_rental_part(hinge,Vector3(w*.5,h*.5,0),Vector3(w,h,.05),paint)
+	_rental_part(hinge,Vector3(w*.77,h*.73,.035),Vector3(.12,.035,.035),Color("#77756a"))
+	_register_storage_door(hinge,Vector3(w*.5,h*.5,.02),Vector3(w,h,.10),label_text)
+
+func _aimed_storage_door(at: Vector3) -> Dictionary:
+	if not inside or not game.adaptation_mode: return {}
+	var cam: Camera3D = game.play_camera
+	var origin: Vector3 = cam.global_position
+	var end: Vector3 = origin-cam.global_basis.z*2.8
+	var best: Dictionary = {}
+	var distance := INF
+	for entry in rental_storage_doors:
+		var hinge: Node3D = entry.hinge
+		if not is_instance_valid(hinge): continue
+		var center: Vector3 = entry.center
+		var size: Vector3 = entry.size
+		var bounds := AABB(center-size*.5,size)
+		var hit = bounds.intersects_segment(hinge.to_local(origin),hinge.to_local(end))
+		if hit==null: continue
+		var p: Vector3 = hinge.to_global(Vector3(hit))
+		var d: float = origin.distance_to(p)
+		if d>=distance or at.distance_to(p)>2.5: continue
+		# The leaf is visual; reject other solid objects in front of it.
+		var ray := PhysicsRayQueryParameters3D.create(origin,origin+(p-origin).normalized()*maxf(.01,d-.10),1|4|8|16|32)
+		ray.exclude = [game.player.get_rid()]
+		if not get_world_3d().direct_space_state.intersect_ray(ray).is_empty(): continue
+		best = entry
+		distance = d
+	return best
+
+func storage_action(at: Vector3) -> String:
+	var entry := _aimed_storage_door(at)
+	if entry.is_empty(): return ""
+	var hinge: Node3D = entry.hinge
+	return "[E] "+("Cerrar " if absf(hinge.rotation.y)>.45 else "Abrir ")+String(entry.label)
+
+func storage_interact(at: Vector3) -> bool:
+	var entry := _aimed_storage_door(at)
+	if entry.is_empty(): return false
+	var hinge: Node3D = entry.hinge
+	var previous: Tween = entry.get("tween")
+	if is_instance_valid(previous): previous.kill()
+	var opening := absf(hinge.rotation.y)<.45
+	var tween := create_tween()
+	entry.tween = tween
+	tween.tween_property(hinge,"rotation:y",-1.45 if opening else 0.0,.38).set_trans(Tween.TRANS_SINE)
+	return true
+
+func show_rental_oil(stored: bool) -> void:
+	if not is_instance_valid(rental_kitchen): return
+	if stored and not is_instance_valid(rental_oil):
+		# The crate rests on the lower cabinet floor, behind its hinged door.
+		rental_oil = business._crate(rental_kitchen,Vector3(.65,.24,-.02),"aceite")
+		rental_oil.scale = Vector3.ONE*.80
+	if is_instance_valid(rental_oil): rental_oil.visible = stored
 
 func _decorate_rental_home() -> void:
 	var decor := _rental_root(interior,Vector3.ZERO)
@@ -624,11 +689,17 @@ func _decorate_rental_home() -> void:
 	# Fixed kitchen counter against west wall, with the permanent refrigerator
 	# immediately beside it and both facing into the room.
 	var kitchen := _rental_root(decor,Vector3(-6.34,0,-.65),PI*.5)
-	_solid(kitchen,Vector3(0,.44,0),Vector3(2.0,.88,.66),Color("#a39b82"))
+	rental_kitchen = kitchen
+	var cabinet_body := _solid(kitchen,Vector3(0,.44,0),Vector3(2.0,.88,.66),Color("#a39b82"))
+	cabinet_body.get_child(0).hide()
+	var wood := Color("#a39b82")
+	_rental_part(kitchen,Vector3(0,.07,0),Vector3(2.0,.07,.66),wood)
+	_rental_part(kitchen,Vector3(0,.44,-.31),Vector3(2.0,.82,.04),wood)
+	for x in [-.98,-.325,.325,.98]:
+		_rental_part(kitchen,Vector3(float(x),.44,0),Vector3(.04,.82,.66),wood)
 	_rental_part(kitchen,Vector3(0,.91,0),Vector3(2.08,.09,.72),Color("#777d76"))
 	for x in [-.65,0.0,.65]:
-		_rental_part(kitchen,Vector3(float(x),.46,.345),Vector3(.59,.66,.05),Color("#c9bda1"))
-		_rental_part(kitchen,Vector3(float(x),.68,.38),Vector3(.17,.033,.035),Color("#77756a"))
+		_make_storage_leaf(kitchen,float(x),.46,.345,.59,.66,"armario inferior",Color("#c9bda1"))
 	_rental_part(kitchen,Vector3(-.54,.963,0),Vector3(.61,.022,.47),Color("#b4bfc0"))
 	_rental_part(kitchen,Vector3(-.54,.98,0),Vector3(.47,.018,.34),Color("#596669"))
 	_rental_cylinder(kitchen,Vector3(-.54,1.07,-.25),.027,.22,Color("#a9b5b5"))
@@ -640,10 +711,17 @@ func _decorate_rental_home() -> void:
 	_rental_cylinder(kitchen,Vector3(.40,1.10,.12),.105,.16,Color("#8c9692"))
 	_rental_cylinder(kitchen,Vector3(.40,1.19,.12),.11,.025,Color("#bbc3bd"))
 	_rental_part(kitchen,Vector3(.58,1.13,.12),Vector3(.18,.04,.045),Color("#514b40"))
-	_rental_part(kitchen,Vector3(0,1.88,-.25),Vector3(1.95,.46,.26),Color("#bcb098"))
+	var upper_wood := Color("#bcb098")
+	for y in [1.66,1.88,2.10]:
+		_rental_part(kitchen,Vector3(0,float(y),-.25),Vector3(1.95,.035,.26),upper_wood)
+	_rental_part(kitchen,Vector3(0,1.88,-.37),Vector3(1.95,.46,.035),upper_wood)
+	for x in [-.96,-.315,.315,.96]:
+		_rental_part(kitchen,Vector3(float(x),1.88,-.25),Vector3(.035,.46,.26),upper_wood)
 	for x in [-.63,0.0,.63]:
-		_rental_part(kitchen,Vector3(float(x),1.88,-.10),Vector3(.60,.40,.04),Color("#cec3ac"))
-		_rental_part(kitchen,Vector3(float(x),1.76,-.07),Vector3(.12,.03,.035),Color("#726c5e"))
+		_make_storage_leaf(kitchen,float(x),1.88,-.10,.60,.40,"armario superior",Color("#cec3ac"))
+	var adaptation: Dictionary = business.ledger.life_data.get("adaptation",{})
+	var stock: Dictionary = adaptation.get("investment_boxes",{})
+	show_rental_oil(String(stock.get("aceite",""))=="stored")
 	# Small CRT and stand along the south wall, outside the luggage area.
 	var tv := _rental_root(decor,Vector3(-4.65,0,5.44),PI)
 	_solid(tv,Vector3(0,.36,0),Vector3(1.25,.72,.44),Color("#78614a"))
@@ -945,6 +1023,8 @@ func action_text(at: Vector3) -> String:
 	if riding: return "Frenando para bajar" if ride_exit_requested else "[E] Bajar"
 	if inside:
 		if at.distance_to(ROOM+Vector3(-.7,.86,5.25))<1.55: return "[E] Salir de casa"
+		var storage := storage_action(at)
+		if not storage.is_empty(): return storage
 		var waste_action := _waste_action(at)
 		if not waste_action.is_empty(): return waste_action
 		var tool_action := _house_tool_action(at)
@@ -973,6 +1053,7 @@ func interact(at: Vector3) -> bool:
 		if at.distance_to(ROOM+Vector3(-.7,.86,5.25))<1.55:
 			_exit()
 		elif not business.life.state.meal.is_empty(): return false
+		elif storage_interact(at): pass
 		elif _waste_interact(at): pass
 		elif _house_tool_interact(at): pass
 		elif _aimed_project(at):
