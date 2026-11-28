@@ -313,7 +313,7 @@ func _greet_carlos() -> void:
 	greeting_tween.tween_callback(_finish_greeting)
 
 const CALL_INTRO := [
-	["Carlos","Buen día, te estoy llamando de parte de Odalis. Me dijo que necesitabas buscar dinero.","carlos_intro",5.20],
+	["Carlos","Buen día, te estoy llamando de parte de Odalis. Me dijo que necesitabas buscar dinero.","carlos_intro_odalis",5.28],
 	["Tú","Oh, sí, bro, dime, ¿qué hay que hacer?","player_intro_v2",2.56],
 	["Carlos","Mira, un vecino mío quiere pintar la casa y me hace falta una mano. ¿Estás dentro?","carlos_offer",5.04]
 ]
@@ -381,12 +381,15 @@ func _play_call(lines: Array,decision: int) -> void:
 		subtitle.text = String(entry[0])+": "+String(entry[1])
 		var path := CALL_AUDIO_DIR+String(entry[2])+".mp3"
 		var duration := float(entry[3])
-		if ResourceLoader.exists(path):
-			var clip := load(path) as AudioStream
-			if clip!=null:
-				voice.stream = clip
-				duration = maxf(.1,clip.get_length())
-				voice.play()
+		var clip: AudioStream
+		if FileAccess.file_exists(path):
+			clip = AudioStreamMP3.load_from_file(path)
+		elif ResourceLoader.exists(path):
+			clip = load(path) as AudioStream
+		if clip!=null:
+			voice.stream = clip
+			duration = maxf(.1,clip.get_length())
+			voice.play()
 		else:
 			# Readable subtitles remain available before the optional voice pack is installed.
 			duration = maxf(duration,2.0)
