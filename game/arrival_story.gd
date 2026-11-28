@@ -124,7 +124,7 @@ func setup(controller) -> void:
 			if bool(state.get("investment_complete",false)):
 				phase = "done"
 				layer.hide()
-				InvestmentStory.restore_business(self)
+				_restore_completed_business.call_deferred()
 			else: _start_investment()
 		else:
 			_start_morning(true)
@@ -137,6 +137,14 @@ func setup(controller) -> void:
 		_resume_arrival()
 	else:
 		_begin_ride()
+
+func _restore_completed_business() -> void:
+	# Restored stands must be placed only after the map colliders are registered.
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	if not is_inside_tree(): return
+	if has_meta("safe_investment_stall"): remove_meta("safe_investment_stall")
+	InvestmentStory.restore_business(self)
 
 func _make_ui() -> void:
 	layer = CanvasLayer.new()
