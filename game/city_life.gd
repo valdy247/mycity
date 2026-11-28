@@ -665,13 +665,13 @@ func _home_food_oval(root: Node3D,at: Vector3,size: Vector3,paint: Color) -> Mes
 	part.scale = size
 	return part
 
-func start_home_plate(ingredients: Array) -> bool:
+func start_home_plate(ingredients: Array,bites: int = 3) -> bool:
 	if ingredients.is_empty() or not state.meal.is_empty() or not ledger.carry.is_empty(): return false
 	var fill := 0
 	if "arroz" in ingredients: fill += 36
 	if "carne" in ingredients: fill += 35
 	if "huevo" in ingredients: fill += 24
-	state.meal = {"key":"plato_casero","ingredients":ingredients.duplicate(),"fill":fill,"food_bites":3,"drink_sips":0}
+	state.meal = {"key":"plato_casero","ingredients":ingredients.duplicate(),"fill":fill,"food_bites":clampi(bites,1,3),"drink_sips":0}
 	_refresh_meal()
 	return true
 
@@ -682,6 +682,11 @@ func start_home_rice() -> bool:
 	return true
 
 func _eat() -> void:
+	var controller = business.get_parent()
+	if String(state.meal.get("key","")) in ["arroz_casero","plato_casero"] and controller.adaptation_mode:
+		if not is_instance_valid(controller.garage) or not controller.garage.dining_seated:
+			business._notify("Siéntate a la mesa para comer.")
+			return
 	if bite_anim>0.0 or active_hand>=0: return
 	var meal: Dictionary = state.meal
 	var bites := int(meal.get("food_bites",0))
@@ -714,6 +719,8 @@ func _finish_bite() -> void:
 	else:
 		business._notify("Hambre %d%% · E para continuar" % roundi(100.0-float(state.fullness)))
 	_refresh_meal()
+	var controller = business.get_parent()
+	if key in ["arroz_casero","plato_casero"] and is_instance_valid(controller.garage): controller.garage._refresh_dining_table()
 	ledger.save_game()
 
 func _save_contact(id: String) -> void:
@@ -1019,6 +1026,9 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	state.fatigue = minf(100.0,float(state.fatigue)+(passed-stimulated*.65)/9.6)
 	if meal_root!=null:
 		meal_root.visible = not in_vehicle and last_first_person and not state.meal.is_empty()
+		var dining = business.get_parent().garage
+		var at_table: bool = is_instance_valid(dining) and dining.dining_seated and String(state.meal.get("key","")) in ["arroz_casero","plato_casero"]
+		food_view.visible = not at_table
 		if food_model=="arroz":
 			food_view.position = food_view.position.move_toward(Vector3(-.28,-.40,-.57),delta*1.2)
 			if is_instance_valid(rice_spoon_view):
@@ -1037,7 +1047,13 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 				if is_instance_valid(rice_spoon_view):
 					var desired := Vector3(.30,-.39,-.58)
 					if active_hand==0: desired = Vector3(-.19,-.34,-.48) if bite_anim>.39 else Vector3(.045,-.12,-.24)
-					rice_spoon_view.position = InteractionHand.camera_safe_pose(cam,desired,.09)
+					if at_table:
+						var plate: Node3D = dining.dining_plate_prop
+						if is_instance_valid(plate) and (active_hand!=0 or bite_anim>.39):
+							desired = cam.to_local(plate.to_global(Vector3(.06,.10,.12)))
+						if dining.dining_water_busy: rice_spoon_view.hide()
+						else: rice_spoon_view.show()
+					rice_spoon_view.position = InteractionHand.camera_safe_pose(cam,desired,.045)
 			elif not food_model.is_empty():
 				food_view.position = InteractionHand.camera_safe_pose(cam,Vector3(-.29,-.12 if active_hand==0 else -.36,-.74),.13)
 			if not drink_model.is_empty():
