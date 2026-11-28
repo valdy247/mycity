@@ -1357,36 +1357,68 @@ func _job_near(site: Dictionary) -> bool:
 	var at: Vector3 = site.entrance
 	return player.global_position.distance_to(at)<5.0
 
+func _job_now() -> float:
+	return float(life.state.get("day",1))*1440.0+float(life.state.get("minutes",480.0))
+
+func _job_route_key(origin: String,destination: String) -> String:
+	return origin+"→"+destination
+
+func _job_route_available(origin: String,destination: String) -> bool:
+	# A broke player can always work. Otherwise regular customers need
+	# time before offering another delivery on the same route.
+	if ledger.cash<500: return true
+	var history: Dictionary = ledger.life_data.get("job_route_history",{})
+	return _job_now()>=float(history.get(_job_route_key(origin,destination),0.0))
+
+func _job_deadline(distance: float) -> float:
+	return _job_now()+maxf(35.0,distance*.18+25.0)
+
+func _job_pay(job: Dictionary) -> int:
+	var late := _job_now()>float(job.get("deadline",INF))
+	return maxi(1,roundi(float(job.get("pay",0))*(.8 if late else 1.0)))
+
 func open_neighborhood_jobs() -> void:
 	var job: Dictionary = ledger.life_data.get("neighborhood_job",{})
 	_open("Trabajos del barrio","Mandados de documentos sin inversión inicial. Recoge el sobre y entrégalo; no cobras hasta terminar.")
 	if not job.is_empty():
 		var collecting := String(job.phase)=="collect"
 		var site := _job_site(String(job.origin if collecting else job.destination))
+		if job.has("deadline"):
+			var minutes_left := ceili(float(job.deadline)-_job_now())
+			_phone_metric("Plazo de entrega",("%d min" % minutes_left) if minutes_left>=0 else "Atrasado · pago reducido 20%")
 		if site.is_empty():
 			_button("Cancelar encargo · lugar no disponible",_cancel_neighborhood_job)
 		else:
 			var label_value := ("Recoger en " if collecting else "Entregar en ")+String(site.name)
-			_button(label_value+" · %d CUP" % int(job.pay),_advance_neighborhood_job,not _job_near(site))
+			_button(label_value+" · %d CUP" % _job_pay(job),_advance_neighborhood_job,not _job_near(site))
 			_button("Marcar en GPS",_job_gps)
 			_button("Cancelar encargo",_cancel_neighborhood_job)
 	else:
 		var sites := _job_sites()
-		for i in range(mini(3,sites.size())):
-			var origin_site: Dictionary = sites[i]
-			if sites.size()<2: break
-			var destination: Dictionary = sites[(i+1)%sites.size()]
-			var distance: float = Vector3(origin_site.entrance).distance_to(Vector3(destination.entrance))
-			var pay := clampi(roundi(160.0+distance*.65),180,450)
-			pay += roundi(float(pay)*float(ledger.reputation(String(origin_site.contact))-50)*.002)
-			_button("%s → %s · %d CUP" % [origin_site.name,destination.name,pay],_accept_neighborhood_job.bind(String(origin_site.id),String(destination.id),pay))
-		if sites.size()<2: _button("No hay rutas disponibles todavía",open_neighborhood_jobs,true)
+		var shown := 0
+		if sites.size()>=2:
+			var offset := posmod(int(life.state.day)+floori(float(life.state.minutes)/120.0),sites.size())
+			for i in range(sites.size()):
+				var index := (i+offset)%sites.size()
+				var origin_site: Dictionary = sites[index]
+				var destination: Dictionary = sites[(index+1)%sites.size()]
+				if not _job_route_available(String(origin_site.id),String(destination.id)): continue
+				var distance: float = Vector3(origin_site.entrance).distance_to(Vector3(destination.entrance))
+				var pay := clampi(roundi(160.0+distance*.65),180,450)
+				pay += roundi(float(pay)*float(ledger.reputation(String(origin_site.contact))-50)*.002)
+				_button("%s → %s · %d CUP" % [origin_site.name,destination.name,pay],_accept_neighborhood_job.bind(String(origin_site.id),String(destination.id),pay))
+				shown += 1
+				if shown>=3: break
+		if shown==0: _button("Sin encargos nuevos · vuelve más tarde",open_neighborhood_jobs,true)
 	_button("Inicio",open_phone_home)
 
 func _accept_neighborhood_job(origin: String,destination: String,pay: int) -> void:
 	if not ledger.life_data.get("neighborhood_job",{}).is_empty() or origin==destination or pay<=0: return
-	if _job_site(origin).is_empty() or _job_site(destination).is_empty(): return
-	ledger.life_data.neighborhood_job = {"origin":origin,"destination":destination,"pay":pay,"phase":"collect"}
+	var start := _job_site(origin)
+	var finish := _job_site(destination)
+	if start.is_empty() or finish.is_empty() or not _job_route_available(origin,destination): return
+	var distance: float = Vector3(start.entrance).distance_to(Vector3(finish.entrance))
+	ledger.life_data.neighborhood_job = {"origin":origin,"destination":destination,"pay":pay,"phase":"collect","deadline":_job_deadline(distance)}
 	ledger.save_game()
 	open_neighborhood_jobs()
 
@@ -1411,12 +1443,15 @@ func _advance_neighborhood_job() -> void:
 		_notify("Encargo recogido. Llévalo a "+String(_job_site(String(job.destination)).get("name","su destino"))+".")
 		open_neighborhood_jobs()
 		return
-	var pay := int(job.pay)
+	var pay := _job_pay(job)
+	var late := _job_now()>float(job.get("deadline",INF))
+	if not ledger.life_data.has("job_route_history"): ledger.life_data.job_route_history = {}
+	ledger.life_data.job_route_history[_job_route_key(String(job.origin),String(job.destination))] = _job_now()+90.0
 	ledger.life_data.neighborhood_job = {}
 	ledger.cash += pay
 	ledger.revenue += pay
 	var origin := _job_site(String(job.origin))
-	ledger.change_reputation(String(origin.get("contact","Vecino")),3)
+	ledger.change_reputation(String(origin.get("contact","Vecino")),1 if late else 3)
 	ledger.life_data.neighborhood_jobs_done = int(ledger.life_data.get("neighborhood_jobs_done",0))+1
 	ledger.add_message("Trabajos","Encargo entregado. Ganaste %d CUP." % pay)
 	ledger.save_game()
