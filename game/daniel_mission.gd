@@ -2,6 +2,8 @@ extends Node3D
 # A social chapter, independent of money rewards and external services.
 const Person = preload("res://street_person.gd")
 const Domino = preload("res://daniel_domino.gd")
+const Leisure = preload("res://leisure_rules.gd")
+const PartyPlay = preload("res://party_play.gd")
 const ROOM := Vector3(65,110,0)
 const TRACKS := ["01_fuego","02_my_oxygen","03_reggaeton_fiesta","04_music_box","05_tumbao","06_old_school_salsa","07_rumba","08_afro_cuban","09_bailando","10_bajo_la_luna"]
 # Initial rhythm-game tempos, adjustable after listening to the real audio.
@@ -32,6 +34,16 @@ var smoking := 0.0
 var cigarette: Node3D
 var drink_prop: Node3D
 var drink_time := 0.0
+var play: Node
+var guests: Array[Dictionary] = []
+var party_lights: Array[OmniLight3D] = []
+var event_clock := 0.0
+var power_cut := false
+var quiet_music := false
+var party_event := ""
+var guest_clock := 0.0
+var last_phase := -1
+var event_cursor := 0
 
 func setup(controller) -> void:
 	game = controller
@@ -40,6 +52,9 @@ func setup(controller) -> void:
 	var life: Dictionary = business.ledger.life_data
 	if not life.has("daniel_party"): life.daniel_party = {"stage":0,"activities":{},"drinks":0,"domino":{},"contacts":{},"track":0}
 	state = life.daniel_party
+	play = PartyPlay.new()
+	add_child(play)
+	play.setup(self)
 	track = posmod(int(state.get("track",0)),TRACKS.size())
 	marker = Node3D.new()
 	add_child(marker)
@@ -150,13 +165,14 @@ func _mark_home() -> void:
 
 func action_text() -> String:
 	if inside:
+		if play.active(): return play.hint()
 		var p: Vector3 = game.player.global_position-ROOM
 		if p.distance_to(Vector3(0,.86,5.1))<2.0: return "[E] Salir de casa de Daniel"
 		if p.distance_to(Vector3(-3,.86,-1.9))<2.2: return "[E] Jugar dominó"
 		if p.distance_to(Vector3(3,.86,-3.2))<2.4: return "[E] Equipo de música"
 		if p.distance_to(Vector3(3,.86,2.5))<2.2: return "[E] Bebidas y comida"
 		if p.distance_to(Vector3(-3,.86,2.8))<2.2: return "[E] Conversar con Daniel"
-		return "[E] Bailar / cantar / conocer invitados"
+		return "[E] Bailar · [F] Invitar / conversar"
 	if int(state.stage)>=2 and _house().is_finite() and not _busy() and not game.garage.inside and game.player.global_position.distance_to(_house()+Vector3.UP*.86)<2.8:
 		return "[E] Entrar a casa de Daniel"
 	return ""
@@ -164,15 +180,16 @@ func action_text() -> String:
 func interact() -> bool:
 	var action := action_text()
 	if action.is_empty(): return false
+	if play.active(): return true
 	if not inside:
 		if game.garage._free_hands(): _enter()
 		else: business._notify("Deja lo que llevas antes de entrar.")
 	elif action.contains("Salir"): _leave()
-	elif action.contains("dominó"): _domino_menu()
+	elif action.contains("dominó"): play.begin_domino()
 	elif action.contains("música"): _music_menu()
 	elif action.contains("Bebidas"): _drink_menu()
 	elif action.contains("Daniel"): _daniel_menu()
-	else: _social_menu()
+	else: play.begin_dance(false)
 	return true
 
 func _solid(p: Vector3,size: Vector3,color: Color) -> void:
@@ -197,7 +214,10 @@ func _guest(style: int,p: Vector3,name_value: String,dancing: bool) -> Person:
 	person.remove_from_group("social_people")
 	person.remove_from_group("pedestrian_spacing")
 	person.set_meta("citizen_name",name_value)
-	if dancing: dancers.append({"node":person,"p":p,"phase":float(dancers.size())*.9})
+	if dancing:
+		var entry := {"node":person,"p":p,"phase":float(dancers.size())*.9,"name":name_value,"personality":["sociable","tranquila","alegre","reservado"][dancers.size()%4],"role":"dance","timer":8.0+float(dancers.size())*3.0,"slot":dancers.size()}
+		dancers.append(entry)
+		guests.append(entry)
 	return person
 
 func _enter() -> void:
@@ -208,6 +228,12 @@ func _enter() -> void:
 	room = Node3D.new()
 	add_child(room)
 	room.position = ROOM
+	last_phase = -1
+	event_clock = 0.0
+	party_event = ""
+	power_cut = false
+	quiet_music = false
+	guest_clock = 0.0
 	var wall := Color("#d2b8a0")
 	_solid(Vector3(0,-.10,0),Vector3(12,.20,12),Color("#a99b88"))
 	_solid(Vector3(-5.9,1.6,0),Vector3(.2,3.2,12),wall)
@@ -217,12 +243,17 @@ func _enter() -> void:
 	_solid(Vector3(0,3.2,0),Vector3(12,.18,12),wall)
 	_solid(Vector3(0,1.05,5.72),Vector3(1.25,2.1,.12),Color("#77584c"))
 	_label("SALIR",Vector3(0,2.5,5.6))
-	_solid(Vector3(-3,.70,-1.9),Vector3(1.35,.12,1.2),Color("#725b42"))
+	_solid(Vector3(-3,.74,-1.9),Vector3(1.60,.12,1.55),Color("#725b42"))
+	for x in [-3.65,-2.35]:
+		for z in [-2.52,-1.28]: business._box(room,Vector3(x,.35,z),Vector3(.09,.70,.09),Color("#5c4735"))
+	for p in [Vector3(-1.93,0,-1.9),Vector3(-4.08,0,-1.9),Vector3(-3,0,-3.02),Vector3(-3,0,-.78)]:
+		business._box(room,p+Vector3.UP*.43,Vector3(.45,.09,.45),Color("#856649"))
+		for dx in [-.17,.17]:
+			for dz in [-.17,.17]: business._box(room,p+Vector3(dx,.20,dz),Vector3(.045,.40,.045),Color("#594634"))
 	_solid(Vector3(3,.8,2.7),Vector3(1.6,.14,.9),Color("#725b42"))
 	for i in range(5):
 		business._box(room,Vector3(2.5+float(i)*.22,.99,2.7),Vector3(.10,.25,.10),Color("#567641") if i%2==0 else Color("#a77736"))
-	for i in range(4):
-		business._box(room,Vector3(-3.3+float(i)*.2,.79,-1.9),Vector3(.09,.025,.15),Color("#e5dfc8"))
+	# The playable domino controller builds the actual hand and chain.
 	_solid(Vector3(3,.75,-3.2),Vector3(.85,1.5,.5),Color("#30343c"))
 	business._box(room,Vector3(3,.9,-2.93),Vector3(.62,.60,.06),Color("#12151b"))
 	_label("DOMINÓ",Vector3(-3,1.8,-1.9))
@@ -234,9 +265,16 @@ func _enter() -> void:
 		var p: Vector3 = [Vector3(-4.1,0,-1.9),Vector3(-3,0,-3.1),Vector3(-3,0,-.7)][i]
 		var guest := _guest(920+i,p,["Mario","Luis","Rafa"][i],false)
 		guest.rotation.y = atan2(-3.0-p.x,-1.9-p.z)
+		guest.position.y = -.34
+		for leg in guest.limbs: leg.rotation.x = -1.35
+		for knee in guest.knees: knee.rotation.x = 1.40
+		for arm in guest.arms: arm.rotation.x = -1.0
+		play.register_opponent(guest)
 	for i in range(4):
 		var p := Vector3(-.8+float(i%2)*1.6,0,-2.0+floorf(float(i)/2.0)*2.0)
 		_guest([919,922,925,923][i],p,["Laura","María","Ana","Javier"][i],true)
+	for i in range(3):
+		_guest([931,934,937][i],Vector3(-1.8+float(i)*1.7,0,3.1),["Lili","Elena","Nora"][i],true)
 	for i in range(3):
 		var light := OmniLight3D.new()
 		room.add_child(light)
@@ -245,6 +283,7 @@ func _enter() -> void:
 		light.omni_range = 7.5
 		light.light_energy = 1.1
 		light.shadow_enabled = false
+		party_lights.append(light)
 	speaker = AudioStreamPlayer3D.new()
 	room.add_child(speaker)
 	speaker.position = Vector3(3,1.25,-3.2)
@@ -260,6 +299,8 @@ func _enter() -> void:
 	game.pivot.rotation = Vector3(game.pitch,game.yaw,0)
 	game._apply_camera_mode()
 	game._update_visual_lighting(true)
+	play.rebuild_table()
+	_refresh_party_phase()
 	_play_track()
 	if not bool(state.get("welcomed",false)):
 		state.welcomed = true
@@ -269,10 +310,14 @@ func _enter() -> void:
 
 func _activity(key: String) -> void:
 	state.activities[key] = true
+	if key in ["amistad","social","domino","baile","canto","musica","evento","descanso"]:
+		Leisure.reward(business.life.state,"daniel_"+key,8.0 if key!="descanso" else 4.0,6.0,90.0)
+	business.life._update_hud()
 	_save()
 
 func _daniel_menu() -> void:
 	business._open("Daniel","¡Cuántos recuerdos, mano! Desde chiquitos juntos. Hoy deja los problemas a un lado.")
+	if not party_event.is_empty(): business._button("Situación: "+party_event,_event_menu)
 	business._button("Recordar la infancia",_remember)
 	business._button("Descansar aquí un rato",_rest_here)
 	business._button("Despedirme de la fiesta",_finish_party)
@@ -301,8 +346,10 @@ func _remember() -> void:
 
 func _social_menu() -> void:
 	business._open("Pista de baile","Comparte con los invitados o practica el ritmo.")
-	business._button("Bailar",_start_rhythm.bind(false))
-	business._button("Cantar siguiendo el ritmo",_start_rhythm.bind(true))
+	business._button("Bailar",play.begin_dance.bind(false))
+	business._button("Cantar siguiendo el ritmo",play.begin_dance.bind(true))
+	for entry in guests:
+		if entry.node.visible: business._button("Invitar a bailar a "+String(entry.name),_invite.bind(String(entry.name)))
 	for name_value in ["Laura","María","Ana","Javier"]:
 		business._button("Conversar con "+name_value,_meet.bind(name_value))
 	business._button("Volver",business.close)
@@ -526,6 +573,7 @@ func _leave() -> void:
 
 func _exit() -> void:
 	business.close()
+	play.end_session(false)
 	inside = false
 	dance_active = false
 	smoking = 0.0
@@ -533,6 +581,9 @@ func _exit() -> void:
 	if is_instance_valid(cigarette): cigarette.queue_free()
 	if is_instance_valid(drink_prop): drink_prop.queue_free()
 	dancers.clear()
+	guests.clear()
+	party_lights.clear()
+	play.clear_room()
 	if is_instance_valid(room): room.queue_free()
 	room = null
 	speaker = null
@@ -569,14 +620,15 @@ func tick(delta: float) -> void:
 		elif exterior.playing: exterior.stop()
 	if not inside: return
 	elapsed += delta
+	play.tick(delta)
+	guest_clock += delta
+	if guest_clock>=1.0:
+		guest_clock = 0.0
+		_refresh_party_phase()
+	_tick_party_events(delta)
 	var period := _period()
 	for entry in dancers:
-		var person: Person = entry.node
-		var phase := _rhythm_clock()*TAU/period+float(entry.phase)
-		person.position = Vector3(entry.p)+Vector3(sin(phase)*.13,absf(sin(phase))*.025,cos(phase*.5)*.08)
-		person.rotation.y = sin(phase*.5)*.30
-		for arm in person.arms: arm.rotation.x = -.65+sin(phase)*.38
-		for leg in person.limbs: leg.rotation.x = sin(phase)*.16
+		_tick_guest(entry,delta)
 	if dance_active:
 		if not business.modal_open() or not is_instance_valid(beat_label): dance_active = false
 		else:
@@ -589,3 +641,120 @@ func tick(delta: float) -> void:
 	if drink_time>0.0:
 		drink_time = maxf(0.0,drink_time-delta)
 		if drink_time<=0.0 and is_instance_valid(drink_prop): drink_prop.queue_free()
+
+func _refresh_party_phase() -> void:
+	var minute := float(business.life.state.minutes)
+	var phase := Leisure.phase(minute)
+	if phase==last_phase: return
+	last_phase = phase
+	var count := Leisure.guest_count(minute)
+	# First mission always has a celebration, even if the player arrives early.
+	if not completed(): count = maxi(4,count)
+	for entry in guests:
+		entry.desired = int(entry.slot)<count
+	if not play.active(): business._notify(Leisure.phase_name(minute))
+
+func _invite(name_value: String) -> void:
+	for entry in guests:
+		if String(entry.name)!=name_value or not entry.node.visible: continue
+		if String(entry.personality)=="reservado" and not bool(state.contacts.get(name_value,false)):
+			business._open(name_value,"Prefiero conversar un rato primero.")
+			business._button("Conversar",_meet.bind(name_value))
+			business._button("Volver",business.close)
+			return
+		play.partner = entry.node
+		entry.role = "dance"
+		play.begin_dance(false)
+		return
+
+func _tick_guest(entry: Dictionary,delta: float) -> void:
+	var person: Person = entry.node
+	if not is_instance_valid(person): return
+	if play.partner==person and play.active(): return
+	if not bool(entry.get("desired",true)):
+		if not person.visible: return
+		var target := ROOM+Vector3(0,0,5.25)
+		# Approach the entrance along the open central aisle.
+		if absf(person.position.x)>.6: target = ROOM+Vector3(0,0,person.position.z)
+		if person.walk_to(target,delta,1.15) and absf(person.position.z-5.25)<.2: person.hide()
+		return
+	if not person.visible:
+		person.position = Vector3(0,0,5.25)
+		person.show()
+		entry.role = "arrive"
+	entry.timer = float(entry.timer)-delta
+	if float(entry.timer)<=0.0 and String(entry.role)!="arrive":
+		entry.timer = 12.0+float(posmod(int(entry.slot)*7+floori(elapsed),11))
+		var roles := ["dance","chat","drink","watch"]
+		entry.role = roles[posmod(floori(elapsed/10.0)+int(entry.slot),roles.size())]
+	var goal: Vector3 = entry.p
+	match String(entry.role):
+		"chat": goal = Vector3(-1.4+float(int(entry.slot)%3)*.95,0,3.1)
+		"drink": goal = Vector3(1.65+float(int(entry.slot)%2)*.35,0,1.15+float(int(entry.slot)%3)*.48)
+		"watch": goal = Vector3(-1.65,0,-3.5+float(int(entry.slot)%3)*.45)
+	var at := ROOM+goal
+	if person.global_position.distance_to(at)>.18:
+		var step := person.global_position.move_toward(at,delta*1.05)
+		# Keep guests clear of furniture and player; don't warp through objects.
+		var local := step-ROOM
+		if (absf(local.x+3.0)<.90 and absf(local.z+1.9)<.88) or (absf(local.x-3.0)<.9 and absf(local.z-2.7)<.60) or step.distance_to(game.player.global_position-Vector3.UP*.86)<.55:
+			person.animate(delta,false)
+			entry.timer = minf(float(entry.timer),1.0)
+			return
+		person.walk_to(at,delta,1.05)
+		return
+	if String(entry.role)=="arrive": entry.role = "dance"
+	if String(entry.role)=="dance" and not power_cut:
+		play.pose_guest(person,_rhythm_clock()*TAU/_period()+float(entry.phase),Leisure.genre(track))
+	else:
+		person.animate(delta,false)
+		if String(entry.role)=="drink": person.arms[1].rotation.x = -1.15+sin(elapsed*2.0)*.18
+		elif String(entry.role)=="chat": person.arms[0].rotation.x = -.4+sin(elapsed*2.4)*.32
+
+func _tick_party_events(delta: float) -> void:
+	if not party_event.is_empty() or play.active() or business.modal_open(): return
+	event_clock += delta
+	if event_clock<50.0: return
+	event_clock = 0.0
+	var events := ["Apagón","Vecino pide bajar el volumen","Competencia de baile","Acompañar a un invitado","Recuerdos de infancia"]
+	party_event = events[event_cursor%events.size()]
+	event_cursor += 1
+	if party_event=="Apagón":
+		power_cut = true
+		if is_instance_valid(speaker): speaker.stream_paused = true
+		for light in party_lights: light.light_energy = .10
+	business._notify("Daniel: "+party_event+". Ven a hablar conmigo.")
+
+func _event_menu() -> void:
+	business._open("Daniel",party_event)
+	match party_event:
+		"Apagón": business._button("Conectar la batería de respaldo",_resolve_event)
+		"Vecino pide bajar el volumen": business._button("Bajar el volumen",_resolve_event)
+		"Competencia de baile": business._button("Participar",_event_dance)
+		"Acompañar a un invitado": business._button("Acompañarlo hasta la puerta",_event_escort)
+		"Recuerdos de infancia": business._button("Conversar sobre los recuerdos",_resolve_event)
+	business._button("Más tarde",business.close)
+
+func _event_dance() -> void:
+	party_event = ""
+	play.begin_dance(false)
+
+func _event_escort() -> void:
+	# The guest walks to the real exit; no fake trip to an unknown address.
+	for entry in guests:
+		if entry.node.visible:
+			entry.desired = false
+			break
+	_resolve_event()
+
+func _resolve_event() -> void:
+	if party_event=="Apagón":
+		power_cut = false
+		if is_instance_valid(speaker): speaker.stream_paused = false
+		for light in party_lights: light.light_energy = 1.1
+	if party_event=="Vecino pide bajar el volumen":
+		quiet_music = true
+		if is_instance_valid(speaker): speaker.volume_db = -15.0
+	party_event = ""
+	_activity("evento")
+	business.close()
