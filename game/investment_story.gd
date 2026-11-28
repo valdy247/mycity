@@ -294,12 +294,13 @@ func _actor_overlaps_player(at: Vector3, minimum: float = 1.10) -> bool:
 	return absf(at.y-player_at.y)<1.6 and Vector2(at.x-player_at.x,at.z-player_at.z).length()<minimum
 
 func _separate_actor_position(at: Vector3) -> Vector3:
-	if not _actor_overlaps_player(at,1.45): return at
+	if at.is_finite() and not _actor_overlaps_player(at,1.45) and world.pedestrian_segment_clear(at,at): return at
 	var player_at: Vector3 = game.player.global_position-Vector3.UP*.86
 	for radius in [1.65,2.2,3.0,4.0]:
 		for i in range(12):
 			var angle := float(i)*TAU/12.0
-			var candidate := player_at+Vector3(cos(angle),0,sin(angle))*float(radius)
+			var center: Vector3 = player_at if _actor_overlaps_player(at,1.45) else at
+			var candidate := center+Vector3(cos(angle),0,sin(angle))*float(radius)
 			if at.y>70.0: candidate.y = at.y
 			else: candidate = game.yordi_mission._ground(candidate,false)
 			if not candidate.is_finite() or _actor_overlaps_player(candidate,1.45): continue
@@ -588,11 +589,21 @@ func _all_at(where: String) -> bool:
 func _trunk() -> Vector3:
 	return cab.body.to_global(Vector3(0,.86,-2.5))
 
+func _walk_actor_checked(target: Vector3,delta: float,speed: float) -> bool:
+	if not target.is_finite() or not is_instance_valid(actor): return false
+	var start: Vector3 = actor.global_position
+	var step: Vector3 = start.move_toward(target,speed*delta)
+	if start.distance_to(target)<.12: step = target
+	if _actor_overlaps_player(step) or not world.pedestrian_segment_clear(start,step) or not world.pedestrian_space_clear(actor,step,.58):
+		actor.animate(delta,false)
+		return false
+	return actor.walk_to(target,delta,speed)
+
 func _follow(delta: float,at: Vector3,radius: float=1.3) -> bool:
 	if not is_instance_valid(actor): return false
 	if actor.global_position.y>70.0:
 		if actor.global_position.distance_to(at)<radius: return true
-		return actor.walk_to(at,delta,1.6)
+		return _walk_actor_checked(at,delta,1.6)
 	return game.yordi_mission._walk(actor,at,delta,2.2,radius)
 
 func _actor_follow(delta: float) -> void:
@@ -618,7 +629,7 @@ func _helper_walk(delta: float,target: Vector3,inside_house: bool = false) -> bo
 			helper_path = PackedVector3Array([Vector3(-2.35,110,3.9),Vector3(-2.35,110,.35),Vector3(-5.32,110,.35),target])
 			helper_index = 0
 		if helper_index>=helper_path.size(): return true
-		if actor.walk_to(helper_path[helper_index],delta,1.8): helper_index += 1
+		if _walk_actor_checked(helper_path[helper_index],delta,1.8): helper_index += 1
 		return helper_index>=helper_path.size()
 	if not helper_goal.is_finite() or helper_goal.distance_to(target)>.5:
 		helper_goal = target
@@ -632,7 +643,7 @@ func _helper_walk(delta: float,target: Vector3,inside_house: bool = false) -> bo
 	var next := helper_path[helper_index]
 	var step := actor.global_position.move_toward(next,2.2*delta)
 	if world.pedestrian_segment_clear(actor.global_position,step) and world.pedestrian_space_clear(actor,step,.5):
-		if actor.walk_to(next,delta,2.2): helper_index += 1
+		if _walk_actor_checked(next,delta,2.2): helper_index += 1
 	else: actor.animate(delta,false)
 	return helper_index>=helper_path.size()
 
@@ -739,7 +750,7 @@ func _neighbor_lead(delta: float) -> void:
 			if _actor_overlaps_player(step):
 				_wait_naturally(delta)
 				return
-			if actor.walk_to(goal,delta,1.8): neighbor_exit_index += 1
+			if _walk_actor_checked(goal,delta,1.8): neighbor_exit_index += 1
 			return
 		# The interior is a separate world: transfer only at the logical doorway.
 		game.garage.set_guest_door(true)
@@ -814,31 +825,84 @@ func _table_tick(delta: float) -> void:
 	table.global_position = game.player.global_position+forward*.82-Vector3.UP*.35
 	table.rotation.y = atan2(forward.x,forward.z)+PI*.5
 	var target: Vector3 = game.player.global_position+forward*1.55-Vector3.UP*.86
-	actor.global_position = target
-	actor.rotation.y = atan2(-forward.x,-forward.z)
-	actor.animate(delta,game.player.velocity.length()>.15)
+	var actor_start: Vector3 = actor.global_position
+	if absf(actor_start.y-target.y)<3.0 and not _actor_overlaps_player(target) and world.pedestrian_segment_clear(actor_start,target):
+		actor.global_position = target
+		actor.rotation.y = atan2(-forward.x,-forward.z)
+		actor.animate(delta,game.player.velocity.length()>.15)
+	else:
+		actor.animate(delta,false)
 	for arm in actor.arms: arm.rotation.x = -1.0
 	if game.player.global_position.y>70.0 and _near(TABLE_ROOM+Vector3(0,.86,2.0),1.1):
 		var at: Vector3 = game.yordi_mission._near_ground(Vector3(neighbor.door)+Vector3(neighbor.normal)*.9,actor,3.0)
-		if at.is_finite(): game.player.global_position = at+Vector3.UP*.86
+		if at.is_finite():
+			game.player.global_position = at+Vector3.UP*.86
+			_spawn_actor(at+Vector3(neighbor.normal)*1.65)
 	_task("Lleva la mesa hasta el punto de venta frente a tu casa.")
-	if game.player.global_position.y<70.0: _mark(_stall_position()+Vector3.UP*.9)
+	if game.player.global_position.y<70.0:
+		var stall := _stall_position()
+		if stall.is_finite(): _mark(stall+Vector3.UP*.9)
+
+static func _safe_stall_layout(parent_story) -> Dictionary:
+	var game = parent_story.game
+	var world = game.cuba_world
+	var home: Dictionary = parent_story.home
+	if home.is_empty(): return {}
+	if parent_story.has_meta("safe_investment_stall"):
+		return parent_story.get_meta("safe_investment_stall")
+	var basis: Basis = home.basis
+	var door: Vector3 = home.door
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(1.66,2.25,.82)
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = shape
+	query.collision_mask = 1|4|8|16|32
+	var space: PhysicsDirectSpaceState3D = world.get_world_3d().direct_space_state
+	for shift in [1.85,-1.85,2.8,-2.8,3.8,-3.8,5.0,-5.0,6.5,-6.5,8.0,-8.0,10.0,-10.0]:
+		for depth in [1.2,1.9,2.6,3.3,4.0,4.7,5.4]:
+			var center: Vector3 = game.yordi_mission._ground(door+basis.x*float(shift)+basis.z*float(depth))
+			if not center.is_finite(): continue
+			query.transform = Transform3D(basis,center+Vector3.UP*1.15)
+			if not space.intersect_shape(query,1).is_empty(): continue
+			var clear := true
+			for x in [-.80,.80]:
+				for z in [-.40,.40]:
+					var corner: Vector3 = center+basis.x*float(x)+basis.z*float(z)
+					if world.street_geometry.point_on_road(corner): clear = false
+			if not clear: continue
+			for local in [Vector2(0,-.95),Vector2(1.25,0),Vector2(-1.25,0),Vector2(0,.95)]:
+				var seller: Vector3 = game.yordi_mission._ground(center+basis.x*local.x+basis.z*local.y)
+				if not seller.is_finite(): continue
+				var accessible := true
+				for entry in world.npc_doorways:
+					var threshold: Vector3 = entry.threshold
+					if threshold.distance_to(center)>6.0: continue
+					var exit: Vector3 = threshold+Vector3(entry.normal)*2.5
+					if Geometry3D.get_closest_point_to_segment(center,threshold,exit).distance_to(center)<1.1 or Geometry3D.get_closest_point_to_segment(seller,threshold,exit).distance_to(seller)<.85:
+						accessible = false
+						break
+				if not accessible: continue
+				var result := {"table":center,"seller":seller}
+				parent_story.set_meta("safe_investment_stall",result)
+				return result
+	return {}
 
 func _stall_position() -> Vector3:
-	var door: Vector3 = story.home.door
-	var basis: Basis = story.home.basis
-	return door+basis.x*1.85+basis.z*.55
+	var layout := _safe_stall_layout(story)
+	return layout.get("table",Vector3.INF)
 
 static func restore_business(parent_story) -> void:
 	var game = parent_story.game
 	var business = game.business
 	if not is_instance_valid(business.stand) or not is_instance_valid(business.albertico): return
-	var home: Dictionary = parent_story.home
-	var basis: Basis = home.basis
-	var at: Vector3 = Vector3(home.door)+basis.x*1.85+basis.z*.55
-	business.stand.global_position = at
+	var layout := _safe_stall_layout(parent_story)
+	if layout.is_empty():
+		push_warning("MyCity: no safe stall position yet; retry after physics initialization.")
+		return
+	var basis: Basis = parent_story.home.basis
+	business.stand.global_position = Vector3(layout.table)
 	business.stand.rotation.y = basis.get_euler().y
-	business.albertico.global_position = at-basis.z*.65
+	business.albertico.global_position = Vector3(layout.seller)
 	business.albertico.rotation.y = basis.get_euler().y
 	if business.first_story!=null:
 		business.first_story.original_actor = business.albertico.global_position
@@ -947,7 +1011,8 @@ func interact() -> void:
 			if game.player.global_position.y<70.0 and _near(_stall_position()+Vector3.UP*.86,2.1):
 				carry_table = false
 				table.global_position = _stall_position()
-				actor.global_position = _stall_position()-Basis(story.home.basis).z*.7
+				var layout := _safe_stall_layout(story)
+				if not layout.is_empty(): _spawn_actor(Vector3(layout.seller))
 				state.investment_stage = "finish"
 				_save()
 				_dialogue(11,14,"finish")
@@ -992,7 +1057,7 @@ func tick(delta: float) -> void:
 			story.subtitle.text = "[E] Abrir puerta" if _near(ENTRY,1.7) else ""
 		"enter_actor":
 			_face(actor.global_position+Vector3.UP*1.45)
-			if actor.walk_to(Vector3(-.7,110,4.95),delta,1.3):
+			if _walk_actor_checked(Vector3(-.7,110,4.95),delta,1.3):
 				game.garage.set_guest_door(false)
 				_credit()
 				_money()
