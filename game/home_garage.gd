@@ -112,6 +112,7 @@ var bath_clock := -1.0
 var bath_warned := false
 var bath_flush_seconds := 0.0
 var bath_soap_foam: Node3D
+var bath_lower_body: Node3D
 const HOME_PAN_TIME := {"carne":25.0,"huevo":12.0}
 var rental_storage_doors: Array[Dictionary] = []
 var rental_oil: Node3D
@@ -1185,6 +1186,38 @@ func _bath_position_clear(at: Vector3,ignore: StaticBody3D = null) -> bool:
 	q.exclude = excluded
 	return get_world_3d().direct_space_state.intersect_shape(q,1).is_empty()
 
+func _show_bath_legs(mode: String,heading: float) -> void:
+	# World-space lower body: independent of camera pitch and not a HUD overlay.
+	if is_instance_valid(bath_lower_body): bath_lower_body.queue_free()
+	bath_lower_body = _rental_root(game.player,Vector3.ZERO)
+	bath_lower_body.rotation.y = heading+PI
+	var seated := mode=="sit"
+	for i in range(2):
+		var x := -.135 if i==0 else .135
+		var source: Node3D = game.limb_legs[i]
+		var original_leg: MeshInstance3D = source.get_node("Leg")
+		var original_shoe: MeshInstance3D = source.get_node("Shoe")
+		if seated:
+			# Thighs follow the seat, knees bend at the front of the bowl,
+			# and the soles rest on the tiled floor in front of the toilet.
+			var thigh := _rental_round(bath_lower_body,Vector3(x,-.105,.19),Vector3(.21,.45,.22),Color("#192e57"))
+			thigh.rotation.x = -PI*.5
+			thigh.material_override = original_leg.material_override
+			var knee := _rental_round(bath_lower_body,Vector3(x,-.15,.39),Vector3(.21,.23,.22),Color("#192e57"))
+			knee.material_override = original_leg.material_override
+			var shin := _rental_round(bath_lower_body,Vector3(x,-.365,.43),Vector3(.18,.47,.19),Color("#192e57"))
+			shin.material_override = original_leg.material_override
+		else:
+			var leg := _rental_round(bath_lower_body,Vector3(x,-.42,0),Vector3(.22,.64,.23),Color("#192e57"))
+			leg.material_override = original_leg.material_override
+		var shoe := MeshInstance3D.new()
+		shoe.mesh = original_shoe.mesh
+		shoe.material_override = original_shoe.material_override
+		shoe.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		bath_lower_body.add_child(shoe)
+		shoe.scale = original_shoe.scale
+		shoe.position = Vector3(x,-.60 if seated else -.74,.53 if seated else .075)
+
 func _start_bath_action(mode: String) -> void:
 	if not bath_mode.is_empty() or not _free_hands(): return
 	var actor: CharacterBody3D = game.player
@@ -1225,6 +1258,7 @@ func _start_bath_action(mode: String) -> void:
 	game.pitch = pitch
 	game.pivot.rotation = Vector3(pitch,heading,0)
 	game._apply_camera_mode()
+	_show_bath_legs(mode,heading)
 	if mode=="wash":
 		bath_water.show()
 		bath_wash_model = _rental_root(bath_sink,Vector3(0,1.015,.04))
@@ -1243,6 +1277,10 @@ func _finish_bath_action(completed: bool = true) -> void:
 	var mode := bath_mode
 	bath_mode = ""
 	bath_seconds = 0.0
+	if is_instance_valid(bath_lower_body):
+		bath_lower_body.hide()
+		bath_lower_body.queue_free()
+	bath_lower_body = null
 	if is_instance_valid(bath_water): bath_water.hide()
 	if is_instance_valid(bath_wash_model): bath_wash_model.queue_free()
 	bath_wash_model = null
