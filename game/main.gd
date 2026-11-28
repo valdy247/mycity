@@ -955,6 +955,7 @@ func _apply_camera_mode() -> void:
 		arm.spring_length = 0.0 if first_person else (2.15 if city_world != null and (city_world.inside_home or (city_world.bakery != null and city_world.bakery.inside) or (cuba_world != null and cuba_world.current_room>=0)) else 4.5)
 		pivot.position.y = .45 if garage!=null and (garage.dining_seated or garage.bath_mode=="sit") else .65
 	if garage!=null and garage.inside and not first_person: arm.spring_length = 2.0
+	if is_instance_valid(daniel_mission) and daniel_mission.inside and not first_person: arm.spring_length = 2.4
 	_update_player_draw_distance()
 	if reticle != null:
 		reticle.visible = first_person and not driving and not building_mode and not (garage!=null and garage.riding)
@@ -965,6 +966,10 @@ func _open_city_map() -> void:
 	city_navigation.open()
 
 func _input(event: InputEvent) -> void:
+	if is_instance_valid(daniel_mission) and daniel_mission.inside and daniel_mission.play.active() and event is InputEventKey:
+		daniel_mission.play.handle(event)
+		get_viewport().set_input_as_handled()
+		return
 	if home_exit_loading:
 		get_viewport().set_input_as_handled()
 		return
@@ -1000,11 +1005,21 @@ func _input(event: InputEvent) -> void:
 			city_navigation.close()
 			get_viewport().set_input_as_handled()
 		return
-	if event.keycode==KEY_M and city_navigation!=null and not building_mode and not (pilar_editor!=null and pilar_editor.active) and not (taxis!=null and taxis.dialog.visible) and not (business!=null and business.modal_open()) and not (street_market!=null and not street_market.active.is_empty()):
+	if event.keycode==KEY_M and city_navigation!=null and not (is_instance_valid(daniel_mission) and daniel_mission.inside) and not building_mode and not (pilar_editor!=null and pilar_editor.active) and not (taxis!=null and taxis.dialog.visible) and not (business!=null and business.modal_open()) and not (street_market!=null and not street_market.active.is_empty()):
 		_open_city_map()
 		get_viewport().set_input_as_handled()
 
 func _unhandled_input(event: InputEvent) -> void:
+	if is_instance_valid(daniel_mission) and daniel_mission.inside:
+		if daniel_mission.play.active():
+			daniel_mission.play.handle(event)
+			return
+		if not business.modal_open() and event is InputEventKey and event.pressed and not event.echo:
+			if event.keycode==KEY_F:
+				daniel_mission._social_menu()
+				return
+			if event.keycode in [KEY_B,KEY_G,KEY_I,KEY_X,KEY_F9]: return
+		if event is InputEventMouseButton and event.button_index==MOUSE_BUTTON_RIGHT: return
 	if arrival_story!=null and arrival_story.active():
 		if event is InputEventMouseMotion: arrival_story.handle_look(event.relative)
 		return
@@ -1959,6 +1974,17 @@ func _physics_process(delta: float) -> void:
 	if carlos_mission!=null and not building_mode: carlos_mission.tick(delta)
 	if _hold_story_input(): return
 	if daniel_mission!=null and not building_mode: daniel_mission.tick(delta)
+	if is_instance_valid(daniel_mission) and daniel_mission.inside and daniel_mission.play.active():
+		player.velocity = Vector3.ZERO
+		interact_requested = false
+		cargo_requested = false
+		context_requested = false
+		if business!=null: business.tick(delta,false,false)
+		hud_time += delta
+		if hud_time>=.12:
+			hud_time = 0.0
+			_update_hud()
+		return
 	if _yordi_enabled() and not building_mode and (daniel_mission==null or not daniel_mission.inside): yordi_mission.tick(delta)
 	if _hold_story_input(): return
 	if not adaptation_mode and incidents!=null and not building_mode and not business.modal_open(): incidents.tick(delta)
