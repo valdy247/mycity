@@ -460,7 +460,7 @@ func _rental_root(parent: Node3D,at: Vector3,angle: float=0.0) -> Node3D:
 	root.rotation.y = angle
 	return root
 
-func _model_rental_furniture(body: StaticBody3D,id: String,size: Vector3) -> void:
+func _model_rental_furniture(body: Node3D,id: String,size: Vector3) -> void:
 	var root := _rental_root(body,Vector3(0,-size.y*.5,0))
 	var wood := Color("#77563e")
 	var dark := Color("#554233")
@@ -631,7 +631,39 @@ func storage_action(at: Vector3) -> String:
 	var entry := _aimed_storage_door(at)
 	if entry.is_empty(): return ""
 	var hinge: Node3D = entry.hinge
-	return "[E] "+("Cerrar " if absf(hinge.rotation.y)>.45 else "Abrir ")+String(entry.label)
+	return "[E] "+("Cerrar " if absf(hinge.rotation.y)>=.10 else "Abrir ")+String(entry.label)
+
+func storage_safe_angle(hinge: Node3D,requested: float) -> float:
+	var entry: Dictionary = {}
+	for candidate in rental_storage_doors:
+		if candidate.hinge==hinge:
+			entry = candidate
+			break
+	if entry.is_empty(): return hinge.rotation.y
+	var size: Vector3 = entry.size
+	var center: Vector3 = entry.center
+	var shape := BoxShape3D.new()
+	# Slight clearance at the hinge avoids touching the cabinet's own frame.
+	shape.size = Vector3(maxf(.02,size.x-.045),maxf(.02,size.y-.035),size.z*.5)
+	center.z += .012
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = shape
+	q.collision_mask = 1|4|8|16|32
+	var space := get_world_3d().direct_space_state
+	var from: float = hinge.rotation.y
+	var safe := from
+	var parent: Node3D = hinge.get_parent()
+	var steps := maxi(1,ceili(absf(requested-from)/.035))
+	for i in range(1,steps+1):
+		var angle := lerpf(from,requested,float(i)/float(steps))
+		var pose := parent.global_transform*Transform3D(Basis(Vector3.UP,angle),hinge.position)
+		q.transform = Transform3D(pose.basis,pose*center)
+		if not space.intersect_shape(q,1).is_empty(): break
+		safe = angle
+	return safe
+
+func apply_storage_angle(requested: float,hinge: Node3D) -> void:
+	if is_instance_valid(hinge): hinge.rotation.y = storage_safe_angle(hinge,requested)
 
 func storage_interact(at: Vector3) -> bool:
 	var entry := _aimed_storage_door(at)
@@ -639,10 +671,14 @@ func storage_interact(at: Vector3) -> bool:
 	var hinge: Node3D = entry.hinge
 	var previous: Tween = entry.get("tween")
 	if is_instance_valid(previous): previous.kill()
-	var opening := absf(hinge.rotation.y)<.45
+	var opening := absf(hinge.rotation.y)<.10
+	var requested := -1.45 if opening else 0.0
+	var allowed := storage_safe_angle(hinge,requested)
+	if absf(allowed-requested)>.06:
+		business._notify("Hay un obstáculo en el recorrido de la puerta.")
 	var tween := create_tween()
 	entry.tween = tween
-	tween.tween_property(hinge,"rotation:y",-1.45 if opening else 0.0,.38).set_trans(Tween.TRANS_SINE)
+	tween.tween_method(apply_storage_angle.bind(hinge),hinge.rotation.y,allowed,.38).set_trans(Tween.TRANS_SINE)
 	return true
 
 func show_rental_oil(stored: bool) -> void:
@@ -825,7 +861,15 @@ func _refresh_carried() -> void:
 		child.queue_free()
 	var id := String(state.held_furniture)
 	if FURNITURE.has(id):
-		business._box(carried_view,Vector3.ZERO,Vector3(.50,.36,.44),FURNITURE[id].color)
+		if game.adaptation_mode:
+			var size: Vector3 = FURNITURE[id].size
+			var model := Node3D.new()
+			carried_view.add_child(model)
+			_model_rental_furniture(model,id,size)
+			# Keep the recognizable model in view without covering the crosshair.
+			model.scale = Vector3.ONE*minf(.75,.85/maxf(size.x,maxf(size.y,size.z)))
+			model.rotation.y = -.25
+		else: business._box(carried_view,Vector3.ZERO,Vector3(.50,.36,.44),FURNITURE[id].color)
 	elif not state.get("waste_hand",{}).is_empty():
 		_make_waste_item(carried_view,state.waste_hand)
 	elif not String(state.paint_carry).is_empty():
