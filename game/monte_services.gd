@@ -19,6 +19,11 @@ var corner_unplaced := 0
 const CORNER_BATCH := 2
 var vehicles: Array = []
 var civilian_route: Array = []
+var prioritize_home_traffic := false
+var home_traffic_routes: Array = []
+var home_traffic_clock := 0.0
+var home_traffic_target := 6
+var home_route_link_keys: Dictionary = {}
 var story_van: CharacterBody3D
 var story_van_registered := false
 var story_van_retry := 0.0
@@ -756,6 +761,72 @@ func _next_neighborhood() -> bool:
 		return traffic_phase>=6
 	return false
 
+# Build short, real directed street loops near the rented home's curb.
+# Keep the existing long avenue routes; no imaginary roads or vehicle jumps.
+func _prepare_home_traffic() -> void:
+	if not prioritize_home_traffic or not home_traffic_routes.is_empty(): return
+	var candidates: Array = []
+	var seen: Dictionary = {}
+	for edge in planner.edges.values():
+		if float(edge.width)<5.6: continue
+		var a: Vector3 = edge.a
+		var b: Vector3 = edge.b
+		var nearest := Geometry3D.get_closest_point_to_segment(anchor,a,b)
+		if nearest.distance_to(anchor)>125.0 or a.distance_to(b)<8.0: continue
+		var first := String(edge.a_id)
+		var last := String(edge.b_id)
+		var key := first+":"+last if first<last else last+":"+first
+		if seen.has(key): continue
+		seen[key] = true
+		candidates.append({"a":first,"b":last,"distance":nearest.distance_to(anchor)})
+	candidates.sort_custom(func(a,b): return float(a.distance)<float(b.distance))
+	for candidate in candidates.slice(0,28):
+		var ids := _neighborhood_loop(String(candidate.a),String(candidate.b))
+		if ids.size()<4: continue
+		var length := 0.0
+		var close_length := 0.0
+		var overlap := 0.0
+		var links: Array[String] = []
+		for i in range(ids.size()-1):
+			var key: String = ids[i]+":"+ids[i+1]
+			var a: Vector3 = world.geography.points[ids[i]]
+			var b: Vector3 = world.geography.points[ids[i+1]]
+			var span := a.distance_to(b)
+			length += span
+			if ((a+b)*.5).distance_to(anchor)<150.0: close_length += span
+			if home_route_link_keys.has(key): overlap += span
+			links.append(key)
+		if length<95.0 or length>720.0 or close_length<length*.4 or overlap>length*.45: continue
+		var route := _traffic_route(ids,false)
+		if route.size()<5: continue
+		home_traffic_routes.append(route)
+		for key in links: home_route_link_keys[key] = true
+		if home_traffic_routes.size()>=2: break
+	if not home_traffic_routes.is_empty():
+		print("MyCity tráfico local: ",home_traffic_routes.size()," circuitos cerca de la casa.")
+	else:
+		print("MyCity tráfico local: sin circuito corto; se mantienen las rutas generales.")
+
+func _maintain_home_traffic(delta: float) -> void:
+	if not prioritize_home_traffic or home_traffic_routes.is_empty(): return
+	home_traffic_clock += delta
+	if home_traffic_clock<3.0: return
+	home_traffic_clock = 0.0
+	var present := 0
+	var total := 0
+	for car in vehicles:
+		if bool(car.truck) or not is_instance_valid(car.body): continue
+		total += 1
+		if String(car.get("traffic_kind",""))=="home": present += 1
+	for job in traffic_jobs:
+		if String(job.kind)=="home": present += 1
+	var target := mini(home_traffic_target,maxi(2,floori(float(civilian_limit)/3.0)))
+	if present>=target or total>=civilian_limit: return
+	# Retry one vacant slot per pass. Normal collision checks still apply.
+	var route: Array = home_traffic_routes[posmod(traffic_serial,home_traffic_routes.size())]
+	traffic_jobs.push_front({"route":route,"kind":"home","outer":false,"slot":posmod(traffic_serial,6),"slots":6,"attempts":0,"serial":traffic_serial})
+	traffic_serial += 1
+
 func _traffic_tick(delta: float) -> void:
 	traffic_clock += delta
 	if traffic_clock<.65: return
@@ -765,10 +836,11 @@ func _traffic_tick(delta: float) -> void:
 		traffic_phase = 1
 	elif traffic_phase<6:
 		if _next_neighborhood(): traffic_phase = 6
+	_maintain_home_traffic(.65)
 	if traffic_jobs.is_empty(): return
 	var total := 0
 	for car in vehicles:
-		if not bool(car.truck): total += 1
+		if not bool(car.truck) and is_instance_valid(car.body): total += 1
 	if total>=civilian_limit:
 		traffic_jobs.clear()
 		return
@@ -841,6 +913,7 @@ func _make_vehicle(route: Array,truck: bool,index: int,slots: int = 8,slot: int 
 		if item.has("stop"): d = item.stop.direction
 		if not truck and not world.street_geometry.intersection_clear_for_stop(p,4.25,1.83): continue
 		if not truck and kind=="neighborhood" and not _small_traffic_street(p,d): continue
+		if not truck and kind=="home" and p.distance_to(anchor)>180.0: continue
 		if not truck and outer:
 			if world.street_geometry.four_lane_at(p,d).is_empty(): continue
 			var service_clear := true
@@ -877,7 +950,17 @@ func _make_vehicle(route: Array,truck: bool,index: int,slots: int = 8,slot: int 
 func _initialize() -> void:
 	planner.setup(world.geography)
 	var ids := planner.plan("MONTE",anchor)
-	if ids.size()<5: return
+	_prepare_home_traffic()
+	if ids.size()<5:
+		# A missing long avenue circuit must not disable all city traffic.
+		if not home_traffic_routes.is_empty():
+			civilian_route = home_traffic_routes[0]
+			for local_route in home_traffic_routes:
+				_queue_traffic(local_route,3,"home")
+		else:
+			_prepare_secondary_routes()
+			traffic_phase = 1
+		return
 	var route: Array = []
 	var car_route: Array = []
 	for i in range(ids.size()-1):
@@ -918,6 +1001,9 @@ func _initialize() -> void:
 	for i in range(8):
 		_make_vehicle(car_route,false,i,8)
 	traffic_serial = 8
+	# Place local jobs ahead of the extra long-route traffic, preserving the cap.
+	for local_route in home_traffic_routes:
+		_queue_traffic(local_route,3,"home")
 	var outer := _traffic_route(ids,true)
 	_queue_traffic(outer,4,"avenue",true)
 	print("Comunales: ",sites.size()," puntos de basura; ",vehicles.size()," vehículos iniciales.")
@@ -1124,7 +1210,7 @@ func _drive(vehicle: Dictionary,delta: float) -> void:
 		var lateral := direction.dot(side)
 		if active and absf(lateral)>.10: vehicle.turn_signal = 1 if lateral>0.0 else -1
 		elif not active: vehicle.turn_signal = 0
-	var limit := 6.5 if bool(vehicle.truck) else (6.0 if String(vehicle.get("traffic_kind","avenue"))=="neighborhood" else 10.5)
+	var limit := 6.5 if bool(vehicle.truck) else (6.0 if String(vehicle.get("traffic_kind","avenue")) in ["neighborhood","home"] else 10.5)
 	var driving_style := int(body.get_meta("driver_style",1))
 	if not bool(vehicle.truck): limit *= float([.88,1.0,1.07][clampi(driving_style,0,2)])
 	var speed := minf(limit,maxf(.8,sqrt(2.0*4.0*distance)))
@@ -1258,7 +1344,7 @@ func tick(delta: float) -> void:
 		initialized = true
 		_initialize()
 		_prepare_corner_jobs()
-	elif not civilian_route.is_empty():
+	else:
 		_traffic_tick(delta)
 	if corner_cursor<corner_jobs.size() or not corner_pending.is_empty(): _tick_corner_bins(delta)
 	# If all berths were occupied at startup, retry without duplicating trucks.

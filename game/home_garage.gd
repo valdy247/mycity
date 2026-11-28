@@ -1441,46 +1441,83 @@ func drive(delta: float,movement: Vector2) -> void:
 
 func _init_traffic() -> void:
 	if game.monte_services==null or not game.monte_services.initialized: return
-	var route: Array = []
-	for vehicle in game.monte_services.vehicles:
-		if not bool(vehicle.truck):
-			route = vehicle.route
-			break
-	if route.size()<5: return
-	traffic_ready = true
-	var spawn_slot := 0
+	var routes: Array = []
+	if game.adaptation_mode:
+		routes.append_array(game.monte_services.home_traffic_routes)
+	if not game.monte_services.civilian_route.is_empty():
+		routes.append(game.monte_services.civilian_route)
+	if routes.is_empty():
+		for vehicle in game.monte_services.vehicles:
+			if not bool(vehicle.truck) and vehicle.route.size()>=5:
+				routes.append(vehicle.route)
+				break
+	if routes.is_empty(): return
+	var counts := {"bicicleta":0,"triciclo":0,"moto":0}
+	for entry in traffic:
+		if is_instance_valid(entry.body): counts[String(entry.kind)] += 1
+	var desired := {"bicicleta":1,"triciclo":2,"moto":2} if game.adaptation_mode and not game.mobile_mode else {"bicicleta":1,"triciclo":1,"moto":1}
 	for kind in ["bicicleta","triciclo","moto"]:
-		var spec: Dictionary = Kit.KITS[kind]
-		var preferred := floori(float(route.size()-2)*float(spawn_slot)/3.0)
-		spawn_slot += 1
-		for offset in range(route.size()-2):
-			var i := 1+(preferred+offset)%(route.size()-2)
-			var p: Vector3 = route[i].p
-			if p.distance_to(game.player.global_position)<25: continue
-			var separated := true
-			for existing in traffic:
-				var other: CharacterBody3D = existing.body
-				if other.global_position.distance_to(p)<15.0:
-					separated = false
-					break
-			if not separated: continue
-			var next: Vector3 = route[i+1].p
-			var d := (next-p).normalized()
-			if d.length_squared()<.5 or not Bypass._on_road(world.street_geometry,p,d,float(spec.width),float(spec.length)): continue
-			var q := PhysicsShapeQueryParameters3D.new()
-			var shape := BoxShape3D.new()
-			shape.size = Vector3(float(spec.width)+.4,2.2,float(spec.length)+.4)
-			q.shape = shape
-			q.transform = Transform3D(Basis(Vector3.UP,atan2(d.x,d.z)),p+Vector3.UP*1.15)
-			q.collision_mask = 1|4|8|32
-			if not get_world_3d().direct_space_state.intersect_shape(q,1).is_empty(): continue
-			var body := Kit.body(self,kind)
-			body.global_position = p+Vector3.UP*.055
-			body.rotation.y = atan2(d.x,d.z)
-			_make_rider(body,kind,600+i)
-			body.add_to_group("autonomous_traffic")
-			traffic.append({"body":body,"kind":kind,"route":route,"index":i+1,"speed":0.0,"blocked":0.0,"cooldown":0.0,"detour":[],"detour_index":0,"resume":0})
-			break
+		if int(counts[kind])>=int(desired[kind]): continue
+		# Try the neighborhood first, fall back to the existing main circuit.
+		for route in routes:
+			if _spawn_ambient_two_wheeler(String(kind),route,int(counts[kind])+traffic.size()):
+				counts[kind] += 1
+				print("MyCity tráfico: ",kind," ",counts[kind],"/",desired[kind])
+				break
+	traffic_ready = true
+	for kind in desired:
+		if int(counts[kind])<int(desired[kind]): traffic_ready = false
+
+func _spawn_ambient_two_wheeler(kind: String,route: Array,slot: int) -> bool:
+	if route.size()<5: return false
+	var spec: Dictionary = Kit.KITS[kind]
+	var preferred := floori(float(route.size())*float(posmod(slot,5))/5.0)
+	for offset in range(route.size()):
+		var i := (preferred+offset)%route.size()
+		var p: Vector3 = route[i].p
+		var actor_at: Vector3 = game.player.global_position
+		if absf(actor_at.y-ROOM.y)<8.0 and not world.garage_home_site.is_empty():
+			actor_at = world.garage_home_site.door
+		if Vector2(p.x-actor_at.x,p.z-actor_at.z).length()<25.0: continue
+		var separated := true
+		for existing in get_tree().get_nodes_in_group("autonomous_traffic"):
+			if not is_instance_valid(existing) or not existing is Node3D: continue
+			if existing.global_position.distance_to(p)<12.0:
+				separated = false
+				break
+		if not separated: continue
+		var next: Vector3 = route[(i+1)%route.size()].p
+		var d := (next-p).normalized()
+		if d.length_squared()<.5 or not Bypass._on_road(world.street_geometry,p,d,float(spec.width),float(spec.length)): continue
+		if not world.street_geometry.intersection_clear_for_stop(p,float(spec.length),float(spec.width)): continue
+		var q := PhysicsShapeQueryParameters3D.new()
+		var shape := BoxShape3D.new()
+		shape.size = Vector3(float(spec.width)+.4,2.2,float(spec.length)+.4)
+		q.shape = shape
+		q.transform = Transform3D(Basis(Vector3.UP,atan2(d.x,d.z)),p+Vector3.UP*1.15)
+		q.collision_mask = 1|4|8|32
+		if not get_world_3d().direct_space_state.intersect_shape(q,1).is_empty(): continue
+		var body := Kit.body(self,kind)
+		body.global_position = p+Vector3.UP*.055
+		body.rotation.y = atan2(d.x,d.z)
+		_make_rider(body,kind,600+i+slot*7)
+		body.add_to_group("autonomous_traffic")
+		traffic.append({"body":body,"kind":kind,"route":route,"index":(i+1)%route.size(),"speed":0.0,"blocked":0.0,"cooldown":0.0,"detour":[],"detour_index":0,"resume":0})
+		return true
+	return false
+
+func tick_ambient_traffic(delta: float) -> void:
+	for i in range(traffic.size()-1,-1,-1):
+		if not is_instance_valid(traffic[i].body):
+			traffic.remove_at(i)
+			traffic_ready = false
+	if not traffic_ready:
+		refresh_clock += delta
+		if refresh_clock>=2.0:
+			refresh_clock = 0.0
+			_init_traffic()
+	# Move existing vehicles even while a missing type is waiting for a berth.
+	_traffic_tick(delta)
 
 func _traffic_tick(delta: float) -> void:
 	for entry in traffic:
@@ -1567,12 +1604,7 @@ func tick(delta: float) -> void:
 	elif not inside and has_home_tool():
 		_stop_home_paint()
 	_tick_listing(delta)
-	if not traffic_ready:
-		refresh_clock += delta
-		if refresh_clock>1.0:
-			refresh_clock = 0.0
-			_init_traffic()
-	else: _traffic_tick(delta)
+	tick_ambient_traffic(delta)
 	marker.position.y = 2.35+sin(Time.get_ticks_msec()*.003)*.12
 	marker.visible = inside and _wheel_pending()
 	_tick_home_paint(delta)

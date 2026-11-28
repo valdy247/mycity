@@ -241,7 +241,11 @@ func _ready() -> void:
 		monte_services = MonteServices.new()
 		if mobile_mode: monte_services.civilian_limit = 14
 		add_child(monte_services)
-		monte_services.setup(cuba_world,cuba_world.home_spawn,avoid,player,play_camera,urban_buses.stops)
+		var traffic_anchor: Vector3 = cuba_world.home_spawn
+		if adaptation_mode and not cuba_world.garage_home_site.is_empty():
+			traffic_anchor = cuba_world.garage_home_site.get("road",cuba_world.garage_home_site.door)
+		monte_services.setup(cuba_world,traffic_anchor,avoid,player,play_camera,urban_buses.stops)
+		monte_services.prioritize_home_traffic = adaptation_mode
 		monte_pedestrians = MontePedestrians.new()
 		add_child(monte_pedestrians)
 		monte_pedestrians.setup(cuba_world,urban_buses,business.life)
@@ -1694,6 +1698,9 @@ func _physics_process(delta: float) -> void:
 		taxis.tick(delta,cuba_world.cuba_clock)
 		monte_services.tick(delta)
 		monte_pedestrians.tick(delta)
+		# Ambient vehicles must run during the taxi, sleep and house scenes.
+		# Do not run garage commerce, paint or mission systems here.
+		if garage!=null: garage.tick_ambient_traffic(delta)
 		arrival_story.tick(delta)
 		return
 	if _hold_story_input(): return
