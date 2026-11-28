@@ -78,6 +78,7 @@ const HOME_PAN_GRACE := {"carne":20.0,"huevo":12.0}
 var home_food_busy := false
 var dining_seated := false
 var dining_chair: Node3D
+var dining_chair_body: StaticBody3D
 var dining_surface: Node3D
 var dining_plate_prop: Node3D
 var dining_water_prop: Node3D
@@ -1954,7 +1955,9 @@ func _refresh_rice_visuals(update_lid: bool = true) -> void:
 	rice_indicator.material_override = business._mat(Color("#df5536") if float(recipe.remaining)>0.0 else (Color("#70b977") if int(recipe.portions)>0 else Color("#6d7066")))
 
 func _build_dining_table(root: Node3D) -> void:
-	dining_chair = _rental_root(root,Vector3(0,0,.74))
+	dining_chair = _rental_root(root,Vector3(0,0,.78))
+	dining_chair_body = _solid(dining_chair,Vector3(0,.47,0),Vector3(.44,.94,.43),Color("#77563e"))
+	dining_chair_body.get_child(0).hide()
 	var wood := Color("#77563e")
 	_rental_part(dining_chair,Vector3(0,.45,0),Vector3(.44,.055,.43),wood)
 	for x in [-.17,.17]:
@@ -1996,6 +1999,15 @@ func _refresh_dining_table() -> void:
 		child.queue_free()
 	if int(food.table_water)>=0: _draw_home_water(dining_water_prop,int(food.table_water))
 
+func _aim_dining_chair() -> bool:
+	if not is_instance_valid(dining_chair_body): return false
+	var cam: Camera3D = game.play_camera
+	var ray := PhysicsRayQueryParameters3D.create(cam.global_position,cam.global_position-cam.global_basis.z*3.0,1|2)
+	ray.exclude = [game.player.get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(ray)
+	if hit.is_empty() or hit.collider!=dining_chair_body: return false
+	return not _door_blocks_target(cam.global_position,Vector3(hit.position),dining_chair)
+
 func _dining_action() -> String:
 	if not inside or not game.adaptation_mode or not is_instance_valid(dining_chair): return ""
 	var food: Dictionary = state.home_food
@@ -2008,7 +2020,7 @@ func _dining_action() -> String:
 			return "[E] Levantarse · mira el plato para comer"
 		return "[E] Levantarse"
 	if not String(food.hand).is_empty(): return ""
-	if _aim_tool(dining_chair,Vector3(0,.72,.18),Vector3(.24,.29,.08)) or _aim_tool(dining_chair,Vector3(0,.45,0),Vector3(.23,.055,.23)):
+	if _aim_dining_chair():
 		if _free_hands() or String(business.life.state.meal.get("key","")) in ["plato_casero","arroz_casero"]: return "[E] Sentarse a la mesa"
 	if int(food.table_water)==0 and _free_hands() and _aim_tool(dining_water_prop,Vector3(0,.11,0),Vector3(.07,.13,.07)): return "[E] Recoger botella vacía"
 	return ""
@@ -2042,7 +2054,7 @@ func _sit_at_dining() -> void:
 	var q := PhysicsShapeQueryParameters3D.new()
 	q.shape = game.player_shape.shape
 	q.collision_mask = 1|2
-	q.exclude = [actor.get_rid()]
+	q.exclude = [actor.get_rid(),dining_chair_body.get_rid()]
 	q.transform = Transform3D(Basis.IDENTITY,seat+Vector3.UP*.15)
 	if not get_world_3d().direct_space_state.intersect_shape(q,1).is_empty():
 		business._notify("No hay espacio libre para sentarse. Mueve la mesa.")
@@ -2050,6 +2062,7 @@ func _sit_at_dining() -> void:
 	dining_stand_position = actor.global_position
 	dining_previous_first = game.first_person
 	dining_seated = true
+	game.player_shape.set_deferred("disabled",true)
 	actor.velocity = Vector3.ZERO
 	actor.global_position = seat
 	game.first_person = true
@@ -2075,6 +2088,7 @@ func _stand_from_dining(force: bool = false) -> void:
 		business.life._refresh_meal()
 	dining_seated = false
 	game.player.global_position = dining_stand_position
+	game.player_shape.set_deferred("disabled",false)
 	game.player.velocity = Vector3.ZERO
 	game.first_person = dining_previous_first
 	game._apply_camera_mode()
@@ -2246,7 +2260,7 @@ func _home_food_action() -> String:
 		if not food.plate.is_empty() and _aimed_furniture()=="mesa" and food.table_plate.is_empty(): return "[E] Dejar plato en la mesa"
 		return ""
 	if hand=="botella":
-		if _aimed_furniture()=="mesa" and int(food.table_water)<0: return "[E] Dejar botella en la mesa"
+		if _aimed_furniture()=="mesa" and int(food.table_water)<0: return "[E] Dejar botella de agua en la mesa"
 	elif hand in ["carne","huevo"]:
 		if pan_aim: return "[E] Cocinar "+hand if pan.is_empty() else "[E] La cazuela está ocupada"
 	else:
@@ -2288,7 +2302,7 @@ func _home_food_interact() -> bool:
 		food.hand = "plato"
 	elif action=="[E] Devolver plato":
 		food.hand = ""
-	elif action=="[E] Dejar botella en la mesa":
+	elif action=="[E] Dejar botella de agua en la mesa":
 		food.table_water = 3
 		food.stock.botella = maxi(0,int(food.stock.botella)-1)
 		food.hand = ""
