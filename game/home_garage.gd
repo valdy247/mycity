@@ -203,7 +203,6 @@ func setup(controller) -> void:
 	game.play_camera.add_child(carried_view)
 	carried_view.position = Vector3(.30,-.35,-.88)
 	_refresh_carried()
-	_refresh_carried()
 	waypoint = Node3D.new()
 	add_child(waypoint)
 	business._box(waypoint,Vector3(0,.22,0),Vector3(.13,.40,.13),Color("#f0c85f"))
@@ -1560,6 +1559,8 @@ func _coffee_special_interact() -> bool:
 		state.coffee_machine.phase = "idle"
 		state.coffee_machine.remaining = 0.0
 		coffee_machine_audio.stop()
+		var shutoff_hand := _attach_interaction_hand(coffee_pot,Vector3(.12,.06,.18))
+		get_tree().create_timer(.35).timeout.connect(shutoff_hand.queue_free)
 		if ready: business.life.brew_home_coffee()
 		_refresh_coffee_machine()
 		_refresh_coffee_visual()
@@ -1632,7 +1633,8 @@ func _tick_coffee_machine(delta: float) -> void:
 			coffee_save_clock = 0.0
 			_save()
 		if phase=="heating":
-			coffee_steam.emitting = float(state.coffee_machine.remaining)<=3.0
+			var steaming := float(state.coffee_machine.remaining)<=3.0
+			if coffee_steam.emitting!=steaming: coffee_steam.emitting = steaming
 			if float(state.coffee_machine.remaining)<=0.0:
 				state.coffee_machine.phase = "ready"
 				state.coffee_machine.remaining = COFFEE_SHUTOFF_SECONDS
@@ -1668,8 +1670,8 @@ func _break_coffee_machine() -> void:
 
 func _coffee_burst_visual() -> void:
 	var puff := CPUParticles3D.new()
-	coffee_stains.add_child(puff)
-	puff.position = Vector3(0,.20,0)
+	coffee_stains.get_parent().add_child(puff)
+	puff.position = coffee_stains.position+Vector3(0,.20,0)
 	puff.amount = 20
 	puff.lifetime = .65
 	puff.one_shot = true
@@ -1956,6 +1958,7 @@ func domestic_action() -> String:
 			if bool(business.life.state.coffee_served): return "Café servido · 1 taza"
 			return "[E] Servir café · 1 taza"
 		"drink":
+			if _coffee_machine_phase() in ["heating","ready"]: return "Apaga el fogón cuando el café esté listo"
 			if bool(business.life.state.coffee_served): return "[E] Tomar café"
 			if int(business.life.state.coffee_cups)>0: return "[E] Servir una taza"
 			return "Taza vacía · prepara una colada"
@@ -2000,7 +2003,9 @@ func domestic_interact() -> bool:
 			if int(business.life.state.coffee_cups)==0: _brew_coffee_async()
 			elif not bool(business.life.state.coffee_served): _serve_coffee_async()
 		"drink":
-			if bool(business.life.state.coffee_served): _drink_coffee_async()
+			if _coffee_machine_phase() in ["heating","ready"]:
+				business._notify("Primero apaga el fogón cuando esté listo el café.")
+			elif bool(business.life.state.coffee_served): _drink_coffee_async()
 			elif int(business.life.state.coffee_cups)>0: _serve_coffee_async()
 			else: business._notify("Prepara una colada en la cafetera.")
 		"bed": _bed_menu()
