@@ -44,6 +44,10 @@ var party_event := ""
 var guest_clock := 0.0
 var last_phase := -1
 var event_cursor := 0
+var event_order: Array[String] = []
+var escort: Person
+var guest_nav := AStarGrid2D.new()
+var party_photo: Node3D
 
 func setup(controller) -> void:
 	game = controller
@@ -167,9 +171,14 @@ func action_text() -> String:
 	if inside:
 		if play.active(): return play.hint()
 		var p: Vector3 = game.player.global_position-ROOM
-		if p.distance_to(Vector3(0,.86,5.1))<2.0: return "[E] Salir de casa de Daniel"
+		if p.distance_to(Vector3(0,.86,5.1))<2.0:
+			if is_instance_valid(escort): return "[E] Acompañar al invitado hasta la puerta"
+			return "[E] Salir de casa de Daniel"
 		if p.distance_to(Vector3(-3,.86,-1.9))<2.2: return "[E] Jugar dominó"
-		if p.distance_to(Vector3(3,.86,-3.2))<2.4: return "[E] Equipo de música"
+		if p.distance_to(Vector3(3,.86,-3.2))<2.4:
+			if power_cut: return "[E] Conectar batería de respaldo"
+			if party_event=="Vecino pide bajar el volumen": return "[E] Bajar volumen por el vecino"
+			return "[E] Equipo de música"
 		if p.distance_to(Vector3(3,.86,2.5))<2.2: return "[E] Bebidas y comida"
 		if p.distance_to(Vector3(-3,.86,2.8))<2.2: return "[E] Conversar con Daniel"
 		return "[E] Bailar · [F] Invitar / conversar"
@@ -184,6 +193,8 @@ func interact() -> bool:
 	if not inside:
 		if game.garage._free_hands(): _enter()
 		else: business._notify("Deja lo que llevas antes de entrar.")
+	elif action.contains("Acompañar"): _finish_escort()
+	elif action.contains("batería") or action.contains("volumen"): _resolve_event()
 	elif action.contains("Salir"): _leave()
 	elif action.contains("dominó"): play.begin_domino()
 	elif action.contains("música"): _music_menu()
@@ -231,6 +242,10 @@ func _enter() -> void:
 	last_phase = -1
 	event_clock = 0.0
 	party_event = ""
+	event_order = ["Apagón","Vecino pide bajar el volumen","Competencia de baile","Acompañar a un invitado","Recuerdos de infancia"]
+	event_order.shuffle()
+	event_cursor = 0
+	escort = null
 	power_cut = false
 	quiet_music = false
 	guest_clock = 0.0
@@ -258,6 +273,19 @@ func _enter() -> void:
 	business._box(room,Vector3(3,.9,-2.93),Vector3(.62,.60,.06),Color("#12151b"))
 	_label("DOMINÓ",Vector3(-3,1.8,-1.9))
 	_label("MÚSICA",Vector3(3,1.95,-3.2))
+	# A small backup battery is physically beside the speaker.
+	business._box(room,Vector3(3.64,.24,-3.2),Vector3(.34,.44,.30),Color("#485258"))
+	business._box(room,Vector3(3.64,.48,-3.2),Vector3(.20,.05,.10),Color("#202527"))
+	party_photo = Node3D.new()
+	room.add_child(party_photo)
+	party_photo.position = Vector3(-5.74,1.70,2.65)
+	party_photo.rotation.y = PI*.5
+	business._box(party_photo,Vector3.ZERO,Vector3(.54,.38,.06),Color("#74573d"))
+	business._box(party_photo,Vector3(0,0,.04),Vector3(.46,.30,.015),Color("#c5aa80"))
+	# Placeholder illustration, not a fabricated photograph of real people.
+	for x in [-.12,.12]:
+		business._box(party_photo,Vector3(x,.045,.052),Vector3(.065,.065,.008),Color("#806047"))
+		business._box(party_photo,Vector3(x,-.055,.052),Vector3(.09,.13,.008),Color("#546d83"))
 	_label("BEBIDAS",Vector3(3,1.75,2.7))
 	_guest(915,Vector3(-3,0,2.8),"Daniel",false).rotation.y = 1.4
 	_label("Daniel",Vector3(-3,2.05,2.8))
@@ -299,6 +327,7 @@ func _enter() -> void:
 	game.pivot.rotation = Vector3(game.pitch,game.yaw,0)
 	game._apply_camera_mode()
 	game._update_visual_lighting(true)
+	_build_guest_nav()
 	play.rebuild_table()
 	_refresh_party_phase()
 	_play_track()
@@ -519,6 +548,9 @@ func _play_track() -> void:
 		track = index
 		output.stream = audio
 		output.play()
+		if inside:
+			output.stream_paused = power_cut
+			output.volume_db = -15.0 if quiet_music else -7.0
 		return
 	output.stop()
 
@@ -581,6 +613,7 @@ func _exit() -> void:
 	if is_instance_valid(cigarette): cigarette.queue_free()
 	if is_instance_valid(drink_prop): drink_prop.queue_free()
 	dancers.clear()
+	escort = null
 	guests.clear()
 	party_lights.clear()
 	play.clear_room()
@@ -651,7 +684,7 @@ func _refresh_party_phase() -> void:
 	# First mission always has a celebration, even if the player arrives early.
 	if not completed(): count = maxi(4,count)
 	for entry in guests:
-		entry.desired = int(entry.slot)<count
+		entry.desired = int(entry.slot)<count and not bool(entry.get("left_early",false))
 	if not play.active(): business._notify(Leisure.phase_name(minute))
 
 func _invite(name_value: String) -> void:
@@ -667,42 +700,89 @@ func _invite(name_value: String) -> void:
 		play.begin_dance(false)
 		return
 
+# The small room uses its own cheap navigation grid, not the whole city graph.
+func _build_guest_nav() -> void:
+	guest_nav.region = Rect2i(-13,-13,27,27)
+	guest_nav.cell_size = Vector2(.4,.4)
+	guest_nav.diagonal_mode = AStarGrid2D.DIAGONAL_MODE_NEVER
+	guest_nav.update()
+	for x in range(-13,14):
+		for z in range(-13,14):
+			var p := Vector3(float(x)*.4,0,float(z)*.4)
+			var blocked := (absf(p.x+3.0)<1.45 and absf(p.z+1.9)<1.50) or (absf(p.x-3.0)<1.15 and absf(p.z-2.7)<.80) or (absf(p.x-3.0)<.8 and absf(p.z+3.2)<.70) or p.distance_to(Vector3(-3,0,2.8))<.7
+			guest_nav.set_point_solid(Vector2i(x,z),blocked)
+
+func _guest_cell(p: Vector3) -> Vector2i:
+	return Vector2i(clampi(roundi(p.x/.4),-13,13),clampi(roundi(p.z/.4),-13,13))
+
+func _guest_walk(entry: Dictionary,goal: Vector3,delta: float) -> bool:
+	var person: Person = entry.node
+	if person.position.distance_to(goal)<.23: return true
+	var from := _guest_cell(person.position)
+	var to := _guest_cell(goal)
+	if guest_nav.is_point_solid(from) or guest_nav.is_point_solid(to): return false
+	if entry.get("nav_goal",Vector2i(999,999))!=to or not entry.has("nav_path"):
+		entry.nav_goal = to
+		entry.nav_path = guest_nav.get_id_path(from,to)
+		entry.nav_index = 1
+	var path: Array = entry.nav_path
+	var index := int(entry.nav_index)
+	var waypoint := goal
+	if index<path.size():
+		var cell: Vector2i = path[index]
+		waypoint = Vector3(float(cell.x)*.4,0,float(cell.y)*.4)
+		if person.position.distance_to(waypoint)<.15:
+			entry.nav_index = index+1
+			return false
+	elif path.is_empty():
+		entry.erase("nav_path")
+		return false
+	var target := ROOM+waypoint
+	var step := person.global_position.move_toward(target,delta*1.10)
+	var player_at: Vector3 = game.player.global_position-Vector3.UP*.86
+	if step.distance_to(player_at)<.52 and step.distance_to(player_at)<person.global_position.distance_to(player_at):
+		person.animate(delta,false)
+		return false
+	for other in guests:
+		var node: Person = other.node
+		if node==person or not node.visible: continue
+		if step.distance_to(node.global_position)<.48 and step.distance_to(node.global_position)<person.global_position.distance_to(node.global_position):
+			person.animate(delta,false)
+			entry.timer = minf(float(entry.timer),1.0)
+			return false
+	person.walk_to(target,delta,1.10)
+	return false
+
 func _tick_guest(entry: Dictionary,delta: float) -> void:
 	var person: Person = entry.node
 	if not is_instance_valid(person): return
 	if play.partner==person and play.active(): return
+	if person==escort:
+		_guest_walk(entry,Vector3(.8,0,5.1),delta)
+		return
 	if not bool(entry.get("desired",true)):
-		if not person.visible: return
-		var target := ROOM+Vector3(0,0,5.25)
-		# Approach the entrance along the open central aisle.
-		if absf(person.position.x)>.6: target = ROOM+Vector3(0,0,person.position.z)
-		if person.walk_to(target,delta,1.15) and absf(person.position.z-5.25)<.2: person.hide()
+		if person.visible and _guest_walk(entry,Vector3(0,0,5.15),delta): person.hide()
 		return
 	if not person.visible:
-		person.position = Vector3(0,0,5.25)
+		# Enter only at the doorway, when no other guest occupies it.
+		for other in guests:
+			if other.node.visible and other.node.position.distance_to(Vector3(0,0,5.15))<.7: return
+		person.position = Vector3(0,0,5.15)
 		person.show()
 		entry.role = "arrive"
+		entry.erase("nav_path")
 	entry.timer = float(entry.timer)-delta
 	if float(entry.timer)<=0.0 and String(entry.role)!="arrive":
 		entry.timer = 12.0+float(posmod(int(entry.slot)*7+floori(elapsed),11))
 		var roles := ["dance","chat","drink","watch"]
 		entry.role = roles[posmod(floori(elapsed/10.0)+int(entry.slot),roles.size())]
+		entry.erase("nav_path")
 	var goal: Vector3 = entry.p
 	match String(entry.role):
 		"chat": goal = Vector3(-1.4+float(int(entry.slot)%3)*.95,0,3.1)
 		"drink": goal = Vector3(1.65+float(int(entry.slot)%2)*.35,0,1.15+float(int(entry.slot)%3)*.48)
-		"watch": goal = Vector3(-1.65,0,-3.5+float(int(entry.slot)%3)*.45)
-	var at := ROOM+goal
-	if person.global_position.distance_to(at)>.18:
-		var step := person.global_position.move_toward(at,delta*1.05)
-		# Keep guests clear of furniture and player; don't warp through objects.
-		var local := step-ROOM
-		if (absf(local.x+3.0)<.90 and absf(local.z+1.9)<.88) or (absf(local.x-3.0)<.9 and absf(local.z-2.7)<.60) or step.distance_to(game.player.global_position-Vector3.UP*.86)<.55:
-			person.animate(delta,false)
-			entry.timer = minf(float(entry.timer),1.0)
-			return
-		person.walk_to(at,delta,1.05)
-		return
+		"watch": goal = Vector3(-1.2,0,-3.5+float(int(entry.slot)%3)*.45)
+	if not _guest_walk(entry,goal,delta): return
 	if String(entry.role)=="arrive": entry.role = "dance"
 	if String(entry.role)=="dance" and not power_cut:
 		play.pose_guest(person,_rhythm_clock()*TAU/_period()+float(entry.phase),Leisure.genre(track))
@@ -716,8 +796,8 @@ func _tick_party_events(delta: float) -> void:
 	event_clock += delta
 	if event_clock<50.0: return
 	event_clock = 0.0
-	var events := ["Apagón","Vecino pide bajar el volumen","Competencia de baile","Acompañar a un invitado","Recuerdos de infancia"]
-	party_event = events[event_cursor%events.size()]
+	if event_order.is_empty(): return
+	party_event = event_order.pop_back()
 	event_cursor += 1
 	if party_event=="Apagón":
 		power_cut = true
@@ -728,11 +808,11 @@ func _tick_party_events(delta: float) -> void:
 func _event_menu() -> void:
 	business._open("Daniel",party_event)
 	match party_event:
-		"Apagón": business._button("Conectar la batería de respaldo",_resolve_event)
-		"Vecino pide bajar el volumen": business._button("Bajar el volumen",_resolve_event)
+		"Apagón": business._button("Ir a la batería junto al equipo",business.close)
+		"Vecino pide bajar el volumen": business._button("Ir al equipo de música",business.close)
 		"Competencia de baile": business._button("Participar",_event_dance)
 		"Acompañar a un invitado": business._button("Acompañarlo hasta la puerta",_event_escort)
-		"Recuerdos de infancia": business._button("Conversar sobre los recuerdos",_resolve_event)
+		"Recuerdos de infancia": business._button("Conversar sobre los recuerdos",_show_memory)
 	business._button("Más tarde",business.close)
 
 func _event_dance() -> void:
@@ -740,12 +820,32 @@ func _event_dance() -> void:
 	play.begin_dance(false)
 
 func _event_escort() -> void:
-	# The guest walks to the real exit; no fake trip to an unknown address.
 	for entry in guests:
 		if entry.node.visible:
-			entry.desired = false
-			break
+			escort = entry.node
+			entry.erase("nav_path")
+			business.close()
+			business._notify("Acompaña a "+String(entry.name)+" hasta la puerta.")
+			return
 	_resolve_event()
+
+func _finish_escort() -> void:
+	if not is_instance_valid(escort): return
+	if escort.position.distance_to(Vector3(.8,0,5.1))>.8:
+		business._notify("Espera a que llegue el invitado.")
+		return
+	for entry in guests:
+		if entry.node==escort:
+			entry.desired = false
+			entry.left_early = true
+			escort.hide()
+			break
+	escort = null
+	_resolve_event()
+
+func _show_memory() -> void:
+	business._open("Recuerdos de infancia","Daniel te enseña un recuerdo de cuando eran niños. La foto es un espacio reservado para una imagen real que se podrá incorporar más adelante.")
+	business._button("Gracias por compartirlo",_resolve_event)
 
 func _resolve_event() -> void:
 	if party_event=="Apagón":
