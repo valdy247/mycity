@@ -426,7 +426,7 @@ func _ponton_court(anchor: Vector2,poly: PackedVector2Array,occupied: Array[Vect
 	var chalk := _mat("ponton_court_lines",Color("#cbc4ae"))
 	for dims in [Vector2(8,14),Vector2(6,10),Vector2(4,7)]:
 		for shift in [Vector2.ZERO,Vector2(0,-8),Vector2(0,8),Vector2(-8,0),Vector2(8,0)]:
-			var center := anchor+shift
+			var center: Vector2 = anchor+shift
 			var safe := true
 			for old in occupied:
 				if old.distance_to(center)<maxf(dims.x,dims.y)+18.0: safe = false
@@ -440,6 +440,26 @@ func _ponton_court(anchor: Vector2,poly: PackedVector2Array,occupied: Array[Vect
 				_ponton_strip(pair[0],pair[1],.075,poly,chalk,"ponton_court_lines",.072)
 			occupied.append(center)
 			return true
+	return false
+
+# Two modest roofed rest shelters seen as pale rectangles in the aerial view.
+func _ponton_shelter(anchor: Vector2,poly: PackedVector2Array,occupied: Array[Vector2]) -> bool:
+	var roof := _mat("ponton_shelter_roof",Color("#d6d2c6"))
+	var post := _mat("ponton_shelter_post",Color("#777c72"))
+	var seat := _mat("ponton_shelter_seat",Color("#b1aa98"))
+	for shift in [Vector2.ZERO,Vector2(0,-5),Vector2(0,5),Vector2(-5,0),Vector2(5,0)]:
+		var p: Vector2 = anchor+shift
+		var safe := true
+		for old in occupied:
+			if old.distance_to(p)<20.0: safe = false
+		if not safe or not _ponton_open_rect(p,Vector2(0,-1),2.6,1.4,poly): continue
+		world._cube(_v(p,2.18),Vector3(5.0,.16,2.5),roof)
+		for x in [-2.15,2.15]:
+			for z in [-.90,.90]:
+				world._cube(_v(p+Vector2(float(x),float(z)),1.05),Vector3(.12,2.10,.12),post,0.0,true)
+		world._cube(_v(p+Vector2(0,.70),.45),Vector3(4.0,.14,.44),seat,0.0,true)
+		occupied.append(p)
+		return true
 	return false
 
 func _build_ponton(item: Dictionary) -> void:
@@ -466,6 +486,8 @@ func _build_ponton(item: Dictionary) -> void:
 	var court_count := 0
 	for fraction in [Vector2(.78,.66),Vector2(.78,.37)]:
 		if _ponton_court(rect.position+fraction*rect.size,poly,occupied): court_count += 1
+	for fraction in [Vector2(.22,.35),Vector2(.58,.82)]:
+		_ponton_shelter(rect.position+fraction*rect.size,poly,occupied)
 	# Choose a real road-facing access near Clavel where available.
 	var gps := _hub(poly)
 	var best := INF
@@ -486,7 +508,12 @@ func _build_ponton(item: Dictionary) -> void:
 					best = score
 					gps = entry
 			break
-	if gps.is_finite(): sites.append({"name":"El Pontón","p":_v(gps,.065),"id":PONTON_ID})
+	if gps.is_finite():
+		sites.append({"name":"El Pontón","p":_v(gps,.065),"id":PONTON_ID})
+		# Short walkable access only when the route is verified clear.
+		var inner := gps+(rect.get_center()-gps).normalized()*5.0
+		if _clear_segment(gps,inner,poly):
+			_path(gps,inner,poly,_mat("ponton_access",Color("#9f998a")))
 	print("MyCity El Pontón: ",field_count," diamonds, ",court_count," courts; mapped buildings preserved.")
 
 func build() -> void:
