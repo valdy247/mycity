@@ -41,6 +41,8 @@ var line := -1
 var after_talk := ""
 var actor: Person
 var actor_reposition_pending := false
+var helper_manual := false
+var helper_repath_clock := 0.0
 var clerk: Person
 var cab: Dictionary = {}
 var cab_departure_requested := false
@@ -123,6 +125,7 @@ func setup(parent_story) -> void:
 	fare_notice.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	fare_notice.hide()
 	resume = String(state.get("investment_stage","clean"))
+	helper_manual = bool(state.get("investment_manual_oil",false))
 	dirt_keys = state.get("investment_dirt",[])
 	neighbor = legacy._find_neighbor()
 	if resume=="clean" and dirt_keys.is_empty(): _seed_dirt()
@@ -315,7 +318,10 @@ func _separate_actor_position(at: Vector3) -> Vector3:
 			var angle := float(i)*TAU/12.0
 			var center: Vector3 = player_at if _actor_overlaps_player(at,1.45) else at
 			var candidate := center+Vector3(cos(angle),0,sin(angle))*float(radius)
-			if at.y>70.0: candidate.y = at.y
+			if at.y>70.0:
+				candidate.y = at.y
+				# Never move the rental-house guest through an exterior wall or partition.
+				if absf(at.x)<7.0 and absf(at.z)<6.0 and (absf(candidate.x)>6.45 or absf(candidate.z)>5.45 or (at.x<-.35 and candidate.x>-.40)): continue
 			else: candidate = game.yordi_mission._ground(candidate,false)
 			if not candidate.is_finite() or _actor_overlaps_player(candidate,1.45): continue
 			if not world.pedestrian_segment_clear(candidate,candidate): continue
@@ -332,9 +338,9 @@ func _spawn_actor(at: Vector3) -> void:
 		actor.remove_from_group("pedestrian_spacing")
 	var safe := _separate_actor_position(at)
 	if not safe.is_finite():
-		actor.global_position = at
+		# Keep the existing actor in its current room until a safe placement exists.
 		actor_reposition_pending = true
-		actor.hide()
+		actor.show()
 		return
 	actor_reposition_pending = false
 	actor.global_position = safe
@@ -775,7 +781,7 @@ func _helper_tick(delta: float,unloading: bool) -> void:
 	var from := "taxi" if unloading else "shelf"
 	var dest := "stored" if unloading else "taxi"
 	if not is_instance_valid(actor): return
-	if String(_box_states().get(key,""))!=from or cab.is_empty():
+	if helper_manual or carry==key or String(_box_states().get(key,""))!=from or cab.is_empty():
 		_wait_naturally(delta)
 		return
 	waiting_clock = 0.0
@@ -812,11 +818,24 @@ func _helper_tick(delta: float,unloading: bool) -> void:
 		return
 	if unloading:
 		if actor.global_position.y<70.0:
-			if not _helper_walk(delta,_house_out()): return
-			_spawn_actor(Vector3(-2.35,110,3.9))
+			if not _helper_walk(delta,_house_out()):
+				if helper_elapsed>=30.0: _offer_manual_oil()
+				return
+			var entry: Vector3 = Vector3(-2.35,110,3.9)
+			if not world.pedestrian_segment_clear(entry,entry) or _actor_overlaps_player(entry,1.45):
+				if helper_elapsed>=30.0: _offer_manual_oil()
+				return
+			_spawn_actor(entry)
 			_clear_helper_path()
+			helper_elapsed = 0.0
 			return
-		if not _helper_walk(delta,OIL-Vector3.UP*.86,true): return
+		helper_repath_clock += delta
+		if helper_repath_clock>=2.0:
+			helper_repath_clock = 0.0
+			_clear_helper_path()
+		if not _helper_walk(delta,OIL-Vector3.UP*.86,true):
+			if helper_elapsed>=30.0: _offer_manual_oil()
+			return
 	else:
 		if not _helper_walk(delta,_helper_trunk_ground()): return
 	if is_instance_valid(helper_box): helper_box.queue_free()
@@ -829,6 +848,20 @@ func _helper_tick(delta: float,unloading: bool) -> void:
 	_save()
 	_rebuild_boxes()
 	_wait_naturally(delta)
+
+func _offer_manual_oil() -> void:
+	# Return the reserved crate to its recorded taxi slot; never credit stock twice.
+	if String(_box_states().get("aceite",""))!="taxi": return
+	if is_instance_valid(helper_box): helper_box.queue_free()
+	if is_instance_valid(actor): actor.carried = null
+	helper_box = null
+	helper_stage = ""
+	helper_manual = true
+	state.investment_manual_oil = true
+	_clear_helper_path()
+	_save()
+	_rebuild_boxes()
+	game.business._notify("Ayuda a Albertico: recoge la caja de aceite del taxi y guárdala en el armario.")
 
 func _neighbor_lead(delta: float) -> void:
 	if not is_instance_valid(actor) or not actor.visible: return
@@ -1115,7 +1148,7 @@ func interact() -> void:
 			if _toggle_home(): return
 			if game.garage.inside and not carry.is_empty() and _near(OIL if carry=="aceite" else FRIDGE,1.65): _deposit("stored")
 			elif not game.garage.inside and carry.is_empty() and not cab.is_empty() and _near(_trunk(),2.4):
-				for key in ["pollo","huevos"]:
+				for key in (KEYS if helper_manual else ["pollo","huevos"]):
 					if String(_box_states().get(key,""))=="taxi":
 						_take(key)
 						break
@@ -1217,7 +1250,7 @@ func tick(delta: float) -> void:
 		"unload":
 			_helper_tick(delta,true)
 			if carry.is_empty() and not _all_at("stored"):
-				var remaining_player_boxes: bool = String(_box_states().get("pollo",""))=="taxi" or String(_box_states().get("huevos",""))=="taxi"
+				var remaining_player_boxes: bool = String(_box_states().get("pollo",""))=="taxi" or String(_box_states().get("huevos",""))=="taxi" or (helper_manual and String(_box_states().get("aceite",""))=="taxi")
 				if remaining_player_boxes:
 					if game.garage.inside: _mark(ENTRY)
 					else: _mark(_trunk())
@@ -1260,7 +1293,9 @@ func tick(delta: float) -> void:
 		if safe.is_finite():
 			actor.global_position = safe
 			actor_reposition_pending = false
+			_clear_helper_path()
+			neighbor_exit_path = PackedVector3Array()
 			actor.show()
 		else:
 			actor_reposition_pending = true
-			actor.hide()
+			actor.show()
