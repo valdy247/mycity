@@ -391,6 +391,9 @@ func touch_look(relative: Vector2) -> void:
 		arrival_story.handle_look(relative)
 		return
 	if touch_blocked() or pivot==null: return
+	if is_instance_valid(garage) and garage.dining_seated:
+		garage.dining_look(relative,.005)
+		return
 	yaw -= relative.x*.005
 	var limit := -1.05
 	var top := .35
@@ -1108,6 +1111,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	if event is InputEventMouseMotion and gameplay_input() and pivot != null:
+		if is_instance_valid(garage) and garage.dining_seated:
+			garage.dining_look(event.relative,.003)
+			return
 		yaw -= event.relative.x * 0.003
 		var down_limit := -1.48 if (garage!=null and garage.inside) or (carlos_mission!=null and carlos_mission.inside) or (yordi_mission!=null and yordi_mission.robbery_active()) else -1.05
 		pitch = clampf(pitch - event.relative.y * 0.003, down_limit, 0.35)
