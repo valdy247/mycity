@@ -76,6 +76,14 @@ var home_pan_smoke: CPUParticles3D
 var home_pan_save_clock := 0.0
 const HOME_PAN_GRACE := {"carne":20.0,"huevo":12.0}
 var home_food_busy := false
+var dining_seated := false
+var dining_chair: Node3D
+var dining_surface: Node3D
+var dining_plate_prop: Node3D
+var dining_water_prop: Node3D
+var dining_stand_position := Vector3.ZERO
+var dining_previous_first := true
+var dining_water_busy := false
 const HOME_PAN_TIME := {"carne":25.0,"huevo":12.0}
 var rental_storage_doors: Array[Dictionary] = []
 var rental_oil: Node3D
@@ -164,6 +172,10 @@ func setup(controller) -> void:
 	# A restored game starts outside; return any kitchen utensil to its shelf.
 	state.rice_recipe.hand = ""
 	if not state.has("home_food"): state.home_food = {"stock":{"carne":8,"huevo":12},"hand":"","pan":"","remaining":0.0,"plate":[]}
+	if not state.home_food.stock.has("botella"): state.home_food.stock.botella = 6
+	if not state.home_food.has("table_plate"): state.home_food.table_plate = []
+	if not state.home_food.has("table_bites"): state.home_food.table_bites = 3
+	if not state.home_food.has("table_water"): state.home_food.table_water = -1
 	if not state.home_food.has("heat_on"): state.home_food.heat_on = float(state.home_food.remaining)>0.0
 	if not state.home_food.has("overcook"): state.home_food.overcook = 0.0
 	if not state.home_food.has("burned"): state.home_food.burned = false
@@ -460,6 +472,15 @@ func _build_interior() -> void:
 		garage_fill.light_color = Color("#fff1dc")
 		garage_fill.omni_attenuation = .90
 		_register_room_light("garaje",garage_fill)
+		var entry_fill := OmniLight3D.new()
+		interior.add_child(entry_fill)
+		entry_fill.position = Vector3(-1.85,2.53,4.45)
+		entry_fill.omni_range = 3.9
+		entry_fill.light_energy = 1.05
+		entry_fill.light_color = Color("#fff1dc")
+		entry_fill.omni_attenuation = .90
+		entry_fill.set_meta("no_home_shadow",true)
+		_register_room_light("sala",entry_fill)
 	marker = Node3D.new()
 	interior.add_child(marker)
 	marker.position = BENCH+Vector3.UP*2.35
@@ -585,8 +606,7 @@ func _model_rental_furniture(body: Node3D,id: String,size: Vector3) -> void:
 				for z in [-.28,.28]:
 					_rental_part(root,Vector3(float(x),.32,float(z)),Vector3(.075,.64,.075),wood)
 			_rental_part(root,Vector3(0,.756,0),Vector3(.36,.012,.67),Color("#d5c3a6"))
-			_rental_cylinder(root,Vector3(.14,.795,-.08),.085,.07,Color("#d7d9ce"))
-			_rental_cylinder(root,Vector3(.14,.836,-.08),.06,.015,Color("#8d715b"))
+			if body is StaticBody3D: _build_dining_table(root)
 		"cama":
 			_rental_part(root,Vector3(0,.20,0),Vector3(1.5,.26,2.0),wood)
 			for x in [-.62,.62]:
@@ -960,7 +980,7 @@ func _decorate_rental_home() -> void:
 	bedside_glow.omni_range = 2.8
 	bedside_glow.visible = bool(state.get("bedside_light",false))
 	# Domestic light fixtures and a third light in the formerly dark bedroom.
-	for at in [Vector3(-3.7,2.88,1.2),Vector3(3.7,2.88,-2.35),Vector3(3.7,2.88,2.65),Vector3(-3.9,2.88,-4.0)]:
+	for at in [Vector3(-3.7,2.88,1.2),Vector3(-1.85,2.88,4.45),Vector3(3.7,2.88,-2.35),Vector3(3.7,2.88,2.65),Vector3(-3.9,2.88,-4.0)]:
 		_rental_fixture(decor,at)
 	var bedroom_light := OmniLight3D.new()
 	decor.add_child(bedroom_light)
@@ -1053,7 +1073,7 @@ func _register_room_light(key: String,light: OmniLight3D) -> void:
 	home_room_lights[key].append(light)
 	if not state.has("home_lights"): state.home_lights = {}
 	light.visible = bool(state.home_lights.get(key,true))
-	light.shadow_enabled = home_shadow_active
+	light.shadow_enabled = home_shadow_active and not light.has_meta("no_home_shadow")
 	light.shadow_bias = .10
 	light.shadow_normal_bias = .6
 
@@ -1067,7 +1087,7 @@ func update_home_lighting(day: float,active: bool) -> float:
 		home_shadow_active = active
 		for group in home_room_lights.values():
 			for light in group:
-				if is_instance_valid(light): light.shadow_enabled = active
+				if is_instance_valid(light): light.shadow_enabled = active and not light.has_meta("no_home_shadow")
 		if is_instance_valid(bedside_glow): bedside_glow.shadow_enabled = active
 	for entry in home_windows:
 		var source: SpotLight3D = entry.daylight_source
@@ -1155,6 +1175,9 @@ func _refresh_carried() -> void:
 			carried_view.position.x = -.27
 			business.life.draw_home_plate(carried_view,state.home_food.plate)
 			_attach_interaction_hand(carried_view,Vector3(-.075,-.025,.06),true,true)
+		elif food_key=="botella":
+			_draw_home_water(carried_view,3)
+			_attach_interaction_hand(carried_view,Vector3(.048,.09,.025))
 		else:
 			_draw_home_raw_food(carried_view,food_key)
 			_attach_interaction_hand(carried_view,Vector3(.055,-.015,.035))
@@ -1216,7 +1239,7 @@ func _refresh_preview() -> void:
 	preview.visible = not owned.has(kind)
 
 func _free_hands() -> bool:
-	if home_food_busy or not String(state.home_food.hand).is_empty(): return false
+	if dining_seated or dining_water_busy or home_food_busy or not String(state.home_food.hand).is_empty(): return false
 	if coffee_busy or coffee_cleaning or bool(state.coffee_machine.rag_held) or bool(state.coffee_machine.replacement) or not String(state.rice_recipe.hand).is_empty(): return false
 	if business.first_story!=null and business.first_story.carrying_table(): return false
 	if game.backpack!=null and not game.backpack.empty_hands(): return false
@@ -1253,6 +1276,9 @@ func _enter() -> void:
 	game._update_visual_lighting(true)
 
 func _exit() -> void:
+	if dining_seated:
+		_stand_from_dining()
+		return
 	if home_food_busy or not String(state.home_food.hand).is_empty():
 		business._notify("Termina de preparar o devuelve la comida antes de salir.")
 		return
@@ -1920,6 +1946,158 @@ func _refresh_rice_visuals(update_lid: bool = true) -> void:
 	rice_contents.material_override = business._mat(Color("#eae2c8") if "arroz" in recipe.added or int(recipe.portions)>0 else Color("#9ebdc2"))
 	rice_indicator.material_override = business._mat(Color("#df5536") if float(recipe.remaining)>0.0 else (Color("#70b977") if int(recipe.portions)>0 else Color("#6d7066")))
 
+func _build_dining_table(root: Node3D) -> void:
+	dining_chair = _rental_root(root,Vector3(0,0,.74))
+	var wood := Color("#77563e")
+	_rental_part(dining_chair,Vector3(0,.45,0),Vector3(.44,.055,.43),wood)
+	for x in [-.17,.17]:
+		for z in [-.16,.16]:
+			_rental_part(dining_chair,Vector3(float(x),.215,float(z)),Vector3(.055,.43,.055),wood)
+		_rental_part(dining_chair,Vector3(float(x),.72,.18),Vector3(.055,.52,.055),wood)
+	for y in [.66,.88]:
+		_rental_part(dining_chair,Vector3(0,float(y),.18),Vector3(.40,.095,.045),wood)
+	dining_surface = _rental_root(root,Vector3(0,.775,.13))
+	dining_plate_prop = _rental_root(dining_surface,Vector3(0,0,0))
+	dining_water_prop = _rental_root(dining_surface,Vector3(.35,0,-.10))
+	_refresh_dining_table()
+
+func _draw_home_water(root: Node3D,sips: int) -> void:
+	# Reusable lightweight bottle shape with a blue cap and a visible fill level.
+	var plastic := Color("#a8c5cc")
+	_rental_cylinder(root,Vector3(0,.092,0),.037,.172,plastic)
+	_rental_cylinder(root,Vector3(0,.19,0),.023,.035,plastic)
+	_rental_cylinder(root,Vector3(0,.217,0),.025,.023,Color("#416b9b"))
+	_rental_cylinder(root,Vector3(0,.102,0),.038,.055,Color("#e4e9df"))
+	if sips>0:
+		var h := .043*float(sips)
+		_rental_cylinder(root,Vector3(0,.014+h*.5,0),.0385,h,Color("#80b5d0"))
+
+func _refresh_dining_table() -> void:
+	if not is_instance_valid(dining_plate_prop) or not is_instance_valid(dining_water_prop): return
+	var food: Dictionary = state.home_food
+	var meal: Dictionary = business.life.state.meal
+	var active := String(meal.get("key","")) in ["plato_casero","arroz_casero"]
+	for child in dining_plate_prop.get_children():
+		dining_plate_prop.remove_child(child)
+		child.queue_free()
+	if active and dining_seated:
+		business.life.draw_home_plate(dining_plate_prop,meal.get("ingredients",["arroz"]),int(meal.get("food_bites",0)))
+	elif not food.table_plate.is_empty():
+		business.life.draw_home_plate(dining_plate_prop,food.table_plate,int(food.table_bites))
+	for child in dining_water_prop.get_children():
+		dining_water_prop.remove_child(child)
+		child.queue_free()
+	if int(food.table_water)>=0: _draw_home_water(dining_water_prop,int(food.table_water))
+
+func _dining_action() -> String:
+	if not inside or not game.adaptation_mode or not is_instance_valid(dining_chair): return ""
+	var food: Dictionary = state.home_food
+	if dining_seated:
+		if dining_water_busy: return "[E] Bebiendo agua…"
+		if business.life.bite_anim>0.0: return "[E] Comiendo…"
+		if int(food.table_water)>0 and _aim_tool(dining_water_prop,Vector3(0,.11,0),Vector3(.07,.13,.07)): return "[E] Beber agua · %d sorbos" % int(food.table_water)
+		if not business.life.state.meal.is_empty() or not food.table_plate.is_empty():
+			if _aim_tool(dining_plate_prop,Vector3(0,.03,0),Vector3(.16,.055,.16)): return "[E] Comer"
+			return "[E] Levantarse · mira el plato para comer"
+		return "[E] Levantarse"
+	if not String(food.hand).is_empty(): return ""
+	if _aim_tool(dining_chair,Vector3(0,.72,.18),Vector3(.24,.29,.08)) or _aim_tool(dining_chair,Vector3(0,.45,0),Vector3(.23,.055,.23)):
+		if _free_hands() or String(business.life.state.meal.get("key","")) in ["plato_casero","arroz_casero"]: return "[E] Sentarse a la mesa"
+	if int(food.table_water)==0 and _free_hands() and _aim_tool(dining_water_prop,Vector3(0,.11,0),Vector3(.07,.13,.07)): return "[E] Recoger botella vacía"
+	return ""
+
+func _dining_interact() -> bool:
+	var action := _dining_action()
+	if action.is_empty(): return false
+	if action=="[E] Sentarse a la mesa": _sit_at_dining()
+	elif action.begins_with("[E] Levantarse"): _stand_from_dining()
+	elif action.begins_with("[E] Beber agua"): _drink_dining_water()
+	elif action=="[E] Comer":
+		var food: Dictionary = state.home_food
+		if business.life.state.meal.is_empty():
+			if business.life.start_home_plate(food.table_plate,int(food.table_bites)):
+				food.table_plate = []
+				_refresh_dining_table()
+				_save()
+		if not business.life.state.meal.is_empty(): business.life.interact(game.player.global_position)
+	elif action=="[E] Recoger botella vacía":
+		state.home_food.table_water = -1
+		state.waste_hand = {"kind":"empty_water","volume":1}
+		_refresh_dining_table()
+		_refresh_carried()
+		_save()
+	return true
+
+func _sit_at_dining() -> void:
+	if dining_seated or not is_instance_valid(dining_chair): return
+	var actor: CharacterBody3D = game.player
+	var seat := dining_chair.to_global(Vector3(0,.72,0))
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = game.player_shape.shape
+	q.collision_mask = 1|2
+	q.exclude = [actor.get_rid()]
+	q.transform = Transform3D(Basis.IDENTITY,seat+Vector3.UP*.15)
+	if not get_world_3d().direct_space_state.intersect_shape(q,1).is_empty():
+		business._notify("No hay espacio libre para sentarse. Mueve la mesa.")
+		return
+	dining_stand_position = actor.global_position
+	dining_previous_first = game.first_person
+	dining_seated = true
+	actor.velocity = Vector3.ZERO
+	actor.global_position = seat
+	game.first_person = true
+	game.yaw = 0.0
+	game.pitch = -.38
+	game.pivot.rotation = Vector3(game.pitch,game.yaw,0)
+	game._apply_camera_mode()
+	game.pivot.position.y = .45
+	_refresh_dining_table()
+	business._notify("Sentado. Mira el plato o la botella y pulsa E. Espacio para levantarte.")
+
+func _stand_from_dining(force: bool = false) -> void:
+	if not dining_seated: return
+	if not force and (dining_water_busy or business.life.bite_anim>0.0): return
+	var food: Dictionary = state.home_food
+	var meal: Dictionary = business.life.state.meal
+	if String(meal.get("key","")) in ["plato_casero","arroz_casero"]:
+		food.table_plate = meal.get("ingredients",["arroz"]).duplicate()
+		food.table_bites = int(meal.get("food_bites",0))
+		business.life.state.meal = {}
+		business.life.active_hand = -1
+		business.life.bite_anim = 0.0
+		business.life._refresh_meal()
+	dining_seated = false
+	game.player.global_position = dining_stand_position
+	game.player.velocity = Vector3.ZERO
+	game.first_person = dining_previous_first
+	game._apply_camera_mode()
+	_refresh_dining_table()
+	_save()
+
+func _drink_dining_water() -> void:
+	if not dining_seated or dining_water_busy or int(state.home_food.table_water)<=0: return
+	dining_water_busy = true
+	dining_water_prop.hide()
+	var model := Node3D.new()
+	game.play_camera.add_child(model)
+	model.position = Vector3(.25,-.33,-.43)
+	_draw_home_water(model,int(state.home_food.table_water))
+	_attach_interaction_hand(model,Vector3(.048,.09,.025))
+	var sip := create_tween()
+	sip.tween_property(model,"position",Vector3(.065,-.19,-.28),.38)
+	sip.parallel().tween_property(model,"rotation:x",.85,.38)
+	sip.tween_interval(.45)
+	sip.tween_property(model,"rotation:x",0.0,.25)
+	sip.parallel().tween_property(model,"position",Vector3(.25,-.33,-.43),.25)
+	await sip.finished
+	model.queue_free()
+	state.home_food.table_water = maxi(0,int(state.home_food.table_water)-1)
+	dining_water_busy = false
+	_refresh_dining_table()
+	dining_water_prop.show()
+	_save()
+	business._notify("Agua bebida · quedan %d sorbos." % int(state.home_food.table_water))
+
 func _draw_home_raw_food(root: Node3D,key: String) -> void:
 	if key=="carne":
 		_rental_part(root,Vector3.ZERO,Vector3(.15,.015,.10),Color("#e0ded2"))
@@ -1929,10 +2107,11 @@ func _draw_home_raw_food(root: Node3D,key: String) -> void:
 		_rental_round(root,Vector3(0,.031,0),Vector3(.045,.060,.045),Color("#e9d6b8"))
 
 func _build_home_food_fridge() -> void:
-	for key in ["carne","huevo"]:
-		var pos := Vector3(-.18,1.30,.05) if key=="carne" else Vector3(.20,.49,.08)
+	for key in ["carne","huevo","botella"]:
+		var pos := Vector3(-.18,1.30,.05) if key=="carne" else (Vector3(.20,.49,.08) if key=="huevo" else Vector3(-.21,.89,.10))
 		var prop := _rental_root(rental_fridge,pos)
-		_draw_home_raw_food(prop,key)
+		if key=="botella": _draw_home_water(prop,3)
+		else: _draw_home_raw_food(prop,key)
 		if key=="huevo":
 			_rental_part(prop,Vector3(0,-.01,0),Vector3(.17,.028,.11),Color("#a99472"))
 			for x in [-.055,.055]:
@@ -2031,7 +2210,7 @@ func _home_shelf_aim(node: Node3D,door: Node3D,body: StaticBody3D,center: Vector
 	return get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
 
 func _home_food_action() -> String:
-	if not inside or not is_instance_valid(home_pan): return ""
+	if not inside or not is_instance_valid(home_pan) or dining_seated: return ""
 	if home_food_busy: return "[E] Preparando comida…"
 	var food: Dictionary = state.home_food
 	var hand := String(food.hand)
@@ -2057,10 +2236,11 @@ func _home_food_action() -> String:
 			return "[E] Servir "+pan+" al plato"
 		if plate_aim and food.plate.is_empty(): return "[E] Devolver plato"
 		if not storage_action(game.player.global_position).is_empty(): return ""
-		var cam: Camera3D = game.play_camera
-		if not food.plate.is_empty() and (_aimed_furniture()=="mesa" or cam.global_basis.z.y>.35): return "[E] Comer plato"
+		if not food.plate.is_empty() and _aimed_furniture()=="mesa" and food.table_plate.is_empty(): return "[E] Dejar plato en la mesa"
 		return ""
-	if hand in ["carne","huevo"]:
+	if hand=="botella":
+		if _aimed_furniture()=="mesa" and int(food.table_water)<0: return "[E] Dejar botella en la mesa"
+	elif hand in ["carne","huevo"]:
 		if pan_aim: return "[E] Cocinar "+hand if pan.is_empty() else "[E] La cazuela está ocupada"
 	else:
 		if not _free_hands(): return ""
@@ -2072,7 +2252,9 @@ func _home_food_action() -> String:
 	for key in home_food_props:
 		var door: Node3D = rental_fridge_doors.get("pollo" if key=="carne" else "huevos")
 		var prop: Node3D = home_food_props[key]
-		if not _home_shelf_aim(prop,door,home_food_fridge_body,Vector3(0,.035,0),Vector3(.10,.065,.08)): continue
+		var center := Vector3(0,.105,0) if key=="botella" else Vector3(0,.035,0)
+		var extent := Vector3(.06,.12,.06) if key=="botella" else Vector3(.10,.065,.08)
+		if not _home_shelf_aim(prop,door,home_food_fridge_body,center,extent): continue
 		if hand==String(key): return "[E] Devolver "+String(key)
 		if hand.is_empty() and int(food.stock.get(key,0))>0: return "[E] Recoger "+String(key)
 	return ""
@@ -2099,6 +2281,11 @@ func _home_food_interact() -> bool:
 		food.hand = "plato"
 	elif action=="[E] Devolver plato":
 		food.hand = ""
+	elif action=="[E] Dejar botella en la mesa":
+		food.table_water = 3
+		food.stock.botella = maxi(0,int(food.stock.botella)-1)
+		food.hand = ""
+		_refresh_dining_table()
 	elif action.begins_with("[E] Recoger "):
 		food.hand = action.trim_prefix("[E] Recoger ")
 	elif action.begins_with("[E] Devolver "):
@@ -2115,11 +2302,13 @@ func _home_food_interact() -> bool:
 	elif action.begins_with("[E] Servir ") and hand=="plato":
 		_home_food_transfer(String(food.pan),true)
 		return true
-	elif action=="[E] Comer plato":
-		if business.life.start_home_plate(food.plate):
-			food.hand = ""
-			food.plate = []
-			business._notify("Buen provecho. Pulsa E para comer en tres bocados.")
+	elif action=="[E] Dejar plato en la mesa":
+		food.table_plate = food.plate.duplicate()
+		food.table_bites = 3
+		food.hand = ""
+		food.plate = []
+		_refresh_dining_table()
+		business._notify("Plato servido. Busca agua si quieres y siéntate en la silla.")
 	_refresh_home_food()
 	_refresh_carried()
 	_save()
@@ -2554,6 +2743,8 @@ func _sleep_home() -> void:
 func action_text(at: Vector3) -> String:
 	if riding: return "Frenando para bajar" if ride_exit_requested else "[E] Bajar"
 	if inside:
+		var dining_action := _dining_action()
+		if not dining_action.is_empty(): return dining_action
 		if not business.life.state.meal.is_empty(): return "[E] Comer / beber"
 		if _home_exit_selected(at): return "[E] Salir de casa"
 		var coffee_action := _coffee_special_action()
@@ -2595,6 +2786,7 @@ func interact(at: Vector3) -> bool:
 		if absf(ride_speed)<.6: _dismount()
 		return true
 	if inside:
+		if _dining_interact(): return true
 		if not business.life.state.meal.is_empty(): return business.life.interact(at)
 		elif _home_exit_selected(at):
 			_exit()
@@ -2621,6 +2813,9 @@ func interact(at: Vector3) -> bool:
 		else:
 			var id := _aimed_furniture()
 			if not id.is_empty() and _free_hands():
+				if id=="mesa" and (not state.home_food.table_plate.is_empty() or int(state.home_food.table_water)>=0):
+					business._notify("Retira la comida y la botella antes de mover la mesa.")
+					return true
 				state.held_furniture = id
 				_refresh_furniture(id)
 				_refresh_carried()
@@ -3652,6 +3847,9 @@ func _build_waste() -> void:
 	_refresh_waste()
 
 func _make_waste_item(root: Node3D,item: Dictionary) -> void:
+	if String(item.get("kind",""))=="empty_water":
+		_draw_home_water(root,0)
+		return
 	if String(item.get("kind",""))=="burned_food":
 		for i in range(3):
 			_rental_round(root,Vector3((float(i)-1.0)*.035,.01,0),Vector3(.045,.025,.055),Color("#33291f"))
