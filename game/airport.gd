@@ -4,6 +4,8 @@ extends Node3D
 const Progress = preload("res://airport_progress.gd")
 const WarmMap = preload("res://pilar_map.gd")
 const WarmStreets = preload("res://street_geometry.gd")
+const WarmStreetSurfaces = preload("res://city_street_mesh_data.gd")
+const WarmTextures = preload("res://havana_textures.gd")
 var city_warm_started := false
 var city_warm_thread: Thread
 var city_warm_data: Dictionary = {}
@@ -1978,7 +1980,14 @@ static func _warm_city_map() -> Dictionary:
 	if not market.is_empty(): geo.remove_market_spurs(market)
 	var streets := WarmStreets.new()
 	streets.build(geo)
-	return {"geography":geo,"streets":streets,"market":market,"ms":Time.get_ticks_msec()-started}
+	var topology_ms := Time.get_ticks_msec()-started
+	var surface_started := Time.get_ticks_msec()
+	var surfaces := WarmStreetSurfaces.prepare(streets)
+	var surface_ms := Time.get_ticks_msec()-surface_started
+	var texture_started := Time.get_ticks_msec()
+	var textures := WarmTextures.new()
+	textures.prepare_images(not OS.get_cmdline_user_args().has("--low-graphics"))
+	return {"geography":geo,"streets":streets,"market":market,"surfaces":surfaces,"textures":textures,"topology_ms":topology_ms,"surface_ms":surface_ms,"texture_ms":Time.get_ticks_msec()-texture_started,"ms":Time.get_ticks_msec()-started}
 
 func _start_city_warmup() -> void:
 	if city_warm_started or OS.has_feature("web"): return
@@ -1995,7 +2004,7 @@ func _poll_city_warmup() -> bool:
 		if city_warm_thread.is_alive(): return false
 		city_warm_data = city_warm_thread.wait_to_finish()
 		city_warm_thread = null
-		print("MyCity carga anticipada (ms): mapa y calles=",city_warm_data.get("ms",0))
+		print("MyCity carga anticipada (ms): mapa y calles=",city_warm_data.get("topology_ms",0),", recorte vial=",city_warm_data.get("surface_ms",0),", texturas=",city_warm_data.get("texture_ms",0),", total=",city_warm_data.get("ms",0))
 	if city_scene_requested and ResourceLoader.load_threaded_get_status("res://main.tscn")==ResourceLoader.THREAD_LOAD_IN_PROGRESS: return false
 	if city_glb_requested and warmed_glb==null:
 		var status := ResourceLoader.load_threaded_get_status("res://city.glb")
@@ -2318,7 +2327,7 @@ func _physics_process(delta: float) -> void:
 	if menu_open: return
 	_tick_ambient_people(delta)
 	_tick_actor_faces(delta)
-	if progress.stage>=9: _start_city_warmup()
+	if progress.stage>=4: _start_city_warmup()
 	if progress.stage==Progress.COMPLETE:
 		_tick_airport_audio(delta)
 		if not boarding_transition and not entering_adaptation: _tick_departure(delta)

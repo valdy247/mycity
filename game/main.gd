@@ -157,6 +157,8 @@ func _ready() -> void:
 			candidate.street_geometry = warmed.streets
 			candidate.market_topology = warmed.market
 			candidate.prebuilt_topology = true
+			candidate.prebuilt_street_surfaces = warmed.get("surfaces",{})
+			if warmed.get("textures")!=null: candidate.havana_textures = warmed.textures
 			loaded = true
 		else:
 			loaded = candidate.load_map()
@@ -180,7 +182,9 @@ func _ready() -> void:
 		if cuba_world!=null: cuba_world.havana_textures.set_quality(graphics_quality)
 		city_world.setup(builder)
 		spawn_position = cuba_world.home_spawn if cuba_world != null else CityWorld.HOME_OUT
+		var vehicles_started := Time.get_ticks_msec()
 		_restore_original_vehicles()
+		print("MyCity carga (ms): vehículos originales=",Time.get_ticks_msec()-vehicles_started)
 		if van == null:
 			_make_demo_van()
 			push_warning("MyCity: van original no disponible; exporta city.glb desde Blender.")
@@ -212,6 +216,7 @@ func _ready() -> void:
 		pilar_editor.setup(cuba_world)
 		taxis = TaxiService.new()
 		add_child(taxis)
+		var services_started := Time.get_ticks_msec()
 		taxis.setup(cuba_world.geography,cuba_world.street_geometry,cuba_world.home_spawn,van.global_position)
 		urban_buses = UrbanBuses.new()
 		add_child(urban_buses)
@@ -220,6 +225,8 @@ func _ready() -> void:
 			var body: CharacterBody3D = taxi.body
 			avoid.append(body.global_position)
 		urban_buses.setup(cuba_world.geography,cuba_world.street_geometry,cuba_world.home_spawn,avoid,cuba_world)
+		print("MyCity carga (ms): rutas de taxis y guaguas=",Time.get_ticks_msec()-services_started)
+		services_started = Time.get_ticks_msec()
 		business = BusinessMission.new()
 		add_child(business)
 		business.adaptation_mode = adaptation_mode
@@ -285,6 +292,7 @@ func _ready() -> void:
 		incidents = CityIncidents.new()
 		add_child(incidents)
 		incidents.setup(self)
+		print("MyCity carga (ms): negocios, interiores y sistemas=",Time.get_ticks_msec()-services_started)
 		first_person = true
 		_face_cuba_home()
 		_apply_camera_mode()

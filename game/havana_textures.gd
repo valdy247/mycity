@@ -3,6 +3,15 @@ extends RefCounted
 var textures: Dictionary = {}
 var materials: Dictionary = {}
 var noise_images: Dictionary = {}
+var prepared_albedo: Dictionary = {}
+var prepared_surfaces: Dictionary = {}
+
+# Produce only Image data on the worker; ImageTexture creation stays on
+# the main thread, preserving the original resolution and material quality.
+func prepare_images(with_detail: bool) -> void:
+	for kind in ["plaster","asphalt","stone","tile","wood","cardboard"]:
+		prepared_albedo[kind] = _albedo_image(kind)
+		if with_detail: prepared_surfaces[kind] = _surface_images(kind)
 var normal_textures: Dictionary = {}
 var roughness_textures: Dictionary = {}
 var material_kinds: Dictionary = {}
@@ -19,6 +28,13 @@ func _map_texture(img: Image,normal: bool = false) -> ImageTexture:
 
 func _surface_maps(kind: String) -> void:
 	if normal_textures.has(kind): return
+	var images: Array = prepared_surfaces.get(kind,[])
+	if images.is_empty(): images = _surface_images(kind)
+	normal_textures[kind] = _map_texture(images[0],true)
+	roughness_textures[kind] = _map_texture(images[1])
+	prepared_surfaces.erase(kind)
+
+func _surface_images(kind: String) -> Array:
 	var height := Image.create(256,256,false,Image.FORMAT_RGB8)
 	var rough := Image.create(256,256,false,Image.FORMAT_RGB8)
 	var fine := _noise(71,.21)
@@ -51,8 +67,7 @@ func _surface_maps(kind: String) -> void:
 			height.set_pixel(x,y,Color(h,h,h))
 			rough.set_pixel(x,y,Color(r,r,r))
 	height.bump_map_to_normal_map(1.0)
-	normal_textures[kind] = _map_texture(height,true)
-	roughness_textures[kind] = _map_texture(rough)
+	return [height,rough]
 
 func _apply_surface_detail(m: StandardMaterial3D,kind: String) -> void:
 	m.normal_enabled = quality>0
@@ -81,6 +96,14 @@ func _noise(seed_value: int,frequency: float) -> Image:
 func _texture(kind: String) -> ImageTexture:
 	if textures.has(kind):
 		return textures[kind] as ImageTexture
+	var img: Image = prepared_albedo.get(kind)
+	if img==null: img = _albedo_image(kind)
+	var tex := _map_texture(img)
+	textures[kind] = tex
+	prepared_albedo.erase(kind)
+	return tex
+
+func _albedo_image(kind: String) -> Image:
 	var fine := _noise(71,.21)
 	var coarse := _noise(31,.035)
 	var stains := _noise(92,.075)
@@ -133,10 +156,7 @@ func _texture(kind: String) -> ImageTexture:
 				tone = .79+.18*f+.10*c
 				pixel = Color(tone,tone,tone)
 			img.set_pixel(x,y,Color(clampf(pixel.r,0,1),clampf(pixel.g,0,1),clampf(pixel.b,0,1)))
-	img.generate_mipmaps()
-	var tex := ImageTexture.create_from_image(img)
-	textures[kind] = tex
-	return tex
+	return img
 
 func material(base: StandardMaterial3D,kind: String) -> StandardMaterial3D:
 	var key := str(base.get_instance_id())+":"+kind

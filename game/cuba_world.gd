@@ -33,6 +33,7 @@ const INVENTORY_PATH := "user://pilar_atares_inventory.json"
 var inventory_path := INVENTORY_PATH
 var geography := MapData.new()
 var prebuilt_topology := false
+var prebuilt_street_surfaces: Dictionary = {}
 var home_root: Node3D
 var business_frontage: Node3D
 var custom_home_enabled := false
@@ -154,8 +155,12 @@ func setup(builder: Builder) -> void:
 	add_child(parks)
 	parks.reserve(self)
 	real_facades.prepare(self)
+	var roads_started := Time.get_ticks_msec()
 	_make_osm_streets()
+	print("MyCity carga (ms): superficies viales=",Time.get_ticks_msec()-roads_started)
+	var buildings_started := Time.get_ticks_msec()
 	_make_frontages()
+	print("MyCity carga (ms): fachadas y comercios=",Time.get_ticks_msec()-buildings_started)
 	if not stadium_reservation.is_empty():
 		stadium.build(self)
 		stadium_gates = stadium.gates
@@ -293,10 +298,17 @@ func _make_osm_streets() -> void:
 	var asphalt := _mat("asphalt_cuba",Color("#555653"))
 	var concrete := _mat("old_sidewalk",Color("#a39c89"))
 	var stripe := _mat("faded_line",Color("#b3a67d"))
-	for poly in street_geometry.roads:
-		_draw_unique_street_polygon(poly,.030,asphalt,"road")
-	for poly in street_geometry.sidewalks:
-		_draw_unique_street_polygon(poly,.061,concrete,"sidewalk")
+	if prebuilt_street_surfaces.has("road") and prebuilt_street_surfaces.has("sidewalk"):
+		for poly in prebuilt_street_surfaces.road:
+			_draw_street_polygon(poly,.030,asphalt,"road")
+		for poly in prebuilt_street_surfaces.sidewalk:
+			_draw_street_polygon(poly,.061,concrete,"sidewalk")
+		prebuilt_street_surfaces.clear()
+	else:
+		for poly in street_geometry.roads:
+			_draw_unique_street_polygon(poly,.030,asphalt,"road")
+		for poly in street_geometry.sidewalks:
+			_draw_unique_street_polygon(poly,.061,concrete,"sidewalk")
 	street_surface_index.clear()
 	for edge in geography.roads:
 		var a: Vector3 = edge.a
