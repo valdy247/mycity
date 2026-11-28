@@ -330,7 +330,8 @@ func _separate_actor_position(at: Vector3) -> Vector3:
 	return Vector3.INF
 
 func _spawn_actor(at: Vector3) -> void:
-	if not is_instance_valid(actor):
+	var created := not is_instance_valid(actor)
+	if created:
 		actor = Person.new()
 		add_child(actor)
 		actor.setup(810)
@@ -339,6 +340,7 @@ func _spawn_actor(at: Vector3) -> void:
 	var safe := _separate_actor_position(at)
 	if not safe.is_finite():
 		# Keep the existing actor in its current room until a safe placement exists.
+		if created: actor.global_position = at
 		actor_reposition_pending = true
 		actor.show()
 		return
@@ -789,7 +791,10 @@ func _helper_tick(delta: float,unloading: bool) -> void:
 	helper_elapsed += delta
 	if helper_stage.is_empty():
 		var target: Vector3 = _helper_trunk_ground() if unloading else Vector3(world.food_factory.pickup)-Vector3.UP*.86
-		if not _helper_walk(delta,target): 
+		if not _helper_walk(delta,target):
+			if unloading and helper_elapsed>=30.0:
+				_offer_manual_oil()
+				return
 			# If local traffic blocks him, retry from a verified nearby ground
 			# point off camera rather than locking the entire chapter.
 			if helper_elapsed<24.0 or not target.is_finite(): return
@@ -1263,7 +1268,12 @@ func tick(delta: float) -> void:
 				story.subtitle.text = "[E] Guardar caja" if game.garage.inside else "[E] Entrar en casa"
 			if _all_at("stored"):
 				_request_cab_departure()
-				if game.garage.inside: _dialogue(10,10,"neighbor")
+				if game.garage.inside:
+					if not is_instance_valid(actor) or actor.global_position.y<70.0:
+						_spawn_actor(Vector3(-2.35,110,3.9))
+					if is_instance_valid(actor) and actor.global_position.y>70.0:
+						_dialogue(10,10,"neighbor")
+					else: story.subtitle.text = "Deja libre la entrada para Albertico."
 				else:
 					_task("Entra a la casa. Albertico terminó de guardar la mercancía.")
 					_mark(_house_out())
