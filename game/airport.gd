@@ -103,11 +103,11 @@ var chapter_title: Label
 var chapter_loading: Label
 const RIDE_LINES := [
 	["Chofer","Cuéntame, ¿cómo fue el vuelo?",1.84],
-	["Tú","Sí, fue bastante bien.",2.72],
+	["Tú","Bastante bien, por suerte.",2.72],
 	["Chofer","¿Y qué? ¿De visita?",1.76],
 	["Tú","Ya quisiera. Después de doce años, deportado. Y ahora... a comenzar de cero.",6.96],
 	["Chofer","Oh, qué mal, compadre. Al Cerro me dijiste, ¿verdad?",4.08],
-	["Tú","Sí, al Cerro.",2.32],
+	["Tú","Al Cerro mismo, compadre.",2.32],
 	["Chofer","No te preocupes. Esto está duro, pero vas a estar bien.",3.52]
 ]
 var protagonist_voice_id := ""
@@ -117,7 +117,7 @@ var bag_arrows: Array[Label3D] = []
 var other_bags: Array[Node3D] = []
 var driver_opening := false
 var driver_exchange := 0
-const TAXI_GREETING_LINES := {"taxi_greeting":["Chofer","Buenas tardes, mi socio. Déjame abrirte el maletero.",3.5],"taxi_reply":["Tú","Sí, gracias por esperarme.",2.0]}
+const TAXI_GREETING_LINES := {"taxi_greeting":["Chofer","Buenas tardes, mi socio. Déjame abrirte el maletero.",3.5],"taxi_reply":["Tú","Gracias por esperarme, mi hermano.",2.0]}
 var driver_route_index := 0
 var driver_return_index := 0
 var driver_ready := false
