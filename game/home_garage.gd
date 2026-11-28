@@ -25,6 +25,8 @@ var paint_previous_first := true
 const CAN_CAPACITY := 300
 const WASTE_CAPACITY := 10
 const TRASH_POS := Vector3(4.9,0,5.20)
+const RENTAL_TRASH_POS := Vector3(-6.37,0,1.92)
+const RENTAL_FIXED_LAYOUT := {"sofa":[-4.1,0,2.35],"mesa":[-3.55,0,-.85],"cama":[-4.5,0,-4.1],"armario":[-1.7,0,-5.0]}
 var empty_cans: Dictionary = {}
 var waste_root: Node3D
 var waste_bag: Node3D
@@ -84,6 +86,8 @@ var dining_plate_prop: Node3D
 var dining_water_prop: Node3D
 var dining_stand_position := Vector3.ZERO
 var dining_previous_first := true
+var dining_previous_yaw := 0.0
+var dining_previous_pitch := 0.0
 var dining_water_busy := false
 var dish_wash_hint: Label
 var dish_washing := false
@@ -260,6 +264,14 @@ func setup(controller) -> void:
 	if bool(state.projects.get("bicicleta",{}).get("wheel_a",false)) or int(state.vehicle_sales.get("bicicleta",0))>0: state.wheel_tutorial = true
 	for id in FURNITURE:
 		if not state.furniture.has(id): state.furniture[id] = {"p":FURNITURE[id].p.duplicate(),"removed":false}
+	# Restore one coherent layout in existing rental saves, without changing
+	# inventory, meal state, waste contents or other progress.
+	if game.adaptation_mode and int(state.get("fixed_layout_version",0))<1:
+		for id in RENTAL_FIXED_LAYOUT:
+			state.furniture[id].p = RENTAL_FIXED_LAYOUT[id].duplicate()
+			if String(state.held_furniture)==id: state.furniture[id].removed = false
+		state.held_furniture = ""
+		state.fixed_layout_version = 1
 	# Existing GPS residence belongs to the player; no purchase or exterior sign.
 	if not world.garage_home_site.is_empty():
 		state.house = true
@@ -934,9 +946,9 @@ func _decorate_rental_home() -> void:
 	_rental_wall_frame(decor,Vector3(-2.72,1.9,-2.18),0.0,Color("#b59872"))
 	# A low woven mat under the living-room area, below the existing
 	# sweepable floor overlay at y=.036.
-	_rental_part(decor,Vector3(-4.45,.012,2.33),Vector3(2.68,.020,2.40),Color("#a49a84"))
+	_rental_part(decor,Vector3(-4.1,.012,2.68),Vector3(2.68,.020,2.40),Color("#a49a84"))
 	for i in range(12):
-		_rental_part(decor,Vector3(-4.45,.025,1.24+float(i)*.198),Vector3(2.58,.007,.055),Color("#807968").lightened(float(i%3)*.05))
+		_rental_part(decor,Vector3(-4.1,.025,1.59+float(i)*.198),Vector3(2.58,.007,.055),Color("#807968").lightened(float(i%3)*.05))
 	# Fixed kitchen counter against west wall, with the permanent refrigerator
 	# immediately beside it and both facing into the room.
 	var kitchen := _rental_root(decor,Vector3(-6.34,0,-.65),PI*.5)
@@ -1654,6 +1666,7 @@ func _aimed_furniture() -> String:
 	return ""
 
 func _place_furniture() -> void:
+	if game.adaptation_mode: return
 	var id := String(state.held_furniture)
 	if not FURNITURE.has(id): return
 	var p: Vector3 = game.player.global_position-ROOM
@@ -2378,22 +2391,33 @@ func _sit_at_dining() -> void:
 	q.exclude = [actor.get_rid(),dining_chair_body.get_rid()]
 	q.transform = Transform3D(Basis.IDENTITY,seat+Vector3.UP*.15)
 	if not get_world_3d().direct_space_state.intersect_shape(q,1).is_empty():
-		business._notify("No hay espacio libre para sentarse. Mueve la mesa.")
+		business._notify("El espacio de la silla está bloqueado. Intenta acercarte desde otro lado.")
 		return
 	dining_stand_position = actor.global_position
 	dining_previous_first = game.first_person
+	dining_previous_yaw = game.yaw
+	dining_previous_pitch = game.pitch
 	dining_seated = true
 	game.player_shape.set_deferred("disabled",true)
 	actor.velocity = Vector3.ZERO
 	actor.global_position = seat
 	game.first_person = true
 	game.yaw = 0.0
-	game.pitch = -.38
+	game.pitch = -.53
 	game.pivot.rotation = Vector3(game.pitch,game.yaw,0)
 	game._apply_camera_mode()
 	game.pivot.position.y = .45
 	_refresh_dining_table()
 	business._notify("Sentado. Mira el plato o la botella y pulsa E. Espacio para levantarte.")
+
+func dining_look(relative: Vector2,sensitivity: float) -> void:
+	if not dining_seated: return
+	# Lock the view during a bite or sip; between actions allow just enough
+	# movement to select the plate and the bottle, never look under the table.
+	if dining_water_busy or business.life.bite_anim>0.0: return
+	game.yaw = clampf(game.yaw-relative.x*sensitivity,-.58,.22)
+	game.pitch = clampf(game.pitch-relative.y*sensitivity,-.68,-.20)
+	game.pivot.rotation = Vector3(game.pitch,game.yaw,0)
 
 func _stand_from_dining(force: bool = false) -> void:
 	if not dining_seated: return
@@ -2413,9 +2437,17 @@ func _stand_from_dining(force: bool = false) -> void:
 	game.player_shape.set_deferred("disabled",false)
 	game.player.velocity = Vector3.ZERO
 	game.first_person = dining_previous_first
+	game.yaw = dining_previous_yaw
+	game.pitch = dining_previous_pitch
+	game.pivot.rotation = Vector3(game.pitch,game.yaw,0)
 	game._apply_camera_mode()
 	_refresh_dining_table()
 	_save()
+
+func _configure_dining_arm(hand: Node3D) -> void:
+	if not is_instance_valid(dining_chair) or not is_instance_valid(hand): return
+	var shirt: MeshInstance3D = game.avatar.get_node("Shirt")
+	hand.configure_body_arm(dining_chair,Vector3(.23,1.00,.09),Vector3(.31,.87,-.035),shirt.material_override)
 
 func _dining_water_safe_pose(at: Vector3,model: Node3D) -> void:
 	if is_instance_valid(model): model.position = InteractionHand.camera_safe_pose(game.play_camera,at,.09)
@@ -2428,7 +2460,8 @@ func _drink_dining_water() -> void:
 	game.play_camera.add_child(model)
 	model.position = Vector3(.25,-.33,-.43)
 	_draw_home_water(model,int(state.home_food.table_water))
-	_attach_interaction_hand(model,Vector3(.048,.09,.025))
+	var drinking_hand = _attach_interaction_hand(model,Vector3(.048,.09,.025))
+	_configure_dining_arm(drinking_hand)
 	var sip := create_tween()
 	sip.tween_method(_dining_water_safe_pose.bind(model),Vector3(.25,-.33,-.43),Vector3(.065,-.19,-.28),.38)
 	sip.parallel().tween_property(model,"rotation:x",.85,.38)
@@ -3177,10 +3210,11 @@ func _bed_menu() -> void:
 	business._open("Cama","Despertarás a las "+life.format_time(wake)+". Puedes cambiar la alarma en el móvil.")
 	business._button("Dormir",_sleep_home,not _free_hands())
 	business._button("Tender la cama",_make_home_bed,not bool(life.state.get("bed_unmade",false)))
-	business._button("Mover cama",_take_bed,not _free_hands())
+	if not game.adaptation_mode: business._button("Mover cama",_take_bed,not _free_hands())
 	business._button("Cerrar",business.close)
 
 func _take_bed() -> void:
+	if game.adaptation_mode: return
 	if not _free_hands() or not furniture_nodes.has("cama"): return
 	state.held_furniture = "cama"
 	_refresh_furniture("cama")
@@ -3232,6 +3266,7 @@ func action_text(at: Vector3) -> String:
 		var tool_action := _house_tool_action(at)
 		if not tool_action.is_empty(): return tool_action
 		if _aimed_project(at): return "[E] Mejorar / ensamblar "+String(Kit.KITS.get(String(state.project),{}).get("name","vehículo"))
+		if game.adaptation_mode: return ""
 		if not String(state.held_furniture).is_empty(): return "[E] Colocar mueble · llévalo afuera para desechar"
 		var id := _aimed_furniture()
 		return "[E] Mover "+String(FURNITURE[id].name) if not id.is_empty() else ""
@@ -3277,8 +3312,8 @@ func interact(at: Vector3) -> bool:
 				if not state.projects.has(String(state.project)): state.projects[String(state.project)] = {}
 				_project_menu()
 			else: _garage_menu()
-		elif not String(state.held_furniture).is_empty(): _place_furniture()
-		else:
+		elif not game.adaptation_mode and not String(state.held_furniture).is_empty(): _place_furniture()
+		elif not game.adaptation_mode:
 			var id := _aimed_furniture()
 			if not id.is_empty() and _free_hands():
 				if id=="mesa" and (bool(state.home_food.table_used_plate) or not state.home_food.table_plate.is_empty() or int(state.home_food.table_water)>=0):
@@ -4316,7 +4351,7 @@ func _build_waste() -> void:
 	waste_mesh.rings = 4
 	waste_root = Node3D.new()
 	interior.add_child(waste_root)
-	waste_root.position = TRASH_POS
+	waste_root.position = RENTAL_TRASH_POS if game.adaptation_mode else TRASH_POS
 	waste_bag = Node3D.new()
 	waste_root.add_child(waste_bag)
 	waste_overflow = Node3D.new()
@@ -4365,12 +4400,12 @@ func _refresh_waste() -> void:
 	for i in range(mini(state.waste_overflow.size(),12)):
 		var prop := Node3D.new()
 		waste_overflow.add_child(prop)
-		prop.position = Vector3(-.50-float(i%4)*.42,.18,.18-float(i/4)*.32)
+		prop.position = Vector3(.40+float(i%2)*.25,.12,.12+floorf(float(i)/2.0)*.22) if game.adaptation_mode else Vector3(-.50-float(i%4)*.42,.18,.18-float(i/4)*.32)
 		_make_waste_item(prop,state.waste_overflow[i])
 
 func _waste_action(at: Vector3) -> String:
 	if not is_instance_valid(waste_bag): return ""
-	var near_bag := at.distance_to(ROOM+TRASH_POS)<2.0
+	var near_bag := at.distance_to(waste_root.global_position)<2.0
 	var hand: Dictionary = state.get("waste_hand",{})
 	if not hand.is_empty():
 		if near_bag and _aim_tool(waste_bag,Vector3(0,.28,0),Vector3(.4,.4,.4)):
