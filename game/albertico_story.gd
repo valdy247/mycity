@@ -21,7 +21,7 @@ var helper_recovered := false
 var cargo_marker: Node3D
 const ROOM := Vector3(60,110,0)
 const FRIDGE := Vector3(-5.8,110,3.6)
-const RENTAL_FRIDGE := Vector3(-6.30,110,.87)
+const RENTAL_FRIDGE := Vector3(-6.29,110,1.0)
 var rental_fridge_doors: Dictionary = {}
 var rental_fridge_goods: Dictionary = {}
 var rental_fridge_tween: Tween
@@ -539,43 +539,21 @@ func cargo_action() -> bool:
 
 func _make_fridge() -> void:
 	if not is_instance_valid(game.garage.interior): return
+	if game.adaptation_mode:
+		# The house constructs the appliance itself; keep only references for
+		# inventory and door animation. No duplicate or mission-only fridge.
+		game.garage._build_rental_fridge()
+		fridge = game.garage.rental_fridge
+		rental_fridge_doors = game.garage.rental_fridge_doors
+		return
 	fridge = Node3D.new()
 	game.garage.interior.add_child(fridge)
-	fridge.global_position = RENTAL_FRIDGE if game.adaptation_mode else FRIDGE
-	if not game.adaptation_mode:
-		business._box(fridge,Vector3(0,.88,0),Vector3(.70,1.76,.65),Color("#d7d9d6"))
-		business._box(fridge,Vector3(0,1.43,.34),Vector3(.68,.58,.035),Color("#e8e9e5"))
-		business._box(fridge,Vector3(0,.55,.34),Vector3(.68,1.06,.035),Color("#e8e9e5"))
-		for y in [.85,1.40]:
-			business._box(fridge,Vector3(.23,float(y),.37),Vector3(.035,.15,.04),Color("#535c60"))
-		return
-	fridge.rotation.y = PI*.5
-	var body := StaticBody3D.new()
-	fridge.add_child(body)
-	body.position.y = .92
-	body.collision_layer = 1
-	body.collision_mask = 0
-	var col := CollisionShape3D.new()
-	var shape := BoxShape3D.new()
-	shape.size = Vector3(.74,1.84,.69)
-	col.shape = shape
-	body.add_child(col)
-	var ivory := Color("#e6e4d9")
-	var inside := Color("#cad4d0")
-	for x in [-.345,.345]:
-		business._box(fridge,Vector3(float(x),.92,0),Vector3(.05,1.84,.68),ivory)
-	business._box(fridge,Vector3(0,.92,-.31),Vector3(.68,1.84,.05),inside)
-	for y in [.055,.44,.84,1.22,1.81]:
-		business._box(fridge,Vector3(0,float(y),0),Vector3(.69,.055,.64),inside)
-	for key in ["pollo","huevos"]:
-		var top := key=="pollo"
-		var hinge := Node3D.new()
-		fridge.add_child(hinge)
-		hinge.position = Vector3(-.36,1.23 if top else .09,.35)
-		var height := .58 if top else 1.11
-		business._box(hinge,Vector3(.36,height*.5,0),Vector3(.72,height,.055),ivory)
-		business._box(hinge,Vector3(.64,height*.75,.043),Vector3(.036,.16,.045),Color("#666d68"))
-		rental_fridge_doors[key] = hinge
+	fridge.position = FRIDGE-game.garage.interior.global_position
+	business._box(fridge,Vector3(0,.88,0),Vector3(.70,1.76,.65),Color("#d7d9d6"))
+	business._box(fridge,Vector3(0,1.43,.34),Vector3(.68,.58,.035),Color("#e8e9e5"))
+	business._box(fridge,Vector3(0,.55,.34),Vector3(.68,1.06,.035),Color("#e8e9e5"))
+	for y in [.85,1.40]:
+		business._box(fridge,Vector3(.23,float(y),.37),Vector3(.035,.15,.04),Color("#535c60"))
 
 func show_rental_stock(key: String,animate_door: bool = true) -> void:
 	if not game.adaptation_mode or not rental_fridge_doors.has(key): return

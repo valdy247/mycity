@@ -60,6 +60,10 @@ var world
 var business
 var state: Dictionary
 var interior: Node3D
+# The fridge belongs to the rented house, not to the mission NPC.
+const RENTAL_FRIDGE_LOCAL := Vector3(-6.29,0,1.0)
+var rental_fridge: Node3D
+var rental_fridge_doors: Dictionary = {}
 var furniture_nodes: Dictionary = {}
 var preview: Node3D
 var marker: Node3D
@@ -372,6 +376,7 @@ func _build_interior() -> void:
 	for id in FURNITURE: _refresh_furniture(String(id))
 	if game.adaptation_mode:
 		_decorate_rental_home()
+		_build_rental_fridge()
 		_build_rental_bathroom()
 	_refresh_preview()
 
@@ -544,6 +549,45 @@ func _rental_wall_frame(parent: Node3D,at: Vector3,angle: float,paint: Color) ->
 	_rental_part(root,Vector3(0,-.04,.041),Vector3(.27,.26,.010),paint)
 	_rental_part(root,Vector3(0,-.095,.048),Vector3(.22,.09,.010),paint.darkened(.22))
 
+func _build_rental_fridge() -> void:
+	if is_instance_valid(rental_fridge): return
+	# Use the same room-local coordinates as the kitchen counter. The
+	# appliance faces into the room and is present before any story starts.
+	rental_fridge = _rental_root(interior,RENTAL_FRIDGE_LOCAL,PI*.5)
+	rental_fridge.name = "RefrigeradorCocina"
+	var ivory := Color("#e8e9e5")
+	var shell := Color("#c3cbc7")
+	var lining := Color("#e1e7e3")
+	var edge := Color("#8c9894")
+	var body := StaticBody3D.new()
+	rental_fridge.add_child(body)
+	body.position.y = .95
+	body.collision_layer = 1
+	body.collision_mask = 0
+	var collision := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(.84,1.90,.74)
+	collision.shape = shape
+	body.add_child(collision)
+	# Explicit closed outer cabinet, dark seal, and solid shelves.
+	_rental_part(rental_fridge,Vector3(0,.95,-.34),Vector3(.84,1.90,.06),shell)
+	for x in [-.39,.39]:
+		_rental_part(rental_fridge,Vector3(float(x),.95,0),Vector3(.06,1.90,.74),shell)
+	for y in [.06,1.26,1.87]:
+		_rental_part(rental_fridge,Vector3(0,float(y),0),Vector3(.79,.06,.70),lining)
+	for y in [.45,.85]:
+		_rental_part(rental_fridge,Vector3(0,float(y),0),Vector3(.75,.035,.65),lining)
+	_rental_part(rental_fridge,Vector3(0,.038,0),Vector3(.72,.075,.65),edge)
+	for key in ["pollo","huevos"]:
+		var top := key=="pollo"
+		var hinge := _rental_root(rental_fridge,Vector3(-.412,1.29 if top else .10,.375))
+		var height := .57 if top else 1.14
+		_rental_part(hinge,Vector3(.412,height*.5,0),Vector3(.815,height,.08),edge)
+		_rental_part(hinge,Vector3(.412,height*.5,.037),Vector3(.79,height-.018,.062),ivory)
+		_rental_part(hinge,Vector3(.70,height*.72,.085),Vector3(.045,.22,.058),Color("#626b68"))
+		rental_fridge_doors[key] = hinge
+	print("MyCity: refrigerador de cocina creado en ",rental_fridge.global_position)
+
 func _decorate_rental_home() -> void:
 	var decor := _rental_root(interior,Vector3.ZERO)
 	decor.name = "RentalHomeDetails"
@@ -577,8 +621,8 @@ func _decorate_rental_home() -> void:
 	_rental_part(decor,Vector3(-4.45,.012,2.33),Vector3(2.68,.020,2.40),Color("#a49a84"))
 	for i in range(12):
 		_rental_part(decor,Vector3(-4.45,.025,1.24+float(i)*.198),Vector3(2.58,.007,.055),Color("#807968").lightened(float(i%3)*.05))
-	# Fixed kitchen counter against west wall, leaving the existing
-	# refrigerator is alongside this counter, with the door facing the room.
+	# Fixed kitchen counter against west wall, with the permanent refrigerator
+	# immediately beside it and both facing into the room.
 	var kitchen := _rental_root(decor,Vector3(-6.34,0,-.65),PI*.5)
 	_solid(kitchen,Vector3(0,.44,0),Vector3(2.0,.88,.66),Color("#a39b82"))
 	_rental_part(kitchen,Vector3(0,.91,0),Vector3(2.08,.09,.72),Color("#777d76"))
