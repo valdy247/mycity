@@ -3716,20 +3716,67 @@ func _ride_body() -> CharacterBody3D:
 	if riding_borrowed(): return borrowed_body
 	return owned.get(ride_kind) as CharacterBody3D
 
-func _player_driver(body: CharacterBody3D) -> Node3D:
+# All player-controlled two/three-wheel vehicles use the actual protagonist,
+# not a randomly styled street NPC. Fit the duplicated visual rig to the
+# physical seat, grips and pedals once; no extra simulation or collision.
+func _player_driver(body: CharacterBody3D,kind: String = "moto") -> Node3D:
 	var source: Node3D = game.avatar
 	var driver := source.duplicate(0) as Node3D
 	body.add_child(driver)
-	driver.position = Vector3(0,1.10,-.18)
-	driver.rotation = Vector3.ZERO
-	driver.scale = Vector3(.85,.85,.85)
+	driver.name = "PlayerRider"
+	var moto := kind=="moto"
+	var tri := kind=="triciclo"
+	driver.position = Vector3(0,1.26,-.32 if moto else -.23)
+	driver.rotation = Vector3(.22 if moto else .30,0,0)
+	driver.scale = Vector3.ONE
 	driver.show()
-	for limb in game.limb_legs:
-		var leg := driver.get_node_or_null(source.get_path_to(limb)) as Node3D
-		if leg!=null: leg.rotation = Vector3(-1.05,0,0)
-	for limb in game.limb_arms:
-		var arm := driver.get_node_or_null(source.get_path_to(limb)) as Node3D
-		if arm!=null: arm.rotation = Vector3(-1.18,0,0)
+	var spec: Dictionary = Kit.KITS[kind]
+	var grip_z := .23 if moto else float(spec.length)*.35*.77
+	var grip_x := .30 if moto else float(spec.width)*.36
+	for i in range(2):
+		var side := -1.0 if i==0 else 1.0
+		var source_arm: Node3D = game.limb_arms[i]
+		var source_leg: Node3D = game.limb_legs[i]
+		var arm_node := driver.get_node(source.get_path_to(source_arm)) as Node3D
+		var leg_node := driver.get_node(source.get_path_to(source_leg)) as Node3D
+		arm_node.rotation = Vector3.ZERO
+		leg_node.rotation = Vector3.ZERO
+		# Do not duplicate food/drink or transient held props onto a rider.
+		for node in arm_node.get_children():
+			if node is MeshInstance3D: continue
+			if node is Node3D: (node as Node3D).hide()
+			else: node.queue_free()
+		var shoulder := driver.to_local(arm_node.global_position)
+		var grip := driver.to_local(body.to_global(Vector3(side*grip_x,1.16 if moto else 1.10,grip_z)))
+		var elbow := _rider_bend(shoulder,grip,.32,.30,Vector3(side*.28,-1,0))
+		var sleeve := arm_node.get_node("Sleeve") as MeshInstance3D
+		var forearm := arm_node.get_node("Arm") as MeshInstance3D
+		var palm := arm_node.get_node("Hand") as MeshInstance3D
+		# Preserve the short sleeve with visible upper arm and forearm.
+		var sleeve_end := shoulder.lerp(elbow,.55)
+		var upper_skin := forearm.duplicate(0) as MeshInstance3D
+		arm_node.add_child(upper_skin)
+		_rider_segment(driver,sleeve,shoulder,sleeve_end)
+		_rider_segment(driver,upper_skin,sleeve_end,elbow)
+		_rider_segment(driver,forearm,elbow,grip)
+		_rider_endpoint(driver,palm,grip)
+		palm.rotation.x = PI*.5-driver.rotation.x
+		var hip := driver.to_local(leg_node.global_position)
+		var foot_z := .08 if moto or tri else side*.15
+		var foot_x := .27 if moto or tri else .21
+		var foot_y := .51 if moto or tri else .47
+		var foot := driver.to_local(body.to_global(Vector3(side*foot_x,foot_y,foot_z)))
+		var joint := _rider_bend(hip,foot,.34,.35,Vector3(side*.45,0,1))
+		var thigh := leg_node.get_node("Leg") as MeshInstance3D
+		var shoe := leg_node.get_node("Shoe") as MeshInstance3D
+		var shin := thigh.duplicate(0) as MeshInstance3D
+		leg_node.add_child(shin)
+		_rider_segment(driver,thigh,hip,joint)
+		_rider_segment(driver,shin,joint,foot)
+		shin.scale.x *= .84
+		shin.scale.z *= .86
+		_rider_endpoint(driver,shoe,foot+Vector3(0,-.025,.045))
+		shoe.rotation.x = -driver.rotation.x
 	return driver
 
 func mount_borrowed_moto(body: CharacterBody3D) -> bool:
@@ -3749,7 +3796,7 @@ func _mount(kind: String) -> void:
 		return
 	var body: CharacterBody3D = owned[kind]
 	borrowed_body = null
-	if kind!="carro": rider = _player_driver(body) if kind=="moto" else _make_rider(body,kind,691)
+	if kind!="carro": rider = _player_driver(body,kind)
 	_begin_manual_ride(body,kind)
 
 func _begin_manual_ride(body: CharacterBody3D,kind: String) -> void:
