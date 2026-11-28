@@ -499,6 +499,7 @@ func _refresh_meal() -> void:
 	var meal: Dictionary = state.meal
 	var key := String(meal.get("key",""))
 	var f := String(MENU[key].food) if MENU.has(key) and int(meal.get("food_bites",0))>0 else ""
+	if key=="arroz_casero" and int(meal.get("food_bites",0))>0: f = "arroz"
 	var d := String(MENU[key].drink) if MENU.has(key) and int(meal.get("drink_sips",0))>0 else ""
 	food_model = f
 	drink_model = d
@@ -520,6 +521,26 @@ func _draw_meal(root: Node3D,kind: String,count: int) -> void:
 		business._box(root,Vector3.ZERO,Vector3(.095,.22,.095),Color("#ba3c3c"))
 		business._box(root,Vector3(0,.11,0),Vector3(.093,.014,.093),Color("#d6d9db"))
 		business._box(root,Vector3(0,.01,.049),Vector3(.067,.07,.004),Color("#fff0d9"))
+	elif kind=="arroz":
+		var plate := MeshInstance3D.new()
+		var plate_mesh := CylinderMesh.new()
+		plate_mesh.top_radius = .13
+		plate_mesh.bottom_radius = .11
+		plate_mesh.height = .018
+		plate.mesh = plate_mesh
+		plate.material_override = business._mat(Color("#eee8d8"))
+		root.add_child(plate)
+		for i in range(count):
+			var rice := MeshInstance3D.new()
+			var mound := SphereMesh.new()
+			mound.radius = .048
+			mound.height = .045
+			mound.radial_segments = 12
+			mound.rings = 5
+			rice.mesh = mound
+			rice.material_override = business._mat(Color("#f0e7cc"))
+			root.add_child(rice)
+			rice.position = Vector3((float(i)-1.0)*.062,.025,0)
 	elif kind=="pizza":
 		for i in range(count):
 			var x := (float(i)-1.0)*.065
@@ -540,6 +561,12 @@ func start_found_meal(key: String,dirty: bool) -> bool:
 	business._notify("Comida encontrada · E para comer" if dirty else "E para comer / beber")
 	return true
 
+func start_home_rice() -> bool:
+	if not state.meal.is_empty() or not ledger.carry.is_empty(): return false
+	state.meal = {"key":"arroz_casero","food_bites":3,"drink_sips":0}
+	_refresh_meal()
+	return true
+
 func _eat() -> void:
 	if bite_anim>0.0 or active_hand>=0: return
 	var meal: Dictionary = state.meal
@@ -552,10 +579,10 @@ func _eat() -> void:
 func _finish_bite() -> void:
 	var meal: Dictionary = state.meal
 	var key := String(meal.get("key",""))
-	if not MENU.has(key):
+	if not MENU.has(key) and key!="arroz_casero":
 		active_hand = -1
 		return
-	var item: Dictionary = MENU[key]
+	var item: Dictionary = {"food":"arroz","drink":"","fill":36} if key=="arroz_casero" else MENU[key]
 	var portions := 6.0 if not String(item.food).is_empty() and not String(item.drink).is_empty() else 3.0
 	var gain := float(item.fill)/portions
 	if active_hand==0:
