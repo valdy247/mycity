@@ -546,7 +546,7 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 		nearby.sort_custom(func(a,b): return int(String(a.get("business_kind",""))=="cafe")>int(String(b.get("business_kind",""))=="cafe"))
 	# A quarter of residents actively seek a bus stop rather than leaving
 	# all transport demand to random selection among hundreds of doors.
-	if not force_non_bus and posmod(person.style_id,4)==0:
+	if not force_non_bus and posmod(person.style_id,4)==0 and String(profile.get("objective",""))!="comer":
 		nearby.sort_custom(func(a,b): return int(String(a.kind)=="bus")>int(String(b.kind)=="bus"))
 	for i in range(mini(nearby.size(),6)):
 		var dest: Dictionary = nearby[i]
@@ -789,6 +789,11 @@ func tick(delta: float) -> void:
 			person.animate(actor_dt,false)
 			if float(agent.pause)<=0.0:
 				if bool(agent.get("indoors",false)):
+					# Stay inside during the resident's rest window instead of
+					# repeatedly stepping out and re-entering the same door.
+					if agent_has_profile(agent) and String(agent.profile.activity)=="home" and String(agent.profile.get("objective","")) in ["descansar","volver a casa"]:
+						agent.pause = 8.0
+						continue
 					if not world.pedestrian_segment_clear(person.global_position,person.global_position) or not world.pedestrian_space_clear(person,person.global_position,.75,false):
 						agent.pause = .5
 						continue
