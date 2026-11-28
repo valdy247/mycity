@@ -502,7 +502,7 @@ func _refresh_meal() -> void:
 	var meal: Dictionary = state.meal
 	var key := String(meal.get("key",""))
 	var f := String(MENU[key].food) if MENU.has(key) and int(meal.get("food_bites",0))>0 else ""
-	if key=="arroz_casero" and int(meal.get("food_bites",0))>0: f = "arroz"
+	if key in ["arroz_casero","plato_casero"] and int(meal.get("food_bites",0))>0: f = "arroz"
 	var d := String(MENU[key].drink) if MENU.has(key) and int(meal.get("drink_sips",0))>0 else ""
 	food_model = f
 	drink_model = d
@@ -552,25 +552,9 @@ func _draw_meal(root: Node3D,kind: String,count: int) -> void:
 		business._box(root,Vector3(0,.11,0),Vector3(.093,.014,.093),Color("#d6d9db"))
 		business._box(root,Vector3(0,.01,.049),Vector3(.067,.07,.004),Color("#fff0d9"))
 	elif kind=="arroz":
-		var plate := MeshInstance3D.new()
-		var plate_mesh := CylinderMesh.new()
-		plate_mesh.top_radius = .13
-		plate_mesh.bottom_radius = .11
-		plate_mesh.height = .018
-		plate.mesh = plate_mesh
-		plate.material_override = business._mat(Color("#eee8d8"))
-		root.add_child(plate)
-		for i in range(count):
-			var rice := MeshInstance3D.new()
-			var mound := SphereMesh.new()
-			mound.radius = .048
-			mound.height = .045
-			mound.radial_segments = 12
-			mound.rings = 5
-			rice.mesh = mound
-			rice.material_override = business._mat(Color("#f0e7cc"))
-			root.add_child(rice)
-			rice.position = Vector3((float(i)-1.0)*.062,.025,0)
+		var meal: Dictionary = state.meal
+		var ingredients: Array = meal.get("ingredients",["arroz"])
+		draw_home_plate(root,ingredients,count)
 	elif kind=="pizza":
 		for i in range(count):
 			var x := (float(i)-1.0)*.065
@@ -591,6 +575,62 @@ func start_found_meal(key: String,dirty: bool) -> bool:
 	business._notify("Comida encontrada · E para comer" if dirty else "E para comer / beber")
 	return true
 
+func draw_home_plate(root: Node3D,ingredients: Array,bites: int = 3) -> void:
+	var plate := MeshInstance3D.new()
+	var plate_mesh := CylinderMesh.new()
+	plate_mesh.top_radius = .137
+	plate_mesh.bottom_radius = .112
+	plate_mesh.height = .018
+	plate.mesh = plate_mesh
+	plate.material_override = business._mat(Color("#eee8d8"))
+	root.add_child(plate)
+	for i in range(clampi(bites,0,3)):
+		if "arroz" in ingredients:
+			var rice := MeshInstance3D.new()
+			var mound := SphereMesh.new()
+			mound.radius = .048
+			mound.height = .035
+			mound.radial_segments = 12
+			mound.rings = 5
+			rice.mesh = mound
+			rice.material_override = business._mat(Color("#eee5c9"))
+			root.add_child(rice)
+			rice.position = Vector3(-.045,.024,(float(i)-1.0)*.050)
+		if "carne" in ingredients:
+			var meat: MeshInstance3D = business._box(root,Vector3(.055,.025,(float(i)-1.0)*.046),Vector3(.065,.030,.042),Color("#805034"))
+			meat.rotation.y = float(i)*.30
+		if "huevo" in ingredients:
+			var white := MeshInstance3D.new()
+			var egg := SphereMesh.new()
+			egg.radius = .044
+			egg.height = .012
+			egg.radial_segments = 12
+			egg.rings = 4
+			white.mesh = egg
+			white.material_override = business._mat(Color("#f0e8d7"))
+			root.add_child(white)
+			white.position = Vector3(.055,.021,(float(i)-1.0)*.044)
+			var yolk := MeshInstance3D.new()
+			var yolk_mesh := SphereMesh.new()
+			yolk_mesh.radius = .020
+			yolk_mesh.height = .014
+			yolk_mesh.radial_segments = 10
+			yolk_mesh.rings = 4
+			yolk.mesh = yolk_mesh
+			yolk.material_override = business._mat(Color("#e6a72b"))
+			white.add_child(yolk)
+			yolk.position.y = .008
+
+func start_home_plate(ingredients: Array) -> bool:
+	if ingredients.is_empty() or not state.meal.is_empty() or not ledger.carry.is_empty(): return false
+	var fill := 0
+	if "arroz" in ingredients: fill += 36
+	if "carne" in ingredients: fill += 35
+	if "huevo" in ingredients: fill += 24
+	state.meal = {"key":"plato_casero","ingredients":ingredients.duplicate(),"fill":fill,"food_bites":3,"drink_sips":0}
+	_refresh_meal()
+	return true
+
 func start_home_rice() -> bool:
 	if not state.meal.is_empty() or not ledger.carry.is_empty(): return false
 	state.meal = {"key":"arroz_casero","food_bites":3,"drink_sips":0}
@@ -609,10 +649,10 @@ func _eat() -> void:
 func _finish_bite() -> void:
 	var meal: Dictionary = state.meal
 	var key := String(meal.get("key",""))
-	if not MENU.has(key) and key!="arroz_casero":
+	if not MENU.has(key) and key not in ["arroz_casero","plato_casero"]:
 		active_hand = -1
 		return
-	var item: Dictionary = {"food":"arroz","drink":"","fill":36} if key=="arroz_casero" else MENU[key]
+	var item: Dictionary = {"food":"arroz","drink":"","fill":int(meal.get("fill",36))} if key in ["arroz_casero","plato_casero"] else MENU[key]
 	var portions := 6.0 if not String(item.food).is_empty() and not String(item.drink).is_empty() else 3.0
 	var gain := float(item.fill)/portions
 	if active_hand==0:
