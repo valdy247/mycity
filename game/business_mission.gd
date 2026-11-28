@@ -1137,7 +1137,10 @@ func open_phone_home() -> void:
 	if life!=null: _phone_tile(apps,"Contactos",life.open_contacts,"contact",Color("#3d6dba"))
 	if life!=null: _phone_tile(apps,"Alarma",life.open_alarm,"clock",Color("#786aa5"))
 	_phone_tile(apps,"Mi negocio",open_business_summary,"business",Color("#b77a38"))
-	if carlos_call.is_valid() and int(ledger.life_data.get("carlos_paint",{}).get("stage",0))>0:
+	# Keep a manual callback available even if the automatic incoming call
+	# has not fired yet; Carlos checks the investment prerequisite himself.
+	var adaptation: Dictionary = ledger.life_data.get("adaptation",{})
+	if carlos_call.is_valid() and (ledger.stage==4 or bool(adaptation.get("investment_complete",false)) or int(ledger.life_data.get("carlos_paint",{}).get("stage",0))>0):
 		_phone_tile(apps,"Carlos",carlos_call,"contact",Color("#457e91"))
 	if yordi_call.is_valid() and int(ledger.life_data.get("yordi_ps5",{}).get("stage",0))>0:
 		_phone_tile(apps,"Yordi",yordi_call,"contact",Color("#527699"))
