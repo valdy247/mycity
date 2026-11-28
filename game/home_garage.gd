@@ -327,8 +327,8 @@ func _build_interior() -> void:
 	interior = Node3D.new()
 	add_child(interior)
 	interior.position = ROOM
-	var floor_color := Color("#b8ada1")
-	var wall := Color("#e0d8c5")
+	var floor_color := Color("#c6bba7") if game.adaptation_mode else Color("#b8ada1")
+	var wall := Color("#e6dfc9") if game.adaptation_mode else Color("#e0d8c5")
 	_solid(interior,Vector3(0,-.10,0),Vector3(14,.20,12),floor_color,2)
 	_solid(interior,Vector3(0,3.05,0),Vector3(14,.18,12),wall)
 	_home_wall("west",Vector3(-6.9,1.5,0),Vector3(.2,3.0,12),wall,true,false)
@@ -351,8 +351,8 @@ func _build_interior() -> void:
 		interior.add_child(light)
 		light.position = Vector3(float(x),2.7,0)
 		light.omni_range = 10.0
-		light.light_energy = 1.6
-		light.light_color = Color("#fff0db")
+		light.light_energy = 1.15 if game.adaptation_mode else 1.6
+		light.light_color = Color("#fff1dc")
 		light.omni_attenuation = 1.1
 	marker = Node3D.new()
 	interior.add_child(marker)
@@ -370,6 +370,7 @@ func _build_interior() -> void:
 	_build_waste()
 	_refresh_paint_station()
 	for id in FURNITURE: _refresh_furniture(String(id))
+	if game.adaptation_mode: _decorate_rental_home()
 	_refresh_preview()
 
 # The city and interior are separate rooms; the door remains a logical
@@ -395,11 +396,250 @@ func _refresh_furniture(id: String) -> void:
 	var body := _solid(interior,Vector3(float(p[0]),size.y*.5,float(p[2])),size,spec.color)
 	body.set_meta("furniture_id",id)
 	furniture_nodes[id] = body
+	if game.adaptation_mode:
+		# Keep the original collision proxy, furniture ID and saved position.
+		# Only its rendered shell is replaced by the detailed model.
+		var old_visual := body.get_child(0) as MeshInstance3D
+		if old_visual!=null: old_visual.hide()
+		_model_rental_furniture(body,id,size)
+		return
 	if id=="sofa":
 		business._box(body,Vector3(0,.48,-.30),Vector3(1.90,.63,.22),spec.color)
 	elif id=="cama":
 		business._box(body,Vector3(0,.29,0),Vector3(1.42,.16,1.94),Color("#e4e1d9"))
 		business._box(body,Vector3(0,.42,-.68),Vector3(.70,.16,.40),Color("#f2eee5"))
+
+# Rental decoration is deliberately inexpensive-looking. All furniture
+# visuals are built locally; no assets, money, inventory or missions are granted.
+func _rental_part(parent: Node3D,at: Vector3,size: Vector3,paint: Color) -> MeshInstance3D:
+	return business._box(parent,at,size,paint) as MeshInstance3D
+
+func _rental_round(parent: Node3D,at: Vector3,size: Vector3,paint: Color) -> MeshInstance3D:
+	var mesh := SphereMesh.new()
+	mesh.radius = .5
+	mesh.height = 1.0
+	mesh.radial_segments = 12
+	mesh.rings = 6
+	var part := MeshInstance3D.new()
+	part.mesh = mesh
+	part.material_override = business._mat(paint)
+	part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	parent.add_child(part)
+	part.position = at
+	part.scale = size
+	return part
+
+func _rental_cylinder(parent: Node3D,at: Vector3,radius: float,height: float,paint: Color) -> MeshInstance3D:
+	var mesh := CylinderMesh.new()
+	mesh.top_radius = radius
+	mesh.bottom_radius = radius
+	mesh.height = height
+	mesh.radial_segments = 16
+	var part := MeshInstance3D.new()
+	part.mesh = mesh
+	part.material_override = business._mat(paint)
+	part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	parent.add_child(part)
+	part.position = at
+	return part
+
+func _rental_root(parent: Node3D,at: Vector3,angle: float=0.0) -> Node3D:
+	var root := Node3D.new()
+	parent.add_child(root)
+	root.position = at
+	root.rotation.y = angle
+	return root
+
+func _model_rental_furniture(body: StaticBody3D,id: String,size: Vector3) -> void:
+	var root := _rental_root(body,Vector3(0,-size.y*.5,0))
+	var wood := Color("#77563e")
+	var dark := Color("#554233")
+	var cloth := Color("#9f8b72")
+	match id:
+		"sofa":
+			# Worn fabric and a visible wooden base, separate seat and back cushions.
+			_rental_part(root,Vector3(0,.24,0),Vector3(1.84,.24,.77),wood)
+			for x in [-.76,.76]:
+				for z in [-.30,.30]:
+					_rental_part(root,Vector3(float(x),.085,float(z)),Vector3(.11,.17,.11),dark)
+			for x in [-.40,.40]:
+				_rental_round(root,Vector3(float(x),.40,.065),Vector3(.79,.25,.67),cloth)
+				_rental_round(root,Vector3(float(x),.65,-.30),Vector3(.80,.64,.25),cloth.lightened(.055))
+			for x in [-.84,.84]:
+				_rental_round(root,Vector3(float(x),.47,.02),Vector3(.20,.32,.79),cloth.darkened(.10))
+			_rental_round(root,Vector3(-.63,.65,-.14),Vector3(.33,.33,.16),Color("#788477")).rotation.z = -.22
+			_rental_round(root,Vector3(.58,.65,-.15),Vector3(.30,.31,.16),Color("#ad7961")).rotation.z = .18
+		"mesa":
+			_rental_part(root,Vector3(0,.705,0),Vector3(1.20,.09,.80),wood)
+			_rental_part(root,Vector3(0,.61,0),Vector3(1.03,.14,.63),dark)
+			for x in [-.48,.48]:
+				for z in [-.28,.28]:
+					_rental_part(root,Vector3(float(x),.32,float(z)),Vector3(.075,.64,.075),wood)
+			_rental_part(root,Vector3(0,.756,0),Vector3(.36,.012,.67),Color("#d5c3a6"))
+			_rental_cylinder(root,Vector3(.14,.795,-.08),.085,.07,Color("#d7d9ce"))
+			_rental_cylinder(root,Vector3(.14,.836,-.08),.06,.015,Color("#8d715b"))
+		"cama":
+			_rental_part(root,Vector3(0,.20,0),Vector3(1.5,.26,2.0),wood)
+			for x in [-.62,.62]:
+				for z in [-.87,.87]:
+					_rental_part(root,Vector3(float(x),.065,float(z)),Vector3(.09,.13,.09),dark)
+			_rental_part(root,Vector3(0,.37,0),Vector3(1.45,.19,1.94),Color("#d9d5c7"))
+			_rental_part(root,Vector3(0,.49,.31),Vector3(1.46,.06,1.29),Color("#819b9c"))
+			_rental_part(root,Vector3(0,.53,-.28),Vector3(1.46,.045,.18),Color("#a7b8b4"))
+			for x in [-.35,.35]:
+				_rental_round(root,Vector3(float(x),.55,-.68),Vector3(.62,.18,.40),Color("#eee9d8"))
+			_rental_part(root,Vector3(0,.53,-.95),Vector3(1.50,.87,.085),wood)
+			for x in [-.69,.69]:
+				_rental_part(root,Vector3(float(x),.54,-.95),Vector3(.09,1.04,.12),dark)
+		"armario":
+			_rental_part(root,Vector3(0,.99,0),Vector3(.95,1.82,.50),wood)
+			_rental_part(root,Vector3(0,.10,0),Vector3(.94,.13,.49),dark)
+			_rental_part(root,Vector3(0,1.89,0),Vector3(1.00,.065,.54),dark)
+			for x in [-.231,.231]:
+				_rental_part(root,Vector3(float(x),1.05,.257),Vector3(.438,1.65,.035),wood.lightened(.075))
+				_rental_part(root,Vector3(float(x),1.05,.28),Vector3(.33,1.45,.025),wood.lightened(.12))
+				_rental_part(root,Vector3(float(x)*.25,1.02,.31),Vector3(.035,.16,.04),Color("#bca985"))
+			_rental_part(root,Vector3(0,.20,.26),Vector3(.86,.17,.045),dark)
+
+func _rental_window(parent: Node3D,at: Vector3,angle: float,width: float) -> void:
+	# The house interior is a separate scene volume. A luminous frosted
+	# jalousie creates believable daylight without exposing the city below.
+	var root := _rental_root(parent,at,angle)
+	_rental_part(root,Vector3.ZERO,Vector3(width+.14,1.28,.11),Color("#b8ae92"))
+	var pane := _rental_part(root,Vector3(0,0,.068),Vector3(width,1.13,.045),Color("#b9cbd0"))
+	var daylight := StandardMaterial3D.new()
+	daylight.albedo_color = Color("#c8d6d7")
+	daylight.emission_enabled = true
+	daylight.emission = Color("#a1bcc3")
+	daylight.emission_energy_multiplier = .38
+	pane.material_override = daylight
+	for i in range(8):
+		var slat := _rental_part(root,Vector3(0,-.49+float(i)*.14,.112),Vector3(width,.115,.047),Color("#b5c5c3"))
+		slat.rotation.x = -.30
+	for x in [-width*.5,width*.5,0.0]:
+		_rental_part(root,Vector3(float(x),0,.14),Vector3(.042,1.17,.06),Color("#66797a"))
+	_rental_part(root,Vector3(0,-.66,.17),Vector3(width+.23,.065,.28),Color("#b9af98"))
+	_rental_part(root,Vector3(0,.74,.24),Vector3(width+.48,.045,.05),Color("#78634f"))
+	for side in [-1.0,1.0]:
+		for k in range(5):
+			var fold := _rental_part(root,Vector3(float(side)*(width*.5+.03-float(k)*.065),-.01,.22+float(k%2)*.045),Vector3(.085,1.46,.06),Color("#ded3bd").darkened(float(k%2)*.035))
+			fold.rotation.z = float(side)*.035
+
+func _rental_fixture(parent: Node3D,at: Vector3) -> void:
+	_rental_cylinder(parent,at+Vector3.UP*.08,.13,.07,Color("#aaa38e"))
+	var fixture := _rental_cylinder(parent,at,.19,.075,Color("#fff1d5"))
+	var glow := StandardMaterial3D.new()
+	glow.albedo_color = Color("#fff0d1")
+	glow.emission_enabled = true
+	glow.emission = Color("#fff0d1")
+	glow.emission_energy_multiplier = .75
+	fixture.material_override = glow
+
+func _rental_wall_frame(parent: Node3D,at: Vector3,angle: float,paint: Color) -> void:
+	var root := _rental_root(parent,at,angle)
+	_rental_part(root,Vector3.ZERO,Vector3(.44,.56,.045),Color("#76573e"))
+	_rental_part(root,Vector3(0,0,.028),Vector3(.37,.49,.018),Color("#e7ddc6"))
+	_rental_part(root,Vector3(0,-.04,.041),Vector3(.27,.26,.010),paint)
+	_rental_part(root,Vector3(0,-.095,.048),Vector3(.22,.09,.010),paint.darkened(.22))
+
+func _decorate_rental_home() -> void:
+	var decor := _rental_root(interior,Vector3.ZERO)
+	decor.name = "RentalHomeDetails"
+	var trim := Color("#948775")
+	# Skirting and ceiling coves stay outside the paint and floor-mark surfaces.
+	for x in [-6.76,6.76]:
+		_rental_part(decor,Vector3(float(x),.077,0),Vector3(.055,.15,11.6),trim)
+		_rental_part(decor,Vector3(float(x),2.93,0),Vector3(.07,.07,11.6),Color("#d2c8b3"))
+	_rental_part(decor,Vector3(0,.077,-5.76),Vector3(13.6,.15,.055),trim)
+	for seg in [Vector2(-4.01,5.42),Vector2(3.23,6.72)]:
+		_rental_part(decor,Vector3(seg.x,.077,5.76),Vector3(seg.y,.15,.055),trim)
+	_rental_part(decor,Vector3(0,2.93,-5.76),Vector3(13.6,.07,.07),Color("#d2c8b3"))
+	_rental_part(decor,Vector3(0,2.93,5.76),Vector3(13.6,.07,.07),Color("#d2c8b3"))
+	# The original doorway and suitcase drop point remain unobstructed.
+	for x in [-1.34,-.06]:
+		_rental_part(decor,Vector3(float(x),1.14,5.69),Vector3(.08,2.28,.12),Color("#8a7057"))
+	_rental_part(decor,Vector3(-.70,2.28,5.69),Vector3(1.36,.10,.12),Color("#8a7057"))
+	for x in [.18,.99]:
+		_rental_part(guest_door,Vector3(float(x),1.10,-.064),Vector3(.065,1.72,.035),Color("#83654f"))
+	for y in [.28,1.10,1.92]:
+		_rental_part(guest_door,Vector3(.60,float(y),-.064),Vector3(.87,.065,.035),Color("#83654f"))
+	# Simple jalousies, curtains and wall decoration, away from the doorway.
+	_rental_window(decor,Vector3(-6.76,1.83,1.50),PI*.5,1.60)
+	_rental_window(decor,Vector3(-4.45,1.78,-5.76),0.0,1.45)
+	_rental_window(decor,Vector3(6.76,2.0,-3.40),-PI*.5,1.70)
+	_rental_wall_frame(decor,Vector3(-3.4,1.9,-2.18),0.0,Color("#8b9e8b"))
+	_rental_wall_frame(decor,Vector3(-2.72,1.9,-2.18),0.0,Color("#b59872"))
+	# A low woven mat under the living-room area, below the existing
+	# sweepable floor overlay at y=.036.
+	_rental_part(decor,Vector3(-4.45,.012,2.33),Vector3(2.68,.020,2.40),Color("#a49a84"))
+	for i in range(12):
+		_rental_part(decor,Vector3(-4.45,.025,1.24+float(i)*.198),Vector3(2.58,.007,.055),Color("#807968").lightened(float(i%3)*.05))
+	# Fixed kitchen counter against west wall, leaving the existing
+	# refrigerator at (-5.8, 3.6) and all paths to it intact.
+	var kitchen := _rental_root(decor,Vector3(-6.34,0,-.65),PI*.5)
+	_solid(kitchen,Vector3(0,.44,0),Vector3(2.0,.88,.66),Color("#a39b82"))
+	_rental_part(kitchen,Vector3(0,.91,0),Vector3(2.08,.09,.72),Color("#777d76"))
+	for x in [-.65,0.0,.65]:
+		_rental_part(kitchen,Vector3(float(x),.46,.345),Vector3(.59,.66,.05),Color("#c9bda1"))
+		_rental_part(kitchen,Vector3(float(x),.68,.38),Vector3(.17,.033,.035),Color("#77756a"))
+	_rental_part(kitchen,Vector3(-.54,.963,0),Vector3(.61,.022,.47),Color("#b4bfc0"))
+	_rental_part(kitchen,Vector3(-.54,.98,0),Vector3(.47,.018,.34),Color("#596669"))
+	_rental_cylinder(kitchen,Vector3(-.54,1.07,-.25),.027,.22,Color("#a9b5b5"))
+	_rental_part(kitchen,Vector3(-.54,1.18,-.16),Vector3(.052,.045,.19),Color("#a9b5b5"))
+	_rental_part(kitchen,Vector3(.55,.975,0),Vector3(.62,.06,.49),Color("#454947"))
+	for x in [.39,.69]:
+		for z in [-.12,.12]:
+			_rental_cylinder(kitchen,Vector3(float(x),1.02,float(z)),.10,.025,Color("#272b29"))
+	_rental_cylinder(kitchen,Vector3(.40,1.10,.12),.105,.16,Color("#8c9692"))
+	_rental_cylinder(kitchen,Vector3(.40,1.19,.12),.11,.025,Color("#bbc3bd"))
+	_rental_part(kitchen,Vector3(.58,1.13,.12),Vector3(.18,.04,.045),Color("#514b40"))
+	_rental_part(kitchen,Vector3(0,1.88,-.25),Vector3(1.95,.46,.26),Color("#bcb098"))
+	for x in [-.63,0.0,.63]:
+		_rental_part(kitchen,Vector3(float(x),1.88,-.10),Vector3(.60,.40,.04),Color("#cec3ac"))
+		_rental_part(kitchen,Vector3(float(x),1.76,-.07),Vector3(.12,.03,.035),Color("#726c5e"))
+	# Small CRT and stand along the south wall, outside the luggage area.
+	var tv := _rental_root(decor,Vector3(-4.65,0,5.44),PI)
+	_solid(tv,Vector3(0,.36,0),Vector3(1.25,.72,.44),Color("#78614a"))
+	_rental_part(tv,Vector3(0,.40,.23),Vector3(1.12,.46,.035),Color("#8b7155"))
+	_rental_part(tv,Vector3(0,.55,.26),Vector3(.18,.035,.04),Color("#b8a98b"))
+	_rental_part(tv,Vector3(0,.98,0),Vector3(.61,.49,.43),Color("#4c504c"))
+	_rental_round(tv,Vector3(-.055,.99,.226),Vector3(.43,.33,.06),Color("#666e69"))
+	_rental_cylinder(tv,Vector3(.24,.98,.233),.045,.034,Color("#b4b0a0")).rotation.x = PI*.5
+	for i in range(4):
+		_rental_part(tv,Vector3(.24,.87+float(i)*.021,.24),Vector3(.07,.008,.01),Color("#242a28"))
+	# Bedside shelf and small lamp do not alter the movable bed.
+	var bedside := _rental_root(decor,Vector3(-6.40,0,-4.60))
+	_solid(bedside,Vector3(0,.31,0),Vector3(.54,.62,.46),Color("#82694e"))
+	_rental_part(bedside,Vector3(0,.39,.24),Vector3(.45,.20,.035),Color("#9b8062"))
+	_rental_part(bedside,Vector3(0,.40,.27),Vector3(.14,.04,.04),Color("#c4b18f"))
+	_rental_cylinder(bedside,Vector3(0,.65,0),.11,.045,Color("#81715b"))
+	_rental_cylinder(bedside,Vector3(0,.79,0),.025,.24,Color("#81715b"))
+	_rental_round(bedside,Vector3(0,.95,0),Vector3(.34,.29,.34),Color("#e2cba3"))
+	# Domestic light fixtures and a third light in the formerly dark bedroom.
+	for at in [Vector3(-3.7,2.88,1.2),Vector3(3.7,2.88,0),Vector3(-3.9,2.88,-4.0)]:
+		_rental_fixture(decor,at)
+	var bedroom_light := OmniLight3D.new()
+	decor.add_child(bedroom_light)
+	bedroom_light.position = Vector3(-3.9,2.65,-4.0)
+	bedroom_light.light_color = Color("#fff0db")
+	bedroom_light.light_energy = .85
+	bedroom_light.omni_range = 5.0
+	bedroom_light.omni_attenuation = 1.25
+	# Garage remains a usable workspace; only wall storage is decorative.
+	var storage := _rental_root(decor,Vector3(6.43,0,-.5),-PI*.5)
+	_rental_part(storage,Vector3(0,1.67,-.19),Vector3(2.2,.72,.04),Color("#9b8c70"))
+	for y in [1.38,1.78]:
+		_rental_part(storage,Vector3(0,float(y),0),Vector3(2.2,.07,.36),Color("#79694e"))
+	for x in [-.76,0.0,.76]:
+		_rental_part(storage,Vector3(float(x),1.55,0),Vector3(.22,.22,.23),Color("#a09b86"))
+	for x in [-.64,.64]:
+		_rental_part(storage,Vector3(float(x),1.19,-.15),Vector3(.055,.31,.05),Color("#515c5b"))
+	# Clock uses fixed decorative hands, not a simulated time display.
+	var clock := _rental_root(decor,Vector3(-.20,2.37,3.00),-PI*.5)
+	_rental_cylinder(clock,Vector3.ZERO,.20,.05,Color("#765c45")).rotation.x = PI*.5
+	_rental_cylinder(clock,Vector3(0,0,.033),.177,.025,Color("#e8e2d1")).rotation.x = PI*.5
+	_rental_part(clock,Vector3(.035,.025,.055),Vector3(.11,.016,.009),Color("#44423a")).rotation.z = .65
+	_rental_part(clock,Vector3(0,.058,.055),Vector3(.014,.13,.009),Color("#44423a")).rotation.z = -.25
 
 func _refresh_carried() -> void:
 	if carried_view==null: return
