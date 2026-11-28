@@ -187,8 +187,8 @@ func _build_infrastructure_now() -> void:
 	var wear := RoadWear.new()
 	add_child(wear)
 	wear.build(geography,street_geometry)
-	_make_corner_plaques()
 	_make_utility_network()
+	_make_corner_plaques()
 	infrastructure_ready = true
 
 func _build_late_infrastructure() -> void:
@@ -214,10 +214,10 @@ func prepare_exit_infrastructure() -> void:
 	wear.build(geography,street_geometry)
 	await get_tree().process_frame
 	if not is_inside_tree(): return
-	_make_corner_plaques()
+	_make_utility_network()
 	await get_tree().process_frame
 	if not is_inside_tree(): return
-	_make_utility_network()
+	_make_corner_plaques()
 	if not is_inside_tree(): return
 	_flush_city_boxes()
 	var controller = get_parent()
@@ -3372,6 +3372,7 @@ func _make_corner_plaques() -> void:
 	var white := _mat("street_plaque_white",Color("#e8e9e5"))
 	var black := _mat("street_plaque_border",Color("#151f2b"))
 	var concrete := _mat("street_plaque_post",Color("#797c72"))
+	var placed: Dictionary = {}
 	for node_id in geography.junctions:
 		var incident: Array = geography.junctions[node_id]
 		var unique: Dictionary = {}
@@ -3400,28 +3401,51 @@ func _make_corner_plaques() -> void:
 				# freestanding support on the verified sidewalk instead.
 				var pos := p
 				var normal := -outward
-				var q := Vector2(pos.x,pos.z)
-				var tiny := PackedVector2Array([q-Vector2(.08,.08),q+Vector2(.08,-.08),q+Vector2(.08,.08),q+Vector2(-.08,.08)])
-				var sidewalk := false
-				for poly in street_geometry.near(street_geometry.protected_index,tiny):
-					if Geometry2D.is_point_in_polygon(q,poly):
-						sidewalk = true
-						break
-				if not sidewalk: continue
+				var width := clampf(float(label.length())*.105+.27,.68,2.15)
+				var found := false
+				for shift in [0.0,1.1,-1.1,2.2,-2.2,3.3,-3.3]:
+					var candidate: Vector3 = p+d*float(shift)
+					if not _street_clear(candidate,.10) or not _utility_open(candidate): continue
+					var q := Vector2(candidate.x,candidate.z)
+					var tiny := PackedVector2Array([q-Vector2(.08,.08),q+Vector2(.08,-.08),q+Vector2(.08,.08),q+Vector2(-.08,.08)])
+					var sidewalk := false
+					for poly in street_geometry.near(street_geometry.protected_index,tiny):
+						if Geometry2D.is_point_in_polygon(q,poly):
+							sidewalk = true
+							break
+					if not sidewalk: continue
+					var clear := true
+					for id in _utility_near(candidate,2.5):
+						var pole: Vector3 = utility_poles[int(id)].p
+						if candidate.distance_to(pole)<width*.5+.32: clear = false
+					var cell := Vector2i(floori(candidate.x/2.0),floori(candidate.z/2.0))
+					for ix in range(-1,2):
+						for iz in range(-1,2):
+							for old in placed.get(cell+Vector2i(ix,iz),[]):
+								if candidate.distance_to(Vector3(old))<1.65: clear = false
+					if not clear: continue
+					pos = candidate
+					if not placed.has(cell): placed[cell] = []
+					placed[cell].append(pos)
+					found = true
+					break
+				if not found: continue
 				var key := label+":"+str(Vector2i(roundi(pos.x/2.0),roundi(pos.z/2.0)))
 				if done.has(key): continue
 				done[key] = true
 				var angle := atan2(normal.x,normal.z)
-				var width := clampf(float(label.length())*.105+.27,.68,2.15)
-				_cube(pos+Vector3.UP*1.28,Vector3(.09,2.56,.09),concrete,angle)
 				var y := 2.48
-				# Both faces are readable, and neither exposes a blank black back.
+				# Opaque solid-backed sign, with the support ending under the plate.
+				_cube(pos+Vector3.UP*1.17,Vector3(.09,2.34,.09),concrete,angle)
+				_cube(pos+Vector3.UP*y,Vector3(width,.31,.085),black,angle)
 				for side in [-1.0,1.0]:
 					var facing := normal*float(side)
-					_plaque_layer(pos+Vector3.UP*y+facing*.060,facing,width,.31,black)
-					_plaque_layer(pos+Vector3.UP*y+facing*.073,facing,width-.085,.235,white)
-					var plate := _label(label,pos+Vector3.UP*y+facing*.090,minf(.0038,(width-.13)/(float(label.length())*29.0)),atan2(facing.x,facing.z),Color("#151d28"))
+					_cube(pos+Vector3.UP*y+facing*.047,Vector3(width-.085,.235,.014),white,angle)
+					var plate := _label(label,pos+Vector3.UP*y+facing*.060,minf(.0038,(width-.13)/(float(label.length())*29.0)),atan2(facing.x,facing.z),Color("#151d28"))
 					plate.outline_size = 0
+					plate.double_sided = false
+					plate.no_depth_test = false
+					plate.alpha_cut = Label3D.ALPHA_CUT_DISCARD
 				plaque_count += 1
 
 func _local_cube(c: Vector3,basis: Basis,p: Vector3,size: Vector3,material: StandardMaterial3D,solid: bool = false) -> void:
