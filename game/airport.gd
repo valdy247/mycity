@@ -3,6 +3,7 @@ extends Node3D
 # Geometry is procedural, not a measured terminal survey; the city is not loaded.
 const Progress = preload("res://airport_progress.gd")
 const WarmMap = preload("res://pilar_map.gd")
+const MapCache = preload("res://city_map_cache.gd")
 const WarmStreets = preload("res://street_geometry.gd")
 const WarmStreetSurfaces = preload("res://city_street_mesh_data.gd")
 const WarmTextures = preload("res://havana_textures.gd")
@@ -1976,21 +1977,16 @@ func _interact() -> void:
 # texture, rendering-server or physics-space access occurs on this thread.
 static func _warm_city_map() -> Dictionary:
 	var started := Time.get_ticks_msec()
-	var geo := WarmMap.new()
-	if not geo.load_map(): return {}
-	var market: Dictionary = geo.market_street_block(geo.project(23.1234716,-82.3659728))
-	if not market.is_empty(): geo.remove_market_spurs(market)
-	var streets := WarmStreets.new()
-	streets.build(geo)
-	var topology_ms := Time.get_ticks_msec()-started
-	var surface_started := Time.get_ticks_msec()
-	var surfaces := WarmStreetSurfaces.prepare(streets)
-	var surface_ms := Time.get_ticks_msec()-surface_started
+	var prepared := MapCache.prepare()
+	if prepared.is_empty(): return {}
 	var texture_started := Time.get_ticks_msec()
 	var textures := WarmTextures.new()
 	var args := OS.get_cmdline_user_args()
 	textures.prepare_images(args.has("--medium-graphics") or args.has("--high-graphics"))
-	return {"geography":geo,"streets":streets,"market":market,"surfaces":surfaces,"textures":textures,"topology_ms":topology_ms,"surface_ms":surface_ms,"texture_ms":Time.get_ticks_msec()-texture_started,"ms":Time.get_ticks_msec()-started}
+	prepared["textures"] = textures
+	prepared["texture_ms"] = Time.get_ticks_msec()-texture_started
+	prepared["ms"] = Time.get_ticks_msec()-started
+	return prepared
 
 func _start_city_warmup() -> void:
 	if city_warm_started or OS.has_feature("web"): return
