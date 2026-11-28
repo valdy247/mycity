@@ -254,6 +254,25 @@ func _clear_target() -> void:
 	game.garage.state.gps = {}
 	game.taxis.set_garage_destination(Vector3.ZERO,"")
 
+# Local prerecorded dialogue; no network or runtime TTS required.
+const CALL_AUDIO_DIR := "res://audio/carlos/"
+const CALL_INTRO := [
+	["Carlos","Buen día, te estoy llamando de parte de Albertico. Me dijo que necesitabas buscar dinero.","carlos_intro",5.20],
+	["Tú","Oh, sí, bro, dime, ¿qué hay que hacer?","player_intro",2.80],
+	["Carlos","Mira, un vecino mío quiere pintar la casa y me hace falta una mano. ¿Estás dentro?","carlos_offer",5.04]
+]
+const CALL_YES := [
+	["Tú","De una, mándame tu ubicación.","player_yes",2.00],
+	["Carlos","¡Jajajaja! ¿Qué ubicación? Ya tú estás en Cuba. Coge por Esteve pa' arriba y dobla Flores. En la primera casa te voy a esperar afuera.","carlos_yes",7.92],
+	["Tú","Jajaja, dale, te veo ahora.","player_yes_end",2.56]
+]
+const CALL_NO := [
+	["Tú","Hermano, si algo más tarde te escribo porque estoy ocupado ahora.","player_no",3.92],
+	["Carlos","Oh, sí, está bien, me dices.","carlos_no",2.40],
+	["Tú","Dale.","player_no_end",0.56]
+]
+var call_generation := 0
+
 func open_call() -> void:
 	if _stage()==0: return
 	if _stage()!=1:
@@ -262,9 +281,54 @@ func open_call() -> void:
 			business._button("Confirmar la puerta de Carlos que estoy mirando",_confirm_home)
 		business._button("Cerrar",business.close)
 		return
-	business._open("Llamada entrante · Carlos","Asere, conseguí un trabajo pintando una casa cerca de la mía. ¿Vienes conmigo? Vivo en Flores, esquina Estévez.")
-	business._button("Sí, cuenta conmigo",_accept)
-	business._button("Ahora no",business.close)
+	_play_call(CALL_INTRO,0)
+
+func _play_call(lines: Array,decision: int) -> void:
+	if _stage()!=1: return
+	call_generation += 1
+	var generation := call_generation
+	business.phone_mode = true
+	business._open("Llamada · Carlos"," ")
+	if is_instance_valid(business.phone_ring): business.phone_ring.stop()
+	var subtitle := Label.new()
+	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	business.content.add_child(subtitle)
+	var voice := AudioStreamPlayer.new()
+	subtitle.add_child(voice)
+	subtitle.visibility_changed.connect(func():
+		if not subtitle.is_visible_in_tree(): voice.stop()
+	)
+	for entry in lines:
+		if generation!=call_generation or not is_instance_valid(subtitle) or not subtitle.is_visible_in_tree() or _stage()!=1: return
+		subtitle.text = String(entry[0])+": "+String(entry[1])
+		var path := CALL_AUDIO_DIR+String(entry[2])+".mp3"
+		var duration := float(entry[3])
+		if ResourceLoader.exists(path):
+			var clip := load(path) as AudioStream
+			if clip!=null:
+				voice.stream = clip
+				duration = maxf(.1,clip.get_length())
+				voice.play()
+		else:
+			# Readable subtitles remain available before the optional voice pack is installed.
+			duration = maxf(duration,2.0)
+		await get_tree().create_timer(duration+.25).timeout
+	if generation!=call_generation or not is_instance_valid(subtitle) or not subtitle.is_visible_in_tree() or _stage()!=1: return
+	voice.stop()
+	match decision:
+		0:
+			business._button("Sí",_call_yes)
+			business._button("No",_call_no)
+		1:
+			_accept()
+		2:
+			business.close()
+
+func _call_yes() -> void:
+	_play_call(CALL_YES,1)
+
+func _call_no() -> void:
+	_play_call(CALL_NO,2)
 
 # Local maps may differ in street spelling or doorway generation.
 # Let the player correct the exact house without changing the map itself.
@@ -298,7 +362,7 @@ func _confirm_home() -> void:
 
 func _accept() -> void:
 	state.stage = 2
-	business.ledger.add_message("Tú → Carlos","Sí, cuenta conmigo. Voy a buscarte.")
+	business.ledger.add_message("Tú → Carlos","Dale, te veo ahora.")
 	business.close()
 	_save()
 	if _locate():
