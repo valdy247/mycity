@@ -14,34 +14,82 @@ func configure(grip: Vector3,left: bool = false,under: bool = false) -> void:
 	skin.albedo_color = Color("#ba875f")
 	skin.roughness = .84
 	nails = StandardMaterial3D.new()
-	nails.albedo_color = Color("#cda38b")
-	nails.roughness = .62
+	nails.albedo_color = Color("#d3aa91")
+	nails.roughness = .65
 	fingers = Node3D.new()
 	add_child(fingers)
-	_oval(fingers,Vector3(side*.026,0,.012),Vector3(.072,.030,.086),skin)
-	_oval(fingers,Vector3(side*.047,-.002,.044),Vector3(.052,.033,.045),skin)
+	# Broad connected palm, knuckles and wrist. Fingers begin inside the
+	# palm and use continuous curved meshes rather than separated beads.
+	_oval(fingers,Vector3(side*.031,0,.002),Vector3(.077,.037,.088),skin)
+	_oval(fingers,Vector3(side*.058,-.002,.023),Vector3(.057,.035,.058),skin)
 	for i in range(4):
-		var z := -.030+float(i)*.020
-		var length: float = [.039,.047,.044,.034][i]
-		var knuckle := Node3D.new()
-		fingers.add_child(knuckle)
-		knuckle.position = Vector3(-side*.004,.002,z)
-		knuckle.rotation.z = side*(.10 if under else .34)
-		_oval(knuckle,Vector3(-side*length*.26,0,0),Vector3(length*.68,.019,.019),skin)
-		var tip := Node3D.new()
-		knuckle.add_child(tip)
-		tip.position.x = -side*length*.52
-		tip.rotation.z = side*(.12 if under else .68)
-		_oval(tip,Vector3(-side*length*.22,0,0),Vector3(length*.57,.017,.017),skin)
-		_oval(tip,Vector3(-side*length*.34,.007,0),Vector3(.013,.004,.012),nails)
-	var thumb := Node3D.new()
-	fingers.add_child(thumb)
-	thumb.position = Vector3(side*.028,.012,-.044)
-	thumb.rotation.y = side*.65
-	_oval(thumb,Vector3(-side*.012,.006,-.006),Vector3(.035,.025,.026),skin)
-	_oval(thumb,Vector3(-side*.031,.012,-.008),Vector3(.027,.020,.021),skin)
-	wrist = Vector3(side*.048,-.003,.048)
-	forearm = _oval(self,wrist,Vector3(.065,.059,.20),skin)
+		var z := -.030+float(i)*.019
+		var length: float = [.064,.073,.069,.055][i]
+		var bend := -.012 if under else -.023
+		var points: Array[Vector3] = [
+			Vector3(side*.015,.001,z),
+			Vector3(side*.002,.002,z),
+			Vector3(-side*length*.40,bend*.35,z),
+			Vector3(-side*length*.66,bend,z),
+			Vector3(-side*length*.70,bend-.008,z)]
+		var radii: Array[float] = [.012,.0115,.010,.008,.003]
+		_skin_tube(points,radii)
+		# A short nail stays on the distal segment instead of floating above it.
+		var nail := _oval(fingers,points[3]+Vector3(0,.006,0),Vector3(.012,.003,.011),nails)
+		nail.rotation.z = side*(.10 if under else .42)
+	var thumb_points: Array[Vector3] = [
+		Vector3(side*.045,.002,-.030),
+		Vector3(side*.030,.013,-.046),
+		Vector3(side*.006,.017,-.052),
+		Vector3(-side*.009,.013,-.042)]
+	var thumb_radii: Array[float] = [.016,.013,.011,.005]
+	_skin_tube(thumb_points,thumb_radii)
+	wrist = Vector3(side*.072,-.002,.028)
+	_oval(fingers,wrist,Vector3(.049,.034,.047),skin)
+	# Taper from wrist to elbow; use a dedicated segment instead of
+	# stretching a sphere across the entire screen.
+	var arm_mesh := CylinderMesh.new()
+	arm_mesh.top_radius = .023
+	arm_mesh.bottom_radius = .035
+	arm_mesh.height = 1.0
+	arm_mesh.radial_segments = 12
+	forearm = MeshInstance3D.new()
+	forearm.mesh = arm_mesh
+	forearm.material_override = skin
+	forearm.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(forearm)
+	forearm.position = wrist
+	forearm.hide()
+
+func _skin_tube(points: Array[Vector3],radii: Array[float]) -> void:
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var rings: Array[PackedVector3Array] = []
+	for i in range(points.size()):
+		var tangent := (points[mini(i+1,points.size()-1)]-points[maxi(i-1,0)]).normalized()
+		var axis := tangent.cross(Vector3.BACK).normalized()
+		var ring := PackedVector3Array()
+		for j in range(10):
+			var angle := TAU*float(j)/10.0
+			ring.append(points[i]+(axis*cos(angle)+Vector3.BACK*sin(angle))*radii[i])
+		rings.append(ring)
+	for i in range(rings.size()-1):
+		for j in range(10):
+			var k := (j+1)%10
+			for vertex in [rings[i][j],rings[i+1][j],rings[i][k],rings[i][k],rings[i+1][j],rings[i+1][k]]:
+				surface.add_vertex(vertex)
+	for j in range(10):
+		surface.add_vertex(points.back())
+		surface.add_vertex(rings.back()[j])
+		surface.add_vertex(rings.back()[(j+1)%10])
+	surface.generate_normals()
+	var mesh := MeshInstance3D.new()
+	mesh.mesh = surface.commit()
+	var material := skin.duplicate() as StandardMaterial3D
+	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mesh.material_override = material
+	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	fingers.add_child(mesh)
 
 func _oval(root: Node3D,at: Vector3,dimensions: Vector3,mat: StandardMaterial3D) -> MeshInstance3D:
 	var visual := MeshInstance3D.new()
@@ -101,14 +149,14 @@ func _physics_process(_delta: float) -> void:
 	if camera==null: return
 	var space := get_world_3d().direct_space_state
 	var wrist_world := to_global(wrist)
-	var grip_query := _sphere_query(to_global(Vector3(side*.024,0,.012)),.025,camera)
+	var grip_query := _sphere_query(to_global(Vector3(side*.032,0,.012)),.032,camera)
 	fingers.visible = space.intersect_shape(grip_query,1).is_empty()
 	var shoulder := camera.to_global(Vector3(side*.32,-.46,.03))
 	var direction := shoulder-wrist_world
 	if direction.length_squared()<.0001 or not fingers.visible:
 		forearm.hide()
 		return
-	var length := minf(direction.length(),.55)
+	var length := minf(direction.length(),.43)
 	var motion_query := _sphere_query(wrist_world,.027,camera)
 	if not space.intersect_shape(motion_query,1).is_empty():
 		forearm.hide()
@@ -119,6 +167,8 @@ func _physics_process(_delta: float) -> void:
 	forearm.visible = length>.025
 	if not forearm.visible: return
 	var end := wrist_world+direction.normalized()*length
-	forearm.global_position = wrist_world.lerp(end,.5)
-	forearm.look_at(end,Vector3.UP if absf(direction.normalized().y)<.97 else Vector3.RIGHT)
-	forearm.scale = Vector3(.065,.059,length)
+	var arm_axis := (wrist_world-end).normalized()
+	var arm_x := arm_axis.cross(Vector3.BACK if absf(arm_axis.z)<.95 else Vector3.RIGHT).normalized()
+	var arm_z := arm_x.cross(arm_axis).normalized()
+	var arm_basis := Basis(arm_x,arm_axis,arm_z).scaled_local(Vector3(1.0,length+.018,1.0))
+	forearm.global_transform = Transform3D(arm_basis,wrist_world.lerp(end,.5))
