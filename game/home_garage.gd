@@ -88,6 +88,29 @@ var dining_water_busy := false
 var dish_wash_hint: Label
 var dish_washing := false
 var dish_sponge: Node3D
+var bath_door: Node3D
+var bath_door_body: StaticBody3D
+var bath_door_target := 0.0
+var bath_door_moving := false
+var bath_sink: Node3D
+var bath_sink_body: StaticBody3D
+var bath_toilet: Node3D
+var bath_toilet_body: StaticBody3D
+var bath_water: MeshInstance3D
+var bath_bowl_water: MeshInstance3D
+var bath_hint: Label
+var bath_mode := ""
+var bath_seconds := 0.0
+var bath_return := Vector3.ZERO
+var bath_old_first := true
+var bath_old_yaw := 0.0
+var bath_old_pitch := 0.0
+var bath_wash_model: Node3D
+var bath_left_hand: Node3D
+var bath_right_hand: Node3D
+var bath_clock := -1.0
+var bath_warned := false
+var bath_flush_seconds := 0.0
 const HOME_PAN_TIME := {"carne":25.0,"huevo":12.0}
 var rental_storage_doors: Array[Dictionary] = []
 var rental_oil: Node3D
@@ -172,6 +195,7 @@ func setup(controller) -> void:
 	var life: Dictionary = business.ledger.life_data
 	if not life.has("garage"): life.garage = {}
 	state = life.garage
+	if not state.has("bathroom"): state.bathroom = {"door":PI*.5,"need":randf_range(12.0,25.0),"rate":randf_range(.28,.45),"hands_dirty":false,"flush":false}
 	if not state.has("rice_recipe"): state.rice_recipe = {"added":[],"remaining":0.0,"portions":0,"hand":"","lid":true,"stock":{"arroz":12,"sal":24,"aceite":24}}
 	# A restored game starts outside; return any kitchen utensil to its shelf.
 	state.rice_recipe.hand = ""
@@ -1042,10 +1066,12 @@ func _build_rental_bathroom() -> void:
 	_solid(root,Vector3(4.15,1.5,-5.26),Vector3(.13,3,.95),wall)
 	_solid(root,Vector3(4.15,1.5,-3.60),Vector3(.13,3,.50),wall)
 	_solid(root,Vector3(4.15,2.65,-4.42),Vector3(.15,.70,1.17),wall)
-	# Hinge at the north jamb, leaf open inside the bathroom along the north side.
-	var bath_door := _rental_root(root,Vector3(4.22,0,-4.78),PI*.5)
-	_rental_part(bath_door,Vector3(0,1.05,.43),Vector3(.065,2.10,.86),Color("#8a6d54"))
-	_rental_part(bath_door,Vector3(.052,1.03,.77),Vector3(.065,.045,.13),Color("#c9b27d"))
+	# Real colliding leaf, hinged inward. The player cannot walk through it.
+	bath_door = _rental_root(root,Vector3(4.22,0,-4.74),clampf(float(state.bathroom.door),0.0,PI*.5))
+	bath_door_target = bath_door.rotation.y
+	bath_door_body = _solid(bath_door,Vector3(0,1.06,.42),Vector3(.055,2.06,.84),Color("#8a6d54"))
+	for side in [-1.0,1.0]:
+		_rental_part(bath_door,Vector3(float(side)*.052,1.03,.73),Vector3(.065,.045,.13),Color("#c9b27d"))
 	_rental_part(root,Vector3(5.49,.025,-4.54),Vector3(2.52,.03,2.28),tile)
 	for x in range(7):
 		_rental_part(root,Vector3(4.25+float(x)*.39,.043,-4.54),Vector3(.016,.006,2.28),Color("#9ea9a4"))
@@ -1053,11 +1079,14 @@ func _build_rental_bathroom() -> void:
 		_rental_part(root,Vector3(5.48,.043,-5.60+float(z)*.40),Vector3(2.48,.006,.016),Color("#9ea9a4"))
 	# Basin against east wall, player stands at x=5.6 facing east.
 	var sink := _rental_root(root,Vector3(6.36,0,-4.42),-PI*.5)
-	_solid(sink,Vector3(0,.42,0),Vector3(.43,.84,.35),Color("#e5e3d7"))
+	bath_sink = sink
+	bath_sink_body = _solid(sink,Vector3(0,.42,0),Vector3(.43,.84,.35),Color("#e5e3d7"))
 	_rental_round(sink,Vector3(0,.88,.02),Vector3(.76,.22,.54),Color("#efeee6"))
 	_rental_round(sink,Vector3(0,.96,.065),Vector3(.49,.055,.34),Color("#99afb0"))
 	_rental_cylinder(sink,Vector3(0,1.02,-.18),.026,.14,Color("#a6b2b1"))
 	_rental_part(sink,Vector3(0,1.10,-.12),Vector3(.048,.045,.16),Color("#b0bdbd"))
+	bath_water = _rental_cylinder(sink,Vector3(0,1.01,-.045),.011,.145,Color("#a5c8d1"))
+	bath_water.hide()
 	_rental_part(sink,Vector3(0,1.64,-.31),Vector3(.58,.66,.05),Color("#8c8274"))
 	var mirror := _rental_part(sink,Vector3(0,1.64,-.277),Vector3(.50,.58,.012),Color("#a9c1c7"))
 	var mirror_mat := StandardMaterial3D.new()
@@ -1069,11 +1098,13 @@ func _build_rental_bathroom() -> void:
 	_rental_part(sink,Vector3(.28,1.10,-.10),Vector3(.018,.19,.018),Color("#cfbd80"))
 	_rental_part(sink,Vector3(.28,1.20,-.10),Vector3(.028,.055,.018),Color("#eee5d6"))
 	var toilet := _rental_root(root,Vector3(5.35,0,-5.27))
-	_solid(toilet,Vector3(0,.23,0),Vector3(.44,.46,.62),Color("#e5e2d8"))
+	bath_toilet = toilet
+	bath_toilet_body = _solid(toilet,Vector3(0,.23,0),Vector3(.44,.46,.62),Color("#e5e2d8"))
 	_rental_round(toilet,Vector3(0,.46,.08),Vector3(.52,.17,.66),Color("#f4f1e7"))
-	_rental_round(toilet,Vector3(0,.53,.09),Vector3(.35,.045,.43),Color("#a8b6b2"))
+	bath_bowl_water = _rental_round(toilet,Vector3(0,.53,.09),Vector3(.35,.045,.43),Color("#a8b6b2"))
 	_rental_part(toilet,Vector3(0,.72,-.26),Vector3(.46,.48,.22),Color("#efede2"))
 	_rental_part(toilet,Vector3(0,.98,-.26),Vector3(.48,.06,.25),Color("#f5f2e8"))
+	_rental_part(toilet,Vector3(.16,.87,-.13),Vector3(.075,.032,.035),Color("#a9b4b4"))
 	_rental_part(root,Vector3(5.35,1.33,-3.45),Vector3(.60,.05,.08),Color("#9caaa9"))
 	_rental_part(root,Vector3(5.35,1.12,-3.51),Vector3(.48,.45,.045),Color("#96a69c"))
 	_rental_fixture(root,Vector3(5.35,2.87,-4.45))
@@ -1085,6 +1116,210 @@ func _build_rental_bathroom() -> void:
 	light.light_color = Color("#fff1dd")
 	_register_room_light("baño",light)
 	_make_light_switch(root,"baño",Vector3(4.06,1.35,-3.75),-PI*.5)
+	_make_bath_hint()
+
+func _make_bath_hint() -> void:
+	bath_hint = Label.new()
+	business.layer.add_child(bath_hint)
+	bath_hint.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	bath_hint.offset_left = -310
+	bath_hint.offset_right = 310
+	bath_hint.offset_top = 115
+	bath_hint.offset_bottom = 145
+	bath_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	bath_hint.add_theme_font_size_override("font_size",17)
+	bath_hint.add_theme_color_override("font_color",Color("#e9e9cf"))
+	bath_hint.add_theme_color_override("font_outline_color",Color.BLACK)
+	bath_hint.add_theme_constant_override("outline_size",5)
+	bath_hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bath_hint.hide()
+
+func _bath_aim_body(body: StaticBody3D) -> bool:
+	if not is_instance_valid(body): return false
+	var cam: Camera3D = game.play_camera
+	var query := PhysicsRayQueryParameters3D.create(cam.global_position,cam.global_position-cam.global_basis.z*2.6,1|2|4|8|16|32)
+	query.exclude = [game.player.get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	return not hit.is_empty() and hit.collider==body
+
+func _bath_action() -> String:
+	if not inside or not game.adaptation_mode or not is_instance_valid(bath_door): return ""
+	if not bath_mode.is_empty(): return "[E] "+("Lavando las manos…" if bath_mode=="wash" else "Usando el baño…")
+	if _bath_aim_body(bath_door_body):
+		return "[E] "+("Cerrar puerta del baño" if bath_door.rotation.y>.12 else "Abrir puerta del baño")
+	if not _free_hands(): return ""
+	if _bath_aim_body(bath_toilet_body) or _aim_tool(bath_toilet,Vector3(0,.59,.03),Vector3(.27,.43,.34)):
+		if bool(state.bathroom.flush): return "[E] Descargar el inodoro"
+		return "[E] Usar el inodoro"
+	if _bath_aim_body(bath_sink_body) or _aim_tool(bath_sink,Vector3(0,1.02,.02),Vector3(.37,.16,.27)):
+		return "[E] Lavarse las manos"
+	return ""
+
+func _bath_interact() -> bool:
+	var action := _bath_action()
+	if action.is_empty(): return false
+	if not bath_mode.is_empty(): return true
+	if action.contains("puerta del baño"):
+		bath_door_target = 0.0 if bath_door.rotation.y>.12 else PI*.5
+		bath_door_moving = true
+	elif action=="[E] Descargar el inodoro":
+		state.bathroom.flush = false
+		bath_flush_seconds = 1.8
+		business._notify("Inodoro descargado. Lávate las manos en el lavamanos.")
+		_save()
+	elif action=="[E] Usar el inodoro":
+		if float(state.bathroom.need)<10.0:
+			business._notify("Todavía no necesitas ir al baño.")
+		else:
+			_start_bath_action("sit" if randf()<.40 else "stand")
+	elif action=="[E] Lavarse las manos":
+		_start_bath_action("wash")
+	return true
+
+func _bath_position_clear(at: Vector3,ignore: StaticBody3D = null) -> bool:
+	var actor: CharacterBody3D = game.player
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = game.player_shape.shape
+	q.transform = Transform3D(Basis.IDENTITY,at)
+	q.collision_mask = 1|4|8|16|32
+	var excluded: Array[RID] = [actor.get_rid()]
+	if is_instance_valid(ignore): excluded.append(ignore.get_rid())
+	q.exclude = excluded
+	return get_world_3d().direct_space_state.intersect_shape(q,1).is_empty()
+
+func _start_bath_action(mode: String) -> void:
+	if not bath_mode.is_empty() or not _free_hands(): return
+	var actor: CharacterBody3D = game.player
+	var target := bath_toilet.to_global(Vector3(0,.86,.83))
+	var heading := 0.0
+	var pitch := -.48
+	if mode=="wash":
+		target = bath_sink.to_global(Vector3(0,.86,.68))
+		heading = bath_sink.global_rotation.y
+		pitch = -.58
+	elif mode=="sit":
+		target = bath_toilet.to_global(Vector3(0,.72,.12))
+		heading = PI
+		pitch = -.13
+	var ignored: StaticBody3D = bath_toilet_body if mode=="sit" else null
+	if not _bath_position_clear(target,ignored) or actor.global_position.distance_to(target)>2.25:
+		business._notify("Acércate al baño y deja espacio libre.")
+		return
+	# Do not teleport across a closed door or other intervening solid.
+	var path := PhysicsRayQueryParameters3D.create(actor.global_position,target,1|4|8|16|32)
+	var excludes: Array[RID] = [actor.get_rid()]
+	if is_instance_valid(ignored): excludes.append(ignored.get_rid())
+	path.exclude = excludes
+	if not get_world_3d().direct_space_state.intersect_ray(path).is_empty():
+		business._notify("El acceso está bloqueado.")
+		return
+	bath_return = actor.global_position
+	bath_old_first = game.first_person
+	bath_old_yaw = game.yaw
+	bath_old_pitch = game.pitch
+	bath_mode = mode
+	bath_seconds = randf_range(7.0,10.0) if mode=="sit" else (randf_range(3.5,5.5) if mode=="stand" else 4.5)
+	actor.velocity = Vector3.ZERO
+	if mode=="sit": game.player_shape.set_deferred("disabled",true)
+	actor.global_position = target
+	game.first_person = true
+	game.yaw = heading
+	game.pitch = pitch
+	game.pivot.rotation = Vector3(pitch,heading,0)
+	game._apply_camera_mode()
+	if mode=="wash":
+		bath_water.show()
+		bath_wash_model = _rental_root(bath_sink,Vector3(0,1.015,.04))
+		bath_left_hand = _attach_interaction_hand(bath_wash_model,Vector3(-.055,0,.03),true,true)
+		bath_right_hand = _attach_interaction_hand(bath_wash_model,Vector3(.055,.027,.03))
+		bath_right_hand.rotation.z = PI*.88
+	business._notify("Lavándote las manos." if mode=="wash" else ("Usando el inodoro sentado." if mode=="sit" else "Usando el inodoro de pie."))
+
+func _finish_bath_action(completed: bool = true) -> void:
+	if bath_mode.is_empty(): return
+	var mode := bath_mode
+	bath_mode = ""
+	bath_seconds = 0.0
+	if is_instance_valid(bath_water): bath_water.hide()
+	if is_instance_valid(bath_wash_model): bath_wash_model.queue_free()
+	bath_wash_model = null
+	bath_left_hand = null
+	bath_right_hand = null
+	if mode=="sit":
+		game.player.global_position = bath_return
+		game.player_shape.set_deferred("disabled",false)
+	game.player.velocity = Vector3.ZERO
+	game.first_person = bath_old_first
+	game.yaw = bath_old_yaw
+	game.pitch = bath_old_pitch
+	game.pivot.rotation = Vector3(game.pitch,game.yaw,0)
+	game._apply_camera_mode()
+	if not completed: return
+	if mode=="wash":
+		state.bathroom.hands_dirty = false
+		business._notify("Manos limpias.")
+	else:
+		state.bathroom.need = 0.0
+		state.bathroom.rate = randf_range(.28,.45)
+		state.bathroom.hands_dirty = true
+		state.bathroom.flush = true
+		bath_warned = false
+		business._notify("Descarga el inodoro y lávate las manos.")
+	_save()
+
+func _tick_bathroom(delta: float) -> void:
+	if not game.adaptation_mode or not is_instance_valid(bath_door): return
+	var data: Dictionary = state.bathroom
+	var now := float(business.life.state.get("day",1))*1440.0+float(business.life.state.get("minutes",0.0))
+	if bath_clock>=0.0 and bath_mode not in ["sit","stand"]:
+		data.need = minf(100.0,float(data.need)+clampf(now-bath_clock,0.0,1440.0)*float(data.rate))
+	bath_clock = now
+	if float(data.need)>=80.0 and not bath_warned:
+		bath_warned = true
+		business._notify("Necesitas ir al baño pronto.")
+	if bath_door_moving:
+		var next := move_toward(bath_door.rotation.y,bath_door_target,delta*2.8)
+		var shape := BoxShape3D.new()
+		shape.size = Vector3(.060,1.99,.76)
+		var q := PhysicsShapeQueryParameters3D.new()
+		q.shape = shape
+		q.collision_mask = 1|4|8|16|32
+		q.exclude = [bath_door_body.get_rid()]
+		var parent: Node3D = bath_door.get_parent()
+		var pose := parent.global_transform*Transform3D(Basis(Vector3.UP,next),bath_door.position)
+		q.transform = Transform3D(pose.basis,pose*Vector3(0,1.06,.42))
+		if get_world_3d().direct_space_state.intersect_shape(q,1).is_empty():
+			bath_door.rotation.y = next
+			if absf(next-bath_door_target)<.005: bath_door_moving = false
+		else:
+			bath_door_moving = false
+			business._notify("Hay algo bloqueando la puerta del baño.")
+		if not bath_door_moving:
+			data.door = bath_door.rotation.y
+			_save()
+	if not bath_mode.is_empty():
+		if not inside or absf(game.player.global_position.y-ROOM.y)>12.0:
+			_finish_bath_action(false)
+		else:
+			bath_seconds = maxf(0.0,bath_seconds-delta)
+			if bath_mode=="wash" and is_instance_valid(bath_wash_model):
+				var wave := sin(bath_seconds*9.0)
+				bath_left_hand.position.z = .025+wave*.024
+				bath_right_hand.position.z = .025-wave*.024
+				bath_right_hand.rotation.x = wave*.22
+			if bath_seconds<=0.0: _finish_bath_action()
+	if bath_flush_seconds>0.0:
+		bath_flush_seconds = maxf(0.0,bath_flush_seconds-delta)
+		bath_bowl_water.scale.y = .045*(.5+.5*absf(sin(bath_flush_seconds*9.0))) if bath_flush_seconds>0.0 else .045
+	if is_instance_valid(bath_hint):
+		var hint := ""
+		if not business.modal_open():
+			if not bath_mode.is_empty(): hint = ("Lavando manos" if bath_mode=="wash" else "Usando el baño")+" · %d s" % ceili(bath_seconds)
+			elif inside and bool(data.flush): hint = "Descarga el inodoro · pulsa E mirando el inodoro"
+			elif inside and bool(data.hands_dirty): hint = "Lávate las manos · pulsa E mirando el lavamanos"
+			elif float(data.need)>=80.0: hint = "Necesitas ir al baño · %d%%" % roundi(float(data.need))
+		if bath_hint.text!=hint: bath_hint.text = hint
+		bath_hint.visible = not hint.is_empty()
 
 func _register_room_light(key: String,light: OmniLight3D) -> void:
 	if not home_room_lights.has(key): home_room_lights[key] = []
@@ -1258,6 +1493,7 @@ func _refresh_preview() -> void:
 	preview.visible = not owned.has(kind)
 
 func _free_hands() -> bool:
+	if not bath_mode.is_empty(): return false
 	if dining_seated or dining_water_busy or home_food_busy or not String(state.home_food.hand).is_empty(): return false
 	if coffee_busy or coffee_cleaning or bool(state.coffee_machine.rag_held) or bool(state.coffee_machine.replacement) or not String(state.rice_recipe.hand).is_empty(): return false
 	if business.first_story!=null and business.first_story.carrying_table(): return false
@@ -1295,6 +1531,7 @@ func _enter() -> void:
 	game._update_visual_lighting(true)
 
 func _exit() -> void:
+	if not bath_mode.is_empty(): return
 	if dining_seated:
 		_stand_from_dining()
 		return
@@ -1825,6 +2062,7 @@ func _physics_process(delta: float) -> void:
 	if not state.is_empty() and state.has("home_food"):
 		_tick_home_pan(delta)
 		_update_dish_hint()
+	if not state.is_empty() and state.has("bathroom"): _tick_bathroom(delta)
 
 func _tick_coffee_machine(delta: float) -> void:
 	if not is_instance_valid(coffee_pot): return
@@ -2917,6 +3155,8 @@ func action_text(at: Vector3) -> String:
 		var dining_action := _dining_action()
 		if not dining_action.is_empty(): return dining_action
 		if not business.life.state.meal.is_empty(): return "[E] Comer / beber"
+		var bath_action := _bath_action()
+		if not bath_action.is_empty(): return bath_action
 		if _home_exit_selected(at): return "[E] Salir de casa"
 		var coffee_action := _coffee_special_action()
 		if not coffee_action.is_empty(): return coffee_action
@@ -2959,6 +3199,7 @@ func interact(at: Vector3) -> bool:
 	if inside:
 		if _dining_interact(): return true
 		if not business.life.state.meal.is_empty(): return business.life.interact(at)
+		elif _bath_interact(): return true
 		elif _home_exit_selected(at):
 			_exit()
 		elif _coffee_special_interact(): pass
@@ -3470,6 +3711,7 @@ func _dismount(force: bool = false) -> void:
 	if borrowed and game.yordi_mission!=null: game.yordi_mission.on_manual_bike_exit(force)
 
 func reset() -> void:
+	if not bath_mode.is_empty(): _finish_bath_action(false)
 	if dining_seated: _stand_from_dining(true)
 	_stop_home_paint()
 	if riding: _dismount(true)
