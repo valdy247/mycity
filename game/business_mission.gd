@@ -73,6 +73,7 @@ var daily_blocked := 0.0
 var daily_anim := 0.0
 var daily_lift_from: Transform3D
 var daily_save_clock := 0.0
+var daily_folded_awning: Node3D
 const DAILY_OPEN_PREP := 405.0
 const DAILY_CLOSE := 1080.0
 const AUTO_UNLOAD_RADIUS := 18.0
@@ -1586,8 +1587,12 @@ func _daily_apply_packing() -> void:
 		"unpack": ratio = clampf(daily_anim/2.2,0.0,1.0)
 		"open","": ratio = 1.0
 		_: ratio = 0.0
-	stock_display.visible = ratio>.04
-	stock_display.scale = Vector3.ONE*maxf(.015,ratio)
+	# Move actual packages onto the lower shelf, retaining their size and stock.
+	stock_display.visible = true
+	stock_display.scale = Vector3.ONE
+	stock_display.position.y = -.60*(1.0-ratio)
+	if is_instance_valid(daily_folded_awning):
+		daily_folded_awning.visible = ratio<.50 and stall_tier(ledger.sold)>0
 	# The canopy's supports and awning fold down before carrying the table.
 	for group in stall_growth:
 		group.scale.y = maxf(.025,ratio)
@@ -1642,6 +1647,13 @@ func _daily_init() -> bool:
 	if is_instance_valid(controller.arrival_story) and not controller.arrival_story.has_meta("safe_investment_stall"): return false
 	if not _daily_find_home(): return false
 	daily_stall_pose = stand.global_transform
+	if not is_instance_valid(daily_folded_awning):
+		daily_folded_awning = Node3D.new()
+		stand.add_child(daily_folded_awning)
+		_box(daily_folded_awning,Vector3(0,.89,0),Vector3(1.28,.11,.30),Color("#638e77"))
+		for x in [-.38,.38]: _box(daily_folded_awning,Vector3(float(x),.90,0),Vector3(.035,.12,.32),Color("#e3d4b0"))
+		_box(daily_folded_awning,Vector3(0,.87,-.20),Vector3(1.35,.045,.045),Color("#554e42"))
+		daily_folded_awning.hide()
 	daily_seller_pos = first_story.original_actor
 	daily_seller_angle = first_story.original_angle
 	if daily_seller_pos.distance_to(daily_stall_pose.origin)>3.0:
