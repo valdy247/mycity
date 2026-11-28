@@ -2113,6 +2113,10 @@ func _physics_process(delta: float) -> void:
 	else:
 		var direction := Vector3(movement.x, 0, movement.y).normalized().rotated(Vector3.UP, yaw)
 		var speed: float = 8.0 if control_pressed(KEY_SHIFT) else 4.5
+		# Fatigue affects sprinting gently, never forces a sleep or blocks walking.
+		if adaptation_mode and control_pressed(KEY_SHIFT) and business!=null and business.life!=null:
+			var tired: float = float(business.life.state.get("fatigue",0.0))
+			speed *= lerpf(1.0,.78,smoothstep(70.0,100.0,tired))
 		if business!=null and business.first_story!=null and business.first_story.carrying_table(): speed = 2.1
 		if city_world != null and city_world.family_home != null and city_world.family_home.pool_inside:
 			speed = 2.0
