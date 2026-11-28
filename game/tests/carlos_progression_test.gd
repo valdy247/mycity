@@ -32,6 +32,21 @@ func _initialize() -> void:
 				if mission._covered(wall,x,y): continue
 				keys[mission._cell_key(wall,x,y)] = mission._required(wall)
 	_check(keys.size()==Mission.TOTAL,"four wall surfaces plus six door cells without double-counting")
+	# Carlos must keep working after the first wall, then leave two walls
+	# and the door for the player unless their colors need repair.
+	mission.state = {"painted":{}}
+	var worker_tiles := 0
+	var worker_walls: Dictionary = {}
+	for i in range(Mission.TOTAL):
+		var job := mission._worker_next()
+		if job.is_empty(): break
+		var wall := int(job.wall)
+		worker_walls[wall] = true
+		mission.state.painted[mission._cell_key(wall,int(job.x),int(job.y))] = job.color
+		worker_tiles += 1
+	_check(worker_walls.size()==2 and worker_walls.has(2) and worker_walls.has(0),"Carlos paints exactly two complete walls")
+	_check(worker_tiles==2*mission._columns(0)*mission._rows(0),"Carlos completes every cell of both assigned walls")
+	_check(mission._worker_next().is_empty(),"Carlos leaves unpainted remaining walls and door to player")
 	mission.state = {"painted":keys.duplicate()}
 	mission.correct_tiles = mission._correct_count()
 	_check(mission._finished(),"correct blue walls and yellow door permit payment")
