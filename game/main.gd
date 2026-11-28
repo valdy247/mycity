@@ -638,8 +638,17 @@ func _setup_visual_environment() -> void:
 
 # Match the existing simulation clock; lighting never changes its speed.
 # Rooms at y=110 have their own lights and must not inherit the outdoor night.
+func _update_player_draw_distance() -> void:
+	if not is_instance_valid(play_camera): return
+	# The rental interior is at y=110 and is only 14 x 12 m. Avoid rendering
+	# distant city geometry through its closed walls. Do not change world physics.
+	var in_rental: bool = is_instance_valid(garage) and garage.inside and is_instance_valid(player) and absf(player.global_position.y-110.0)<8.0
+	var distance := 38.0 if in_rental else (320.0 if low_graphics else (550.0 if graphics_quality==1 else 720.0))
+	if not is_equal_approx(play_camera.far,distance): play_camera.far = distance
+
 func _update_visual_lighting(force: bool = false) -> void:
 	if visual_environment==null or visual_sun==null: return
+	_update_player_draw_distance()
 	var minute := 480.0
 	if business!=null and business.life!=null:
 		minute = fposmod(float(business.life.state.get("minutes",480.0)),1440.0)
@@ -682,10 +691,13 @@ func _apply_performance_mode() -> void:
 	graphics_quality = clampi(graphics_quality,0,2)
 	low_graphics = graphics_quality==0
 	var window := get_window()
-	window.content_scale_mode = Window.CONTENT_SCALE_MODE_VIEWPORT
+	# Quality controls shadows and scene detail, never the output resolution.
+	# Canvas-items stretch keeps both HUD text and 3D at the window's native pixels.
+	window.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
 	window.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
-	window.content_scale_size = Vector2i(960,540) if low_graphics else Vector2i(1280,720)
-	play_camera.far = 320.0 if low_graphics else (550.0 if graphics_quality==1 else 720.0)
+	window.content_scale_size = Vector2i(1280,720)
+	window.scaling_3d_scale = 1.0
+	_update_player_draw_distance()
 	visual_sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS if graphics_quality==2 else DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
 	visual_sun.directional_shadow_max_distance = 105.0 if graphics_quality==2 else 55.0
 	if cuba_world!=null: cuba_world.set_graphics_quality(graphics_quality)
@@ -805,6 +817,7 @@ func _apply_camera_mode() -> void:
 		arm.spring_length = 0.0 if first_person else (2.15 if city_world != null and (city_world.inside_home or (city_world.bakery != null and city_world.bakery.inside) or (cuba_world != null and cuba_world.current_room>=0)) else 4.5)
 		pivot.position.y = .65
 	if garage!=null and garage.inside and not first_person: arm.spring_length = 2.0
+	_update_player_draw_distance()
 	if reticle != null:
 		reticle.visible = first_person and not driving and not building_mode and not (garage!=null and garage.riding)
 
