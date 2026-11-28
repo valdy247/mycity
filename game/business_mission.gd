@@ -70,6 +70,8 @@ var daily_path := PackedVector3Array()
 var daily_index := 0
 var daily_retry := 0.0
 var daily_blocked := 0.0
+var daily_no_progress := 0.0
+var daily_progress_anchor := Vector3.INF
 var daily_anim := 0.0
 var daily_lift_from: Transform3D
 var daily_save_clock := 0.0
@@ -1574,6 +1576,8 @@ func _daily_change(value: String) -> void:
 	daily_anim = 0.0
 	daily_retry = 0.0
 	daily_blocked = 0.0
+	daily_no_progress = 0.0
+	daily_progress_anchor = Vector3.INF
 	daily_path = PackedVector3Array()
 	daily_index = 0
 	_sync_visuals()
@@ -1737,6 +1741,29 @@ func _daily_walk(target: Vector3,delta: float) -> bool:
 	for arm in actor.arms: arm.rotation.x = -.95
 	return false
 
+# A wide folded stall can be unable to pass a narrow facade even when the
+# pedestrian route is valid. Recover the routine at its existing safe endpoints
+# rather than retrying forever or changing the player's inventory/progression.
+func _daily_recover(working: bool) -> bool:
+	if modal_open() or not auto_unload_id.is_empty() or (first_story!=null and not first_story.fetch_phase.is_empty()): return false
+	var actor := albertico as Person
+	if working:
+		var target := daily_seller_pos
+		if not target.is_finite() or not world.pedestrian_segment_clear(target,target): return false
+		if not world.pedestrian_space_clear(actor,target,.55,false): return false
+		actor.global_position = target
+		actor.rotation.y = daily_seller_angle
+		stand.global_transform = daily_stall_pose
+		actor.animate(.1,false)
+		_daily_change("open")
+	else:
+		if not daily_home_entry.is_finite(): return false
+		actor.global_position = daily_home_entry
+		stand.global_transform = daily_stall_pose
+		actor.animate(.1,false)
+		_daily_change("rest")
+	return true
+
 func _tick_albertico_daily(delta: float) -> void:
 	if not is_instance_valid(albertico) or not is_instance_valid(stand) or life==null: return
 	if daily_phase.is_empty():
@@ -1749,6 +1776,19 @@ func _tick_albertico_daily(delta: float) -> void:
 	var minute := float(life.state.get("minutes",480.0))
 	var working := minute>=DAILY_OPEN_PREP and minute<DAILY_CLOSE
 	daily_anim += delta
+	# Measure actual displacement, independent of route retries. Doorway
+	# collision and a missing path otherwise never reach a terminal phase.
+	if daily_phase in ["to_home","enter","leave","return"]:
+		if not daily_progress_anchor.is_finite() or actor.global_position.distance_to(daily_progress_anchor)>=.25:
+			daily_progress_anchor = actor.global_position
+			daily_no_progress = 0.0
+		else:
+			daily_no_progress += delta
+		if daily_no_progress>=12.0 or daily_anim>=90.0:
+			if _daily_recover(working): return
+			# Retry only once per second when the safe endpoint is occupied.
+			daily_no_progress = 11.0
+			daily_anim = minf(daily_anim,89.0)
 	daily_save_clock += delta
 	if daily_save_clock>=12.0 and daily_phase not in ["open","rest"]:
 		daily_save_clock = 0.0
