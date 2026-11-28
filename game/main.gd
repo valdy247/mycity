@@ -2185,9 +2185,22 @@ func _physics_process(delta: float) -> void:
 		var direction := Vector3(movement.x, 0, movement.y).normalized().rotated(Vector3.UP, yaw)
 		var speed: float = 8.0 if control_pressed(KEY_SHIFT) else 4.5
 		# Fatigue affects sprinting gently, never forces a sleep or blocks walking.
-		if adaptation_mode and control_pressed(KEY_SHIFT) and business!=null and business.life!=null:
-			var tired: float = float(business.life.state.get("fatigue",0.0))
-			speed *= lerpf(1.0,.78,smoothstep(70.0,100.0,tired))
+		if adaptation_mode and business!=null and business.life!=null:
+			var life_state: Dictionary = business.life.state
+			var tired := float(life_state.get("fatigue",0.0))
+			var fullness := float(life_state.get("fullness",100.0))
+			var sprinting := control_pressed(KEY_SHIFT)
+			if sprinting:
+				speed *= lerpf(1.0,.78,smoothstep(70.0,100.0,tired))
+				speed *= lerpf(.75,1.0,smoothstep(0.0,25.0,fullness))
+				if is_instance_valid(garage):
+					var urgency := float(garage.state.get("bathroom",{}).get("need",0.0))
+					speed *= lerpf(1.0,.85,smoothstep(85.0,100.0,urgency))
+				if direction.length_squared()>.01:
+					life_state.fatigue = minf(100.0,tired+delta*.06)
+					life_state.fullness = maxf(0.0,fullness-delta*.025)
+			if float(life_state.get("illness_minutes",0.0))>0.0: speed *= .90
+			if float(life_state.get("overfull_minutes",0.0))>0.0 and sprinting: speed *= .92
 		if business!=null and business.first_story!=null and business.first_story.carrying_table(): speed = 2.1
 		if city_world != null and city_world.family_home != null and city_world.family_home.pool_inside:
 			speed = 2.0
