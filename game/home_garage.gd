@@ -92,6 +92,18 @@ var coffee_heat: MeshInstance3D
 var coffee_stream: MeshInstance3D
 var coffee_steam: CPUParticles3D
 var coffee_phase := ""
+const COFFEE_REPLACEMENT_PRICE := 1200
+const COFFEE_SHUTOFF_SECONDS := 30.0
+var coffee_machine_audio: AudioStreamPlayer3D
+var coffee_ready_sound: AudioStreamWAV
+var coffee_burst_sound: AudioStreamWAV
+var coffee_alert_clock := 0.0
+var coffee_save_clock := 0.0
+var coffee_stains: Node3D
+var coffee_broken_prop: Node3D
+var coffee_rag: Node3D
+var coffee_cleaning := false
+var coffee_status_label: Label
 var wall_hour_hand: Node3D
 var wall_minute_hand: Node3D
 var bedside_lamp: Node3D
@@ -138,6 +150,8 @@ func setup(controller) -> void:
 	if not state.has("rice_recipe"): state.rice_recipe = {"added":[],"remaining":0.0,"portions":0,"hand":"","lid":true,"stock":{"arroz":12,"sal":24,"aceite":24}}
 	# A restored game starts outside; return any kitchen utensil to its shelf.
 	state.rice_recipe.hand = ""
+	if not state.has("coffee_machine"): state.coffee_machine = {"phase":"idle","remaining":0.0,"dirty":0,"rag_held":false,"replacement":false}
+	state.coffee_machine.rag_held = false
 	for key in {"house":false,"project":"", "projects":{},"inventory":{},"deliveries":[],"part":"","furniture":{},"held_furniture":"","parked":{},"trash":[]}.keys():
 		if not state.has(key):
 			var defaults := {"house":false,"project":"","projects":{},"inventory":{},"deliveries":[],"part":"","furniture":{},"held_furniture":"","parked":{},"trash":[]}
@@ -1060,6 +1074,14 @@ func _refresh_carried() -> void:
 			model.scale = Vector3.ONE*minf(.75,.85/maxf(size.x,maxf(size.y,size.z)))
 			model.rotation.y = -.25
 		else: business._box(carried_view,Vector3.ZERO,Vector3(.50,.36,.44),FURNITURE[id].color)
+	elif bool(state.coffee_machine.rag_held):
+		carried_view.position = Vector3(.29,-.37,-.52)
+		_draw_coffee_rag(carried_view)
+		_attach_interaction_hand(carried_view,Vector3(.065,0,.025))
+	elif bool(state.coffee_machine.replacement):
+		carried_view.position = Vector3(.30,-.36,-.65)
+		_draw_moka_model(carried_view,false)
+		_attach_interaction_hand(carried_view,Vector3(.122,.194,.025))
 	elif not String(state.rice_recipe.hand).is_empty():
 		carried_view.position = Vector3(.33,-.36,-.58)
 		var key := String(state.rice_recipe.hand)
@@ -1067,6 +1089,9 @@ func _refresh_carried() -> void:
 		_attach_interaction_hand(carried_view,Vector3(.066,.075,.025) if key in ["jarra","agua"] else Vector3(.045,.055,.025))
 	elif not state.get("waste_hand",{}).is_empty():
 		_make_waste_item(carried_view,state.waste_hand)
+		if String(state.waste_hand.get("kind",""))=="broken_coffee":
+			carried_view.position = Vector3(.30,-.39,-.65)
+			_attach_interaction_hand(carried_view,Vector3(.10,.05,.035))
 	elif not String(state.paint_carry).is_empty():
 		_make_paint_can(carried_view,String(state.paint_carry))
 	elif not String(state.part).is_empty():
@@ -1104,7 +1129,7 @@ func _refresh_preview() -> void:
 	preview.visible = not owned.has(kind)
 
 func _free_hands() -> bool:
-	if coffee_busy or not String(state.rice_recipe.hand).is_empty(): return false
+	if coffee_busy or coffee_cleaning or bool(state.coffee_machine.rag_held) or bool(state.coffee_machine.replacement) or not String(state.rice_recipe.hand).is_empty(): return false
 	if business.first_story!=null and business.first_story.carrying_table(): return false
 	if game.backpack!=null and not game.backpack.empty_hands(): return false
 	return business.ledger.carry.is_empty() and business.life.state.meal.is_empty() and (game.monte_services==null or game.monte_services.player_bag==null) and String(state.part).is_empty() and String(state.held_furniture).is_empty() and String(state.get("paint_carry","")).is_empty() and String(state.get("paint_tool","")).is_empty() and state.get("waste_hand",{}).is_empty()
@@ -1142,8 +1167,13 @@ func _exit() -> void:
 	if not String(state.rice_recipe.hand).is_empty():
 		business._notify("Devuelve el ingrediente o añádelo a la arrocera antes de salir.")
 		return
-	if coffee_busy:
-		business._notify("Termina de preparar o tomar el café antes de salir.")
+	if bool(state.coffee_machine.rag_held):
+		state.coffee_machine.rag_held = false
+		_refresh_coffee_machine()
+		_refresh_carried()
+		_save()
+	if coffee_busy or coffee_cleaning:
+		business._notify("Termina la interacción de café antes de salir.")
 		return
 	var site: Dictionary = world.garage_home_site
 	if site.is_empty(): return
@@ -1333,23 +1363,61 @@ func _refresh_coffee_visual() -> void:
 	if is_instance_valid(coffee_liquid):
 		coffee_liquid.visible = bool(business.life.state.get("coffee_served",false))
 
-func _build_home_coffee(kitchen: Node3D) -> void:
-	# Seat the octagonal Cuban stovetop moka on the rear right burner.
-	coffee_pot = _rental_root(kitchen,Vector3(.69,1.033,-.12))
+func _draw_moka_model(root: Node3D,broken: bool = false) -> void:
+	if broken:
+		_moka_section(root,.044,.08,.055,.08,Color("#696761"))
+		var top := _rental_root(root,Vector3(.10,.055,.035))
+		top.rotation.z = 1.2
+		_moka_section(top,.05,.05,.08,.09,Color("#aaa49b"))
+		_rental_part(root,Vector3(.12,.045,.08),Vector3(.06,.03,.04),Color("#34322e"))
+		return
 	var aluminum := Color("#b6bbb9")
 	var dark := Color("#292b29")
-	_moka_section(coffee_pot,.009,.076,.076,.018,Color("#848b88"))
-	_moka_section(coffee_pot,.075,.080,.048,.12,aluminum)
-	_moka_section(coffee_pot,.146,.053,.053,.022,Color("#777e7b"))
-	_moka_section(coffee_pot,.201,.050,.082,.088,aluminum)
-	_moka_section(coffee_pot,.254,.082,.083,.018,Color("#c7cbc8"))
-	_moka_section(coffee_pot,.270,.083,.032,.014,aluminum)
-	_moka_section(coffee_pot,.291,.020,.024,.027,dark)
+	_moka_section(root,.009,.076,.076,.018,Color("#848b88"))
+	_moka_section(root,.075,.080,.048,.12,aluminum)
+	_moka_section(root,.146,.053,.053,.022,Color("#777e7b"))
+	_moka_section(root,.201,.050,.082,.088,aluminum)
+	_moka_section(root,.254,.082,.083,.018,Color("#c7cbc8"))
+	_moka_section(root,.270,.083,.032,.014,aluminum)
+	_moka_section(root,.291,.020,.024,.027,dark)
 	# Pouring lip and curved, open black handle on opposing sides.
-	_rental_part(coffee_pot,Vector3(-.083,.247,0),Vector3(.055,.018,.047),aluminum).rotation.z = -.16
-	_rental_part(coffee_pot,Vector3(.090,.235,0),Vector3(.050,.024,.030),dark)
-	_rental_part(coffee_pot,Vector3(.122,.194,0),Vector3(.025,.085,.032),dark).rotation.z = .14
-	_rental_part(coffee_pot,Vector3(.101,.148,0),Vector3(.049,.024,.030),dark).rotation.z = .30
+	_rental_part(root,Vector3(-.083,.247,0),Vector3(.055,.018,.047),aluminum).rotation.z = -.16
+	_rental_part(root,Vector3(.090,.235,0),Vector3(.050,.024,.030),dark)
+	_rental_part(root,Vector3(.122,.194,0),Vector3(.025,.085,.032),dark).rotation.z = .14
+	_rental_part(root,Vector3(.101,.148,0),Vector3(.049,.024,.030),dark).rotation.z = .30
+
+func _build_home_coffee(kitchen: Node3D) -> void:
+	coffee_pot = _rental_root(kitchen,Vector3(.69,1.033,-.12))
+	_draw_moka_model(coffee_pot)
+	coffee_broken_prop = _rental_root(kitchen,coffee_pot.position)
+	_draw_moka_model(coffee_broken_prop,true)
+	coffee_rag = _rental_root(kitchen,Vector3(-.28,.982,.25))
+	_draw_coffee_rag(coffee_rag)
+	coffee_stains = _rental_root(kitchen,Vector3(.69,1.043,-.12))
+	for i in range(3):
+		var patch := _rental_root(coffee_stains,Vector3((float(i)-1.0)*.14,0,.12))
+		for j in range(5):
+			var drop := _rental_round(patch,Vector3(sin(float(j)*2.4)*.05,0,cos(float(j)*2.4)*.047),Vector3(.065+float(j%3)*.012,.004,.048),Color("#50301c"))
+	coffee_machine_audio = AudioStreamPlayer3D.new()
+	coffee_pot.add_child(coffee_machine_audio)
+	coffee_machine_audio.max_distance = 18.0
+	coffee_machine_audio.unit_size = 4.0
+	coffee_ready_sound = _make_coffee_sound(false)
+	coffee_burst_sound = _make_coffee_sound(true)
+	coffee_status_label = Label.new()
+	business.layer.add_child(coffee_status_label)
+	coffee_status_label.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	coffee_status_label.offset_left = -345
+	coffee_status_label.offset_right = -18
+	coffee_status_label.offset_top = 80
+	coffee_status_label.offset_bottom = 112
+	coffee_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	coffee_status_label.add_theme_font_size_override("font_size",18)
+	coffee_status_label.add_theme_color_override("font_color",Color("#ffd396"))
+	coffee_status_label.add_theme_color_override("font_outline_color",Color.BLACK)
+	coffee_status_label.add_theme_constant_override("outline_size",5)
+	coffee_status_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	coffee_status_label.hide()
 	coffee_cup = _rental_root(kitchen,Vector3(.03,.979,.12))
 	_rental_cylinder(kitchen,Vector3(.03,.972,.12),.078,.012,Color("#dfd6c5"))
 	coffee_liquid = _make_coffee_cup(coffee_cup)
@@ -1380,6 +1448,192 @@ func _build_home_coffee(kitchen: Node3D) -> void:
 	coffee_steam.mesh = vapor
 	coffee_steam.emitting = false
 	_refresh_coffee_visual()
+	_refresh_coffee_machine()
+
+func _draw_coffee_rag(root: Node3D) -> void:
+	_rental_part(root,Vector3.ZERO,Vector3(.13,.018,.09),Color("#b9936e")).rotation.y = .16
+	_rental_part(root,Vector3(.015,.013,-.007),Vector3(.10,.012,.07),Color("#d3b38b")).rotation.y = -.12
+
+func _make_coffee_sound(burst: bool) -> AudioStreamWAV:
+	var rate := 22050
+	var duration := .65 if burst else 1.0
+	var samples := int(float(rate)*duration)
+	var bytes := PackedByteArray()
+	bytes.resize(samples*2)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 32019
+	for i in range(samples):
+		var t := float(i)/float(rate)
+		var noise := rng.randf_range(-1.0,1.0)
+		var signal_value := 0.0
+		if burst:
+			signal_value = (noise*.55+sin(TAU*82.0*t)*.45)*exp(-t*9.0)
+		else:
+			var pulse := sin(TAU*7.0*t)*.5+.5
+			signal_value = (sin(TAU*(720.0+70.0*sin(TAU*5.0*t))*t)*.36+noise*.11)*pulse*minf(1.0,t*20.0)*minf(1.0,(duration-t)*20.0)
+		bytes.encode_s16(i*2,roundi(clampf(signal_value,-1.0,1.0)*22000.0))
+	var audio := AudioStreamWAV.new()
+	audio.format = AudioStreamWAV.FORMAT_16_BITS
+	audio.mix_rate = rate
+	audio.data = bytes
+	return audio
+
+func _play_coffee_sound(stream: AudioStreamWAV) -> void:
+	if not is_instance_valid(coffee_machine_audio) or stream==null: return
+	coffee_machine_audio.stream = stream
+	coffee_machine_audio.play()
+
+func _coffee_machine_phase() -> String:
+	return String(state.coffee_machine.phase)
+
+func _refresh_coffee_machine() -> void:
+	if not is_instance_valid(coffee_pot): return
+	var phase := _coffee_machine_phase()
+	coffee_pot.visible = phase in ["idle","heating","ready"]
+	coffee_broken_prop.visible = phase=="broken"
+	coffee_heat.visible = phase in ["heating","ready"]
+	coffee_steam.emitting = phase=="ready" or (phase=="heating" and float(state.coffee_machine.remaining)<=3.0)
+	coffee_rag.visible = not bool(state.coffee_machine.rag_held)
+	for i in range(coffee_stains.get_child_count()):
+		coffee_stains.get_child(i).visible = i<int(state.coffee_machine.dirty)
+
+func _coffee_stove_aimed() -> bool:
+	if _aim_tool(coffee_pot,Vector3(0,.15,0),Vector3(.18,.18,.15)): return true
+	return _aim_tool(coffee_broken_prop,Vector3(0,.07,0),Vector3(.23,.11,.20))
+
+func _coffee_special_action() -> String:
+	if not inside or not is_instance_valid(coffee_pot): return ""
+	var phase := _coffee_machine_phase()
+	if coffee_cleaning: return "[E] Limpiando la cocina…"
+	if bool(state.coffee_machine.rag_held):
+		if _aim_tool(coffee_rag,Vector3.ZERO,Vector3(.10,.04,.08)): return "[E] Devolver trapo"
+		if int(state.coffee_machine.dirty)>0 and (_aim_tool(coffee_stains,Vector3(0,.015,.12),Vector3(.30,.10,.22)) or _coffee_stove_aimed()): return "[E] Limpiar mancha de café"
+		return ""
+	if bool(state.coffee_machine.replacement):
+		if _coffee_stove_aimed(): return "[E] Colocar cafetera nueva" if int(state.coffee_machine.dirty)==0 else "[E] Limpia el fogón antes de colocar la cafetera"
+		return ""
+	if _coffee_stove_aimed():
+		match phase:
+			"heating": return "[E] Apagar fogón · preparando café"
+			"ready": return "[E] Apagar fogón · %d s" % ceili(float(state.coffee_machine.remaining))
+			"broken": return "[E] Recoger cafetera rota"
+			"missing": return "[E] Falta una cafetera · compra otra en Cuatro Caminos"
+	if _aim_tool(coffee_rag,Vector3.ZERO,Vector3(.10,.04,.08)) and _free_hands(): return "[E] Recoger trapo"
+	return ""
+
+func _coffee_special_interact() -> bool:
+	var action := _coffee_special_action()
+	if action.is_empty(): return false
+	if coffee_cleaning: return true
+	if action.contains("Apagar fogón"):
+		var ready := _coffee_machine_phase()=="ready"
+		state.coffee_machine.phase = "idle"
+		state.coffee_machine.remaining = 0.0
+		coffee_machine_audio.stop()
+		if ready: business.life.brew_home_coffee()
+		_refresh_coffee_machine()
+		_refresh_coffee_visual()
+		_save()
+		business._notify("Fogón apagado. Sirve el café." if ready else "Fogón apagado antes de terminar. Puedes preparar otra colada.")
+	elif action.contains("Recoger cafetera rota"):
+		if not _free_hands(): return true
+		state.waste_hand = {"kind":"broken_coffee","volume":3}
+		state.coffee_machine.phase = "missing"
+		_refresh_coffee_machine()
+		_refresh_carried()
+		_save()
+		business._notify("Lleva la cafetera rota a la bolsa de basura o a un contenedor.")
+	elif action.contains("Recoger trapo"):
+		if not _free_hands(): return true
+		state.coffee_machine.rag_held = true
+		_refresh_coffee_machine()
+		_refresh_carried()
+		_save()
+	elif action.contains("Devolver trapo"):
+		state.coffee_machine.rag_held = false
+		_refresh_coffee_machine()
+		_refresh_carried()
+		_save()
+	elif action.contains("Limpiar mancha"):
+		_clean_coffee_async()
+	elif action.contains("Colocar cafetera nueva"):
+		state.coffee_machine.replacement = false
+		state.coffee_machine.phase = "idle"
+		_refresh_coffee_machine()
+		_refresh_carried()
+		_save()
+		business._notify("Cafetera nueva instalada.")
+	elif action.contains("Limpia el fogón"): business._notify("Limpia el fogón antes de instalar el repuesto.")
+	else: business._notify("Consigue una cafetera nueva en el Mercado de Cuatro Caminos.")
+	return true
+
+func _clean_coffee_async() -> void:
+	if coffee_cleaning or not bool(state.coffee_machine.rag_held) or int(state.coffee_machine.dirty)<=0: return
+	coffee_cleaning = true
+	var patch := int(state.coffee_machine.dirty)-1
+	var rag := _rental_root(coffee_stains,Vector3((float(patch)-1.0)*.14,.05,.12))
+	_draw_coffee_rag(rag)
+	_attach_interaction_hand(rag,Vector3(.065,0,.025))
+	carried_view.hide()
+	var wipe := create_tween()
+	for i in range(3):
+		wipe.tween_property(rag,"position:z",.19,.18)
+		wipe.tween_property(rag,"position:z",.065,.18)
+	await wipe.finished
+	rag.queue_free()
+	state.coffee_machine.dirty = maxi(0,int(state.coffee_machine.dirty)-1)
+	coffee_cleaning = false
+	_refresh_coffee_machine()
+	_refresh_carried()
+	carried_view.show()
+	_save()
+	business._notify("Cocina limpia." if int(state.coffee_machine.dirty)==0 else "Sigue limpiando las manchas.")
+
+func _physics_process(delta: float) -> void:
+	if not state.is_empty() and state.has("coffee_machine"): _tick_coffee_machine(delta)
+
+func _tick_coffee_machine(delta: float) -> void:
+	if not is_instance_valid(coffee_pot): return
+	var phase := _coffee_machine_phase()
+	if phase in ["heating","ready"]:
+		state.coffee_machine.remaining = maxf(0.0,float(state.coffee_machine.remaining)-delta)
+		coffee_save_clock += delta
+		if coffee_save_clock>=5.0:
+			coffee_save_clock = 0.0
+			_save()
+		if phase=="heating":
+			coffee_steam.emitting = float(state.coffee_machine.remaining)<=3.0
+			if float(state.coffee_machine.remaining)<=0.0:
+				state.coffee_machine.phase = "ready"
+				state.coffee_machine.remaining = COFFEE_SHUTOFF_SECONDS
+				coffee_alert_clock = 0.0
+				_play_coffee_sound(coffee_ready_sound)
+				_save()
+				business._notify("¡Café listo! Apaga el fogón en 30 segundos.")
+		else:
+			coffee_alert_clock += delta
+			if coffee_alert_clock>=3.0:
+				coffee_alert_clock = 0.0
+				_play_coffee_sound(coffee_ready_sound)
+			if float(state.coffee_machine.remaining)<=0.0:
+				_break_coffee_machine()
+	phase = _coffee_machine_phase()
+	coffee_status_label.visible = inside and phase in ["heating","ready"]
+	if coffee_status_label.visible:
+		var line := "¡APAGA EL FOGÓN!" if phase=="ready" else "Preparando café"
+		coffee_status_label.text = "%s · %d s" % [line,ceili(float(state.coffee_machine.remaining))]
+
+func _break_coffee_machine() -> void:
+	state.coffee_machine.phase = "broken"
+	state.coffee_machine.remaining = 0.0
+	state.coffee_machine.dirty = 3
+	business.life.state.coffee_cups = 0
+	business.life.state.coffee_served = false
+	_play_coffee_sound(coffee_burst_sound)
+	_refresh_coffee_machine()
+	_refresh_coffee_visual()
+	_save()
+	business._notify("¡La cafetera explotó! Tira los restos y limpia la cocina con el trapo.")
 
 func _refresh_tv_screen() -> void:
 	if not is_instance_valid(television_screen): return
@@ -1628,7 +1882,7 @@ func _domestic_target() -> Dictionary:
 	if _aim_tool(bedside_lamp,Vector3(0,.22,0),Vector3(.20,.25,.20)): return {"kind":"lamp"}
 	if _aim_tool(television,Vector3(0,.98,.12),Vector3(.32,.26,.20)): return {"kind":"tv"}
 	if _aim_tool(kitchen_tap,Vector3(0,.06,.08),Vector3(.08,.16,.14)): return {"kind":"tap"}
-	if _aim_tool(coffee_pot,Vector3(0,.15,0),Vector3(.14,.17,.12)): return {"kind":"brew"}
+	if _coffee_machine_phase()=="idle" and _aim_tool(coffee_pot,Vector3(0,.15,0),Vector3(.14,.17,.12)): return {"kind":"brew"}
 	if _aim_tool(coffee_cup,Vector3(0,.05,0),Vector3(.09,.07,.09)): return {"kind":"drink"}
 	if _aimed_furniture()=="cama": return {"kind":"bed"}
 	return {}
@@ -1700,24 +1954,17 @@ func domestic_interact() -> bool:
 	return true
 
 func _brew_coffee_async() -> void:
-	if coffee_busy or not _free_hands(): return
+	if coffee_busy or not _free_hands() or _coffee_machine_phase()!="idle": return
 	if int(business.life.state.coffee_cups)>0: return
-	coffee_busy = true
-	coffee_phase = "Preparando colada…"
-	coffee_heat.show()
-	business._notify("Preparando una colada de café.")
-	await get_tree().create_timer(2.0).timeout
-	coffee_steam.emitting = true
-	await get_tree().create_timer(3.0).timeout
-	coffee_steam.emitting = false
-	coffee_heat.hide()
-	coffee_busy = false
-	if business.life.brew_home_coffee():
-		_refresh_coffee_visual()
-		business._notify("Colada lista · 1 taza. Pulsa E en la cafetera para servir.")
+	state.coffee_machine.phase = "heating"
+	state.coffee_machine.remaining = 5.0
+	coffee_save_clock = 0.0
+	_refresh_coffee_machine()
+	_save()
+	business._notify("Fogón encendido. Preparando una colada de una taza.")
 
 func _serve_coffee_async() -> void:
-	if coffee_busy or not _free_hands(): return
+	if coffee_busy or not _free_hands() or _coffee_machine_phase()!="idle": return
 	if int(business.life.state.coffee_cups)<=0 or bool(business.life.state.coffee_served): return
 	coffee_busy = true
 	coffee_phase = "Sirviendo café…"
@@ -1817,6 +2064,8 @@ func action_text(at: Vector3) -> String:
 	if inside:
 		if not business.life.state.meal.is_empty(): return "[E] Comer / beber"
 		if _home_exit_selected(at): return "[E] Salir de casa"
+		var coffee_action := _coffee_special_action()
+		if not coffee_action.is_empty(): return coffee_action
 		var light_action := _switch_action()
 		if not light_action.is_empty(): return light_action
 		var rice_action := _rice_action()
@@ -1853,6 +2102,7 @@ func interact(at: Vector3) -> bool:
 		if _home_exit_selected(at):
 			_exit()
 		elif not business.life.state.meal.is_empty(): return business.life.interact(at)
+		elif _coffee_special_interact(): pass
 		elif _switch_interact(): pass
 		elif _rice_interact(): pass
 		elif not String(state.rice_recipe.hand).is_empty():
@@ -2564,8 +2814,8 @@ func tick(delta: float) -> void:
 		waypoint.visible = waypoint_active and not inside
 		waypoint.global_position = waypoint_point+Vector3.UP*(2.7+sin(Time.get_ticks_msec()*.003)*.15)
 	if carried_view!=null:
-		carried_view.visible = not rice_pouring and not riding and not game.driving and not game.taxi_riding and not game.bus_riding
-		if inside and carried_view.visible and not String(state.rice_recipe.hand).is_empty():
+		carried_view.visible = not rice_pouring and not coffee_cleaning and not riding and not game.driving and not game.taxi_riding and not game.bus_riding
+		if inside and carried_view.visible and (not String(state.rice_recipe.hand).is_empty() or bool(state.coffee_machine.rag_held) or bool(state.coffee_machine.replacement)) and not coffee_cleaning:
 			carried_view.position = InteractionHand.camera_safe_pose(game.play_camera,Vector3(.33,-.36,-.58),.15)
 	for i in range(state.deliveries.size()-1,-1,-1):
 		var delivery: Dictionary = state.deliveries[i]
@@ -2895,6 +3145,9 @@ func _build_waste() -> void:
 	_refresh_waste()
 
 func _make_waste_item(root: Node3D,item: Dictionary) -> void:
+	if String(item.get("kind",""))=="broken_coffee":
+		_draw_moka_model(root,true)
+		return
 	if String(item.get("kind",""))=="paint_can":
 		_make_empty_can(root,String(item.get("color","")))
 		return
