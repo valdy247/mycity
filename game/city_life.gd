@@ -3,6 +3,7 @@ extends Node3D
 const Person = preload("res://street_person.gd")
 const InteractionHand = preload("res://interaction_hand.gd")
 const Ledger = preload("res://business_ledger.gd")
+const Leisure = preload("res://leisure_rules.gd")
 const Residents = preload("res://resident_simulation.gd")
 const MENU := {
 	"pizza":{"name":"Pizza","price":160,"food":"pizza","drink":"","fill":30,"needs":{"harina":1,"queso":1,"tomate":1}},
@@ -56,6 +57,7 @@ func setup(mission) -> void:
 	world = mission.world
 	ledger = mission.ledger
 	state = ledger.life_data
+	Leisure.ensure_wellbeing(state)
 	rng.randomize()
 	if not state.has("fullness"): state.fullness = 100.0
 	if not state.has("minutes"): state.minutes = 480.0
@@ -190,6 +192,7 @@ func _update_hud() -> void:
 	var energy := clampf(100.0-float(state.fatigue),0.0,100.0)
 	sleep_bar.value = energy
 	sleep_label.text = "Energía %d%%" % roundi(energy)
+	sleep_label.text += " · Ánimo %d%%" % roundi(float(state.get("happiness",75.0)))
 	if float(state.coffee_minutes)>0.0: sleep_label.text += " · Café activo"
 	if float(state.get("party_alcohol",0.0))>30.0: sleep_label.text += " · Mareo"
 	if float(state.get("illness_minutes",0.0))>0.0: sleep_label.text += " · Malestar"
@@ -300,6 +303,7 @@ func sleep_at_home() -> String:
 	var duration := planned_sleep_minutes()
 	advance_sleep_economy(duration)
 	advance_game_minutes(duration)
+	Leisure.advance_wellbeing(state,duration,false)
 	var router = world.pedestrian_router
 	if is_instance_valid(router):
 		router.advance_residents()
@@ -916,12 +920,24 @@ func open_contacts() -> void:
 		business.content.add_child(label)
 	business._button("Inicio",business.open_phone_home)
 
+func open_wellbeing() -> void:
+	business._open("Bienestar","Descansa, conversa y disfruta actividades para equilibrar trabajo y vida. No impide caminar ni trabajar.")
+	business._phone_metric("Alimentación","%d%%" % roundi(float(state.fullness)))
+	business._phone_metric("Energía","%d%%" % roundi(100.0-float(state.fatigue)))
+	var controller = business.get_parent()
+	var clean := not bool(controller.garage.state.get("bathroom",{}).get("hands_dirty",false)) if is_instance_valid(controller.garage) else true
+	business._phone_metric("Higiene de manos","Limpias" if clean else "Necesitas lavarlas")
+	business._phone_metric("Felicidad","%d%%" % roundi(float(state.happiness)))
+	business._phone_metric("Vida social","%d%%" % roundi(float(state.social)))
+	business._button("Inicio",business.open_phone_home)
+
 func greet(person: Node3D) -> String:
 	var id := String(person.get_meta("citizen_id",""))
 	if id.is_empty(): return ""
 	var name_value := String(person.get_meta("citizen_name",""))
 	var known := bool(state.met.get(id,false))
 	state.met[id] = true
+	Leisure.reward(state,"saludo_"+id,1.0,2.0,180.0)
 	if person.has_meta("resident_style"):
 		var style := int(person.get_meta("resident_style"))
 		var router = world.pedestrian_router
@@ -1273,6 +1289,11 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	if active_hand>=0 and bite_anim<=0.0: _finish_bite()
 	var passed := delta*GAME_MINUTES_PER_SECOND
 	advance_game_minutes(passed)
+	var controller = business.get_parent()
+	var working := false
+	if is_instance_valid(controller.carlos_mission): working = controller.carlos_mission.inside and controller.carlos_mission._stage()==4
+	if not ledger.carry.is_empty(): working = true
+	Leisure.advance_wellbeing(state,passed,working)
 	world.update_utility_lighting(float(state.minutes),delta)
 	state.fullness = maxf(0.0,float(state.fullness)-passed/9.6)
 	var stimulated := minf(passed,float(state.coffee_minutes))
@@ -1327,7 +1348,6 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 			ledger.save_game()
 	# Remote storefront NPC movement can wait while the player is in the rental room.
 	# Economy, hunger, energy and the game clock continue independently.
-	var controller = business.get_parent()
 	if controller.ambient_city_suspended():
 		agent_tick_clock = 0.0
 		indoor_resident_clock += passed
