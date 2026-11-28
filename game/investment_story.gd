@@ -38,6 +38,7 @@ var speech_left := 0.0
 var line := -1
 var after_talk := ""
 var actor: Person
+var actor_reposition_pending := false
 var clerk: Person
 var cab: Dictionary = {}
 var ride_out := true
@@ -290,8 +291,11 @@ func _spawn_actor(at: Vector3) -> void:
 		actor.remove_from_group("pedestrian_spacing")
 	var safe := _separate_actor_position(at)
 	if not safe.is_finite():
+		actor.global_position = at
+		actor_reposition_pending = true
 		actor.hide()
 		return
+	actor_reposition_pending = false
 	actor.global_position = safe
 	actor.show()
 
@@ -947,7 +951,12 @@ func tick(delta: float) -> void:
 			story.subtitle.text = "[E] Instalar mesa" if game.player.global_position.y<70.0 and _near(_stall_position()+Vector3.UP*.86,2.1) else ""
 
 	# Final guard after scripted moves, checkpoint restoration and helper actions.
-	if phase!="ride" and is_instance_valid(actor) and actor.visible and not actor.is_queued_for_deletion() and _actor_overlaps_player(actor.global_position):
+	if phase!="ride" and is_instance_valid(actor) and not actor.is_queued_for_deletion() and (actor_reposition_pending or (actor.visible and _actor_overlaps_player(actor.global_position))):
 		var safe := _separate_actor_position(actor.global_position)
-		if safe.is_finite(): actor.global_position = safe
-		else: actor.hide()
+		if safe.is_finite():
+			actor.global_position = safe
+			actor_reposition_pending = false
+			actor.show()
+		else:
+			actor_reposition_pending = true
+			actor.hide()
