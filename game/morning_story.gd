@@ -360,6 +360,10 @@ func tick(delta: float) -> void:
 			else:
 				story.title.hide()
 				game.business.life.state.minutes = 420.0
+				game.business.life.state.day = int(game.business.life.state.get("day",1))+1
+				game.business.life.state.fatigue = 0.0
+				game.business.life.state.bed_unmade = true
+				game.garage._refresh_furniture("cama")
 				game.player.global_position = _bed_stand()
 				_face(Vector3(-4.5,111.25,-4.1),-.10)
 				story.fade.color.a = 0.0
