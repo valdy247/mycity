@@ -1996,8 +1996,7 @@ func _start_city_warmup() -> void:
 	city_warm_thread = Thread.new()
 	if city_warm_thread.start(_warm_city_map)!=OK: city_warm_thread = null
 	city_scene_requested = ResourceLoader.load_threaded_request("res://main.tscn","PackedScene",false)==OK
-	if ResourceLoader.exists("res://city.glb"):
-		city_glb_requested = ResourceLoader.load_threaded_request("res://city.glb","PackedScene",false)==OK
+	# Original vehicles load only after city gameplay starts.
 
 func _poll_city_warmup() -> bool:
 	if is_instance_valid(city_warm_thread):
@@ -2006,11 +2005,6 @@ func _poll_city_warmup() -> bool:
 		city_warm_thread = null
 		print("MyCity carga anticipada (ms): mapa y calles=",city_warm_data.get("topology_ms",0),", recorte vial=",city_warm_data.get("surface_ms",0),", texturas=",city_warm_data.get("texture_ms",0),", total=",city_warm_data.get("ms",0))
 	if city_scene_requested and ResourceLoader.load_threaded_get_status("res://main.tscn")==ResourceLoader.THREAD_LOAD_IN_PROGRESS: return false
-	if city_glb_requested and warmed_glb==null:
-		var status := ResourceLoader.load_threaded_get_status("res://city.glb")
-		if status==ResourceLoader.THREAD_LOAD_IN_PROGRESS: return false
-		if status==ResourceLoader.THREAD_LOAD_LOADED: warmed_glb = ResourceLoader.load_threaded_get("res://city.glb")
-		city_glb_requested = false
 	return true
 
 func _tick_departure(delta: float) -> void:
@@ -2043,7 +2037,6 @@ func _tick_departure(delta: float) -> void:
 			tree.set_meta("mycity_adaptation",true)
 			tree.set_meta("mycity_city_load_started",Time.get_ticks_msec())
 			if not city_warm_data.is_empty(): tree.set_meta("mycity_warmed_map",city_warm_data)
-			if warmed_glb!=null: tree.set_meta("mycity_warmed_glb",warmed_glb)
 			if city_scene_requested and ResourceLoader.load_threaded_get_status("res://main.tscn")==ResourceLoader.THREAD_LOAD_LOADED:
 				var scene := ResourceLoader.load_threaded_get("res://main.tscn") as PackedScene
 				tree.change_scene_to_packed.call_deferred(scene)

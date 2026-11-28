@@ -539,7 +539,7 @@ func _trunk() -> Vector3:
 	return cab.to_global(Vector3(0,0,-2.65))
 
 func _house_near() -> bool:
-	return _flat(game.player.global_position,Vector3(home.door))<2.5
+	return game.garage.rental_entry_near(game.player.global_position)
 
 func _action() -> String:
 	var count := int(dropped[0])+int(dropped[1])
@@ -550,7 +550,9 @@ func _action() -> String:
 		return "[E] Salir a buscar la otra maleta" if game.player.global_position.distance_to(Vector3(-.7,110.86,5.25))<1.8 else "Vuelve a la puerta."
 	if carry>=0:
 		return "[E] Entrar en la casa alquilada" if _house_near() else "Lleva la maleta hasta la casa."
-	return "[E] Recoger maleta del maletero" if _flat(game.player.global_position,_trunk())<2.1 else "Acércate al maletero del taxi."
+	if _flat(game.player.global_position,_trunk())<2.1: return "[E] Recoger maleta del maletero"
+	if _house_near(): return "[E] Entrar en la casa alquilada"
+	return "Acércate al maletero del taxi."
 
 func interact() -> void:
 	if phase=="investment" and investment!=null:
@@ -574,7 +576,9 @@ func interact() -> void:
 	if carry>=0:
 		if _house_near(): game.garage._enter()
 		return
-	if _flat(game.player.global_position,_trunk())>=2.1: return
+	if _flat(game.player.global_position,_trunk())>=2.1:
+		if _house_near(): game.garage._enter()
+		return
 	for i in range(2):
 		if dropped[i]: continue
 		carry = i

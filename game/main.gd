@@ -20,6 +20,10 @@ const FirstStory = preload("res://albertico_story.gd")
 const HomeGarage = preload("res://home_garage.gd")
 const ArrivalStory = preload("res://arrival_story.gd")
 var adaptation_mode := false
+var deferred_vehicles_clock := 0.0
+var deferred_vehicles_requested := false
+var deferred_vehicles_done := false
+var deferred_vehicles_ready: PackedScene
 var arrival_story: ArrivalStory
 var garage: HomeGarage
 const CarlosMission = preload("res://carlos_mission.gd")
@@ -183,14 +187,22 @@ func _ready() -> void:
 		city_world.setup(builder)
 		spawn_position = cuba_world.home_spawn if cuba_world != null else CityWorld.HOME_OUT
 		var vehicles_started := Time.get_ticks_msec()
-		_restore_original_vehicles()
-		print("MyCity carga (ms): vehículos originales=",Time.get_ticks_msec()-vehicles_started)
-		if van == null:
-			_make_demo_van()
-			push_warning("MyCity: van original no disponible; exporta city.glb desde Blender.")
-		van.global_position = cuba_world.van_spawn if cuba_world != null else CityWorld.VAN_PARK + Vector3.UP * .055
-		if cuba_world != null:
-			van.rotation.y = cuba_world.van_angle
+		if adaptation_mode and cuba_world!=null:
+			# Empty hidden reference body, with no imported geometry.
+			van = _new_van_body(Vector3(0,-100,0))
+			van.hide()
+			van.collision_layer = 0
+			van.collision_mask = 0
+			van_ground_initialized = true
+		else:
+			_restore_original_vehicles()
+			if van == null:
+				_make_demo_van()
+				push_warning("MyCity: van original no disponible; exporta city.glb desde Blender.")
+			van.global_position = cuba_world.van_spawn if cuba_world != null else CityWorld.VAN_PARK + Vector3.UP * .055
+			if cuba_world != null:
+				van.rotation.y = cuba_world.van_angle
+		print("MyCity carga (ms): vehículos originales en inicio=",Time.get_ticks_msec()-vehicles_started)
 		van_home = van.global_transform
 		city_loaded = true
 	elif ResourceLoader.exists(CITY_PATH):
@@ -310,7 +322,7 @@ func _ready() -> void:
 			van.collision_layer = 0
 			van.collision_mask = 0
 			van_ground_initialized = true
-			monte_services.story_van = van
+			# Register only when the real model has loaded.
 			arrival_story = ArrivalStory.new()
 			add_child(arrival_story)
 			arrival_story.setup(self)
@@ -786,6 +798,8 @@ func _update_vehicle_lights() -> void:
 var mission_tracker_clock := 0.0
 
 func _process(delta: float) -> void:
+	if adaptation_mode and not deferred_vehicles_done:
+		_tick_deferred_vehicles(delta)
 	if is_instance_valid(mobile_controls): mobile_controls.sync()
 	if arrival_story!=null and arrival_story.active():
 		_update_vehicle_lights()
@@ -1035,6 +1049,68 @@ func _new_van_body(position_world: Vector3) -> CharacterBody3D:
 	return car
 
 # Reuse only the two original vehicles; do not attach the old city permanently.
+func _tick_deferred_vehicles(delta: float) -> void:
+	if not is_instance_valid(player) or not is_instance_valid(monte_services): return
+	deferred_vehicles_clock += minf(delta,.1)
+	if deferred_vehicles_clock<8.0: return
+	if arrival_story!=null and arrival_story.phase=="approach" and arrival_story.fade.color.a>.1: return
+	if not deferred_vehicles_requested:
+		deferred_vehicles_requested = true
+		if not ResourceLoader.exists(CITY_PATH):
+			deferred_vehicles_done = true
+			push_warning("MyCity: falta city.glb para recuperar la van original.")
+			return
+		var error := ResourceLoader.load_threaded_request(CITY_PATH,"PackedScene",false)
+		if error!=OK:
+			deferred_vehicles_done = true
+			push_warning("MyCity: no se pudo solicitar el vehículo original: "+str(error))
+		return
+	if deferred_vehicles_ready==null:
+		var result := ResourceLoader.load_threaded_get_status(CITY_PATH)
+		if result==ResourceLoader.THREAD_LOAD_IN_PROGRESS: return
+		if result!=ResourceLoader.THREAD_LOAD_LOADED:
+			deferred_vehicles_done = true
+			push_warning("MyCity: falló la carga diferida del vehículo original.")
+			return
+		deferred_vehicles_ready = ResourceLoader.load_threaded_get(CITY_PATH) as PackedScene
+		if deferred_vehicles_ready==null:
+			deferred_vehicles_done = true
+			return
+	# Prefer an indoor moment, but don't wait forever if the player stays outside.
+	if deferred_vehicles_clock<20.0 and (garage==null or not garage.inside): return
+	deferred_vehicles_done = true
+	var started := Time.get_ticks_msec()
+	var source := deferred_vehicles_ready.instantiate()
+	deferred_vehicles_ready = null
+	if source==null: return
+	# The old city never enters the scene tree; only its two vehicle subtrees do.
+	var holder := Node3D.new()
+	add_child(holder)
+	var original := _find_named(source,"vancontrol")
+	var school_bus := _find_named(source,"buscontrol")
+	if original!=null: _extract_imported_vehicle(original,holder)
+	if school_bus!=null: _extract_imported_vehicle(school_bus,holder)
+	source.free()
+	if original!=null:
+		_install_city_van(holder)
+		monte_services.story_van = van
+		monte_services.story_van_retry = 0.0
+		print("MyCity: van original cargada después del inicio; esperando un lugar seguro en el tráfico.")
+	else: push_warning("MyCity: VAN | CONTROL no encontrado; no se inventa otro modelo.")
+	if school_bus!=null: city_world.add_school_bus(school_bus)
+	holder.queue_free()
+	print("MyCity carga diferida (ms): extracción de vehículos=",Time.get_ticks_msec()-started)
+
+func _extract_imported_vehicle(model: Node3D,holder: Node3D) -> void:
+	var pose := model.transform
+	var parent := model.get_parent()
+	while parent!=null:
+		if parent is Node3D: pose = parent.transform*pose
+		parent = parent.get_parent()
+	model.get_parent().remove_child(model)
+	holder.add_child(model)
+	model.transform = pose
+
 func _restore_original_vehicles() -> void:
 	var warmed: Resource = get_tree().get_meta("mycity_warmed_glb",null)
 	if get_tree().has_meta("mycity_warmed_glb"): get_tree().remove_meta("mycity_warmed_glb")
@@ -1066,7 +1142,9 @@ func _install_city_van(city: Node) -> void:
 		push_warning("No se encontro VAN | CONTROL en city.glb; la van no sera interactiva.")
 		return
 	var original_transform := original.global_transform
-	van = _new_van_body(original_transform.origin)
+	if not adaptation_mode or not is_instance_valid(van):
+		van = _new_van_body(original_transform.origin)
+	# In adaptation the hidden body is reused; traffic places it on a road.
 	# Blender -Y maps to Godot +Z in our GLB export.
 	# Preserve imported transforms and mesh hierarchy, including door hinges.
 	var forward := original_transform.basis.z

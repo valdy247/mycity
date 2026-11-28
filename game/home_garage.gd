@@ -903,7 +903,14 @@ func _nearest_bin(at: Vector3) -> Dictionary:
 	if game.monte_services==null: return {}
 	return game.monte_services.nearest_disposal_site(at)
 
+func rental_entry_near(at: Vector3) -> bool:
+	if world.garage_home_site.is_empty() or inside: return false
+	var door: Vector3 = world.garage_home_site.door
+	# Logical entrance: no exact mesh ray or carried object required.
+	return absf(at.y-door.y)<2.6 and Vector2(at.x-door.x,at.z-door.z).length()<=3.5
+
 func _aimed_home(at: Vector3) -> bool:
+	if game.adaptation_mode: return rental_entry_near(at)
 	if world.garage_home_site.is_empty(): return false
 	var site: Dictionary = world.garage_home_site
 	var door: Vector3 = site.door

@@ -26,6 +26,8 @@ var home_traffic_target := 6
 var home_route_link_keys: Dictionary = {}
 var story_van: CharacterBody3D
 var story_van_registered := false
+var story_van_route: Array = []
+var main_circuit_ids: Array[String] = []
 var story_van_retry := 0.0
 var collection_route: Array = []
 var truck_retry := 0.0
@@ -950,6 +952,7 @@ func _make_vehicle(route: Array,truck: bool,index: int,slots: int = 8,slot: int 
 func _initialize() -> void:
 	planner.setup(world.geography)
 	var ids := planner.plan("MONTE",anchor)
+	main_circuit_ids = ids.duplicate()
 	_prepare_home_traffic()
 	if ids.size()<5:
 		# A missing long avenue circuit must not disable all city traffic.
@@ -1125,10 +1128,8 @@ func _local_recovery(body: CharacterBody3D,target: Vector3,width: float,length: 
 			if valid and not points.is_empty(): return points
 	return []
 
-func _register_story_van() -> void:
-	# Reuse the exported white van as autonomous city traffic, not a player asset.
-	if civilian_route.size()<5: return
-	var ids := planner.plan("MONTE",anchor)
+func _build_story_van_route() -> Array:
+	var ids: Array[String] = main_circuit_ids
 	var route: Array = []
 	for i in range(ids.size()-1):
 		var edge: Dictionary = planner.edges.get(String(ids[i])+":"+String(ids[i+1]),{})
@@ -1140,6 +1141,13 @@ func _register_story_van() -> void:
 		if a.distance_to(b)>8.0: route.append({"p":a+d*3.0+offset})
 		route.append({"p":b+offset})
 	route = _civilian_route(route)
+	if route.size()<5: route = civilian_route.duplicate(true)
+	if route.size()<5 and not home_traffic_routes.is_empty(): route = home_traffic_routes[0].duplicate(true)
+	return route
+
+func _register_story_van() -> void:
+	if story_van_route.is_empty(): story_van_route = _build_story_van_route()
+	var route: Array = story_van_route
 	if route.size()<5: return
 	for j in range(route.size()):
 		var i := (floori(float(route.size())*.5)+j)%route.size()
