@@ -853,8 +853,17 @@ func _open_city_map() -> void:
 	city_navigation.open()
 
 func _input(event: InputEvent) -> void:
+	# In free play the home portal must not depend on mouse capture or legacy mission input.
+	if adaptation_mode and player!=null and garage!=null and not driving and not taxi_riding and not bus_riding and not garage.riding and not touch_blocked() and (arrival_story==null or not arrival_story.active()) and event is InputEventKey and event.pressed and not event.echo and (event.keycode==KEY_E or event.physical_keycode==KEY_E):
+		if garage.rental_entry_near(player.global_position) or (garage.inside and player.global_position.distance_to(Vector3(-.7,110.86,5.25))<2.2):
+			if garage.inside: garage._exit()
+			else: garage._enter()
+			interact_requested = false
+			_update_hud()
+			get_viewport().set_input_as_handled()
+			return
 	if arrival_story!=null and arrival_story.active() and event is InputEventKey:
-		if event.pressed and not event.echo and event.keycode==KEY_E: arrival_story.interact()
+		if event.pressed and not event.echo and (event.keycode==KEY_E or event.physical_keycode==KEY_E): arrival_story.interact()
 		get_viewport().set_input_as_handled()
 		return
 	if player!=null and (event is InputEventScreenTouch or event is InputEventScreenDrag):
