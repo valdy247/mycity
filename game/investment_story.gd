@@ -338,10 +338,30 @@ func _spawn_actor(at: Vector3) -> void:
 	actor.global_position = safe
 	actor.show()
 
+func _near_return_door() -> bool:
+	if not game.garage.inside: return false
+	var at: Vector3 = game.player.global_position
+	return absf(at.y-ENTRY.y)<1.5 and Vector2(at.x-ENTRY.x,at.z-ENTRY.z).length()<=2.1
+
 func _door_return() -> void:
-	_spawn_actor(Vector3(-.7,110,5.5))
+	# The guest door is a logical interior threshold, as in MorningStory.
+	# Keep the player clear of the wall and use the authored guest entry path.
+	game.player.global_position = Vector3(-1.65,110.86,3.15)
+	game.player.velocity = Vector3.ZERO
+	game.first_person = true
+	game._apply_camera_mode()
+	if not is_instance_valid(actor):
+		actor = Person.new()
+		add_child(actor)
+		actor.setup(810)
+		actor.remove_from_group("social_people")
+		actor.remove_from_group("pedestrian_spacing")
+	actor.global_position = Vector3(-.7,110,5.5)
+	actor.rotation.y = PI
+	actor_reposition_pending = false
+	actor.show()
 	game.garage.set_guest_door(true)
-	game.player.global_position = Vector3(-.7,110.86,3.3)
+	_face(actor.global_position+Vector3.UP*1.45)
 	_set_phase("enter_actor")
 
 func _credit() -> void:
@@ -1013,7 +1033,14 @@ func _restore() -> void:
 			if not game.garage.inside: game.garage._enter()
 			if _clean_ratio()>=.80: _set_phase("return_door","return_door")
 			else: _dialogue(0,0,"clean")
-		"return_door": _set_phase("return_door","return_door")
+		"return_door":
+			if not game.garage.inside: game.garage._enter()
+			game.player.global_position = Vector3(-1.65,110.86,3.15)
+			game.player.velocity = Vector3.ZERO
+			game.first_person = true
+			game._apply_camera_mode()
+			_face(ENTRY+Vector3.UP*.6)
+			_set_phase("return_door","return_door")
 		"outbound":
 			_spawn_actor(Vector3(-2.35,110,3.9))
 			_set_phase("outbound","outbound")
@@ -1054,7 +1081,7 @@ func interact() -> void:
 	match phase:
 		"clean": pass
 		"return_door":
-			if _near(ENTRY,1.7): _door_return()
+			if _near_return_door(): _door_return()
 		"outbound","return":
 			if phase=="outbound" and _toggle_home(): return
 			if not cab.is_empty() and _near(cab.body.global_position+Vector3.UP*.86,4.0): _start_ride(phase=="outbound")
@@ -1128,11 +1155,13 @@ func tick(delta: float) -> void:
 				if is_instance_valid(story.morning): story.morning._play_effect(story.morning.knock)
 		"return_door":
 			_task("Abre la puerta. Albertico ha vuelto.")
-			_mark(ENTRY+Vector3.UP*.7)
-			story.subtitle.text = "[E] Abrir puerta" if _near(ENTRY,1.7) else ""
+			_mark(Vector3(-.7,111.3,4.25))
+			story.subtitle.text = "[E] Abrir puerta" if _near_return_door() else "Acércate a la puerta de entrada."
 		"enter_actor":
 			_face(actor.global_position+Vector3.UP*1.45)
-			if _walk_actor_checked(Vector3(-.7,110,4.95),delta,1.3):
+			# Same short, authored threshold walk used for the first visit.
+			# The closed wall behind the visual door is not a street route.
+			if actor.walk_to(Vector3(-.7,110,4.7),delta,1.3):
 				game.garage.set_guest_door(false)
 				_credit()
 				_money()
