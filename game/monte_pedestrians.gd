@@ -413,7 +413,8 @@ func _restore_profiles() -> void:
 		profile.merge({"id":"resident_"+String(key),"style":style,"home":home,"workplace":workplace,"activity":"street","active":false},true)
 		Residents.advance(profile,style,resident_clock)
 		profiles[String(key)] = profile
-		serial = maxi(serial,style)
+		if style<1000000: serial = maxi(serial,style)
+		elif buses!=null: buses.serial = maxi(buses.serial,style)
 	for key in profiles: _save_profile(profiles[key])
 
 func _save_profile(profile: Dictionary) -> void:
