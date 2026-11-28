@@ -23,7 +23,7 @@ var buses: Array = []
 var stops: Array = []
 var materials: Dictionary = {}
 var meshes: Dictionary = {}
-var serial := 0
+var serial := 1000000
 var pedestrian_update := 0.0
 var player_bus: Dictionary = {}
 var player_board_stop: Dictionary = {}
@@ -510,7 +510,7 @@ func _set_bus_door(door: Node3D,opened: bool) -> void:
 func _person(style: int) -> Node3D:
 	var root := StreetPerson.new()
 	add_child(root)
-	root.setup(style)
+	root.setup(style,false,true)
 	return root
 
 func _queue_position(stop: Dictionary,index: int) -> Vector3:
