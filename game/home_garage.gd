@@ -1261,11 +1261,16 @@ func _start_bath_action(mode: String) -> void:
 	_show_bath_legs(mode,heading)
 	if mode=="wash":
 		bath_water.show()
-		bath_wash_model = _rental_root(bath_sink,Vector3(0,1.015,.04))
-		bath_left_hand = _attach_interaction_hand(bath_wash_model,Vector3(-.055,0,.03),true,true)
-		bath_right_hand = _attach_interaction_hand(bath_wash_model,Vector3(.055,.027,.03))
-		bath_right_hand.rotation.z = PI*.88
-		bath_soap_foam = _rental_root(bath_wash_model,Vector3(0,.025,.025))
+		bath_wash_model = _rental_root(bath_sink,Vector3(0,1.025,.045))
+		bath_left_hand = _attach_interaction_hand(bath_wash_model,Vector3(-.027,0,.08),true,true)
+		bath_right_hand = _attach_interaction_hand(bath_wash_model,Vector3(.027,.037,.08))
+		# Palms overlap lightly, fingertips face the faucet, wrists face the body.
+		bath_left_hand.basis = Basis(Vector3.UP,PI*.5)*Basis(Vector3.RIGHT,PI)
+		bath_right_hand.rotation = Vector3(0,-PI*.5,0)
+		var shirt: MeshInstance3D = game.avatar.get_node("Shirt")
+		bath_left_hand.configure_body_arm(bath_sink,Vector3(-.19,1.25,.74),Vector3(-.19,1.065,.46),shirt.material_override)
+		bath_right_hand.configure_body_arm(bath_sink,Vector3(.19,1.25,.74),Vector3(.19,1.065,.46),shirt.material_override)
+		bath_soap_foam = _rental_root(bath_wash_model,Vector3(0,.031,.05))
 		for i in range(8):
 			var a := float(i)*2.4
 			_rental_round(bath_soap_foam,Vector3(cos(a)*.04,.008,sin(a)*.025),Vector3(.012,.009,.012),Color("#f2f2e9"))
@@ -1345,11 +1350,16 @@ func _tick_bathroom(delta: float) -> void:
 		else:
 			bath_seconds = maxf(0.0,bath_seconds-delta)
 			if bath_mode=="wash" and is_instance_valid(bath_wash_model):
-				var wave := sin(bath_seconds*9.0)
-				bath_left_hand.position.z = .025+wave*.024
-				bath_right_hand.position.z = .025-wave*.024
-				bath_right_hand.rotation.x = wave*.22
-				if is_instance_valid(bath_soap_foam): bath_soap_foam.visible = bath_seconds<3.6 and bath_seconds>.7
+				var rubbing := bath_seconds<3.6 and bath_seconds>.7
+				var wave := sin(bath_seconds*11.0)
+				# Wet, rub, then slide both palms beneath the stream to rinse.
+				var reach := .08 if rubbing else .025
+				bath_left_hand.position = Vector3(-.027,.003,reach+(wave*.014 if rubbing else 0.0))
+				bath_right_hand.position = Vector3(.027+(wave*.018 if rubbing else 0.0),.040,reach-(wave*.022 if rubbing else 0.0))
+				bath_right_hand.basis = Basis(Vector3.UP,-PI*.5)*Basis(Vector3.RIGHT,wave*.10 if rubbing else 0.0)
+				if is_instance_valid(bath_soap_foam): 
+					bath_soap_foam.position.z = reach-.025
+					bath_soap_foam.visible = rubbing
 			if bath_seconds<=0.0: _finish_bath_action()
 	if bath_flush_seconds>0.0:
 		bath_flush_seconds = maxf(0.0,bath_flush_seconds-delta)
