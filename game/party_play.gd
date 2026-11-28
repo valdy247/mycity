@@ -143,7 +143,11 @@ func _button(label_value: String,callback: Callable) -> void:
 func begin_domino() -> void:
 	if active() or not party.inside: return
 	var g: Dictionary = party.state.domino
-	if g.is_empty() or bool(g.done): party.state.domino = Domino.start()
+	if bool(g.get("done",false)): _record_match(g)
+	if g.is_empty() or bool(g.done):
+		var match_score: Dictionary = party.state.domino_match
+		if maxi(int(match_score.ours),int(match_score.theirs))>=100: party.state.domino_match = {"ours":0,"theirs":0,"hands":0}
+		party.state.domino = Domino.start()
 	_begin("domino")
 	game.player.global_position = party.ROOM+SEAT
 	game.first_person = true
@@ -288,6 +292,8 @@ func _refresh() -> void:
 		var hand: Array = g.hands[0]
 		var chosen := "%d-%d" % hand[selected] if not hand.is_empty() else "—"
 		status.text = "%s · Ficha %s · Extremos %d / %d\n%s" % ["Fin de la mano" if bool(g.done) else ("Tu turno" if int(g.turn)==0 else "Turno del jugador "+str(int(g.turn)+1)),chosen,int(g.left),int(g.right),feedback if feedback_time>0 else String(g.log)]
+		var match_score: Dictionary = party.state.domino_match
+		status.text += "\nParejas: %d – %d / 100 tantos" % [int(match_score.ours),int(match_score.theirs)]
 	elif mode=="dance":
 		var period: float = party._period()
 		var phase := fposmod(float(party._rhythm_clock()),period)
@@ -334,6 +340,7 @@ func tick(delta: float) -> void:
 		var g: Dictionary = party.state.domino
 		if bool(g.done) and not result_announced and place_lock<=0.0:
 			result_announced = true
+			_record_match(g)
 			party.business._notify("¡Buena partida! "+String(g.log))
 			for i in range(opponent_nodes.size()):
 				var person = opponent_nodes[i]
@@ -428,3 +435,16 @@ func _clack() -> void:
 		wav.data = samples
 		tile_sound.stream = wav
 	tile_sound.play()
+
+func _record_match(g: Dictionary) -> void:
+	if not bool(g.get("done",false)) or bool(g.get("scored",false)): return
+	var match_score: Dictionary = party.state.domino_match
+	if int(g.winner)==0:
+		match_score.ours = int(match_score.ours)+Domino.points(g.hands[1])+Domino.points(g.hands[3])
+	elif int(g.winner)==1:
+		match_score.theirs = int(match_score.theirs)+Domino.points(g.hands[0])+Domino.points(g.hands[2])
+	match_score.hands = int(match_score.hands)+1
+	g.scored = true
+	party._save()
+	if maxi(int(match_score.ours),int(match_score.theirs))>=100:
+		party.business._notify("Torneo terminado · %d – %d" % [int(match_score.ours),int(match_score.theirs)])
