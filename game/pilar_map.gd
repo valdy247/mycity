@@ -173,6 +173,7 @@ func _register_park(id: String,ids: Array,t: Dictionary) -> void:
 	var label := String(t.get("name",""))
 	if id=="373927999": label = "Parque de La Normal"
 	elif id=="23917140": label = "La Normal"
+	elif id=="23918119": label = "El Pontón"
 	if label.is_empty(): label = "Parque público"
 	park_areas.append({"id":id,"name":label,"poly":polygon,"tags":t})
 
@@ -242,7 +243,7 @@ func load_map() -> bool:
 				outline.append(Vector2(point.x,point.z))
 			if outline.size()>3 and outline[0].is_equal_approx(outline[outline.size()-1]): outline.remove_at(outline.size()-1)
 			if outline.size()>=3: stadium_boundary = outline
-		if String(t.get("leisure",""))=="park" or String(way.id) in ["373927999","23917140"]:
+		if String(t.get("leisure",""))=="park" or String(way.id) in ["373927999","23917140","23918119"]:
 			_register_park(String(way.id),way.refs,t)
 		if t.has("building"):
 			building_count += 1
