@@ -3935,8 +3935,9 @@ func _rider_endpoint(person: Node3D,part: MeshInstance3D,at: Vector3) -> void:
 	part.rotation = Vector3.ZERO
 	part.scale = dims
 
-func _pose_moto(person: Person,body: CharacterBody3D) -> void:
-	person.position = Vector3(0,.286,-.32)
+func _pose_moto(person: Person,body: CharacterBody3D,tri: bool = false) -> void:
+	person.position = Vector3(0,.28 if tri else .286,Kit.TRI_SEAT_Z if tri else -.32)
+	if tri: person.scale = Vector3.ONE*.90
 	var torso := Node3D.new()
 	person.add_child(torso)
 	torso.position = Vector3(0,.88,0)
@@ -3946,13 +3947,13 @@ func _pose_moto(person: Person,body: CharacterBody3D) -> void:
 			node.reparent(torso,true)
 		elif node in person.arms:
 			node.reparent(torso,true)
-	torso.rotation.x = .46
+	torso.rotation.x = .38 if tri else .46
 	for i in range(2):
 		var side := -1.0 if i==0 else 1.0
 		var arm: Node3D = person.arms[i]
 		var shoulder := person.to_local(arm.global_position)
-		var hand := person.to_local(body.to_global(Vector3(side*.30,1.16,.23)))
-		var elbow := _rider_bend(shoulder,hand,.25,.24,Vector3(side*.25,-1,0))
+		var hand := person.to_local(body.to_global(Vector3(side*(Kit.TRI_GRIP_X if tri else .30),Kit.TRI_GRIP_Y if tri else 1.16,Kit.TRI_GRIP_Z if tri else .23)))
+		var elbow := _rider_bend(shoulder,hand,.29 if tri else .25,.27 if tri else .24,Vector3(side*.25,-1,0))
 		var arm_parts := arm.get_children()
 		_rider_segment(person,arm_parts[0] as MeshInstance3D,shoulder,elbow)
 		_rider_segment(person,arm_parts[1] as MeshInstance3D,elbow,hand)
@@ -3960,7 +3961,7 @@ func _pose_moto(person: Person,body: CharacterBody3D) -> void:
 		var leg: Node3D = person.limbs[i]
 		var knee: Node3D = person.knees[i]
 		var hip := person.to_local(leg.global_position)
-		var foot := person.to_local(body.to_global(Vector3(side*.27,.49,.08)))
+		var foot := person.to_local(body.to_global(Vector3(side*(Kit.TRI_FOOT_X if tri else .27),Kit.TRI_FOOT_Y if tri else .49,Kit.TRI_FOOT_Z if tri else .08)))
 		var joint := _rider_bend(hip,foot,.42,.38,Vector3(side*.55,0,1))
 		var thigh_parts: Array[MeshInstance3D] = []
 		for node in leg.get_children():
@@ -3981,8 +3982,8 @@ func _make_rider(body: CharacterBody3D,kind: String,style: int) -> Node3D:
 	person.scale = Vector3(.80,.80,.80)
 	person.remove_from_group("social_people")
 	person.remove_from_group("pedestrian_spacing")
-	if kind=="moto":
-		_pose_moto(person,body)
+	if kind in ["moto","triciclo"]:
+		_pose_moto(person,body,kind=="triciclo")
 	else:
 		for leg in person.limbs: leg.rotation.x = -1.00
 		for knee in person.knees: knee.rotation.x = 1.25
@@ -4006,13 +4007,14 @@ func _player_driver(body: CharacterBody3D,kind: String = "moto") -> Node3D:
 	driver.name = "PlayerRider"
 	var moto := kind=="moto"
 	var tri := kind=="triciclo"
-	driver.position = Vector3(0,1.26,-.32 if moto else -.23)
+	driver.position = Vector3(0,1.28 if tri else 1.26,Kit.TRI_SEAT_Z+.065 if tri else (-.32 if moto else -.23))
 	driver.rotation = Vector3(.22 if moto else .30,0,0)
-	driver.scale = Vector3.ONE
+	driver.scale = Vector3.ONE*(.90 if tri else 1.0)
 	driver.show()
 	var spec: Dictionary = Kit.KITS[kind]
-	var grip_z := .23 if moto else float(spec.length)*.35*.77
-	var grip_x := .30 if moto else float(spec.width)*.36
+	var grip_z := Kit.TRI_GRIP_Z if tri else (.23 if moto else float(spec.length)*.35*.77)
+	var grip_x := Kit.TRI_GRIP_X if tri else (.30 if moto else float(spec.width)*.36)
+	var grip_y := Kit.TRI_GRIP_Y if tri else (1.16 if moto else 1.10)
 	for i in range(2):
 		var side := -1.0 if i==0 else 1.0
 		var source_arm: Node3D = game.limb_arms[i]
@@ -4027,7 +4029,7 @@ func _player_driver(body: CharacterBody3D,kind: String = "moto") -> Node3D:
 			if node is Node3D: (node as Node3D).hide()
 			else: node.queue_free()
 		var shoulder := driver.to_local(arm_node.global_position)
-		var grip := driver.to_local(body.to_global(Vector3(side*grip_x,1.16 if moto else 1.10,grip_z)))
+		var grip := driver.to_local(body.to_global(Vector3(side*grip_x,grip_y,grip_z)))
 		var elbow := _rider_bend(shoulder,grip,.32,.30,Vector3(side*.28,-1,0))
 		var sleeve := arm_node.get_node("Sleeve") as MeshInstance3D
 		var forearm := arm_node.get_node("Arm") as MeshInstance3D
@@ -4042,9 +4044,9 @@ func _player_driver(body: CharacterBody3D,kind: String = "moto") -> Node3D:
 		_rider_endpoint(driver,palm,grip)
 		palm.rotation.x = PI*.5-driver.rotation.x
 		var hip := driver.to_local(leg_node.global_position)
-		var foot_z := .08 if moto or tri else side*.15
-		var foot_x := .27 if moto or tri else .21
-		var foot_y := .51 if moto or tri else .47
+		var foot_z := Kit.TRI_FOOT_Z if tri else (.08 if moto else side*.15)
+		var foot_x := Kit.TRI_FOOT_X if tri else (.27 if moto else .21)
+		var foot_y := Kit.TRI_FOOT_Y if tri else (.51 if moto else .47)
 		var foot := driver.to_local(body.to_global(Vector3(side*foot_x,foot_y,foot_z)))
 		var joint := _rider_bend(hip,foot,.34,.35,Vector3(side*.45,0,1))
 		var thigh := leg_node.get_node("Leg") as MeshInstance3D
@@ -4055,7 +4057,7 @@ func _player_driver(body: CharacterBody3D,kind: String = "moto") -> Node3D:
 		_rider_segment(driver,shin,joint,foot)
 		shin.scale.x *= .84
 		shin.scale.z *= .86
-		_rider_endpoint(driver,shoe,foot+Vector3(0,-.025,.045))
+		_rider_endpoint(driver,shoe,foot if tri else foot+Vector3(0,-.025,.045))
 		shoe.rotation.x = -driver.rotation.x
 	return driver
 
