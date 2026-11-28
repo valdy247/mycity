@@ -17,7 +17,7 @@ static func fingerprint() -> String:
 	var path := source_path()
 	if path.is_empty() or not FileAccess.file_exists(path): return ""
 	var key := str(VERSION)+":"+str(Engine.get_version_info().get("string",""))+":"+path
-	for file_path in [path,"res://pilar_map.gd","res://street_geometry.gd","res://city_street_mesh_data.gd"]:
+	for file_path in [path,"res://pilar_map.gd","res://street_geometry.gd","res://city_street_mesh_data.gd","res://city_map_cache.gd"]:
 		# Exported scripts may not be available as source. Don't reuse a
 		# cache when its generator cannot be fingerprinted.
 		if not FileAccess.file_exists(file_path): return ""
@@ -59,10 +59,11 @@ static func _digest(bytes: PackedByteArray) -> String:
 	hash.update(bytes)
 	return hash.finish().hex_encode()
 
-static func _write(key: String,geo: MapData,streets: Streets,market: Dictionary,surfaces: Dictionary) -> void:
+static func _write(key: String,geo: MapData,streets: Streets,market: Dictionary,surfaces: Dictionary,path: String = CACHE) -> void:
 	var snapshot := {
 		"points":geo.points,"roads":geo.roads,"graph":geo.graph,"names":geo.names,
 		"signals":geo.signal_nodes,"building_count":geo.building_count,"footprints":geo.footprints,
+		"junction_keys":geo.junctions.keys(),
 		"stadium":geo.stadium_boundary,"parks":geo.park_areas,"poi":geo.poi,
 		"street_roads":streets.roads,"sidewalks":streets.sidewalks,"road_index":streets.road_index,
 		"protected_index":streets.protected_index,"intersections":streets.intersection_cells,
@@ -71,7 +72,7 @@ static func _write(key: String,geo: MapData,streets: Streets,market: Dictionary,
 	}
 	var bytes := var_to_bytes(snapshot)
 	if bytes.is_empty() or bytes.size()>MAX_BYTES: return
-	var temp := CACHE+"."+str(OS.get_process_id())+".tmp"
+	var temp := path+"."+str(OS.get_process_id())+".tmp"
 	var file := FileAccess.open(temp,FileAccess.WRITE)
 	if file==null: return
 	file.store_line(key)
@@ -79,12 +80,12 @@ static func _write(key: String,geo: MapData,streets: Streets,market: Dictionary,
 	file.store_64(bytes.size())
 	file.store_buffer(bytes)
 	file.close()
-	if DirAccess.rename_absolute(temp,CACHE)!=OK:
+	if DirAccess.rename_absolute(temp,path)!=OK:
 		DirAccess.remove_absolute(temp)
 
-static func _read(key: String) -> Dictionary:
-	if not FileAccess.file_exists(CACHE): return {}
-	var file := FileAccess.open(CACHE,FileAccess.READ)
+static func _read(key: String,path: String = CACHE) -> Dictionary:
+	if not FileAccess.file_exists(path): return {}
+	var file := FileAccess.open(path,FileAccess.READ)
 	if file==null: return {}
 	if file.get_length()>MAX_BYTES+512 or file.get_line()!=key: return {}
 	var digest := file.get_line()
@@ -97,7 +98,7 @@ static func _read(key: String) -> Dictionary:
 	var data: Dictionary = raw
 	for field in ["points","graph","names","signals","road_index","protected_index","intersections","market","surfaces"]:
 		if not data.get(field) is Dictionary: return {}
-	for field in ["roads","footprints","parks","poi","street_roads","sidewalks","signal_sites"]:
+	for field in ["roads","footprints","parks","poi","street_roads","sidewalks","signal_sites","junction_keys"]:
 		if not data.get(field) is Array: return {}
 	if not data.get("stadium") is PackedVector2Array or not data.get("serial") is int: return {}
 	if data.roads.size()<20 or data.points.is_empty() or data.street_roads.is_empty(): return {}
@@ -116,6 +117,8 @@ static func _read(key: String) -> Dictionary:
 	geo.poi = data.poi
 	# Rebuild spatial indexes from the canonical dictionaries so edits and
 	# callers see the same edge/footprint objects, not deserialized copies.
+	for id in data.junction_keys:
+		geo.junctions[id] = []
 	for edge in geo.roads:
 		var a: Vector3 = edge.a
 		var b: Vector3 = edge.b
