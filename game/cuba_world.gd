@@ -2915,6 +2915,13 @@ func _compiled_scene_valid(root: Node3D,material_count: int) -> bool:
 				if surface_id< -1 or surface_id>=material_count: return false
 	return root.get_child_count()>0
 
+# PackedScene ownership refers to its temporary root. Clear it recursively
+# before moving runtime nodes into the city, including collision children.
+func _compiled_clear_owners(node: Node) -> void:
+	node.owner = null
+	for child in node.get_children():
+		_compiled_clear_owners(child)
+
 func _compiled_restore(snapshot: Dictionary) -> bool:
 	if snapshot.is_empty(): return false
 	var data: Dictionary = snapshot.data
@@ -2955,6 +2962,7 @@ func _compiled_restore(snapshot: Dictionary) -> bool:
 					var surface_ids: PackedInt32Array = node.get_meta("compiled_surfaces",PackedInt32Array())
 					for i in range(surface_ids.size()):
 						if surface_ids[i]>=0: node.mesh.surface_set_material(i,materials[surface_ids[i]])
+			_compiled_clear_owners(node)
 			chunk.remove_child(node)
 			add_child(node)
 			if node is GeometryInstance3D and not node is Label3D:
