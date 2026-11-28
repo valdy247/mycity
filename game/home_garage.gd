@@ -65,6 +65,15 @@ var interior: Node3D
 const RENTAL_FRIDGE_LOCAL := Vector3(-6.29,0,1.0)
 var rental_fridge: Node3D
 var rental_fridge_doors: Dictionary = {}
+var home_food_fridge_body: StaticBody3D
+var home_food_props: Dictionary = {}
+var home_plate_stack: Node3D
+var home_plate_door: Node3D
+var home_pan: Node3D
+var home_pan_food: Node3D
+var home_pan_heat: MeshInstance3D
+var home_food_busy := false
+const HOME_PAN_TIME := {"carne":25.0,"huevo":12.0}
 var rental_storage_doors: Array[Dictionary] = []
 var rental_oil: Node3D
 var rental_kitchen: Node3D
@@ -151,6 +160,8 @@ func setup(controller) -> void:
 	if not state.has("rice_recipe"): state.rice_recipe = {"added":[],"remaining":0.0,"portions":0,"hand":"","lid":true,"stock":{"arroz":12,"sal":24,"aceite":24}}
 	# A restored game starts outside; return any kitchen utensil to its shelf.
 	state.rice_recipe.hand = ""
+	if not state.has("home_food"): state.home_food = {"stock":{"carne":8,"huevo":12},"hand":"","pan":"","remaining":0.0,"plate":[]}
+	if String(state.home_food.hand)!="plato": state.home_food.hand = ""
 	if not state.has("coffee_machine"): state.coffee_machine = {"phase":"idle","remaining":0.0,"dirty":0,"rag_held":false,"replacement":false}
 	state.coffee_machine.rag_held = false
 	# Migrate old saves without bringing back stains the player already cleaned.
@@ -682,6 +693,7 @@ func _build_rental_fridge() -> void:
 	var lining := Color("#e1e7e3")
 	var edge := Color("#8c9894")
 	var body := StaticBody3D.new()
+	home_food_fridge_body = body
 	rental_fridge.add_child(body)
 	body.position.y = .95
 	body.collision_layer = 1
@@ -709,6 +721,7 @@ func _build_rental_fridge() -> void:
 		_rental_part(hinge,Vector3(.70,height*.72,.085),Vector3(.045,.22,.058),Color("#626b68"))
 		rental_fridge_doors[key] = hinge
 		_register_storage_door(hinge,Vector3(.412,height*.5,.05),Vector3(.82,height,.13),"congelador" if top else "refrigerador")
+	_build_home_food_fridge()
 	print("MyCity: refrigerador de cocina creado en ",rental_fridge.global_position)
 
 func _register_storage_door(hinge: Node3D,center: Vector3,size: Vector3,label_text: String) -> void:
@@ -885,9 +898,7 @@ func _decorate_rental_home() -> void:
 	for x in [.39,.69]:
 		for z in [-.12,.12]:
 			_rental_cylinder(kitchen,Vector3(float(x),1.02,float(z)),.10,.025,Color("#272b29"))
-	_rental_cylinder(kitchen,Vector3(.40,1.10,.12),.105,.16,Color("#8c9692"))
-	_rental_cylinder(kitchen,Vector3(.40,1.19,.12),.11,.025,Color("#bbc3bd"))
-	_rental_part(kitchen,Vector3(.58,1.13,.12),Vector3(.18,.04,.045),Color("#514b40"))
+	_build_home_pan(kitchen)
 	var upper_wood := Color("#bcb098")
 	for y in [1.66,1.88,2.10]:
 		_rental_part(kitchen,Vector3(0,float(y),-.25),Vector3(1.95,.035,.26),upper_wood)
@@ -898,6 +909,8 @@ func _decorate_rental_home() -> void:
 		var leaf := _make_storage_leaf(kitchen,float(x),1.88,-.10,.60,.40,"armario superior",Color("#cec3ac"))
 		if float(x)<-.5: rice_doors["sal"] = leaf
 		elif absf(float(x))<.01: rice_doors["aceite"] = leaf
+		else: home_plate_door = leaf
+	_build_home_plate_stack(kitchen)
 	_build_rice_kitchen(kitchen)
 	var adaptation: Dictionary = business.ledger.life_data.get("adaptation",{})
 	var stock: Dictionary = adaptation.get("investment_boxes",{})
@@ -1129,6 +1142,16 @@ func _refresh_carried() -> void:
 			model.scale = Vector3.ONE*minf(.75,.85/maxf(size.x,maxf(size.y,size.z)))
 			model.rotation.y = -.25
 		else: business._box(carried_view,Vector3.ZERO,Vector3(.50,.36,.44),FURNITURE[id].color)
+	elif not String(state.home_food.hand).is_empty():
+		var food_key := String(state.home_food.hand)
+		carried_view.position = Vector3(.30,-.39,-.59)
+		if food_key=="plato":
+			carried_view.position.x = -.27
+			business.life.draw_home_plate(carried_view,state.home_food.plate)
+			_attach_interaction_hand(carried_view,Vector3(-.075,-.025,.06),true,true)
+		else:
+			_draw_home_raw_food(carried_view,food_key)
+			_attach_interaction_hand(carried_view,Vector3(.055,-.015,.035))
 	elif bool(state.coffee_machine.rag_held):
 		carried_view.position = Vector3(.29,-.37,-.52)
 		_draw_coffee_rag(carried_view)
@@ -1184,6 +1207,7 @@ func _refresh_preview() -> void:
 	preview.visible = not owned.has(kind)
 
 func _free_hands() -> bool:
+	if home_food_busy or not String(state.home_food.hand).is_empty(): return false
 	if coffee_busy or coffee_cleaning or bool(state.coffee_machine.rag_held) or bool(state.coffee_machine.replacement) or not String(state.rice_recipe.hand).is_empty(): return false
 	if business.first_story!=null and business.first_story.carrying_table(): return false
 	if game.backpack!=null and not game.backpack.empty_hands(): return false
@@ -1220,6 +1244,9 @@ func _enter() -> void:
 	game._update_visual_lighting(true)
 
 func _exit() -> void:
+	if home_food_busy or not String(state.home_food.hand).is_empty():
+		business._notify("Termina de preparar o devuelve la comida antes de salir.")
+		return
 	if not String(state.rice_recipe.hand).is_empty():
 		business._notify("Devuelve el ingrediente o añádelo a la arrocera antes de salir.")
 		return
@@ -1741,6 +1768,7 @@ func _clean_coffee_async() -> void:
 
 func _physics_process(delta: float) -> void:
 	if not state.is_empty() and state.has("coffee_machine"): _tick_coffee_machine(delta)
+	if not state.is_empty() and state.has("home_food"): _tick_home_pan(delta)
 
 func _tick_coffee_machine(delta: float) -> void:
 	if not is_instance_valid(coffee_pot): return
@@ -1883,6 +1911,217 @@ func _refresh_rice_visuals(update_lid: bool = true) -> void:
 	rice_contents.material_override = business._mat(Color("#eae2c8") if "arroz" in recipe.added or int(recipe.portions)>0 else Color("#9ebdc2"))
 	rice_indicator.material_override = business._mat(Color("#df5536") if float(recipe.remaining)>0.0 else (Color("#70b977") if int(recipe.portions)>0 else Color("#6d7066")))
 
+func _draw_home_raw_food(root: Node3D,key: String) -> void:
+	if key=="carne":
+		_rental_part(root,Vector3.ZERO,Vector3(.15,.015,.10),Color("#e0ded2"))
+		for i in range(3):
+			_rental_round(root,Vector3((float(i)-1.0)*.043,.025,0),Vector3(.054,.032,.072),Color("#a74e46"))
+	else:
+		_rental_round(root,Vector3(0,.031,0),Vector3(.045,.060,.045),Color("#e9d6b8"))
+
+func _build_home_food_fridge() -> void:
+	for key in ["carne","huevo"]:
+		var pos := Vector3(-.18,1.30,.05) if key=="carne" else Vector3(.20,.49,.08)
+		var prop := _rental_root(rental_fridge,pos)
+		_draw_home_raw_food(prop,key)
+		if key=="huevo":
+			_rental_part(prop,Vector3(0,-.01,0),Vector3(.17,.028,.11),Color("#a99472"))
+			for x in [-.055,.055]:
+				_rental_round(prop,Vector3(float(x),.031,0),Vector3(.045,.060,.045),Color("#e9d6b8"))
+		home_food_props[key] = prop
+	_refresh_home_food()
+
+func _build_home_plate_stack(kitchen: Node3D) -> void:
+	home_plate_stack = _rental_root(kitchen,Vector3(.63,1.69,-.23))
+	for i in range(3):
+		_rental_cylinder(home_plate_stack,Vector3(0,float(i)*.021,0),.112,.017,Color("#eee8d8"))
+
+func _build_home_pan(kitchen: Node3D) -> void:
+	home_pan = _rental_root(kitchen,Vector3(.39,1.034,.12))
+	_rental_cylinder(home_pan,Vector3(0,.013,0),.101,.026,Color("#666d6b"))
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i in range(24):
+		var a := TAU*float(i)/24.0
+		var b := TAU*float(i+1)/24.0
+		var p := Vector3(cos(a)*.103,.015,sin(a)*.103)
+		var q := Vector3(cos(b)*.103,.015,sin(b)*.103)
+		var u := Vector3(cos(a)*.113,.078,sin(a)*.113)
+		var v := Vector3(cos(b)*.113,.078,sin(b)*.113)
+		for vertex in [p,q,u,q,v,u]: surface.add_vertex(vertex)
+	surface.generate_normals()
+	var walls := MeshInstance3D.new()
+	walls.mesh = surface.commit()
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color("#969e9a")
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	walls.material_override = mat
+	home_pan.add_child(walls)
+	_rental_part(home_pan,Vector3(.16,.052,0),Vector3(.15,.031,.042),Color("#47443e"))
+	home_pan_food = _rental_root(home_pan,Vector3(0,.027,0))
+	home_pan_heat = _rental_cylinder(kitchen,Vector3(.39,1.035,.12),.098,.004,Color("#d96b32"))
+	home_pan_heat.hide()
+	_refresh_home_food()
+
+func _refresh_home_food() -> void:
+	var food: Dictionary = state.home_food
+	for key in home_food_props:
+		var prop: Node3D = home_food_props[key]
+		prop.visible = int(food.stock.get(key,0))>0 and (String(food.hand)!=String(key) or int(food.stock.get(key,0))>1)
+	if not is_instance_valid(home_pan_food): return
+	for child in home_pan_food.get_children():
+		home_pan_food.remove_child(child)
+		child.queue_free()
+	var key := String(food.pan)
+	var cooked := float(food.remaining)<=0.0
+	home_pan_heat.visible = not key.is_empty() and not cooked
+	if key=="carne":
+		for i in range(3):
+			_rental_round(home_pan_food,Vector3((float(i)-1.0)*.048,.016,0),Vector3(.051,.03,.065),Color("#805034") if cooked else Color("#a74e46"))
+	elif key=="huevo":
+		_rental_round(home_pan_food,Vector3.ZERO,Vector3(.145,.012,.120),Color("#eee6d5") if cooked else Color("#b9b3a0"))
+		_rental_round(home_pan_food,Vector3(.02,.009,0),Vector3(.048,.021,.048),Color("#e6a72b"))
+
+func _home_shelf_aim(node: Node3D,door: Node3D,body: StaticBody3D,center: Vector3,extent: Vector3) -> bool:
+	if not is_instance_valid(node) or not is_instance_valid(door) or not is_instance_valid(body): return false
+	if absf(door.rotation.y)<.55: return false
+	var cam: Camera3D = game.play_camera
+	var start := cam.global_position
+	var end := start-cam.global_basis.z*2.8
+	var hit: Variant = AABB(center-extent,extent*2.0).intersects_segment(node.to_local(start),node.to_local(end))
+	if hit==null: return false
+	var point := node.to_global(Vector3(hit))
+	if game.player.global_position.distance_to(point)>2.8 or _door_blocks_target(start,point,node): return false
+	var ray := PhysicsRayQueryParameters3D.create(start,point,1|2)
+	ray.exclude = [game.player.get_rid(),body.get_rid()]
+	return get_world_3d().direct_space_state.intersect_ray(ray).is_empty()
+
+func _home_food_action() -> String:
+	if not inside or not is_instance_valid(home_pan): return ""
+	if home_food_busy: return "[E] Preparando comida…"
+	var food: Dictionary = state.home_food
+	var hand := String(food.hand)
+	var pan := String(food.pan)
+	var pan_aim := _aim_tool(home_pan,Vector3(0,.045,0),Vector3(.15,.075,.13))
+	var plate_aim := _home_shelf_aim(home_plate_stack,home_plate_door,rice_cabinet_body,Vector3(0,.025,0),Vector3(.12,.045,.12))
+	if hand=="plato":
+		if _aim_tool(rice_lid,Vector3(0,.02,.15),Vector3(.19,.055,.19)) or _aim_tool(rice_cooker,Vector3(0,.16,0),Vector3(.22,.18,.21)):
+			if int(state.rice_recipe.portions)>0 and bool(state.rice_recipe.lid): return "[E] Abrir arrocera"
+			if int(state.rice_recipe.portions)>0 and "arroz" not in food.plate: return "[E] Echar arroz al plato"
+			return "[E] Ya tienes arroz" if "arroz" in food.plate else "[E] No hay arroz listo"
+		if pan_aim:
+			if pan.is_empty(): return "[E] Cazuela vacía"
+			if float(food.remaining)>0.0: return "[E] Cocinando "+pan+" · %d s" % ceili(float(food.remaining))
+			if "carne" in food.plate or "huevo" in food.plate: return "[E] El plato ya tiene acompañamiento"
+			return "[E] Servir "+pan+" al plato"
+		if plate_aim and food.plate.is_empty(): return "[E] Devolver plato"
+		if not storage_action(game.player.global_position).is_empty(): return ""
+		if not food.plate.is_empty(): return "[E] Comer plato"
+		return ""
+	if hand in ["carne","huevo"]:
+		if pan_aim: return "[E] Cocinar "+hand if pan.is_empty() else "[E] La cazuela está ocupada"
+	else:
+		if not _free_hands(): return ""
+		if plate_aim: return "[E] Recoger plato"
+		if pan_aim:
+			if pan.is_empty(): return "[E] Cazuela · busca carne o huevo en el refrigerador"
+			if float(food.remaining)>0.0: return "[E] Cocinando "+pan+" · %d s" % ceili(float(food.remaining))
+			return "[E] "+pan.capitalize()+" listo · recoge un plato"
+	for key in home_food_props:
+		var door: Node3D = rental_fridge_doors.get("pollo" if key=="carne" else "huevos")
+		var prop: Node3D = home_food_props[key]
+		if not _home_shelf_aim(prop,door,home_food_fridge_body,Vector3(0,.035,0),Vector3(.10,.065,.08)): continue
+		if hand==String(key): return "[E] Devolver "+String(key)
+		if hand.is_empty() and int(food.stock.get(key,0))>0: return "[E] Recoger "+String(key)
+	return ""
+
+func _home_food_interact() -> bool:
+	var action := _home_food_action()
+	if action.is_empty(): return false
+	if home_food_busy: return true
+	var food: Dictionary = state.home_food
+	var hand := String(food.hand)
+	if action=="[E] Recoger plato":
+		food.hand = "plato"
+	elif action=="[E] Devolver plato":
+		food.hand = ""
+	elif action.begins_with("[E] Recoger "):
+		food.hand = action.trim_prefix("[E] Recoger ")
+	elif action.begins_with("[E] Devolver "):
+		food.hand = ""
+	elif action.begins_with("[E] Cocinar ") and hand in ["carne","huevo"] and String(food.pan).is_empty():
+		_home_food_transfer(hand,false)
+		return true
+	elif action=="[E] Abrir arrocera":
+		_set_rice_lid(false)
+		return true
+	elif action=="[E] Echar arroz al plato":
+		_home_food_transfer("arroz",true)
+		return true
+	elif action.begins_with("[E] Servir ") and hand=="plato":
+		_home_food_transfer(String(food.pan),true)
+		return true
+	elif action=="[E] Comer plato":
+		if business.life.start_home_plate(food.plate):
+			food.hand = ""
+			food.plate = []
+			business._notify("Buen provecho. Pulsa E para comer en tres bocados.")
+	_refresh_home_food()
+	_refresh_carried()
+	_save()
+	return true
+
+func _home_food_transfer(key: String,serving: bool) -> void:
+	if home_food_busy: return
+	home_food_busy = true
+	var food: Dictionary = state.home_food
+	var destination: Node3D = rice_cooker if key=="arroz" else home_pan
+	var model := _rental_root(destination,Vector3(.24,.36,.14))
+	if serving:
+		business.life.draw_home_plate(model,food.plate)
+		_attach_interaction_hand(model,Vector3(-.075,-.025,.06),true,true)
+	else:
+		_draw_home_raw_food(model,key)
+		_attach_interaction_hand(model,Vector3(.055,-.015,.035))
+	carried_view.hide()
+	var motion := create_tween()
+	motion.tween_property(model,"position",Vector3(.13,.23,.12),.45)
+	motion.tween_interval(.25)
+	motion.tween_property(model,"position",Vector3(.24,.36,.14),.35)
+	await motion.finished
+	model.queue_free()
+	if serving:
+		food.plate.append(key)
+		if key=="arroz":
+			state.rice_recipe.portions = maxi(0,int(state.rice_recipe.portions)-1)
+			if int(state.rice_recipe.portions)==0: state.rice_recipe.added = []
+			_refresh_rice_visuals()
+		else:
+			food.pan = ""
+			food.remaining = 0.0
+		business._notify("Añadiste "+key+" al plato.")
+	else:
+		food.stock[key] = maxi(0,int(food.stock.get(key,0))-1)
+		food.hand = ""
+		food.pan = key
+		food.remaining = float(HOME_PAN_TIME[key])
+		business._notify("Cocinando "+key+"…")
+	home_food_busy = false
+	_refresh_home_food()
+	_refresh_carried()
+	carried_view.show()
+	_save()
+
+func _tick_home_pan(delta: float) -> void:
+	if not is_instance_valid(home_pan): return
+	var food: Dictionary = state.home_food
+	if float(food.remaining)<=0.0: return
+	food.remaining = maxf(0.0,float(food.remaining)-delta)
+	if float(food.remaining)<=0.0:
+		_refresh_home_food()
+		_save()
+		business._notify(String(food.pan).capitalize()+" listo. Recoge un plato para servir.")
+
 func _rice_prop_aim(key: String) -> bool:
 	if not rice_pantry.has(key): return false
 	var node: Node3D = rice_pantry[key]
@@ -1902,6 +2141,7 @@ func _rice_prop_aim(key: String) -> bool:
 
 func _rice_action() -> String:
 	if not inside or not is_instance_valid(rice_cooker): return ""
+	if not String(state.home_food.hand).is_empty(): return ""
 	var recipe: Dictionary = state.rice_recipe
 	var hand := String(recipe.hand)
 	if rice_pouring: return "[E] Añadiendo ingrediente…"
@@ -1918,7 +2158,7 @@ func _rice_action() -> String:
 		if int(recipe.portions)>0:
 			if bool(recipe.lid): return "[E] Abrir arrocera"
 			if lid_aimed: return "[E] Cerrar tapa"
-			return "[E] Servir plato de arroz · %d" % int(recipe.portions)
+			return "[E] Recoge un plato del armario superior"
 		if bool(recipe.lid):
 			return "[E] Cocinar arroz" if recipe.added.size()==4 else "[E] Abrir tapa de la arrocera"
 		return "[E] Cerrar tapa" if recipe.added.size()==4 else "[E] Cerrar tapa · faltan "+_rice_missing()
@@ -1961,11 +2201,8 @@ func _rice_interact() -> bool:
 		if recipe.added.size()==4 and bool(recipe.lid):
 			recipe.remaining = RICE_COOK_SECONDS
 			business._notify("Arrocera encendida. Puedes hacer otras cosas mientras cocina.")
-	elif action.contains("Servir plato"):
-		if _free_hands() and business.life.start_home_rice():
-			recipe.portions = int(recipe.portions)-1
-			if int(recipe.portions)==0: recipe.added = []
-			business._notify("Arroz servido · E para comer.")
+	elif action.contains("Recoge un plato"):
+		business._notify("Abre el armario superior derecho y recoge un plato.")
 	elif action.contains("faltan"): business._notify("Busca los ingredientes: "+_rice_missing())
 	_refresh_rice_visuals()
 	_refresh_carried()
@@ -2248,6 +2485,9 @@ func action_text(at: Vector3) -> String:
 		if not coffee_action.is_empty(): return coffee_action
 		var light_action := _switch_action()
 		if not light_action.is_empty(): return light_action
+		var food_action := _home_food_action()
+		if not food_action.is_empty(): return food_action
+		if not String(state.home_food.hand).is_empty(): return storage_action(at)
 		var rice_action := _rice_action()
 		if not rice_action.is_empty(): return rice_action
 		var domestic := domestic_action()
@@ -2285,6 +2525,10 @@ func interact(at: Vector3) -> bool:
 			_exit()
 		elif _coffee_special_interact(): pass
 		elif _switch_interact(): pass
+		elif _home_food_interact(): pass
+		elif not String(state.home_food.hand).is_empty():
+			if storage_interact(at): return true
+			return true
 		elif _rice_interact(): pass
 		elif not String(state.rice_recipe.hand).is_empty():
 			if storage_interact(at): return true
@@ -2998,9 +3242,12 @@ func tick(delta: float) -> void:
 		waypoint.visible = waypoint_active and not inside
 		waypoint.global_position = waypoint_point+Vector3.UP*(2.7+sin(Time.get_ticks_msec()*.003)*.15)
 	if carried_view!=null:
-		carried_view.visible = not rice_pouring and not coffee_cleaning and not riding and not game.driving and not game.taxi_riding and not game.bus_riding
+		carried_view.visible = not home_food_busy and not rice_pouring and not coffee_cleaning and not riding and not game.driving and not game.taxi_riding and not game.bus_riding
 		if carried_view.visible and (not String(state.rice_recipe.hand).is_empty() or bool(state.coffee_machine.rag_held) or bool(state.coffee_machine.replacement)) and not coffee_cleaning:
 			carried_view.position = InteractionHand.camera_safe_pose(game.play_camera,Vector3(.33,-.36,-.58),.15)
+		if carried_view.visible and not String(state.home_food.hand).is_empty():
+			var desired := Vector3(-.27,-.39,-.59) if String(state.home_food.hand)=="plato" else Vector3(.30,-.39,-.59)
+			carried_view.position = InteractionHand.camera_safe_pose(game.play_camera,desired,.16)
 	for i in range(state.deliveries.size()-1,-1,-1):
 		var delivery: Dictionary = state.deliveries[i]
 		delivery.remaining = float(delivery.remaining)-delta
