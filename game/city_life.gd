@@ -41,6 +41,7 @@ var meal_arms: Array = []
 var last_first_person := true
 var save_clock := 0.0
 var economy_clock := 0.0
+var indoor_resident_clock := 0.0
 var supply_clock := 0.0
 const CAFE_INGREDIENTS := ["harina","queso","tomate","refresco","perrito"]
 const CAFE_CREDIT_LIMIT := 3000
@@ -1324,6 +1325,11 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	var controller = business.get_parent()
 	if controller.ambient_city_suspended():
 		agent_tick_clock = 0.0
+		indoor_resident_clock += passed
+		if indoor_resident_clock>=15.0:
+			indoor_resident_clock = 0.0
+			var router = world.pedestrian_router
+			if is_instance_valid(router): router.advance_residents()
 	else:
 		agent_tick_clock += delta
 		if agent_tick_clock>=.065:
