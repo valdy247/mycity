@@ -1909,7 +1909,7 @@ func _physics_process(delta: float) -> void:
 			reset_requested = false
 			return
 	if _hold_story_input(): return
-	if not adaptation_mode and carlos_mission!=null and not building_mode: carlos_mission.tick(delta)
+	if carlos_mission!=null and not building_mode: carlos_mission.tick(delta)
 	if _hold_story_input(): return
 	if not adaptation_mode and yordi_mission!=null and not building_mode: yordi_mission.tick(delta)
 	if _hold_story_input(): return
@@ -2088,7 +2088,7 @@ func _physics_process(delta: float) -> void:
 			player.velocity = Vector3.ZERO
 			_update_hud()
 			return
-		elif not adaptation_mode and carlos_mission!=null and carlos_mission.interact():
+		elif carlos_mission!=null and carlos_mission.interact():
 			player.velocity = Vector3.ZERO
 			_update_hud()
 			return
