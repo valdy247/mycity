@@ -1,12 +1,13 @@
 extends Node
 const Domino = preload("res://daniel_domino.gd")
 const Leisure = preload("res://leisure_rules.gd")
+const Person = preload("res://street_person.gd")
 const TABLE := Vector3(-3,.83,-1.9)
 const SEAT := Vector3(-1.93,.58,-1.9)
 var party
 var game
 var mode := ""
-var partner: Node3D
+var partner: Person
 var opponent_nodes: Array[Node3D] = []
 var table_root: Node3D
 var hand_nodes: Array[Node3D] = []
