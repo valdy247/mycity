@@ -1988,7 +1988,8 @@ static func _warm_city_map() -> Dictionary:
 	var surface_ms := Time.get_ticks_msec()-surface_started
 	var texture_started := Time.get_ticks_msec()
 	var textures := WarmTextures.new()
-	textures.prepare_images(not OS.get_cmdline_user_args().has("--low-graphics"))
+	var args := OS.get_cmdline_user_args()
+	textures.prepare_images(args.has("--medium-graphics") or args.has("--high-graphics"))
 	return {"geography":geo,"streets":streets,"market":market,"surfaces":surfaces,"textures":textures,"topology_ms":topology_ms,"surface_ms":surface_ms,"texture_ms":Time.get_ticks_msec()-texture_started,"ms":Time.get_ticks_msec()-started}
 
 func _start_city_warmup() -> void:
