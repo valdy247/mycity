@@ -87,7 +87,8 @@ func _find_house() -> bool:
 			f.close()
 	for entry in world.npc_doorways:
 		if String(entry.get("kind",""))!="home": continue
-		var point: Vector3 = entry.threshold+Vector3(entry.normal)*.85
+		var normal: Vector3 = entry.normal
+		var point: Vector3 = entry.threshold+normal*.85
 		if world.street_geometry.point_on_road(point): continue
 		var distance := origin.distance_to(point)
 		if distance<35.0 or distance>350.0: continue
@@ -231,7 +232,7 @@ func _enter() -> void:
 		var guest := _guest(920+i,p,["Mario","Luis","Rafa"][i],false)
 		guest.rotation.y = atan2(-3.0-p.x,-1.9-p.z)
 	for i in range(4):
-		var p := Vector3(-.8+float(i%2)*1.6,0,-2.0+float(i/2)*2.0)
+		var p := Vector3(-.8+float(i%2)*1.6,0,-2.0+floorf(float(i)/2.0)*2.0)
 		_guest([919,922,925,923][i],p,["Laura","María","Ana","Javier"][i],true)
 	for i in range(3):
 		var light := OmniLight3D.new()
@@ -270,8 +271,25 @@ func _activity(key: String) -> void:
 func _daniel_menu() -> void:
 	business._open("Daniel","¡Cuántos recuerdos, mano! Desde chiquitos juntos. Hoy deja los problemas a un lado.")
 	business._button("Recordar la infancia",_remember)
+	business._button("Descansar aquí un rato",_rest_here)
 	business._button("Despedirme de la fiesta",_finish_party)
 	business._button("Seguir disfrutando",business.close)
+
+func _rest_here() -> void:
+	var life = business.life
+	var duration := 180.0
+	# Home cooking and paid orders still advance even while visiting a friend.
+	game.garage._advance_home_sleep(duration)
+	life.advance_sleep_economy(duration)
+	life.advance_game_minutes(duration)
+	life.state.fatigue = maxf(0.0,float(life.state.fatigue)-35.0)
+	life.state.fullness = maxf(0.0,float(life.state.fullness)-duration*.025)
+	life.state.party_alcohol = maxf(0.0,float(life.state.get("party_alcohol",0.0))-duration*.45)
+	if is_instance_valid(world.pedestrian_router): world.pedestrian_router.advance_residents()
+	life._update_hud()
+	_activity("descanso")
+	business._open("Descansaste en casa de Daniel","Daniel: Tómate tu tiempo, mano. No hay apuro.")
+	business._button("Volver",business.close)
 
 func _remember() -> void:
 	_activity("amistad")
@@ -287,9 +305,10 @@ func _social_menu() -> void:
 	business._button("Volver",business.close)
 
 func _meet(name_value: String) -> void:
-	state.contacts[name_value] = true
-	business.ledger.add_message(name_value,"¡Qué bueno conocerte en casa de Daniel! Nos vemos por el barrio.")
-	business.ledger.change_reputation(name_value,2)
+	if not bool(state.contacts.get(name_value,false)):
+		state.contacts[name_value] = true
+		business.ledger.add_message(name_value,"¡Qué bueno conocerte en casa de Daniel! Nos vemos por el barrio.")
+		business.ledger.change_reputation(name_value,2)
 	_activity("social")
 	business._open(name_value,"¡Qué bolá! Qué bueno que viniste. Nos vemos en otra fiesta.")
 	business._button("Volver",_social_menu)
@@ -456,6 +475,11 @@ func _next_and_menu() -> void:
 
 func _finish_party() -> void:
 	if not completed():
+		if state.activities.size()<2:
+			business._open("Daniel","¡Pero si acabas de llegar! Comparte dos actividades antes de despedirte. También puedes salir y regresar más tarde.")
+			business._button("Seguir disfrutando",business.close)
+			business._button("Salir por ahora",_exit)
+			return
 		state.stage = 3
 		state.completed_at = float(business.life.state.day)*1440.0+float(business.life.state.minutes)
 		business.ledger.change_reputation("Daniel",10)
@@ -486,6 +510,7 @@ func _exit() -> void:
 	if is_instance_valid(room): room.queue_free()
 	room = null
 	speaker = null
+	exterior.stream = null
 	game.player.global_position = _house()+Vector3.UP*.86
 	game.player.velocity = Vector3.ZERO
 	game.first_person = previous_first
