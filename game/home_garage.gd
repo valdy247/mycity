@@ -1134,13 +1134,37 @@ func _home_exit_selected(at: Vector3) -> bool:
 	if game.adaptation_mode: return aimed_rental_exit(at)
 	return at.distance_to(ROOM+Vector3(-.7,.86,5.25))<1.55
 
+func _moka_section(root: Node3D,y: float,bottom: float,top: float,height: float,color: Color) -> MeshInstance3D:
+	var mesh := CylinderMesh.new()
+	mesh.radial_segments = 8
+	mesh.rings = 0
+	mesh.bottom_radius = bottom
+	mesh.top_radius = top
+	mesh.height = height
+	var part := MeshInstance3D.new()
+	part.mesh = mesh
+	part.material_override = business._mat(color)
+	root.add_child(part)
+	part.position.y = y
+	return part
+
 func _build_home_coffee(kitchen: Node3D) -> void:
-	coffee_pot = _rental_root(kitchen,Vector3(.72,.965,-.22))
-	_rental_cylinder(coffee_pot,Vector3(0,.075,0),.083,.15,Color("#aab0ad"))
-	_rental_cylinder(coffee_pot,Vector3(0,.17,0),.055,.08,Color("#777e7b"))
-	_rental_cylinder(coffee_pot,Vector3(0,.245,0),.085,.10,Color("#aab0ad"))
-	_rental_part(coffee_pot,Vector3(.10,.19,0),Vector3(.07,.15,.035),Color("#393b39"))
-	_rental_part(coffee_pot,Vector3(0,.305,0),Vector3(.035,.035,.035),Color("#393b39"))
+	# Seat the octagonal Cuban stovetop moka on the rear right burner.
+	coffee_pot = _rental_root(kitchen,Vector3(.69,1.033,-.12))
+	var aluminum := Color("#b6bbb9")
+	var dark := Color("#292b29")
+	_moka_section(coffee_pot,.009,.076,.076,.018,Color("#848b88"))
+	_moka_section(coffee_pot,.075,.080,.048,.12,aluminum)
+	_moka_section(coffee_pot,.146,.053,.053,.022,Color("#777e7b"))
+	_moka_section(coffee_pot,.201,.050,.082,.088,aluminum)
+	_moka_section(coffee_pot,.254,.082,.083,.018,Color("#c7cbc8"))
+	_moka_section(coffee_pot,.270,.083,.032,.014,aluminum)
+	_moka_section(coffee_pot,.291,.020,.024,.027,dark)
+	# Pouring lip and curved, open black handle on opposing sides.
+	_rental_part(coffee_pot,Vector3(-.083,.247,0),Vector3(.055,.018,.047),aluminum).rotation.z = -.16
+	_rental_part(coffee_pot,Vector3(.090,.235,0),Vector3(.050,.024,.030),dark)
+	_rental_part(coffee_pot,Vector3(.122,.194,0),Vector3(.025,.085,.032),dark).rotation.z = .14
+	_rental_part(coffee_pot,Vector3(.101,.148,0),Vector3(.049,.024,.030),dark).rotation.z = .30
 	coffee_cup = _rental_root(kitchen,Vector3(.03,.965,.12))
 	_rental_cylinder(coffee_cup,Vector3(0,.045,0),.045,.09,Color("#eee5d4"))
 	_rental_cylinder(coffee_cup,Vector3(0,.092,0),.035,.005,Color("#593723"))
