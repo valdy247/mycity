@@ -208,9 +208,16 @@ func planned_sleep_minutes() -> float:
 
 # Abstract elapsed business time without moving NPCs or spawning buyers.
 # The normal simulation resumes at the new clock time after waking.
-func _economy_step() -> void:
+func _economy_step(minute: float = -1.0,day_number: int = -1) -> void:
+	if minute<0.0: minute = float(state.minutes)
+	if day_number<0: day_number = int(state.day)
+	var open_now := fposmod(minute,1440.0)>=420.0 and fposmod(minute,1440.0)<1200.0
 	for id in state.cafes:
 		var cafe: Dictionary = state.cafes[id]
+		if cafe.has("management"):
+			_pay_cafe_wage(cafe,day_number)
+			if not bool(cafe.management.get("staff",false)) or int(cafe.management.get("wage_due",0))>0: continue
+		if not open_now: continue
 		var choices := MENU.keys()
 		choices.shuffle()
 		for key in choices:
@@ -261,7 +268,7 @@ func advance_sleep_economy(minutes: float) -> void:
 		economy_clock += step
 		if economy_clock>=60.0:
 			economy_clock -= 60.0
-			_economy_step()
+			_economy_step(current,int(state.day)+floori(minute/1440.0))
 		minute += step*GAME_MINUTES_PER_SECOND
 		remaining -= step
 	if sales>0: ledger.add_message("Albertico","Mientras descansabas vendí %d productos. Ingresaron %d CUP." % [sales,earned])
@@ -474,6 +481,9 @@ func interact(at: Vector3) -> bool:
 	if not ledger.carry.is_empty():
 		_offer_delivery(id)
 		return true
+	if not _cafe_open(id):
+		business._notify("Cafetería cerrada. Horario: 7 AM a 8 PM; los pedidos pagados se conservan.")
+		return true
 	_menu(id)
 	return true
 
@@ -503,6 +513,7 @@ func _deliver_to_cafe(id: String,key: String) -> void:
 	var cafe: Dictionary = state.cafes[id]
 	var price := _delivery_price(key)
 	cafe.cash = int(cafe.cash)-_cafe_cost(key)
+	if cafe.has("management"): cafe.management.costs = int(cafe.management.costs)+_cafe_cost(key)
 	# A limited city logistics contract covers the transport difference.
 	cafe.delivery_cooldown = 120.0
 	cafe[key] = int(cafe.get(key,0))+int(ledger.product(key).units)
@@ -554,7 +565,7 @@ func _menu(id: String) -> void:
 	business._button("Salir",business.close)
 
 func _order(id: String,key: String) -> void:
-	if not state.order.is_empty() or not state.meal.is_empty() or not _can_make(id,key): return
+	if not _cafe_open(id) or not state.order.is_empty() or not state.meal.is_empty() or not _can_make(id,key): return
 	var item: Dictionary = MENU[key]
 	if ledger.cash<int(item.price): return
 	var cafe: Dictionary = state.cafes[id]
@@ -946,10 +957,117 @@ func citizen_purchase(id: String,budget: int) -> int:
 		return price
 	return 0
 
+const CAFE_ACQUISITION := 15000
+const CAFE_RESERVE := 2000
+const CAFE_DAILY_WAGE := 120
+
+func _cafe_open(id: String) -> bool:
+	var minute := float(state.minutes)
+	if minute<420.0 or minute>=1200.0: return false
+	var cafe: Dictionary = state.cafes.get(id,{})
+	var management: Dictionary = cafe.get("management",{})
+	return management.is_empty() or (bool(management.get("staff",false)) and int(management.get("wage_due",0))==0)
+
+func _pay_cafe_wage(cafe: Dictionary,day_number: int) -> void:
+	var m: Dictionary = cafe.management
+	if not bool(m.staff): return
+	var days := maxi(0,day_number-int(m.last_day))
+	m.last_day = day_number
+	if days>0:
+		var wages := days*CAFE_DAILY_WAGE
+		m.wage_due = int(m.wage_due)+wages
+		m.costs = int(m.costs)+wages
+	var paid := mini(int(m.wage_due),maxi(0,int(cafe.cash)))
+	cafe.cash = int(cafe.cash)-paid
+	m.wage_due = int(m.wage_due)-paid
+
+func open_managed_businesses() -> void:
+	business._open("Mis establecimientos","Compra cafeterías existentes, conserva sus existencias y contrata personal. Cada negocio paga su mercancía y salarios de su propia caja.")
+	for id in state.cafes:
+		if not sites.has(id): continue
+		var cafe: Dictionary = state.cafes[id]
+		business._button(String(sites[id].name)+(" · Tu negocio" if cafe.has("management") else " · Disponible"),_managed_cafe_menu.bind(String(id)))
+	business._button("Volver",business.open_business_summary)
+
+func _managed_cafe_menu(id: String) -> void:
+	if not state.cafes.has(id) or not sites.has(id): return
+	var cafe: Dictionary = state.cafes[id]
+	var site: Dictionary = sites[id]
+	if not cafe.has("management"):
+		business._open(String(site.name),"Adquisición: %d CUP. La caja, mercancía y deuda existentes permanecen en el negocio. Debes contratar personal para abrir." % CAFE_ACQUISITION)
+		business._button("Comprar establecimiento",_buy_cafe.bind(id),ledger.cash<CAFE_ACQUISITION or not _near_managed_cafe(id))
+		business._button("Marcar ubicación",_location.bind(id))
+	else:
+		var m: Dictionary = cafe.management
+		business._open(String(site.name),"Caja: %d CUP\nIngresos: %d · Costos y salarios: %d\nDeuda con proveedores: %d · Salarios pendientes: %d\nPersonal: %s" % [int(cafe.cash),int(m.sales),int(m.costs),int(cafe.get("supplier_debt",0)),int(m.wage_due),"Contratado" if bool(m.staff) else "Sin personal"])
+		business._button("Contratar empleado · %d CUP/día" % CAFE_DAILY_WAGE,_hire_cafe_staff.bind(id),bool(m.staff))
+		business._button("Aportar 500 CUP a la caja",_fund_cafe.bind(id),ledger.cash<500)
+		business._button("Retirar beneficio · %d CUP" % _cafe_withdrawable(cafe),_withdraw_cafe.bind(id),_cafe_withdrawable(cafe)<=0)
+		var inventory_label := Label.new()
+		var inventory: Array[String] = []
+		for ingredient in CAFE_INGREDIENTS: inventory.append("%s: %d" % [ingredient,int(cafe.get(ingredient,0))])
+		inventory_label.text = "Inventario: "+", ".join(inventory)
+		inventory_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		business.content.add_child(inventory_label)
+	business._button("Volver",open_managed_businesses)
+
+func _near_managed_cafe(id: String) -> bool:
+	if not sites.has(id): return false
+	var at: Vector3 = sites[id].entrance
+	return business.player.global_position.distance_to(at)<5.0
+
+func _buy_cafe(id: String) -> void:
+	if not state.cafes.has(id) or not _near_managed_cafe(id) or ledger.cash<CAFE_ACQUISITION: return
+	var cafe: Dictionary = state.cafes[id]
+	if cafe.has("management"): return
+	cafe.management = {"staff":false,"last_day":int(state.day),"sales":0,"costs":0,"withdrawn":0,"wage_due":0}
+	ledger.spend(CAFE_ACQUISITION)
+	ledger.change_reputation(String(sites[id].contact),5)
+	ledger.save_game()
+	_managed_cafe_menu(id)
+
+func _hire_cafe_staff(id: String) -> void:
+	var cafe: Dictionary = state.cafes.get(id,{})
+	var m: Dictionary = cafe.get("management",{})
+	if m.is_empty() or bool(m.staff): return
+	m.staff = true
+	m.last_day = int(state.day)-1
+	_pay_cafe_wage(cafe,int(state.day))
+	ledger.save_game()
+	_managed_cafe_menu(id)
+
+func _fund_cafe(id: String) -> void:
+	var cafe: Dictionary = state.cafes.get(id,{})
+	if not cafe.has("management") or ledger.cash<500: return
+	cafe.cash = int(cafe.cash)+500
+	ledger.spend(500)
+	_pay_cafe_wage(cafe,int(state.day))
+	ledger.save_game()
+	_managed_cafe_menu(id)
+
+func _cafe_withdrawable(cafe: Dictionary) -> int:
+	var m: Dictionary = cafe.get("management",{})
+	if m.is_empty(): return 0
+	var profit := maxi(0,int(m.sales)-int(m.costs)-int(m.withdrawn))
+	var available_cash := maxi(0,int(cafe.cash)-CAFE_RESERVE-int(cafe.get("supplier_debt",0))-int(m.wage_due))
+	return mini(profit,available_cash)
+
+func _withdraw_cafe(id: String) -> void:
+	var cafe: Dictionary = state.cafes.get(id,{})
+	var amount := _cafe_withdrawable(cafe)
+	if amount<=0: return
+	cafe.cash = int(cafe.cash)-amount
+	cafe.management.withdrawn = int(cafe.management.withdrawn)+amount
+	ledger.cash += amount
+	ledger.revenue += amount
+	ledger.save_game()
+	_managed_cafe_menu(id)
+
 func _cafe_sale(cafe: Dictionary,amount: int) -> void:
 	var repayment := mini(int(cafe.get("supplier_debt",0)),floori(float(amount)*.25))
 	cafe.supplier_debt = int(cafe.get("supplier_debt",0))-repayment
 	cafe.cash = int(cafe.cash)+amount-repayment
+	if cafe.has("management"): cafe.management.sales = int(cafe.management.sales)+amount
 
 func _cafe_can_buy(cafe: Dictionary,key: String) -> bool:
 	return int(cafe.cash)+maxi(0,CAFE_CREDIT_LIMIT-int(cafe.get("supplier_debt",0)))>=_cafe_cost(key)
@@ -958,6 +1076,7 @@ func _cafe_buy(id: String,supplier: String,key: String) -> bool:
 	var cafe: Dictionary = state.cafes[id]
 	if int(cafe.get(key,0))>=5 or not _cafe_can_buy(cafe,key) or not reserve_crate(supplier,key): return false
 	var price := _cafe_cost(key)
+	if cafe.has("management"): cafe.management.costs = int(cafe.management.costs)+price
 	var paid := mini(maxi(0,int(cafe.cash)),price)
 	cafe.cash = int(cafe.cash)-paid
 	cafe.supplier_debt = int(cafe.get("supplier_debt",0))+price-paid
