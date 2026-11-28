@@ -75,6 +75,12 @@ var coffee_drink_view: Node3D
 var coffee_busy := false
 var wall_hour_hand: Node3D
 var wall_minute_hand: Node3D
+var bedside_lamp: Node3D
+var bedside_glow: OmniLight3D
+var television: Node3D
+var television_screen: MeshInstance3D
+var kitchen_tap: Node3D
+var tap_water: MeshInstance3D
 var furniture_nodes: Dictionary = {}
 var preview: Node3D
 var marker: Node3D
@@ -512,13 +518,17 @@ func _model_rental_furniture(body: Node3D,id: String,size: Vector3) -> void:
 			for x in [-.69,.69]:
 				_rental_part(root,Vector3(float(x),.54,-.95),Vector3(.09,1.04,.12),dark)
 		"armario":
-			_rental_part(root,Vector3(0,.99,0),Vector3(.95,1.82,.50),wood)
+			_rental_part(root,Vector3(0,.99,-.23),Vector3(.95,1.82,.045),wood)
+			for x in [-.455,.455]: _rental_part(root,Vector3(float(x),.99,0),Vector3(.04,1.82,.50),wood)
+			for y in [.20,.72,1.35,1.82]: _rental_part(root,Vector3(0,float(y),0),Vector3(.90,.045,.46),wood)
 			_rental_part(root,Vector3(0,.10,0),Vector3(.94,.13,.49),dark)
 			_rental_part(root,Vector3(0,1.89,0),Vector3(1.00,.065,.54),dark)
 			for x in [-.231,.231]:
-				_rental_part(root,Vector3(float(x),1.05,.257),Vector3(.438,1.65,.035),wood.lightened(.075))
-				_rental_part(root,Vector3(float(x),1.05,.28),Vector3(.33,1.45,.025),wood.lightened(.12))
-				_rental_part(root,Vector3(float(x)*.25,1.02,.31),Vector3(.035,.16,.04),Color("#bca985"))
+				var hinge := _rental_root(root,Vector3(float(x)-.219,.225,.27))
+				_rental_part(hinge,Vector3(.219,.825,0),Vector3(.438,1.65,.035),wood.lightened(.075))
+				_rental_part(hinge,Vector3(.219,.825,.023),Vector3(.33,1.45,.025),wood.lightened(.12))
+				_rental_part(hinge,Vector3(.36,.80,.05),Vector3(.035,.16,.04),Color("#bca985"))
+				if body is StaticBody3D: _register_storage_door(hinge,Vector3(.219,.825,.025),Vector3(.438,1.65,.08),"armario del dormitorio")
 			_rental_part(root,Vector3(0,.20,.26),Vector3(.86,.17,.045),dark)
 
 func _rental_window(parent: Node3D,at: Vector3,angle: float,width: float) -> void:
@@ -760,8 +770,11 @@ func _decorate_rental_home() -> void:
 		_make_storage_leaf(kitchen,float(x),.46,.345,.59,.66,"armario inferior",Color("#c9bda1"))
 	_rental_part(kitchen,Vector3(-.54,.963,0),Vector3(.61,.022,.47),Color("#b4bfc0"))
 	_rental_part(kitchen,Vector3(-.54,.98,0),Vector3(.47,.018,.34),Color("#596669"))
-	_rental_cylinder(kitchen,Vector3(-.54,1.07,-.25),.027,.22,Color("#a9b5b5"))
-	_rental_part(kitchen,Vector3(-.54,1.18,-.16),Vector3(.052,.045,.19),Color("#a9b5b5"))
+	kitchen_tap = _rental_root(kitchen,Vector3(-.54,1.07,-.25))
+	_rental_cylinder(kitchen_tap,Vector3.ZERO,.027,.22,Color("#a9b5b5"))
+	_rental_part(kitchen_tap,Vector3(0,.11,.09),Vector3(.052,.045,.19),Color("#a9b5b5"))
+	tap_water = _rental_cylinder(kitchen_tap,Vector3(0,.005,.17),.014,.19,Color("#9dc5cf"))
+	tap_water.hide()
 	_rental_part(kitchen,Vector3(.55,.975,0),Vector3(.62,.06,.49),Color("#454947"))
 	for x in [.39,.69]:
 		for z in [-.12,.12]:
@@ -782,11 +795,12 @@ func _decorate_rental_home() -> void:
 	show_rental_oil(String(stock.get("aceite",""))=="stored")
 	# Small CRT and stand along the south wall, outside the luggage area.
 	var tv := _rental_root(decor,Vector3(-4.65,0,5.44),PI)
+	television = tv
 	_solid(tv,Vector3(0,.36,0),Vector3(1.25,.72,.44),Color("#78614a"))
 	_rental_part(tv,Vector3(0,.40,.23),Vector3(1.12,.46,.035),Color("#8b7155"))
 	_rental_part(tv,Vector3(0,.55,.26),Vector3(.18,.035,.04),Color("#b8a98b"))
 	_rental_part(tv,Vector3(0,.98,0),Vector3(.61,.49,.43),Color("#4c504c"))
-	_rental_round(tv,Vector3(-.055,.99,.226),Vector3(.43,.33,.06),Color("#666e69"))
+	television_screen = _rental_round(tv,Vector3(-.055,.99,.226),Vector3(.43,.33,.06),Color("#666e69"))
 	_rental_cylinder(tv,Vector3(.24,.98,.233),.045,.034,Color("#b4b0a0")).rotation.x = PI*.5
 	for i in range(4):
 		_rental_part(tv,Vector3(.24,.87+float(i)*.021,.24),Vector3(.07,.008,.01),Color("#242a28"))
@@ -806,9 +820,17 @@ func _decorate_rental_home() -> void:
 	_rental_part(bedside_drawer,Vector3(0,-.085,0),Vector3(.43,.03,.43),Color("#8a6d51"))
 	for x in [-.21,.21]: _rental_part(bedside_drawer,Vector3(float(x),-.025,0),Vector3(.025,.14,.43),Color("#8a6d51"))
 	_rental_part(bedside_drawer,Vector3(0,-.025,-.20),Vector3(.43,.14,.025),Color("#8a6d51"))
-	_rental_cylinder(bedside,Vector3(0,.65,0),.11,.045,Color("#81715b"))
-	_rental_cylinder(bedside,Vector3(0,.79,0),.025,.24,Color("#81715b"))
-	_rental_round(bedside,Vector3(0,.95,0),Vector3(.34,.29,.34),Color("#e2cba3"))
+	bedside_lamp = _rental_root(bedside,Vector3(0,.65,0))
+	_rental_cylinder(bedside_lamp,Vector3.ZERO,.11,.045,Color("#81715b"))
+	_rental_cylinder(bedside_lamp,Vector3(0,.14,0),.025,.24,Color("#81715b"))
+	_rental_round(bedside_lamp,Vector3(0,.30,0),Vector3(.34,.29,.34),Color("#e2cba3"))
+	bedside_glow = OmniLight3D.new()
+	bedside_lamp.add_child(bedside_glow)
+	bedside_glow.position.y = .30
+	bedside_glow.light_color = Color("#ffe1ae")
+	bedside_glow.light_energy = .7
+	bedside_glow.omni_range = 2.8
+	bedside_glow.visible = bool(state.get("bedside_light",false))
 	# Domestic light fixtures and a third light in the formerly dark bedroom.
 	for at in [Vector3(-3.7,2.88,1.2),Vector3(3.7,2.88,0),Vector3(-3.9,2.88,-4.0)]:
 		_rental_fixture(decor,at)
@@ -837,6 +859,7 @@ func _decorate_rental_home() -> void:
 	wall_minute_hand = _rental_root(clock,Vector3(0,0,.064))
 	_rental_part(wall_minute_hand,Vector3(0,.073,0),Vector3(.014,.146,.009),Color("#44423a"))
 	_build_home_coffee(kitchen)
+	_refresh_tv_screen()
 	_update_wall_clock()
 
 func _build_rental_bathroom() -> void:
@@ -1123,6 +1146,16 @@ func _build_home_coffee(kitchen: Node3D) -> void:
 	_rental_cylinder(coffee_cup,Vector3(0,.092,0),.035,.005,Color("#593723"))
 	_rental_part(coffee_cup,Vector3(.05,.045,0),Vector3(.035,.055,.02),Color("#eee5d4"))
 
+func _refresh_tv_screen() -> void:
+	if not is_instance_valid(television_screen): return
+	var on := bool(state.get("tv_on",false))
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color("#8fa7aa") if on else Color("#666e69")
+	mat.emission_enabled = on
+	mat.emission = Color("#a9c2c9")
+	mat.emission_energy_multiplier = .5
+	television_screen.material_override = mat
+
 func _update_wall_clock() -> void:
 	if not is_instance_valid(wall_hour_hand) or business.life==null: return
 	var minute: float = float(business.life.state.minutes)
@@ -1139,6 +1172,9 @@ func _domestic_target() -> Dictionary:
 			if _aim_tool(curtain,Vector3.ZERO,Vector3(width*.25,.74,.12)): return {"kind":"curtain","window":entry}
 		if _aim_tool(root,Vector3(0,0,.12),Vector3(width*.5,.58,.12)): return {"kind":"window","window":entry}
 	if _aim_tool(bedside_drawer,Vector3(0,0,.25),Vector3(.24,.12,.10)): return {"kind":"drawer"}
+	if _aim_tool(bedside_lamp,Vector3(0,.22,0),Vector3(.20,.25,.20)): return {"kind":"lamp"}
+	if _aim_tool(television,Vector3(0,.98,.12),Vector3(.32,.26,.20)): return {"kind":"tv"}
+	if _aim_tool(kitchen_tap,Vector3(0,.06,.08),Vector3(.08,.16,.14)): return {"kind":"tap"}
 	if _aim_tool(coffee_pot,Vector3(0,.15,0),Vector3(.14,.17,.12)): return {"kind":"brew"}
 	if _aim_tool(coffee_cup,Vector3(0,.05,0),Vector3(.09,.07,.09)): return {"kind":"drink"}
 	if _aimed_furniture()=="cama": return {"kind":"bed"}
@@ -1150,6 +1186,9 @@ func domestic_action() -> String:
 		"curtain": return "[E] "+("Cerrar cortinas" if bool(target.window.curtain) else "Abrir cortinas")
 		"window": return "[E] "+("Cerrar ventana" if bool(target.window.window) else "Abrir ventana")
 		"drawer": return "[E] "+("Cerrar cajón" if bedside_drawer.position.z>.15 else "Abrir cajón")
+		"lamp": return "[E] "+("Apagar lámpara" if bedside_glow.visible else "Encender lámpara")
+		"tv": return "[E] "+("Apagar televisor" if bool(state.get("tv_on",false)) else "Encender televisor")
+		"tap": return "[E] "+("Cerrar grifo" if tap_water.visible else "Abrir grifo")
 		"brew": return "[E] Preparar café" if int(business.life.state.coffee_cups)==0 else "Cafetera · %d tazas restantes" % int(business.life.state.coffee_cups)
 		"drink": return "[E] Tomar café · %d/4" % int(business.life.state.coffee_cups)
 		"bed": return "[E] Cama · Dormir / tender / mover"
@@ -1178,6 +1217,15 @@ func domestic_interact() -> bool:
 			var goal := 0.0 if bedside_drawer.position.z>.15 else .30
 			var tween := create_tween()
 			tween.tween_property(bedside_drawer,"position:z",goal,.30)
+		"lamp":
+			bedside_glow.visible = not bedside_glow.visible
+			state.bedside_light = bedside_glow.visible
+			_save()
+		"tv":
+			state.tv_on = not bool(state.get("tv_on",false))
+			_refresh_tv_screen()
+			_save()
+		"tap": tap_water.visible = not tap_water.visible
 		"brew": _brew_coffee_async()
 		"drink": _drink_coffee_async()
 		"bed": _bed_menu()
