@@ -178,7 +178,9 @@ func setup(builder: Builder) -> void:
 		print("MyCity: using prebuilt road topology from airport.")
 	var street_ms := Time.get_ticks_msec()
 	_begin_building_cache()
+	var clip_started := Time.get_ticks_msec()
 	_load_map_edits()
+	print("MyCity carga (ms): huellas y recortes=",Time.get_ticks_msec()-clip_started)
 	_reserve_market_block()
 	stadium = Latino.new()
 	add_child(stadium)
@@ -1864,41 +1866,70 @@ func _face(a: Vector3,b: Vector3,c: Vector3,normal: Vector3,mat: StandardMateria
 		map_collision[tile] = []
 	map_collision[tile].append_array([a,b,c])
 
-func _extrude(poly: PackedVector2Array,bottom: float,top: float,mat: StandardMaterial3D,tile: Vector2i) -> bool:
-	var key := DerivedCache.key_for(poly) if not derived_key.is_empty() else ""
-	var triangles: PackedInt32Array
+# Save the actual wall/roof triangle positions and normals as plain data.
+# The material and physics resources are rebuilt for the current scene.
+func _extrusion_geometry(poly: PackedVector2Array,bottom: float,top: float) -> Dictionary:
+	var key := DerivedCache.key_for([poly,bottom,top]) if not derived_key.is_empty() else ""
 	if not key.is_empty() and building_cache.extrusion.has(key):
-		triangles = building_cache.extrusion[key]
-		building_hits += 1
-	else:
-		triangles = Geometry2D.triangulate_polygon(poly)
-		if not key.is_empty():
-			building_cache.extrusion[key] = triangles
-			building_misses += 1
-			derived_dirty = true
-	if triangles.is_empty():
-		return false
-	for i in range(0,triangles.size(),3):
-		var a := poly[triangles[i]]
-		var b := poly[triangles[i+1]]
-		var c := poly[triangles[i+2]]
-		_face(Vector3(a.x,top,a.y),Vector3(b.x,top,b.y),Vector3(c.x,top,c.y),Vector3.UP,mat,tile)
-		# An underside is required for walkable arcades.
-		if bottom>0.1:
-			_face(Vector3(c.x,bottom,c.y),Vector3(b.x,bottom,b.y),Vector3(a.x,bottom,a.y),Vector3.DOWN,mat,tile)
-	var clockwise := Geometry2D.is_polygon_clockwise(poly)
-	for i in range(poly.size()):
-		var a := poly[i]
-		var b := poly[(i+1)%poly.size()]
-		var av := Vector3(a.x,bottom,a.y)
-		var bv := Vector3(b.x,bottom,b.y)
-		var at := Vector3(a.x,top,a.y)
-		var bt := Vector3(b.x,top,b.y)
-		var normal := Vector3(b.y-a.y,0,a.x-b.x).normalized()
-		if clockwise:
-			normal = -normal
-		_face(av,at,bt,normal,mat,tile)
-		_face(av,bt,bv,normal,mat,tile)
+		var cached: Variant = building_cache.extrusion[key]
+		if cached is Dictionary and cached.get("vertices") is PackedVector3Array and cached.get("normals") is PackedVector3Array and cached.vertices.size()==cached.normals.size()*3:
+			building_hits += 1
+			return cached
+	var vertices := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var triangles := Geometry2D.triangulate_polygon(poly)
+	if not triangles.is_empty():
+		for i in range(0,triangles.size(),3):
+			var a := poly[triangles[i]]
+			var b := poly[triangles[i+1]]
+			var c := poly[triangles[i+2]]
+			vertices.append_array(PackedVector3Array([Vector3(a.x,top,a.y),Vector3(b.x,top,b.y),Vector3(c.x,top,c.y)]))
+			normals.append(Vector3.UP)
+			if bottom>0.1:
+				vertices.append_array(PackedVector3Array([Vector3(c.x,bottom,c.y),Vector3(b.x,bottom,b.y),Vector3(a.x,bottom,a.y)]))
+				normals.append(Vector3.DOWN)
+		var clockwise := Geometry2D.is_polygon_clockwise(poly)
+		for i in range(poly.size()):
+			var a := poly[i]
+			var b := poly[(i+1)%poly.size()]
+			var av := Vector3(a.x,bottom,a.y)
+			var bv := Vector3(b.x,bottom,b.y)
+			var at := Vector3(a.x,top,a.y)
+			var bt := Vector3(b.x,top,b.y)
+			var normal := Vector3(b.y-a.y,0,a.x-b.x).normalized()
+			if clockwise: normal = -normal
+			vertices.append_array(PackedVector3Array([av,at,bt,av,bt,bv]))
+			normals.append(normal)
+			normals.append(normal)
+	var result := {"vertices":vertices,"normals":normals}
+	if not key.is_empty():
+		building_cache.extrusion[key] = result
+		building_misses += 1
+		derived_dirty = true
+	return result
+
+func _extrude(poly: PackedVector2Array,bottom: float,top: float,mat: StandardMaterial3D,tile: Vector2i) -> bool:
+	var geometry := _extrusion_geometry(poly,bottom,top)
+	var vertices: PackedVector3Array = geometry.vertices
+	var normals: PackedVector3Array = geometry.normals
+	if vertices.is_empty(): return false
+	mat = _textured(mat,Vector3(float(tile.x)*96.0+48.0,0,float(tile.y)*96.0+48.0))
+	var key := str(tile)+":"+str(mat.get_instance_id())
+	if not map_surfaces.has(key):
+		var surface := SurfaceTool.new()
+		surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+		surface.set_material(mat)
+		map_surfaces[key] = surface
+	var st: SurfaceTool = map_surfaces[key]
+	# Resolve the shared material and spatial batch once per extrusion,
+	# instead of for every triangle. Keep the same vertices and winding.
+	for i in range(normals.size()):
+		var normal: Vector3 = normals[i]
+		for j in range(3):
+			st.set_normal(normal)
+			st.add_vertex(vertices[i*3+j])
+	if not map_collision.has(tile): map_collision[tile] = []
+	map_collision[tile].append_array(Array(vertices))
 	return true
 
 func _flush_footprints() -> void:
