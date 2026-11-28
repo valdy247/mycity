@@ -498,14 +498,59 @@ func _attach_profile(agent: Dictionary) -> void:
 	person.set_meta("resident_job",profile.job)
 	person.set_meta("resident_personality",profile.personality)
 
+# Road nodes may connect opposite sidewalks, but never serve as places
+# to wait, socialize, spawn or finish an ordinary pedestrian trip.
+func _road_point(p: Vector3) -> bool:
+	return world.street_geometry.point_on_road(p)
+
+func _safe_destination(id: int) -> bool:
+	return graph.has_point(id) and graph.get_point_weight_scale(id)<ROAD_COST and not _road_point(graph.get_point_position(id))
+
+func _destination_available(id: int,actor: Person) -> bool:
+	if not _safe_destination(id): return false
+	var p := graph.get_point_position(id)
+	var reserved := 0
+	for entry in walkers:
+		if entry.node==actor or not is_instance_valid(entry.node) or bool(entry.get("indoors",false)): continue
+		var other: Person = entry.node
+		if other.global_position.distance_squared_to(p)<5.0: reserved += 1
+		elif int(entry.get("destination",{}).get("id",-1))==id: reserved += 1
+		if reserved>=2: return false
+	return true
+
+func _leave_road(agent: Dictionary) -> bool:
+	var person: Person = agent.node
+	var at := person.global_position
+	var candidates := _near_ids(at,12.0)
+	candidates.sort_custom(func(a,b): return graph.get_point_position(int(a)).distance_squared_to(at)<graph.get_point_position(int(b)).distance_squared_to(at))
+	var tested := 0
+	for id_value in candidates:
+		var id := int(id_value)
+		if not _safe_destination(id): continue
+		var p := graph.get_point_position(id)
+		if not world.pedestrian_space_clear(person,p,.85,false): continue
+		tested += 1
+		if tested>6: break
+		if not world.pedestrian_segment_clear(at,p): continue
+		agent.path = PackedVector3Array([p])
+		agent.index = 0
+		agent.destination = {"id":id,"kind":"walk"}
+		agent.pause = 0.0
+		person.remove_meta("conversation_until")
+		person.social_context = "street"
+		return true
+	return false
+
 func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 	var person: Person = agent.node
+	if _road_point(person.global_position) and _leave_road(agent): return true
 	var start := _nearest(person.global_position,6.0)
 	if start<0: return false
 	var nearby: Array = []
 	var origin := graph.get_point_position(start)
 	for dest in destinations:
 		if force_non_bus and String(dest.kind)=="bus": continue
+		if not _destination_available(int(dest.id),person): continue
 		var p := graph.get_point_position(int(dest.id))
 		var dist := origin.distance_to(p)
 		if dist<8.0 or dist>155.0: continue
@@ -518,7 +563,7 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 	if not profile.is_empty():
 		var home: Dictionary = profile.home
 		# In the evening favor the resident's own doorway if reachable.
-		if String(profile.get("objective","")) in ["descansar","volver a casa"] and not home.is_empty():
+		if String(profile.get("objective","")) in ["descansar","volver a casa"] and not home.is_empty() and _destination_available(int(home.id),person):
 			var home_path := graph.get_point_path(start,int(home.id))
 			if not home_path.is_empty():
 				agent.path = home_path
@@ -530,7 +575,7 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 				return true
 		if String(profile.get("objective","")) in ["trabajar","estudiar"] and not force_non_bus:
 			var workplace: Dictionary = profile.get("workplace",{})
-			if not workplace.is_empty() and resident_clock-float(profile.last_work)>=180.0:
+			if not workplace.is_empty() and _destination_available(int(workplace.id),person) and resident_clock-float(profile.last_work)>=180.0:
 				var work_path := PackedVector3Array()
 				if origin.distance_to(graph.get_point_position(int(workplace.id)))<155.0:
 					work_path = graph.get_point_path(start,int(workplace.id))
@@ -560,7 +605,9 @@ func _choose_route(agent: Dictionary,force_non_bus: bool = false) -> bool:
 		if not profile.is_empty(): profile.activity = String(dest.kind)
 		agent.pause = 0.0
 		return true
-	var neighbors := graph.get_point_connections(start)
+	var neighbors: Array = []
+	for candidate in graph.get_point_connections(start):
+		if _destination_available(int(candidate),person): neighbors.append(candidate)
 	if neighbors.is_empty(): return false
 	var end := int(neighbors[randi_range(0,neighbors.size()-1)])
 	agent.path = graph.get_point_path(start,end)
@@ -645,12 +692,16 @@ func _populate() -> void:
 		# Roadway nodes are for fallback travel, not ordinary population spawns.
 		if graph.get_point_weight_scale(int(id))>=ROAD_COST: continue
 		var p := graph.get_point_position(int(id))
-		if p.distance_to(at)<7.0: continue
+		if _road_point(p) or p.distance_to(at)<7.0: continue
 		if not world.pedestrian_space_clear(null,p,1.0,false): continue
 		var safe := true
+		var local_count := 0
 		for agent in walkers:
 			var other: Person = agent.node
-			if other.global_position.distance_to(p)<2.1:
+			if not is_instance_valid(other) or bool(agent.get("indoors",false)): continue
+			var distance := other.global_position.distance_to(p)
+			if distance<12.0: local_count += 1
+			if distance<2.1 or local_count>=4:
 				safe = false
 				break
 		if not safe: continue
@@ -773,14 +824,20 @@ func tick(delta: float) -> void:
 		if distance_sq>4900.0 and float(agent.lod_dt)<.20 and not agent.has("yield_target"): continue
 		var actor_dt: float = agent.lod_dt
 		agent.lod_dt = 0.0
-		person.phone_idle = float(agent.pause)>0.0 and not bool(agent.get("indoors",false)) and distance_sq<900.0
+		var on_road := _road_point(person.global_position)
+		person.phone_idle = not on_road and float(agent.pause)>0.0 and not bool(agent.get("indoors",false)) and distance_sq<900.0
+		if on_road and not bool(agent.get("indoors",false)):
+			person.remove_meta("conversation_until")
+			if float(agent.pause)>0.0 or int(agent.index)>=(agent.path as PackedVector3Array).size():
+				agent.pause = 0.0
+				if not _leave_road(agent): _choose_route(agent,true)
 		if agent.has("yield_target"):
 			var safe: Vector3 = agent.yield_target
 			var step := person.global_position.move_toward(safe,1.8*actor_dt)
 			if world.pedestrian_segment_clear(person.global_position,step) and world.pedestrian_space_clear(person,step):
 				if person.walk_to(safe,actor_dt,1.8):
 					agent.erase("yield_target")
-					agent.pause = 6.0
+					agent.pause = 0.0 if _road_point(person.global_position) else 6.0
 			else:
 				agent.erase("yield_target")
 			continue
@@ -806,6 +863,9 @@ func tick(delta: float) -> void:
 		var index := int(agent.index)
 		if index>=path.size():
 			var dest: Dictionary = agent.destination
+			if on_road:
+				if not _leave_road(agent): _choose_route(agent,true)
+				continue
 			if String(dest.get("kind",""))=="bus" and buses!=null:
 				if buses.join_stop(dest.stop,person):
 					person.remove_from_group("bus_yield_walkers")
@@ -871,9 +931,9 @@ func tick(delta: float) -> void:
 			else:
 				person.animate(actor_dt,false)
 				agent.people_wait = float(agent.get("people_wait",0.0))+actor_dt
-				if float(agent.people_wait)>2.0:
+				if float(agent.people_wait)>(.5 if on_road else 2.0):
 					agent.people_wait = 0.0
-					_choose_route(agent,true)
+					if not on_road or not _leave_road(agent): _choose_route(agent,true)
 			continue
 		agent.people_wait = 0.0
 		if not world.pedestrian_segment_clear(person.global_position,step) or not route_clear:
@@ -890,5 +950,5 @@ func tick(delta: float) -> void:
 				if disconnected: graph.connect_points(from_id,to_id,true)
 			continue
 		agent["blocked_time"] = 0.0
-		if person.walk_to(p,actor_dt,float(agent.speed)):
+		if person.walk_to(p,actor_dt,float(agent.speed)*(1.25 if on_road else 1.0)):
 			agent.index = index+1
