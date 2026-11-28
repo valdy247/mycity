@@ -184,6 +184,7 @@ var inside := false
 var previous_first := true
 var riding := false
 var market_buyer: Node3D
+var last_vehicle_warning := ""
 var ride_kind := ""
 var ride_speed := 0.0
 var borrowed_body: CharacterBody3D
@@ -398,6 +399,14 @@ func _vehicle_condition(kind: String) -> float:
 func _vehicle_energy(kind: String) -> float:
 	return clampf(float(state.vehicle_energy.get(kind,100.0)),0.0,100.0)
 
+func _vehicle_fault(kind: String) -> String:
+	var condition := _vehicle_condition(kind)
+	if condition<=15.0: return "Gomas y transmisión muy desgastadas" if kind=="bicicleta" else "Motor y frenos muy desgastados"
+	if condition<=35.0: return "Cadena y frenos necesitan ajuste" if kind=="bicicleta" else "Mantenimiento urgente"
+	if kind!="bicicleta" and _vehicle_energy(kind)<=0.0: return "Sin energía · modo de emergencia"
+	if kind!="bicicleta" and _vehicle_energy(kind)<=15.0: return "Batería baja" if kind=="triciclo" else "Combustible bajo"
+	return ""
+
 func _vehicle_service_menu(kind: String) -> void:
 	if not inside or not _complete(kind): return
 	var condition := _vehicle_condition(kind)
@@ -484,6 +493,9 @@ func _confirm_listing(kind: String) -> void:
 	business.close()
 	business._notify("Vehículo publicado. Recibirás ofertas en el teléfono.")
 
+func _listing_now() -> float:
+	return float(business.life.state.get("day",1))*1440.0+float(business.life.state.get("minutes",480.0))
+
 func _tick_listing(delta: float) -> void:
 	var listing: Dictionary = state.listing
 	if listing.is_empty(): return
@@ -494,6 +506,17 @@ func _tick_listing(delta: float) -> void:
 		business._notify("Publicación retirada: vehículo no disponible.")
 		return
 	if not listing.has("phase"): listing.phase = "waiting"
+	if String(listing.phase) in ["offer","agreed"]:
+		if _listing_now()>=float(listing.get("expires",INF)):
+			business.ledger.add_message("Marketplace","El comprador ya no está disponible. Tu vehículo sigue publicado y puedes recibir otra oferta.")
+			listing.phase = "waiting"
+			listing.remaining = 35.0
+			listing.erase("expires")
+			listing.erase("agreed")
+			if is_instance_valid(market_buyer): market_buyer.queue_free()
+			market_buyer = null
+			_save()
+		return
 	if String(listing.phase)!="waiting": return
 	listing.remaining = maxf(0.0,float(listing.remaining)-delta)
 	if float(listing.remaining)>0.0: return
@@ -501,6 +524,7 @@ func _tick_listing(delta: float) -> void:
 	var discount := maxi(0,12-floori(float(business.ledger.reputation("Marketplace"))/10.0)-int(listing.attempt)*2)
 	listing.offer = maxi(1,roundi(float(listing.price)*(1.0-float(discount)/100.0)))
 	listing.phase = "offer"
+	listing.expires = _listing_now()+120.0
 	business.ledger.add_message("Marketplace","Buenas, ¿todavía tienes "+String(Kit.KITS[kind].name)+"? Te ofrezco "+str(listing.offer)+" CUP. Responde en Marketplace.")
 	_save()
 	business._notify("Marketplace · Nueva oferta por tu vehículo")
@@ -522,6 +546,7 @@ func _vehicle_listing_menu() -> void:
 			business._button("Rechazar y esperar",_reject_vehicle_offer)
 		"agreed":
 			var near := _vehicle_handover_near(kind)
+			business._phone_metric("Encuentro","%d min restantes" % maxi(0,ceili(float(listing.get("expires",_listing_now()+180.0))-_listing_now())))
 			business._button("Encontrarse con comprador",_vehicle_handover,not near)
 			business._button("Marcar lugar de entrega",_vehicle_meeting_gps)
 	business._button("Cancelar publicación",_cancel_vehicle_listing)
@@ -529,13 +554,14 @@ func _vehicle_listing_menu() -> void:
 
 func _accept_vehicle_offer(counter: bool) -> void:
 	var listing: Dictionary = state.listing
-	if String(listing.get("phase",""))!="offer": return
+	if String(listing.get("phase",""))!="offer" or _listing_now()>=float(listing.get("expires",INF)): return
 	if counter and int(listing.get("attempt",1))<2 and business.ledger.reputation("Marketplace")<65:
 		business.ledger.add_message("Marketplace","No me alcanza para ese precio, hermano. Suerte con la venta.")
 		_reject_vehicle_offer()
 		return
 	listing.agreed = int(listing.price) if counter else int(listing.offer)
 	listing.phase = "agreed"
+	listing.expires = _listing_now()+180.0
 	business.ledger.add_message("Marketplace","Trato hecho. Nos vemos donde tienes el vehículo. Te pago al recibirlo.")
 	_save()
 	_vehicle_listing_menu()
@@ -544,6 +570,7 @@ func _reject_vehicle_offer() -> void:
 	if String(state.listing.get("phase",""))!="offer": return
 	state.listing.phase = "waiting"
 	state.listing.remaining = 35.0
+	state.listing.erase("expires")
 	_save()
 	_vehicle_listing_menu()
 
@@ -593,7 +620,7 @@ func _show_market_buyer() -> void:
 
 func _vehicle_handover() -> void:
 	var listing: Dictionary = state.listing
-	if String(listing.get("phase",""))!="agreed" or not _vehicle_handover_near(String(listing.kind)): return
+	if String(listing.get("phase",""))!="agreed" or _listing_now()>=float(listing.get("expires",INF)) or not _vehicle_handover_near(String(listing.kind)): return
 	_show_market_buyer()
 	business._open("Comprador","Está bien, me quedo con el vehículo. Aquí tienes los %d CUP. ¿Cerramos el trato?" % int(listing.agreed))
 	business._button("Entregar vehículo y cobrar",_complete_vehicle_sale)
@@ -601,7 +628,7 @@ func _vehicle_handover() -> void:
 
 func _complete_vehicle_sale() -> void:
 	var listing: Dictionary = state.listing
-	if String(listing.get("phase",""))!="agreed": return
+	if String(listing.get("phase",""))!="agreed" or _listing_now()>=float(listing.get("expires",INF)): return
 	var kind := String(listing.kind)
 	if not _complete(kind) or not _vehicle_handover_near(kind): return
 	var price := int(listing.agreed)
@@ -4054,6 +4081,7 @@ func _mount(kind: String) -> void:
 
 func _begin_manual_ride(body: CharacterBody3D,kind: String) -> void:
 	riding = true
+	last_vehicle_warning = ""
 	ride_exit_requested = false
 	ride_kind = kind
 	ride_speed = 0.0
@@ -4149,6 +4177,12 @@ func drive(delta: float,movement: Vector2) -> void:
 		elif _vehicle_energy(ride_kind)<=0.0:
 			speed = minf(speed,2.0) # Limp-home mode prevents stranding.
 			boost = false
+	if not riding_borrowed():
+		var warning := _vehicle_fault(ride_kind)
+		if warning!=last_vehicle_warning:
+			last_vehicle_warning = warning
+			if not warning.is_empty(): business._notify(warning)
+		if _vehicle_condition(ride_kind)<=35.0: boost = false
 	var target := -movement.y*(minf(45.0,speed*1.35) if boost else (speed if movement.y<=0 else speed*.28))
 	var brake: bool = game.control_pressed(KEY_SPACE) or ride_exit_requested
 	ride_speed = move_toward(ride_speed,0.0 if brake else target,delta*(16.0 if brake else (15.0 if boost else 4.0)))
