@@ -570,12 +570,12 @@ func show_rental_stock(key: String,animate_door: bool = true) -> void:
 		rental_fridge_goods[key] = goods
 	if not animate_door: return
 	if is_instance_valid(rental_fridge_tween): rental_fridge_tween.kill()
-	for door_node in rental_fridge_doors.values(): door_node.rotation.y = 0.0
 	var hinge: Node3D = rental_fridge_doors[key]
+	var allowed: float = game.garage.storage_safe_angle(hinge,-1.45)
 	rental_fridge_tween = create_tween()
-	rental_fridge_tween.tween_property(hinge,"rotation:y",-1.45,.38)
+	rental_fridge_tween.tween_method(game.garage.apply_storage_angle.bind(hinge),hinge.rotation.y,allowed,.38)
 	rental_fridge_tween.tween_interval(.85)
-	rental_fridge_tween.tween_property(hinge,"rotation:y",0.0,.40)
+	rental_fridge_tween.tween_method(game.garage.apply_storage_angle.bind(hinge),allowed,0.0,.40)
 
 func _store_cold() -> bool:
 	if ledger.carry.is_empty(): return false
