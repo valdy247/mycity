@@ -371,40 +371,54 @@ func _play_fare_line(i: int) -> void:
 	print("MyCity: fare dialogue ",i+1,"/",FARE_LINES.size()," | ",String(item[1]))
 	fare_active = true
 
-func _safe_approach_cut() -> void:
-	# This is a cinematic time ellipsis, only while the screen is fully black.
-	if service.arrived or service.passenger.is_empty(): return
+func _safe_approach_cut() -> bool:
+	# Choose a point along a real final route segment, even when route
+	# waypoints are far apart. The former waypoint-only search often failed.
+	if service.arrived: return true
+	if service.passenger.is_empty(): return false
 	var path: Array = service.passenger.path
 	var current := int(service.passenger.index)
-	if current>=path.size()-2: return
-	var remaining := cab.global_position.distance_to(path.back().p)
-	if remaining<26.0: return
-	for i in range(path.size()-2,maxi(current,path.size()-35),-1):
-		var p: Vector3 = path[i].p
-		var next: Vector3 = path[i+1].p
+	if path.is_empty(): return false
+	var end: Vector3 = path.back().p
+	if _flat(cab.global_position,end)<25.0: return true
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(1.95,1.8,4.9)
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = shape
+	q.collision_mask = 1|4|8|32
+	q.exclude = [cab.get_rid(),game.player.get_rid()]
+	for i in range(path.size()-1,maxi(current,1)-1,-1):
+		var p: Vector3 = path[i-1].p
+		var next: Vector3 = path[i].p
 		var d := next-p
-		d.y = 0
-		if d.length()<.8 or p.distance_to(path.back().p)<8.0 or p.distance_to(path.back().p)>25.0: continue
-		d = d.normalized()
-		if not world.street_geometry.point_on_road(p): continue
+		d.y = 0.0
+		var length := d.length()
+		if length<.8: continue
+		d /= length
 		var angle := atan2(d.x,d.z)
-		var q := PhysicsShapeQueryParameters3D.new()
-		var shape := BoxShape3D.new()
-		shape.size = Vector3(1.95,1.8,4.9)
-		q.shape = shape
-		q.transform = Transform3D(Basis(Vector3.UP,angle),p+Vector3.UP*.92)
-		q.collision_mask = 1|4|8|32
-		q.exclude = [cab.get_rid(),game.player.get_rid()]
-		if not get_world_3d().direct_space_state.intersect_shape(q,1).is_empty(): continue
-		# Release the old junction reservation and keep the route's final samples.
-		var saved: Dictionary = service.passenger.duplicate(true)
-		service.finish_trip()
-		cab.global_position = Vector3(p.x,cab.global_position.y,p.z)
-		cab.rotation.y = angle
-		saved.index = i+1
-		saved.path = path
-		service.resume_mission_trip(saved)
-		return
+		# Search points along the last road, rather than assuming a sample
+		# happens to be at the requested cinematic distance.
+		var count := mini(120,ceili(length/2.0))
+		for step in range(count+1):
+			var pos := next-d*minf(length,float(step)*2.0)
+			var distance := _flat(pos,end)
+			if distance<10.0 or distance>26.0: continue
+			if not world.street_geometry.point_on_road(pos): continue
+			var right := Vector3(-d.z,0,d.x)
+			if not world.street_geometry.point_on_road(pos+right) or not world.street_geometry.point_on_road(pos-right): continue
+			q.transform = Transform3D(Basis(Vector3.UP,angle),Vector3(pos.x,cab.global_position.y+.92,pos.z))
+			if not get_world_3d().direct_space_state.intersect_shape(q,1).is_empty(): continue
+			var saved: Dictionary = service.passenger.duplicate(true)
+			service.finish_trip()
+			cab.global_position = Vector3(pos.x,cab.global_position.y,pos.z)
+			cab.rotation.y = angle
+			saved.index = i
+			saved.path = path
+			if service.resume_mission_trip(saved):
+				print("MyCity: arrival cut ",roundi(distance),"m from home stop.")
+				return true
+			return false
+	return false
 
 func _arrive() -> void:
 	var exit: Dictionary = service.stop_position(game.player,game.player_shape.shape)
@@ -783,16 +797,18 @@ func tick(delta: float) -> void:
 		"approach":
 			game.player.global_position = cab.global_position+Vector3.UP
 			arrival_wait += delta
-			if not approach_cut_done:
-				approach_cut_done = true
-				_safe_approach_cut()
+			if not approach_cut_done and fade.color.a>=.99:
+				approach_cut_done = _safe_approach_cut()
 			var close_to_home: bool = service.arrived
 			if not service.passenger.is_empty():
 				var route: Array = service.passenger.path
 				if not route.is_empty(): close_to_home = cab.global_position.distance_to(route.back().p)<30.0
-			if close_to_home:
+			# Never hide a long traffic wait behind a frozen loading screen.
+			# If no safe cut was available, reveal the real approach instead.
+			if close_to_home or approach_cut_done or arrival_wait>=1.5:
+				approach_cut_done = true
 				subtitle.text = ""
-				fade.color.a = move_toward(fade.color.a,0.0,delta*1.3)
+				fade.color.a = move_toward(fade.color.a,0.0,delta*1.8)
 			if service.arrived and fade.color.a<=.01:
 				phase = "arrival"
 				arrival_wait = 0.0

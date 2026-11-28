@@ -2,6 +2,15 @@ extends Node3D
 # Airport arrivals inspired by the supplied exterior/interior/baggage references.
 # Geometry is procedural, not a measured terminal survey; the city is not loaded.
 const Progress = preload("res://airport_progress.gd")
+const WarmMap = preload("res://pilar_map.gd")
+const WarmStreets = preload("res://street_geometry.gd")
+var city_warm_started := false
+var city_warm_thread: Thread
+var city_warm_data: Dictionary = {}
+var city_scene_requested := false
+var city_glb_requested := false
+var warmed_glb: Resource
+var warm_start_ms := 0
 const Person = preload("res://street_person.gd")
 const Lights = preload("res://vehicle_lights.gd")
 const DESK := Vector3(-2.7,0,-24.4)
@@ -1959,7 +1968,44 @@ func _interact() -> void:
 			sliding.tween_property(exit_visual,"position:x",5.0,.65)
 			sliding.tween_callback(exit_visual.hide)
 
+# Prepare the immutable-to-the-scene map data on a worker. No Node,
+# texture, rendering-server or physics-space access occurs on this thread.
+static func _warm_city_map() -> Dictionary:
+	var started := Time.get_ticks_msec()
+	var geo := WarmMap.new()
+	if not geo.load_map(): return {}
+	var market: Dictionary = geo.market_street_block(geo.project(23.1234716,-82.3659728))
+	if not market.is_empty(): geo.remove_market_spurs(market)
+	var streets := WarmStreets.new()
+	streets.build(geo)
+	return {"geography":geo,"streets":streets,"market":market,"ms":Time.get_ticks_msec()-started}
+
+func _start_city_warmup() -> void:
+	if city_warm_started or OS.has_feature("web"): return
+	city_warm_started = true
+	warm_start_ms = Time.get_ticks_msec()
+	city_warm_thread = Thread.new()
+	if city_warm_thread.start(_warm_city_map)!=OK: city_warm_thread = null
+	city_scene_requested = ResourceLoader.load_threaded_request("res://main.tscn","PackedScene",false)==OK
+	if ResourceLoader.exists("res://city.glb"):
+		city_glb_requested = ResourceLoader.load_threaded_request("res://city.glb","PackedScene",false)==OK
+
+func _poll_city_warmup() -> bool:
+	if is_instance_valid(city_warm_thread):
+		if city_warm_thread.is_alive(): return false
+		city_warm_data = city_warm_thread.wait_to_finish()
+		city_warm_thread = null
+		print("MyCity carga anticipada (ms): mapa y calles=",city_warm_data.get("ms",0))
+	if city_scene_requested and ResourceLoader.load_threaded_get_status("res://main.tscn")==ResourceLoader.THREAD_LOAD_IN_PROGRESS: return false
+	if city_glb_requested and warmed_glb==null:
+		var status := ResourceLoader.load_threaded_get_status("res://city.glb")
+		if status==ResourceLoader.THREAD_LOAD_IN_PROGRESS: return false
+		if status==ResourceLoader.THREAD_LOAD_LOADED: warmed_glb = ResourceLoader.load_threaded_get("res://city.glb")
+		city_glb_requested = false
+	return true
+
 func _tick_departure(delta: float) -> void:
+	_start_city_warmup()
 	if not departure_started:
 		departure_started = true
 		# Only a completed dialogue from this revision can skip the prologue.
@@ -1979,13 +2025,21 @@ func _tick_departure(delta: float) -> void:
 		cinema_fade.color.a = move_toward(cinema_fade.color.a,1.0,delta*1.6)
 		if cinema_fade.color.a>=.99: chapter_title.show()
 		if departure_title_clock>=2.0: chapter_loading.show()
-		if departure_title_clock>=3.4:
+		if departure_title_clock>=3.0 and _poll_city_warmup():
 			entering_adaptation = true
 			if not replay_departure:
 				progress.ride_finished = true
 				progress.save_game()
-			get_tree().set_meta("mycity_adaptation",true)
-			get_tree().change_scene_to_file.call_deferred("res://main.tscn")
+			var tree := get_tree()
+			tree.set_meta("mycity_adaptation",true)
+			tree.set_meta("mycity_city_load_started",Time.get_ticks_msec())
+			if not city_warm_data.is_empty(): tree.set_meta("mycity_warmed_map",city_warm_data)
+			if warmed_glb!=null: tree.set_meta("mycity_warmed_glb",warmed_glb)
+			if city_scene_requested and ResourceLoader.load_threaded_get_status("res://main.tscn")==ResourceLoader.THREAD_LOAD_LOADED:
+				var scene := ResourceLoader.load_threaded_get("res://main.tscn") as PackedScene
+				tree.change_scene_to_packed.call_deferred(scene)
+			else:
+				tree.change_scene_to_file.call_deferred("res://main.tscn")
 		return
 	_move_departure_taxi(delta)
 	departure_clock += delta
@@ -2222,6 +2276,10 @@ func _legacy() -> void:
 	get_tree().change_scene_to_file("res://main.tscn")
 
 func _exit_tree() -> void:
+	# A Thread must always be joined before releasing its owning scene.
+	if is_instance_valid(city_warm_thread):
+		city_warm_thread.wait_to_finish()
+		city_warm_thread = null
 	if not voice_id.is_empty(): DisplayServer.tts_stop()
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -2260,6 +2318,7 @@ func _physics_process(delta: float) -> void:
 	if menu_open: return
 	_tick_ambient_people(delta)
 	_tick_actor_faces(delta)
+	if progress.stage>=9: _start_city_warmup()
 	if progress.stage==Progress.COMPLETE:
 		_tick_airport_audio(delta)
 		if not boarding_transition and not entering_adaptation: _tick_departure(delta)

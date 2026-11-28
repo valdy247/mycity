@@ -32,6 +32,7 @@ var home_cutaway: Array = []
 const INVENTORY_PATH := "user://pilar_atares_inventory.json"
 var inventory_path := INVENTORY_PATH
 var geography := MapData.new()
+var prebuilt_topology := false
 var home_root: Node3D
 var business_frontage: Node3D
 var custom_home_enabled := false
@@ -136,10 +137,13 @@ func setup(builder: Builder) -> void:
 			break
 	# Locate the block before rendering roads so internal dead-end access
 	# cannot split the market footprint or remain in the vehicle graph.
-	market_topology = geography.market_street_block(texture_market)
-	if not market_topology.is_empty():
-		geography.remove_market_spurs(market_topology)
-	street_geometry.build(geography)
+	if not prebuilt_topology:
+		market_topology = geography.market_street_block(texture_market)
+		if not market_topology.is_empty():
+			geography.remove_market_spurs(market_topology)
+		street_geometry.build(geography)
+	else:
+		print("MyCity: using prebuilt road topology from airport.")
 	var street_ms := Time.get_ticks_msec()
 	_load_map_edits()
 	_reserve_market_block()

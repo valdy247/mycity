@@ -149,7 +149,18 @@ func _ready() -> void:
 		var candidate := CubaWorld.new()
 		var map_started := Time.get_ticks_msec()
 		if adaptation_mode: candidate.inventory_path = "user://mycity_adaptation_inventory_v1.json"
-		if candidate.load_map():
+		var warmed: Dictionary = get_tree().get_meta("mycity_warmed_map",{})
+		if get_tree().has_meta("mycity_warmed_map"): get_tree().remove_meta("mycity_warmed_map")
+		var loaded := false
+		if adaptation_mode and not warmed.is_empty():
+			candidate.geography = warmed.geography
+			candidate.street_geometry = warmed.streets
+			candidate.market_topology = warmed.market
+			candidate.prebuilt_topology = true
+			loaded = true
+		else:
+			loaded = candidate.load_map()
+		if loaded:
 			print("MyCity carga (ms): mapa OSM=",Time.get_ticks_msec()-map_started)
 			cuba_world = candidate
 		else:
@@ -291,6 +302,9 @@ func _ready() -> void:
 			arrival_story = ArrivalStory.new()
 			add_child(arrival_story)
 			arrival_story.setup(self)
+			if get_tree().has_meta("mycity_city_load_started"):
+				print("MyCity carga (ms): inicialización ciudad y llegada=",Time.get_ticks_msec()-int(get_tree().get_meta("mycity_city_load_started")))
+				get_tree().remove_meta("mycity_city_load_started")
 		else:
 			game_menu.open_menu(true)
 
@@ -997,10 +1011,12 @@ func _new_van_body(position_world: Vector3) -> CharacterBody3D:
 
 # Reuse only the two original vehicles; do not attach the old city permanently.
 func _restore_original_vehicles() -> void:
-	if not ResourceLoader.exists(CITY_PATH):
+	var warmed: Resource = get_tree().get_meta("mycity_warmed_glb",null)
+	if get_tree().has_meta("mycity_warmed_glb"): get_tree().remove_meta("mycity_warmed_glb")
+	if warmed==null and not ResourceLoader.exists(CITY_PATH):
 		push_warning("MyCity: falta game/city.glb. Exporta la ciudad original desde Blender.")
 		return
-	var packed := load(CITY_PATH) as PackedScene
+	var packed := warmed as PackedScene if warmed!=null else load(CITY_PATH) as PackedScene
 	if packed == null:
 		push_warning("MyCity: no se pudo cargar city.glb.")
 		return
