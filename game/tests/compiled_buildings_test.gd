@@ -10,6 +10,12 @@ func _check(ok: bool,label: String) -> void:
 		failures += 1
 		printerr("FAIL: ",label)
 
+func _has_scene_owner(node: Node) -> bool:
+	if node.owner!=null: return true
+	for child in node.get_children():
+		if _has_scene_owner(child): return true
+	return false
+
 func _run() -> void:
 	var world := World.new()
 	root.add_child(world)
@@ -47,6 +53,7 @@ func _run() -> void:
 			var solids := 0
 			var meshes := 0
 			for node in restored.get_children():
+				_check(not _has_scene_owner(node),"restored runtime node and descendants have no stale PackedScene owner")
 				if node is StaticBody3D: solids += node.get_child_count()
 				if node is MeshInstance3D or node is MultiMeshInstance3D: meshes += 1
 			_check(solids>=2 and meshes>=2,"compiled walls retain meshes and physical shapes")
