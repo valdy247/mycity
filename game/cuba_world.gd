@@ -2,6 +2,15 @@ extends "res://city_world.gd"
 # Real road centerlines; reconstructed facades and gameplay premises.
 const MapData = preload("res://pilar_map.gd")
 const MapCache = preload("res://city_map_cache.gd")
+const DerivedCache = preload("res://city_derived_cache.gd")
+const BUILD_CACHE := "user://mycity_building_plans_v1.bin"
+const UTILITY_CACHE := "user://mycity_utility_plan_v1.bin"
+var derived_key := ""
+var building_cache: Dictionary = {}
+var derived_dirty := false
+var building_hits := 0
+var building_misses := 0
+var height_cache_key := ""
 const StreetGeometry = preload("res://street_geometry.gd")
 const TrafficBypass = preload("res://traffic_bypass.gd")
 const HavanaTextures = preload("res://havana_textures.gd")
@@ -168,6 +177,7 @@ func setup(builder: Builder) -> void:
 	else:
 		print("MyCity: using prebuilt road topology from airport.")
 	var street_ms := Time.get_ticks_msec()
+	_begin_building_cache()
 	_load_map_edits()
 	_reserve_market_block()
 	stadium = Latino.new()
@@ -183,6 +193,7 @@ func setup(builder: Builder) -> void:
 	var buildings_started := Time.get_ticks_msec()
 	_make_frontages()
 	print("MyCity carga (ms): fachadas y comercios=",Time.get_ticks_msec()-buildings_started)
+	_finish_building_cache()
 	if not stadium_reservation.is_empty():
 		stadium.build(self)
 		stadium_gates = stadium.gates
@@ -1813,7 +1824,17 @@ func _face(a: Vector3,b: Vector3,c: Vector3,normal: Vector3,mat: StandardMateria
 	map_collision[tile].append_array([a,b,c])
 
 func _extrude(poly: PackedVector2Array,bottom: float,top: float,mat: StandardMaterial3D,tile: Vector2i) -> bool:
-	var triangles := Geometry2D.triangulate_polygon(poly)
+	var key := DerivedCache.key_for(poly) if not derived_key.is_empty() else ""
+	var triangles: PackedInt32Array
+	if not key.is_empty() and building_cache.extrusion.has(key):
+		triangles = building_cache.extrusion[key]
+		building_hits += 1
+	else:
+		triangles = Geometry2D.triangulate_polygon(poly)
+		if not key.is_empty():
+			building_cache.extrusion[key] = triangles
+			building_misses += 1
+			derived_dirty = true
 	if triangles.is_empty():
 		return false
 	for i in range(0,triangles.size(),3):
@@ -2048,6 +2069,18 @@ func _clip_inward(poly: PackedVector2Array,front: Dictionary,depth: float) -> Pa
 	return output
 
 func _building_height(fp: Dictionary) -> Dictionary:
+	if derived_key.is_empty(): return _calculate_building_height(fp)
+	var id := String(fp.id)
+	if building_cache.height.has(id):
+		building_hits += 1
+		return building_cache.height[id].duplicate()
+	var result := _calculate_building_height(fp)
+	building_cache.height[id] = result.duplicate()
+	building_misses += 1
+	derived_dirty = true
+	return result
+
+func _calculate_building_height(fp: Dictionary) -> Dictionary:
 	var tags: Dictionary = fp.tags
 	var exact := MappedHeight.resolve(tags)
 	if not exact.is_empty(): return exact
@@ -2222,6 +2255,52 @@ func _reserve_market_block() -> void:
 		market_reservation = original
 		print("Cuatro Caminos: perímetro OSM original; faltan cruces verificables para reservar toda la manzana.")
 
+# Cache deterministic geometry inputs, not scene nodes or save-game state.
+# Individual entries are keyed by footprint and dimensions; moving a
+# building does not invalidate other frontage and extrusion entries.
+func _begin_building_cache() -> void:
+	if OS.has_feature("web") or OS.get_cmdline_user_args().has("--no-building-cache"): return
+	var base := MapCache.fingerprint()
+	if base.is_empty(): return
+	var inputs: Array = [base,Engine.get_version_info().get("string","")]
+	for path in ["res://cuba_world.gd","res://mapped_height.gd","res://city_derived_cache.gd"]:
+		var digest := FileAccess.get_sha256(path)
+		if digest.is_empty(): return
+		inputs.append(digest)
+	derived_key = DerivedCache.key_for(inputs)
+	building_cache = DerivedCache.read(BUILD_CACHE,derived_key)
+	for section in ["clip","frontage","height","extrusion"]:
+		if not building_cache.get(section) is Dictionary: building_cache[section] = {}
+	print("MyCity edificios cache: ", "HIT" if not building_cache.frontage.is_empty() else "MISS")
+
+func _finish_building_cache() -> void:
+	if derived_key.is_empty(): return
+	print("MyCity edificios cache: ",building_hits," reutilizados, ",building_misses," calculados.")
+	if derived_dirty:
+		# The snapshot contains only values, no active Godot nodes.
+		# Serialization is measured separately from generation.
+		var started := Time.get_ticks_msec()
+		DerivedCache.write(BUILD_CACHE,derived_key,building_cache)
+		print("MyCity cache escritura edificios (ms): ",Time.get_ticks_msec()-started)
+		derived_dirty = false
+
+func _cached_building_frontage(poly: PackedVector2Array,center: Vector3,extent: Vector3) -> Dictionary:
+	var key := DerivedCache.key_for(poly) if not derived_key.is_empty() else ""
+	if not key.is_empty() and building_cache.frontage.has(key):
+		var cached: Dictionary = building_cache.frontage[key]
+		building_hits += 1
+		# Consumers may modify their selected front; keep the cache immutable.
+		return cached.duplicate(true)
+	var front := _front_edge(poly)
+	var monte_front := _front_edge(poly,true)
+	var faces: Array = _street_facing_walls(poly) if not monte_front.is_empty() or _near_avenue(center,extent) else []
+	var result := {"front":front,"monte":monte_front,"faces":faces}
+	if not key.is_empty():
+		building_cache.frontage[key] = result.duplicate(true)
+		building_misses += 1
+		derived_dirty = true
+	return result
+
 func _load_map_edits() -> void:
 	if FileAccess.file_exists(EDIT_FILE):
 		var file := FileAccess.open(EDIT_FILE,FileAccess.READ)
@@ -2230,6 +2309,12 @@ func _load_map_edits() -> void:
 			if parsed is Dictionary:
 				map_edits = parsed
 	# Preserve the geographic source and construct a separate editable layer.
+	if not derived_key.is_empty():
+		height_cache_key = DerivedCache.key_for(map_edits)
+		if String(building_cache.get("height_key",""))!=height_cache_key:
+			building_cache.height = {}
+			building_cache.height_key = height_cache_key
+			derived_dirty = true
 	var working: Array = []
 	geography.footprint_cells.clear()
 	for original in geography.footprints:
@@ -2246,21 +2331,30 @@ func _load_map_edits() -> void:
 		var dx := float(changes.get("dx",0.0))
 		var dz := float(changes.get("dz",0.0))
 		var angle := float(changes.get("angle",0.0))
+		var clip_key := DerivedCache.key_for([id,dx,dz,angle]) if not derived_key.is_empty() else ""
 		var changed := PackedVector2Array()
-		var middle := Vector2(origin.x,origin.z)
-		for p in polygon:
-			changed.append((p-middle).rotated(-angle)+middle+Vector2(dx,dz))
-		if not street_geometry.clear(changed):
-			# OSM widths are estimated. Do not let inferred pavement overlap
-			# a solid model: clip only the game rendering, never the source.
-			var safe: Array = street_geometry.subtract(changed,street_geometry.protected_index)
-			if safe.is_empty():
-				continue
-			var largest: PackedVector2Array = safe[0]
-			for piece in safe:
-				if street_geometry.bounds(piece).get_area()>street_geometry.bounds(largest).get_area():
-					largest = piece
-			changed = largest
+		if not clip_key.is_empty() and building_cache.clip.has(clip_key):
+			changed = building_cache.clip[clip_key]
+			building_hits += 1
+		else:
+			var middle := Vector2(origin.x,origin.z)
+			for p in polygon:
+				changed.append((p-middle).rotated(-angle)+middle+Vector2(dx,dz))
+			if not street_geometry.clear(changed):
+				var safe: Array = street_geometry.subtract(changed,street_geometry.protected_index)
+				if safe.is_empty():
+					changed = PackedVector2Array()
+				else:
+					var largest: PackedVector2Array = safe[0]
+					for piece in safe:
+						if street_geometry.bounds(piece).get_area()>street_geometry.bounds(largest).get_area():
+							largest = piece
+					changed = largest
+			if not clip_key.is_empty():
+				building_cache.clip[clip_key] = changed
+				building_misses += 1
+				derived_dirty = true
+		if changed.is_empty(): continue
 		var rect := street_geometry.bounds(changed)
 		fp.poly = changed
 		fp.center = Vector3(rect.get_center().x,0,rect.get_center().y)
@@ -2611,10 +2705,11 @@ func _make_mapped_buildings(public_anchor: Vector3) -> void:
 			mapped_buildings += 1
 			kept_footprints.append(fp)
 			continue
-		var front := _front_edge(poly)
-		var monte_front := _front_edge(poly,true)
 		var extent: Vector3 = fp.high-fp.low
-		var faces := _street_facing_walls(poly) if not monte_front.is_empty() or _near_avenue(center,extent) else []
+		var prepared := _cached_building_frontage(poly,center,extent)
+		var front: Dictionary = prepared.front
+		var monte_front: Dictionary = prepared.monte
+		var faces: Array = prepared.faces
 		var avenue_faces: Array = []
 		for face in faces:
 			if _avenue_edge(face.road): avenue_faces.append(face)
