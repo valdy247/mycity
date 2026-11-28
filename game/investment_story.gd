@@ -62,6 +62,7 @@ var neighbor: Dictionary = {}
 var helper_box: Node3D
 var helper_stage := ""
 var helper_clock := 0.0
+var waiting_clock := 0.0
 var table: Node3D
 var carry_table := false
 var money_prop: Node3D
@@ -597,7 +598,7 @@ func _actor_follow(delta: float) -> void:
 	var at: Vector3 = game.player.global_position-Vector3.UP*.86
 	if absf(at.y-actor.global_position.y)>8.0: return
 	if actor.global_position.distance_to(at)>2.5: _follow(delta,at,1.9)
-	else: actor.animate(delta,false)
+	else: _wait_naturally(delta)
 
 func _helper_trunk_ground() -> Vector3:
 	var body: CharacterBody3D = cab.body
@@ -638,11 +639,35 @@ func _clear_helper_path() -> void:
 	helper_index = 0
 	helper_goal = Vector3.INF
 
+func _wait_naturally(delta: float) -> void:
+	if not is_instance_valid(actor) or not actor.visible: return
+	waiting_clock += delta
+	# Ease out of the last walking/carrying pose, breathe and blink.
+	actor.animate(delta,false)
+	var blend := minf(1.0,delta*3.5)
+	actor.rotation.x = lerpf(actor.rotation.x,sin(waiting_clock*1.65)*.012,blend)
+	var target: Vector3 = game.player.global_position
+	if fposmod(waiting_clock,10.0)>5.5 and not cab.is_empty() and is_instance_valid(cab.get("body")) and actor.global_position.y<70.0:
+		target = cab.body.global_position
+	var direction: Vector3 = target-actor.global_position
+	if absf(direction.y)<3.0 and Vector2(direction.x,direction.z).length()>1.1:
+		var look_yaw := atan2(direction.x,direction.z)+sin(waiting_clock*.65)*.12
+		actor.rotation.y = lerp_angle(actor.rotation.y,look_yaw,minf(1.0,delta*1.4))
+	# Occasional small relaxed arm movement; never fake walking in place.
+	if actor.carried==null and actor.arms.size()>1:
+		var gesture := pow(maxf(0.0,sin(waiting_clock*.65)),8.0)*.23
+		actor.arms[0].rotation.x = lerpf(actor.arms[0].rotation.x,-gesture,blend)
+		actor.arms[1].rotation.x = lerpf(actor.arms[1].rotation.x,sin(waiting_clock*1.3)*.045,blend)
+
 func _helper_tick(delta: float,unloading: bool) -> void:
 	var key := "aceite"
 	var from := "taxi" if unloading else "shelf"
 	var dest := "stored" if unloading else "taxi"
-	if String(_box_states().get(key,""))!=from or cab.is_empty() or not is_instance_valid(actor): return
+	if not is_instance_valid(actor): return
+	if String(_box_states().get(key,""))!=from or cab.is_empty():
+		_wait_naturally(delta)
+		return
+	waiting_clock = 0.0
 	helper_clock += delta
 	helper_elapsed += delta
 	if helper_stage.is_empty():
@@ -692,6 +717,7 @@ func _helper_tick(delta: float,unloading: bool) -> void:
 	_box_states()[key] = dest
 	_save()
 	_rebuild_boxes()
+	_wait_naturally(delta)
 
 func _toggle_home() -> bool:
 	if game.garage.inside and _near(ENTRY,1.8):
