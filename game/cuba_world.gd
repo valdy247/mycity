@@ -79,6 +79,17 @@ var street_surface_index: Dictionary = {}
 var physics_chunks: Dictionary = {}
 var static_box_shapes: Dictionary = {}
 var detail_batches := 0
+# Keep geometry that is required for gameplay resident. Cosmetic batches
+# are materialized by 96 m tile and released when far outside view range.
+const DETAIL_LOAD_RADIUS := 390.0
+const DETAIL_UNLOAD_RADIUS := 510.0
+const DETAIL_FRAME_BUDGET_USEC := 2500
+var detail_stream_tiles: Dictionary = {}
+var detail_stream_pending: Array = []
+var detail_stream_clock := 0.0
+var detail_stream_quality := 1
+var detail_stream_cube: BoxMesh
+var detail_stream_enabled := not OS.get_cmdline_user_args().has("--no-detail-streaming")
 var npc_update_time := 0.0
 var kept_footprints: Array = []
 var market_drawn := false
@@ -304,36 +315,96 @@ func _cube(at: Vector3, size: Vector3, material: StandardMaterial3D, angle: floa
 		body.add_child(col)
 		col.transform = Transform3D(basis,at-body.position)
 
+func _create_city_box_batch(item: Dictionary) -> MultiMeshInstance3D:
+	if detail_stream_cube==null:
+		detail_stream_cube = BoxMesh.new()
+		detail_stream_cube.size = Vector3.ONE
+	var multi := MultiMesh.new()
+	multi.transform_format = MultiMesh.TRANSFORM_3D
+	multi.mesh = detail_stream_cube
+	multi.instance_count = item.transforms.size()
+	for i in range(multi.instance_count):
+		multi.set_instance_transform(i,item.transforms[i])
+	var instance := MultiMeshInstance3D.new()
+	instance.multimesh = multi
+	instance.material_override = item.material
+	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(instance)
+	instance.position = item.origin
+	if not bool(item.detail): instance.add_to_group("city_shadow_batches")
+	if bool(item.detail):
+		instance.add_to_group("city_detail_batches")
+		instance.visibility_range_end = 105.0 if detail_stream_quality==0 else (190.0 if detail_stream_quality==1 else 240.0)
+		instance.visibility_range_end_margin = 12.0
+		detail_batches += 1
+	if int(item.home_level)>0:
+		home_cutaway.append({"node":instance,"level":item.home_level})
+	return instance
+
 func _flush_city_boxes() -> void:
-	var cube := BoxMesh.new()
-	cube.size = Vector3.ONE
+	var deferred_count := 0
 	for item in box_groups.values():
-		var multi := MultiMesh.new()
-		multi.transform_format = MultiMesh.TRANSFORM_3D
-		multi.mesh = cube
-		multi.instance_count = item.transforms.size()
-		for i in range(multi.instance_count):
-			multi.set_instance_transform(i,item.transforms[i])
-		var instance := MultiMeshInstance3D.new()
-		instance.multimesh = multi
-		instance.material_override = item.material
-		instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		add_child(instance)
-		instance.position = item.origin
-		if not bool(item.detail): instance.add_to_group("city_shadow_batches")
-		if bool(item.detail):
-			instance.add_to_group("city_detail_batches")
-			instance.visibility_range_end = 190.0
-			instance.visibility_range_end_margin = 12.0
-			detail_batches += 1
-		if int(item.home_level)>0:
-			home_cutaway.append({"node":instance,"level":item.home_level})
+		if detail_stream_enabled and bool(item.detail) and int(item.home_level)==0:
+			var origin: Vector3 = item.origin
+			var key := Vector2i(roundi(origin.x/96.0),roundi(origin.z/96.0))
+			if not detail_stream_tiles.has(key):
+				detail_stream_tiles[key] = {"center":origin+Vector3(48,0,48),"items":[],"nodes":[],"next":0}
+			detail_stream_tiles[key].items.append(item)
+			deferred_count += 1
+		else:
+			_create_city_box_batch(item)
 	box_groups.clear()
+	if deferred_count>0:
+		detail_stream_clock = 0.0
+		print("MyCity streaming: ",deferred_count," lotes de detalle preparados en ",detail_stream_tiles.size()," zonas.")
+
+func _detail_stream_update(focus: Vector3) -> void:
+	detail_stream_pending.clear()
+	var candidates: Array = []
+	for key in detail_stream_tiles:
+		var entry: Dictionary = detail_stream_tiles[key]
+		var center: Vector3 = entry.center
+		var distance := Vector2(center.x-focus.x,center.z-focus.z).length()
+		if distance>DETAIL_UNLOAD_RADIUS and int(entry.next)>0:
+			for node in entry.nodes:
+				if is_instance_valid(node):
+					node.queue_free()
+					detail_batches -= 1
+			entry.nodes.clear()
+			entry.next = 0
+		if distance<=DETAIL_LOAD_RADIUS and int(entry.next)<entry.items.size():
+			candidates.append({"key":key,"distance":distance})
+	candidates.sort_custom(func(a,b): return float(a.distance)<float(b.distance))
+	for candidate in candidates:
+		detail_stream_pending.append(candidate.key)
+
+func _process(delta: float) -> void:
+	if not detail_stream_enabled or detail_stream_tiles.is_empty(): return
+	var camera := get_viewport().get_camera_3d()
+	if not is_instance_valid(camera): return
+	var focus := camera.global_position
+	detail_stream_clock -= delta
+	if detail_stream_clock<=0.0:
+		detail_stream_clock = .20
+		_detail_stream_update(focus)
+	var deadline := Time.get_ticks_usec()+DETAIL_FRAME_BUDGET_USEC
+	while not detail_stream_pending.is_empty() and Time.get_ticks_usec()<deadline:
+		var key: Vector2i = detail_stream_pending[0]
+		var entry: Dictionary = detail_stream_tiles[key]
+		var center: Vector3 = entry.center
+		if Vector2(center.x-focus.x,center.z-focus.z).length()>DETAIL_LOAD_RADIUS or int(entry.next)>=entry.items.size():
+			detail_stream_pending.pop_front()
+			continue
+		var item: Dictionary = entry.items[int(entry.next)]
+		entry.nodes.append(_create_city_box_batch(item))
+		entry.next = int(entry.next)+1
+		if int(entry.next)>=entry.items.size(): detail_stream_pending.pop_front()
 
 func set_detail_quality(low: bool) -> void:
 	set_graphics_quality(0 if low else 1)
 
 func set_graphics_quality(quality: int) -> void:
+	detail_stream_quality = quality
 	# Rendering only: never hide physics or alter navigation.
 	havana_textures.set_quality(quality)
 	for item in get_tree().get_nodes_in_group("city_detail_batches"):
