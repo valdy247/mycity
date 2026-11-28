@@ -370,7 +370,9 @@ func _build_interior() -> void:
 	_build_waste()
 	_refresh_paint_station()
 	for id in FURNITURE: _refresh_furniture(String(id))
-	if game.adaptation_mode: _decorate_rental_home()
+	if game.adaptation_mode:
+		_decorate_rental_home()
+		_build_rental_bathroom()
 	_refresh_preview()
 
 # The city and interior are separate rooms; the door remains a logical
@@ -640,6 +642,54 @@ func _decorate_rental_home() -> void:
 	_rental_cylinder(clock,Vector3(0,0,.033),.177,.025,Color("#e8e2d1")).rotation.x = PI*.5
 	_rental_part(clock,Vector3(.035,.025,.055),Vector3(.11,.016,.009),Color("#44423a")).rotation.z = .65
 	_rental_part(clock,Vector3(0,.058,.055),Vector3(.014,.13,.009),Color("#44423a")).rotation.z = -.25
+
+func _build_rental_bathroom() -> void:
+	var root := _rental_root(interior,Vector3.ZERO)
+	root.name = "RentalBathroom"
+	var wall := Color("#dedbd0")
+	var tile := Color("#d5ddd7")
+	# Bathroom in the unused northeast corner. Entrance faces west.
+	_solid(root,Vector3(5.45,1.5,-3.35),Vector3(2.65,3,.13),wall)
+	_solid(root,Vector3(4.15,1.5,-5.26),Vector3(.13,3,.95),wall)
+	_solid(root,Vector3(4.15,1.5,-3.60),Vector3(.13,3,.50),wall)
+	_solid(root,Vector3(4.15,2.65,-4.42),Vector3(.15,.70,1.17),wall)
+	_rental_part(root,Vector3(5.49,.025,-4.54),Vector3(2.52,.03,2.28),tile)
+	for x in range(7):
+		_rental_part(root,Vector3(4.25+float(x)*.39,.043,-4.54),Vector3(.016,.006,2.28),Color("#9ea9a4"))
+	for z in range(6):
+		_rental_part(root,Vector3(5.48,.043,-5.60+float(z)*.40),Vector3(2.48,.006,.016),Color("#9ea9a4"))
+	# Basin against east wall, player stands at x=5.6 facing east.
+	var sink := _rental_root(root,Vector3(6.36,0,-4.42),-PI*.5)
+	_solid(sink,Vector3(0,.42,0),Vector3(.43,.84,.35),Color("#e5e3d7"))
+	_rental_round(sink,Vector3(0,.88,.02),Vector3(.76,.22,.54),Color("#efeee6"))
+	_rental_round(sink,Vector3(0,.96,.065),Vector3(.49,.055,.34),Color("#99afb0"))
+	_rental_cylinder(sink,Vector3(0,1.02,-.18),.026,.14,Color("#a6b2b1"))
+	_rental_part(sink,Vector3(0,1.10,-.12),Vector3(.048,.045,.16),Color("#b0bdbd"))
+	_rental_part(sink,Vector3(0,1.66,-.31),Vector3(.72,.78,.05),Color("#8c8274"))
+	var mirror := _rental_part(sink,Vector3(0,1.66,-.277),Vector3(.64,.70,.012),Color("#a9c1c7"))
+	var mirror_mat := StandardMaterial3D.new()
+	mirror_mat.albedo_color = Color("#a7bfc4")
+	mirror_mat.metallic = .6
+	mirror_mat.roughness = .22
+	mirror.material_override = mirror_mat
+	_rental_cylinder(sink,Vector3(.28,.995,-.10),.06,.12,Color("#749da0"))
+	_rental_part(sink,Vector3(.28,1.10,-.10),Vector3(.018,.19,.018),Color("#cfbd80"))
+	_rental_part(sink,Vector3(.28,1.20,-.10),Vector3(.028,.055,.018),Color("#eee5d6"))
+	var toilet := _rental_root(root,Vector3(5.35,0,-5.27))
+	_solid(toilet,Vector3(0,.23,0),Vector3(.44,.46,.62),Color("#e5e2d8"))
+	_rental_round(toilet,Vector3(0,.46,.08),Vector3(.52,.17,.66),Color("#f4f1e7"))
+	_rental_round(toilet,Vector3(0,.53,.09),Vector3(.35,.045,.43),Color("#a8b6b2"))
+	_rental_part(toilet,Vector3(0,.72,-.26),Vector3(.46,.48,.22),Color("#efede2"))
+	_rental_part(toilet,Vector3(0,.98,-.26),Vector3(.48,.06,.25),Color("#f5f2e8"))
+	_rental_part(root,Vector3(5.35,1.33,-3.45),Vector3(.60,.05,.08),Color("#9caaa9"))
+	_rental_part(root,Vector3(5.35,1.12,-3.51),Vector3(.48,.45,.045),Color("#96a69c"))
+	_rental_fixture(root,Vector3(5.35,2.87,-4.45))
+	var light := OmniLight3D.new()
+	root.add_child(light)
+	light.position = Vector3(5.45,2.65,-4.43)
+	light.omni_range = 3.8
+	light.light_energy = .9
+	light.light_color = Color("#fff1dd")
 
 func _refresh_carried() -> void:
 	if carried_view==null: return

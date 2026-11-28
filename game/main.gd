@@ -1671,7 +1671,7 @@ func _physics_process(delta: float) -> void:
 	if city_navigation!=null and city_navigation.active:
 		player.velocity = Vector3.ZERO
 		return
-	if business!=null and business.first_story!=null and not building_mode:
+	if not adaptation_mode and business!=null and business.first_story!=null and not building_mode:
 		business.first_story.tick(delta)
 		if business.first_story.handshake_active():
 			player.velocity = Vector3.ZERO

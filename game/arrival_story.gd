@@ -1,6 +1,9 @@
 extends Node3D
 # Chapter 1. Uses the normal Havana street graph and the airport taxi's cabin.
 const Person = preload("res://street_person.gd")
+const MorningStory = preload("res://morning_story.gd")
+var morning: MorningStory
+var bag_markers: Array[MeshInstance3D] = []
 const FARE_REVISION := 2
 const FARE_LINES := [
 	["Tú","Debo pagarle al taxista.",2.1],
@@ -63,6 +66,7 @@ func active() -> bool:
 	return phase!="done"
 
 func cinematic() -> bool:
+	if phase=="morning" and morning!=null: return morning.cinematic()
 	return phase not in ["done","unload"]
 
 func setup(controller) -> void:
@@ -88,6 +92,7 @@ func setup(controller) -> void:
 		_fail("No se encontró la casa existente en el mapa.")
 		return
 	_make_house_arrow()
+	_make_bag_markers()
 	# Explicit arrival test resets only this mission's luggage/fare checkpoint.
 	if OS.get_cmdline_user_args().has("--replay-home-arrival"):
 		state.step = 0
@@ -95,6 +100,9 @@ func setup(controller) -> void:
 		state.fare_scene_done = false
 		state.fare_lines_completed = 0
 		state.taxi_payment_pending = false
+		state.erase("morning_stage")
+		state.erase("morning_complete")
+		state.erase("bags_given_to_albertico")
 	# Older completion flags did not certify the full farewell sequence.
 	# Preserve the bags and balance, but replay the pending fare on resume.
 	var replay_fare := OS.get_cmdline_user_args().has("--replay-fare")
@@ -107,10 +115,13 @@ func setup(controller) -> void:
 	elif int(state.get("step",0))<2:
 		state.fare_scene_done = false
 	if int(state.get("step",0))>=2:
-		phase = "done"
-		_make_bags_at_home()
+		if not bool(state.get("bags_given_to_albertico",false)): _make_bags_at_home()
 		game.garage._enter()
-		layer.hide()
+		if bool(state.get("morning_complete",false)):
+			phase = "done"
+			layer.hide()
+		else:
+			_start_morning(true)
 		return
 	game.status.hide()
 	game.reticle.hide()
@@ -466,6 +477,34 @@ func _save() -> void:
 	state.dropped = dropped.duplicate()
 	game.business.ledger.save_game()
 
+func _make_bag_markers() -> void:
+	for i in range(2):
+		var mesh := PlaneMesh.new()
+		mesh.size = Vector2(.53,.43)
+		var marker := MeshInstance3D.new()
+		marker.mesh = mesh
+		var material := StandardMaterial3D.new()
+		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		material.albedo_color = Color(1.0,.75,.07,.55)
+		material.emission_enabled = true
+		material.emission = Color("#ffd22e")
+		material.emission_energy_multiplier = 1.2
+		marker.material_override = material
+		marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(marker)
+		marker.global_position = Vector3(-2.15+float(i)*.55,110.048,4.35)
+		marker.hide()
+		bag_markers.append(marker)
+
+func _update_bag_markers() -> void:
+	for i in range(bag_markers.size()):
+		var marker := bag_markers[i]
+		marker.visible = phase=="unload" and game.garage.inside and not dropped[i]
+		if marker.visible:
+			var material := marker.material_override as StandardMaterial3D
+			material.albedo_color.a = .38+.25*(.5+.5*sin(arrow_clock*4.0)) if carry==i else .22
+
 func _place_bag_home(i: int) -> void:
 	var bag := bags[i]
 	if bag.get_parent()!=self: bag.reparent(self,false)
@@ -487,16 +526,19 @@ func _action() -> String:
 	objective.text = "CAPÍTULO 1 · LA ADAPTACIÓN\nMaletas dentro de la casa: %d/2" % count
 	if game.garage.inside:
 		if carry>=0:
-			return "[E] Dejar maleta junto a la entrada" if game.player.global_position.distance_to(Vector3(-1.85,110.86,4.35))<2.5 else "Acércate a la entrada de la casa."
+			return "[E] Dejar maleta sobre la marca amarilla" if game.player.global_position.distance_to(Vector3(-2.15+float(carry)*.55,110.86,4.35))<1.45 else "Acércate a la marca amarilla del suelo."
 		return "[E] Salir a buscar la otra maleta" if game.player.global_position.distance_to(Vector3(-.7,110.86,5.25))<1.8 else "Vuelve a la puerta."
 	if carry>=0:
 		return "[E] Entrar en la casa alquilada" if _house_near() else "Lleva la maleta hasta la casa."
 	return "[E] Recoger maleta del maletero" if _flat(game.player.global_position,_trunk())<2.1 else "Acércate al maletero del taxi."
 
 func interact() -> void:
+	if phase=="morning" and morning!=null:
+		morning.interact()
+		return
 	if phase!="unload" or busy: return
 	if game.garage.inside:
-		if carry>=0 and game.player.global_position.distance_to(Vector3(-1.85,110.86,4.35))<2.5:
+		if carry>=0 and game.player.global_position.distance_to(Vector3(-2.15+float(carry)*.55,110.86,4.35))<1.45:
 			var i := carry
 			carry = -1
 			dropped[i] = true
@@ -690,24 +732,31 @@ func _finish() -> void:
 	state.fare_lines_completed = fare_completed_lines
 	state.taxi_payment_pending = true
 	state.fare_audio_missing = fare_audio_missing.duplicate()
-	print("MyCity: fare cinematic complete; free play unlocked.")
+	print("MyCity: fare cinematic complete; rest and morning routine unlocked.")
 	_save()
-	phase = "done"
-	subtitle.text = ""
-	objective.text = ""
-	layer.hide()
-	game.status.show()
-	game.map_credit.show()
-	game.business.layer.show()
-	game._update_hud()
+	_start_morning(false)
 	# Keep the departing cab in city traffic rather than deleting it in view.
 	# Once its route finishes it is returned to the ordinary taxi fleet.
 	if is_instance_valid(cab) and departure_record.is_empty():
 		cab.add_to_group("traffic_parked")
 		cab.set_meta("traffic_servicing",false)
 
+func _start_morning(resuming: bool) -> void:
+	phase = "morning"
+	morning = MorningStory.new()
+	add_child(morning)
+	morning.setup(self,resuming)
+
+func morning_finished() -> void:
+	phase = "done"
+	layer.hide()
+	game.status.show()
+	game.map_credit.show()
+	game.business.layer.show()
+	game._update_hud()
+
 func _process(_delta: float) -> void:
-	if phase=="done" and not departure_record.is_empty() and service.passenger.get("body")==cab and service.arrived:
+	if phase in ["morning","done"] and not departure_record.is_empty() and service.passenger.get("body")==cab and service.arrived:
 		var record: Dictionary = service.passenger
 		service.finish_trip()
 		service.taxis.append(record)
@@ -718,6 +767,8 @@ func handle_look(relative: Vector2) -> void:
 		look.x = clampf(look.x-relative.x*.003,-1.15,1.15)
 		look.y = clampf(look.y-relative.y*.003,-.48,.35)
 		cab_view.rotation = Vector3(look.y-.06,PI+look.x,0)
+	elif phase=="morning" and morning!=null:
+		morning.handle_look(relative)
 	elif phase=="unload":
 		game.yaw -= relative.x*.003
 		game.pitch = clampf(game.pitch-relative.y*.003,-1.05,.35)
@@ -725,7 +776,10 @@ func handle_look(relative: Vector2) -> void:
 
 func tick(delta: float) -> void:
 	_update_house_arrow(delta)
+	_update_bag_markers()
 	match phase:
+		"morning":
+			if morning!=null: morning.tick(delta)
 		"approach":
 			game.player.global_position = cab.global_position+Vector3.UP
 			arrival_wait += delta
