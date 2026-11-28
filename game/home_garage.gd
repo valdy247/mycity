@@ -111,6 +111,7 @@ var bath_right_hand: Node3D
 var bath_clock := -1.0
 var bath_warned := false
 var bath_flush_seconds := 0.0
+var bath_soap_foam: Node3D
 const HOME_PAN_TIME := {"carne":25.0,"huevo":12.0}
 var rental_storage_doors: Array[Dictionary] = []
 var rental_oil: Node3D
@@ -1168,10 +1169,7 @@ func _bath_interact() -> bool:
 		business._notify("Inodoro descargado. Lávate las manos en el lavamanos.")
 		_save()
 	elif action=="[E] Usar el inodoro":
-		if float(state.bathroom.need)<10.0:
-			business._notify("Todavía no necesitas ir al baño.")
-		else:
-			_start_bath_action("sit" if randf()<.40 else "stand")
+		_start_bath_action("sit" if randf()<.40 else "stand")
 	elif action=="[E] Lavarse las manos":
 		_start_bath_action("wash")
 	return true
@@ -1233,6 +1231,11 @@ func _start_bath_action(mode: String) -> void:
 		bath_left_hand = _attach_interaction_hand(bath_wash_model,Vector3(-.055,0,.03),true,true)
 		bath_right_hand = _attach_interaction_hand(bath_wash_model,Vector3(.055,.027,.03))
 		bath_right_hand.rotation.z = PI*.88
+		bath_soap_foam = _rental_root(bath_wash_model,Vector3(0,.025,.025))
+		for i in range(8):
+			var a := float(i)*2.4
+			_rental_round(bath_soap_foam,Vector3(cos(a)*.04,.008,sin(a)*.025),Vector3(.012,.009,.012),Color("#f2f2e9"))
+		bath_soap_foam.hide()
 	business._notify("Lavándote las manos." if mode=="wash" else ("Usando el inodoro sentado." if mode=="sit" else "Usando el inodoro de pie."))
 
 func _finish_bath_action(completed: bool = true) -> void:
@@ -1245,8 +1248,9 @@ func _finish_bath_action(completed: bool = true) -> void:
 	bath_wash_model = null
 	bath_left_hand = null
 	bath_right_hand = null
+	bath_soap_foam = null
 	if mode=="sit":
-		game.player.global_position = bath_return
+		if inside and absf(game.player.global_position.y-ROOM.y)<12.0: game.player.global_position = bath_return
 		game.player_shape.set_deferred("disabled",false)
 	game.player.velocity = Vector3.ZERO
 	game.first_person = bath_old_first
@@ -1307,6 +1311,7 @@ func _tick_bathroom(delta: float) -> void:
 				bath_left_hand.position.z = .025+wave*.024
 				bath_right_hand.position.z = .025-wave*.024
 				bath_right_hand.rotation.x = wave*.22
+				if is_instance_valid(bath_soap_foam): bath_soap_foam.visible = bath_seconds<3.6 and bath_seconds>.7
 			if bath_seconds<=0.0: _finish_bath_action()
 	if bath_flush_seconds>0.0:
 		bath_flush_seconds = maxf(0.0,bath_flush_seconds-delta)
