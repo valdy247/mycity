@@ -638,14 +638,13 @@ func _position_mission_tracker(left: bool) -> void:
 
 func mission_objectives() -> Array[String]:
 	var entries: Array[String] = []
-	if adaptation_mode: return entries
-	if ledger.stage<4:
+	if not adaptation_mode and ledger.stage<4:
 		var first := _objective()
 		if not first.is_empty(): entries.append("01 · Albertico\n"+first)
 	if carlos_objective.is_valid():
 		var job := String(carlos_objective.call())
 		if not job.is_empty(): entries.append("02 · Carlos\n"+job)
-	if yordi_objective.is_valid():
+	if not adaptation_mode and yordi_objective.is_valid():
 		var job := String(yordi_objective.call())
 		if not job.is_empty(): entries.append("03 · Yordi\n"+job)
 	return entries
