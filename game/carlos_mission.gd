@@ -272,7 +272,7 @@ const CALL_NO := [
 	["Tú","Dale.","player_no_end",0.56]
 ]
 var call_generation := 0
-const CALL_DIALOGUE_VERSION := 1
+const CALL_DIALOGUE_VERSION := 2
 var call_ring_started := false
 
 func open_call() -> void:
