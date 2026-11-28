@@ -182,8 +182,10 @@ func setup(controller) -> void:
 	if game.adaptation_mode and String(saved_meal.get("key","")) in ["plato_casero","arroz_casero"]:
 		state.home_food.table_plate = saved_meal.get("ingredients",["arroz"]).duplicate()
 		state.home_food.table_bites = int(saved_meal.get("food_bites",3))
+		state.home_food.table_used_plate = true
 		business.life.state.meal = {}
 		business.life._refresh_meal()
+	if not state.home_food.has("table_used_plate"): state.home_food.table_used_plate = not state.home_food.table_plate.is_empty()
 	if not state.home_food.has("heat_on"): state.home_food.heat_on = float(state.home_food.remaining)>0.0
 	if not state.home_food.has("overcook"): state.home_food.overcook = 0.0
 	if not state.home_food.has("burned"): state.home_food.burned = false
@@ -1994,6 +1996,8 @@ func _refresh_dining_table() -> void:
 		business.life.draw_home_plate(dining_plate_prop,meal.get("ingredients",["arroz"]),int(meal.get("food_bites",0)))
 	elif not food.table_plate.is_empty():
 		business.life.draw_home_plate(dining_plate_prop,food.table_plate,int(food.table_bites))
+	elif bool(food.table_used_plate):
+		business.life.draw_home_plate(dining_plate_prop,[],0)
 	for child in dining_water_prop.get_children():
 		dining_water_prop.remove_child(child)
 		child.queue_free()
@@ -2022,6 +2026,7 @@ func _dining_action() -> String:
 	if not String(food.hand).is_empty(): return ""
 	if _aim_dining_chair():
 		if _free_hands() or String(business.life.state.meal.get("key","")) in ["plato_casero","arroz_casero"]: return "[E] Sentarse a la mesa"
+	if bool(food.table_used_plate) and food.table_plate.is_empty() and _free_hands() and _aim_tool(dining_plate_prop,Vector3(0,.025,0),Vector3(.15,.04,.15)): return "[E] Recoger plato vacío"
 	if int(food.table_water)==0 and _free_hands() and _aim_tool(dining_water_prop,Vector3(0,.11,0),Vector3(.07,.13,.07)): return "[E] Recoger botella vacía"
 	return ""
 
@@ -2039,6 +2044,13 @@ func _dining_interact() -> bool:
 				_refresh_dining_table()
 				_save()
 		if not business.life.state.meal.is_empty(): business.life.interact(game.player.global_position)
+	elif action=="[E] Recoger plato vacío":
+		state.home_food.table_used_plate = false
+		state.home_food.hand = "plato"
+		state.home_food.plate = []
+		_refresh_dining_table()
+		_refresh_carried()
+		_save()
 	elif action=="[E] Recoger botella vacía":
 		state.home_food.table_water = -1
 		state.waste_hand = {"kind":"empty_water","volume":1}
@@ -2081,6 +2093,7 @@ func _stand_from_dining(force: bool = false) -> void:
 	var meal: Dictionary = business.life.state.meal
 	if String(meal.get("key","")) in ["plato_casero","arroz_casero"]:
 		food.table_plate = meal.get("ingredients",["arroz"]).duplicate()
+		food.table_used_plate = true
 		food.table_bites = int(meal.get("food_bites",0))
 		business.life.state.meal = {}
 		business.life.active_hand = -1
@@ -2095,6 +2108,9 @@ func _stand_from_dining(force: bool = false) -> void:
 	_refresh_dining_table()
 	_save()
 
+func _dining_water_safe_pose(at: Vector3,model: Node3D) -> void:
+	if is_instance_valid(model): model.position = InteractionHand.camera_safe_pose(game.play_camera,at,.09)
+
 func _drink_dining_water() -> void:
 	if not dining_seated or dining_water_busy or int(state.home_food.table_water)<=0: return
 	dining_water_busy = true
@@ -2105,11 +2121,11 @@ func _drink_dining_water() -> void:
 	_draw_home_water(model,int(state.home_food.table_water))
 	_attach_interaction_hand(model,Vector3(.048,.09,.025))
 	var sip := create_tween()
-	sip.tween_property(model,"position",Vector3(.065,-.19,-.28),.38)
+	sip.tween_method(_dining_water_safe_pose.bind(model),Vector3(.25,-.33,-.43),Vector3(.065,-.19,-.28),.38)
 	sip.parallel().tween_property(model,"rotation:x",.85,.38)
 	sip.tween_interval(.45)
 	sip.tween_property(model,"rotation:x",0.0,.25)
-	sip.parallel().tween_property(model,"position",Vector3(.25,-.33,-.43),.25)
+	sip.parallel().tween_method(_dining_water_safe_pose.bind(model),Vector3(.065,-.19,-.28),Vector3(.25,-.33,-.43),.25)
 	await sip.finished
 	model.queue_free()
 	state.home_food.table_water = maxi(0,int(state.home_food.table_water)-1)
@@ -2257,7 +2273,7 @@ func _home_food_action() -> String:
 			return "[E] Servir "+pan+" al plato"
 		if plate_aim and food.plate.is_empty(): return "[E] Devolver plato"
 		if not storage_action(game.player.global_position).is_empty(): return ""
-		if not food.plate.is_empty() and _aimed_furniture()=="mesa" and food.table_plate.is_empty(): return "[E] Dejar plato en la mesa"
+		if not food.plate.is_empty() and _aimed_furniture()=="mesa" and food.table_plate.is_empty() and not bool(food.table_used_plate): return "[E] Dejar plato en la mesa"
 		return ""
 	if hand=="botella":
 		if _aimed_furniture()=="mesa" and int(food.table_water)<0: return "[E] Dejar botella de agua en la mesa"
@@ -2325,6 +2341,7 @@ func _home_food_interact() -> bool:
 		return true
 	elif action=="[E] Dejar plato en la mesa":
 		food.table_plate = food.plate.duplicate()
+		food.table_used_plate = true
 		food.table_bites = 3
 		food.hand = ""
 		food.plate = []
@@ -2834,7 +2851,7 @@ func interact(at: Vector3) -> bool:
 		else:
 			var id := _aimed_furniture()
 			if not id.is_empty() and _free_hands():
-				if id=="mesa" and (not state.home_food.table_plate.is_empty() or int(state.home_food.table_water)>=0):
+				if id=="mesa" and (bool(state.home_food.table_used_plate) or not state.home_food.table_plate.is_empty() or int(state.home_food.table_water)>=0):
 					business._notify("Retira la comida y la botella antes de mover la mesa.")
 					return true
 				state.held_furniture = id
