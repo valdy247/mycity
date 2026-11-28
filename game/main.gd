@@ -34,6 +34,8 @@ const CarlosMission = preload("res://carlos_mission.gd")
 var carlos_mission: CarlosMission
 const DanielMission = preload("res://daniel_mission.gd")
 var daniel_mission: DanielMission
+const ParkLeisure = preload("res://park_leisure.gd")
+var park_leisure: ParkLeisure
 const YordiMission = preload("res://yordi_mission.gd")
 var yordi_mission: YordiMission
 const CityNavigation = preload("res://city_navigation.gd")
@@ -311,6 +313,9 @@ func _ready() -> void:
 		daniel_mission.setup(self)
 		business.daniel_call = daniel_mission.open_call
 		business.daniel_objective = daniel_mission.objective
+		park_leisure = ParkLeisure.new()
+		add_child(park_leisure)
+		park_leisure.setup(self)
 		yordi_mission = YordiMission.new()
 		add_child(yordi_mission)
 		yordi_mission.setup(self)
@@ -966,6 +971,10 @@ func _open_city_map() -> void:
 	city_navigation.open()
 
 func _input(event: InputEvent) -> void:
+	if is_instance_valid(park_leisure) and park_leisure.active() and event is InputEventKey:
+		park_leisure.handle(event)
+		get_viewport().set_input_as_handled()
+		return
 	if is_instance_valid(daniel_mission) and daniel_mission.inside and daniel_mission.play.active() and event is InputEventKey:
 		daniel_mission.play.handle(event)
 		get_viewport().set_input_as_handled()
@@ -1010,6 +1019,9 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 func _unhandled_input(event: InputEvent) -> void:
+	if is_instance_valid(park_leisure) and park_leisure.active():
+		park_leisure.handle(event)
+		return
 	if is_instance_valid(daniel_mission) and daniel_mission.inside:
 		if daniel_mission.play.active():
 			daniel_mission.play.handle(event)
@@ -1559,6 +1571,9 @@ func _face_cuba_home() -> void:
 
 func _reset_player() -> void:
 	if business!=null and business.first_story!=null and business.first_story.reset_checkpoint(): return
+	if is_instance_valid(park_leisure) and park_leisure.active():
+		park_leisure.end_session()
+		return
 	if daniel_mission!=null and daniel_mission.reset(): return
 	if yordi_mission!=null and yordi_mission.checkpoint_reset(): return
 	if carlos_mission!=null: carlos_mission.reset()
@@ -1658,6 +1673,7 @@ func _update_hud() -> void:
 		var action: String = garage.action_text(player.global_position) if adaptation_mode and garage!=null and (garage.inside or garage.rental_entry_near(player.global_position)) else ""
 		if action.is_empty() and not adaptation_mode and business!=null and business.first_story!=null: action = business.first_story.action_text()
 		if action.is_empty() and daniel_mission!=null: action = daniel_mission.action_text()
+		if action.is_empty() and is_instance_valid(park_leisure): action = park_leisure.action_text()
 		if action.is_empty() and _yordi_enabled(): action = yordi_mission.action_text()
 		if action.is_empty() and carlos_mission!=null: action = carlos_mission.action_text()
 		if action.is_empty() and backpack!=null: action = backpack.action_text()
@@ -1723,6 +1739,7 @@ func _update_compact_hud() -> void:
 		var action: String = garage.action_text(player.global_position) if adaptation_mode and garage!=null and (garage.inside or garage.rental_entry_near(player.global_position)) else ""
 		if action.is_empty() and not adaptation_mode and business!=null and business.first_story!=null: action = business.first_story.action_text()
 		if action.is_empty() and daniel_mission!=null: action = daniel_mission.action_text()
+		if action.is_empty() and is_instance_valid(park_leisure): action = park_leisure.action_text()
 		if action.is_empty() and _yordi_enabled(): action = yordi_mission.action_text()
 		if action.is_empty() and carlos_mission!=null: action = carlos_mission.action_text()
 		if action.is_empty() and backpack!=null: action = backpack.action_text()
@@ -1985,6 +2002,15 @@ func _physics_process(delta: float) -> void:
 			hud_time = 0.0
 			_update_hud()
 		return
+	if is_instance_valid(park_leisure) and park_leisure.active():
+		park_leisure.tick(delta)
+		player.velocity = Vector3.ZERO
+		interact_requested = false
+		context_requested = false
+		cargo_requested = false
+		_tick_outdoor_free_play(delta)
+		if business!=null: business.tick(delta,false,false)
+		return
 	if _yordi_enabled() and not building_mode and (daniel_mission==null or not daniel_mission.inside): yordi_mission.tick(delta)
 	if _hold_story_input(): return
 	if not adaptation_mode and incidents!=null and not building_mode and not business.modal_open(): incidents.tick(delta)
@@ -2159,6 +2185,10 @@ func _physics_process(delta: float) -> void:
 		elif not adaptation_mode and business!=null and business.first_story!=null and business.first_story.carrying_table():
 			return
 		elif daniel_mission!=null and daniel_mission.interact():
+			player.velocity = Vector3.ZERO
+			_update_hud()
+			return
+		elif is_instance_valid(park_leisure) and park_leisure.interact():
 			player.velocity = Vector3.ZERO
 			_update_hud()
 			return
