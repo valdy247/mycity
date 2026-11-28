@@ -409,7 +409,7 @@ func _ponton_diamond(anchor: Vector2,poly: PackedVector2Array,occupied: Array[Ve
 			world._cube(_v(center,.087),Vector3(.58,.025,.15),base_mat,atan2(forward.x,forward.y))
 			for base in [first,third]:
 				var direction: Vector2 = (base-home).normalized()
-				var end := base
+				var end: Vector2 = base
 				for metre in range(1,35):
 					var q: Vector2 = base+direction*float(metre)
 					if not _free(q,poly,.55): break
