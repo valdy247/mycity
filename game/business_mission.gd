@@ -58,6 +58,23 @@ var buyer_agent: Dictionary = {}
 var last_customer_style := -1
 var recent_customers: Array[int] = []
 var trading_open := false
+# Daily routine is independent of the original investment mission.
+var daily_phase := ""
+var daily_stall_pose: Transform3D
+var daily_seller_pos := Vector3.ZERO
+var daily_seller_angle := 0.0
+var daily_home: Dictionary = {}
+var daily_home_entry := Vector3.INF
+var daily_home_approach := Vector3.INF
+var daily_path := PackedVector3Array()
+var daily_index := 0
+var daily_retry := 0.0
+var daily_blocked := 0.0
+var daily_anim := 0.0
+var daily_lift_from: Transform3D
+var daily_save_clock := 0.0
+const DAILY_OPEN_PREP := 405.0
+const DAILY_CLOSE := 1080.0
 const AUTO_UNLOAD_RADIUS := 18.0
 var last_unloaded_id := ""
 var auto_unload_id := ""
@@ -955,6 +972,7 @@ func taxi_arrival(at: Vector3) -> void:
 func aimed_albertico_text(at: Vector3) -> String:
 	if not is_instance_valid(albertico) or not albertico.is_visible_in_tree() or camera==null or player==null: return ""
 	if not _near(at,albertico.global_position,2.0): return ""
+	if adaptation_mode and ledger.stage==4 and daily_phase!="open": return ""
 	var origin := camera.global_position
 	var direction := -camera.global_transform.basis.z
 	var finish := origin+direction*8.0
@@ -1444,10 +1462,14 @@ func _sync_visuals() -> void:
 	arrow.visible = not adaptation_mode and ledger.albertico_visible() and (ledger.stage==0 or (ledger.stage==3 and (first_story==null or not first_story.active())))
 	factory_arrow.visible = not adaptation_mode and ledger.stage in [1,2]
 	stand.visible = (not adaptation_mode or ledger.stage==4) and (ledger.stage==4 or (first_story!=null and first_story._phase()=="handshake") or (ledger.stage>=1 and not ledger.life_data.has("albertico_story")))
+	if adaptation_mode and ledger.stage==4 and not daily_phase.is_empty():
+		albertico.visible = daily_phase!="rest"
+		stand.visible = daily_phase!="rest"
 	var tier := stall_tier(ledger.sold) if ledger.stage==4 else 0
 	for i in range(stall_growth.size()): stall_growth[i].visible = tier>=i+1
+	if adaptation_mode and ledger.stage==4 and not daily_phase.is_empty(): _daily_apply_packing()
 	if is_instance_valid(stall_sign):
-		stall_sign.text = ("ALBERTICO · ABIERTO" if is_trading_hour() else "CERRADO · 07–18 H") if ledger.stage==4 else "ALIMENTOS · ALBERTICO"
+		stall_sign.text = ("ALBERTICO · ABIERTO" if is_trading_hour() and (not adaptation_mode or daily_phase=="open") else "CERRADO · 07–18 H") if ledger.stage==4 else "ALIMENTOS · ALBERTICO"
 	# Refresh only what changed; sales must not recreate paid boxes, cargo or hands.
 	var pending_key := JSON.stringify(ledger.pending)
 	if pending_visual_key!=pending_key:
@@ -1470,6 +1492,7 @@ func _sync_visuals() -> void:
 			var visual := _crate(stock_display,Vector3(-.46+float(product_slot)*.46,.98,0),String(key))
 			visual.scale = Vector3.ONE*.78
 			product_slot += 1
+	if adaptation_mode and ledger.stage==4 and not daily_phase.is_empty(): _daily_apply_packing()
 	if carry_visual_key!=ledger.carry:
 		carry_visual_key = ledger.carry
 		_clear_visual_children(crate_view)
@@ -1538,8 +1561,255 @@ static func trading_hour(minutes: float) -> bool:
 func is_trading_hour() -> bool:
 	return life!=null and trading_hour(float(life.state.get("minutes",480.0)))
 
+func _daily_save() -> void:
+	# Store JSON-compatible phase and locations, not nodes or graph objects.
+	if not adaptation_mode or daily_phase.is_empty(): return
+	var p := albertico.global_position
+	ledger.life_data["albertico_daily"] = {"phase":daily_phase,"position":[p.x,p.y,p.z]}
+	ledger.save_game()
+
+func _daily_change(value: String) -> void:
+	daily_phase = value
+	daily_anim = 0.0
+	daily_retry = 0.0
+	daily_blocked = 0.0
+	daily_path = PackedVector3Array()
+	daily_index = 0
+	_sync_visuals()
+	_daily_save()
+
+func _daily_apply_packing() -> void:
+	if not is_instance_valid(stock_display): return
+	var ratio := 1.0
+	match daily_phase:
+		"pack": ratio = 1.0-clampf(daily_anim/2.2,0.0,1.0)
+		"unpack": ratio = clampf(daily_anim/2.2,0.0,1.0)
+		"open","": ratio = 1.0
+		_: ratio = 0.0
+	stock_display.visible = ratio>.04
+	stock_display.scale = Vector3.ONE*maxf(.015,ratio)
+	# The canopy's supports and awning fold down before carrying the table.
+	for group in stall_growth:
+		group.scale.y = maxf(.025,ratio)
+		if ratio<=.04: group.hide()
+		else: group.visible = stall_growth.find(group)<stall_tier(ledger.sold)
+
+func _daily_carry_pose(at: Vector3,heading: float) -> Transform3D:
+	var direction := Vector3(sin(heading),0,cos(heading))
+	# Long edge points along the walking direction to pass narrow sidewalks.
+	return Transform3D(Basis(Vector3.UP,heading+PI*.5),at+direction*1.0+Vector3.UP*.32)
+
+func _daily_carry_clear(pose: Transform3D) -> bool:
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(1.47,.84,.66)
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = shape
+	q.collision_mask = 1|4|8|16|32
+	q.transform = pose*Transform3D(Basis.IDENTITY,Vector3(0,.43,0))
+	return get_world_3d().direct_space_state.intersect_shape(q,1).is_empty()
+
+func _daily_find_home() -> bool:
+	if first_story==null or not is_instance_valid(first_story.game.yordi_mission): return false
+	if daily_home.is_empty(): daily_home = first_story._find_neighbor()
+	if daily_home.is_empty(): return false
+	var door: Vector3 = daily_home.door
+	var normal: Vector3 = daily_home.normal
+	# Use the same verified residential entrance used in the investment story.
+	for offset in [1.05,1.35,1.65,2.0]:
+		var at: Vector3 = first_story.game.yordi_mission._ground(door+normal*float(offset),false)
+		if not at.is_finite(): continue
+		var facing := atan2(-normal.x,-normal.z)
+		if not _daily_carry_clear(_daily_carry_pose(at,facing)): continue
+		daily_home_approach = at
+		daily_home_entry = door+normal*.25
+		daily_home_entry.y = at.y
+		return true
+	# Narrow frontage: keep the table at a verified approach, then pass
+	# through the same doorway using the compact folded carry pose.
+	for offset in [1.35,1.65,2.0]:
+		var at: Vector3 = first_story.game.yordi_mission._ground(door+normal*float(offset),false)
+		if at.is_finite():
+			daily_home_approach = at
+			daily_home_entry = door+normal*.25
+			daily_home_entry.y = at.y
+			return true
+	return false
+
+func _daily_init() -> bool:
+	if not is_instance_valid(albertico) or not is_instance_valid(stand) or first_story==null: return false
+	if not _daily_find_home(): return false
+	daily_stall_pose = stand.global_transform
+	daily_seller_pos = first_story.original_actor
+	daily_seller_angle = first_story.original_angle
+	if daily_seller_pos.distance_to(daily_stall_pose.origin)>3.0:
+		daily_seller_pos = albertico.global_position
+		daily_seller_angle = albertico.rotation.y
+	var minute := float(life.state.get("minutes",480.0))
+	var saved: Dictionary = ledger.life_data.get("albertico_daily",{})
+	var old_phase := String(saved.get("phase",""))
+	if old_phase in ["to_home","return","lift","lower","pack","unpack"]:
+		var values: Array = saved.get("position",[])
+		if values.size()==3:
+			var p := Vector3(float(values[0]),float(values[1]),float(values[2]))
+			if p.distance_to(daily_stall_pose.origin)<70.0 and world.pedestrian_segment_clear(p,p):
+				albertico.global_position = p
+				if old_phase in ["to_home","return","lift","lower"]:
+					daily_phase = "return" if old_phase in ["return","lower"] else "to_home"
+					stand.global_transform = _daily_carry_pose(p,albertico.rotation.y)
+				else: daily_phase = old_phase
+				_sync_visuals()
+				return true
+	if minute<DAILY_OPEN_PREP or minute>=DAILY_CLOSE:
+		daily_phase = "rest"
+		albertico.global_position = daily_home_entry
+		stand.global_transform = daily_stall_pose
+	else:
+		daily_phase = "open"
+	_sync_visuals()
+	_daily_save()
+	return true
+
+func _daily_route(target: Vector3) -> PackedVector3Array:
+	var from := albertico.global_position
+	if world.pedestrian_segment_clear(from,target): return PackedVector3Array([target])
+	if world.pedestrian_router==null: return PackedVector3Array()
+	var path: PackedVector3Array = world.pedestrian_router.call("route_between",from,target)
+	if path.is_empty(): return path
+	var length := 0.0
+	var previous := from
+	for point in path:
+		length += previous.distance_to(point)
+		if length>100.0: return PackedVector3Array()
+		previous = point
+	if previous.distance_to(target)>1.0: return PackedVector3Array()
+	return path
+
+func _daily_walk(target: Vector3,delta: float) -> bool:
+	var actor := albertico as Person
+	if actor.global_position.distance_to(target)<.22: return true
+	daily_retry = maxf(0.0,daily_retry-delta)
+	if daily_path.is_empty():
+		if daily_retry>0.0: return false
+		daily_path = _daily_route(target)
+		daily_index = 0
+		daily_retry = 2.0
+		if daily_path.is_empty(): return false
+	if daily_index>=daily_path.size():
+		daily_path = PackedVector3Array()
+		return false
+	var goal := daily_path[daily_index]
+	if actor.global_position.distance_to(goal)<.19:
+		daily_index += 1
+		return false
+	var next := actor.global_position.move_toward(goal,1.45*delta)
+	var diff := goal-actor.global_position
+	var heading := atan2(diff.x,diff.z)
+	var pose := _daily_carry_pose(next,heading)
+	var can_move := world.pedestrian_segment_clear(actor.global_position,next) and world.pedestrian_space_clear(actor,next,.65) and _daily_carry_clear(pose)
+	if can_move:
+		actor.remove_meta("conversation_until")
+		actor.walk_to(goal,delta,1.45)
+		stand.global_transform = _daily_carry_pose(actor.global_position,actor.rotation.y)
+		daily_blocked = 0.0
+	else:
+		actor.animate(delta,false)
+		daily_blocked += delta
+		if daily_blocked>=2.0:
+			daily_path = PackedVector3Array()
+			daily_retry = 2.5
+			daily_blocked = 0.0
+	for arm in actor.arms: arm.rotation.x = -.95
+	return false
+
+func _tick_albertico_daily(delta: float) -> void:
+	if not is_instance_valid(albertico) or not is_instance_valid(stand) or life==null: return
+	if daily_phase.is_empty():
+		daily_retry = maxf(0.0,daily_retry-delta)
+		if daily_retry>0.0: return
+		if not _daily_init():
+			daily_retry = 3.0
+			return
+	var actor := albertico as Person
+	var minute := float(life.state.get("minutes",480.0))
+	var working := minute>=DAILY_OPEN_PREP and minute<DAILY_CLOSE
+	daily_anim += delta
+	daily_save_clock += delta
+	if daily_save_clock>=12.0 and daily_phase not in ["open","rest"]:
+		daily_save_clock = 0.0
+		_daily_save()
+	match daily_phase:
+		"open":
+			if working: return
+			if not auto_unload_id.is_empty() or (first_story!=null and not first_story.fetch_phase.is_empty()): return
+			_release_buyer()
+			_daily_change("pack")
+		"pack":
+			actor.animate(delta,false)
+			for arm in actor.arms: arm.rotation.x = -.85+sin(daily_anim*6.0)*.18
+			_daily_apply_packing()
+			if daily_anim>=2.2:
+				daily_lift_from = stand.global_transform
+				_daily_change("lift")
+		"lift":
+			var direction := daily_home_approach-actor.global_position
+			actor.rotation.y = lerp_angle(actor.rotation.y,atan2(direction.x,direction.z),minf(1.0,delta*6.0))
+			var pose := _daily_carry_pose(actor.global_position,actor.rotation.y)
+			stand.global_transform = daily_lift_from.interpolate_with(pose,clampf(daily_anim/.8,0.0,1.0))
+			for arm in actor.arms: arm.rotation.x = -.95
+			if daily_anim>=.8: _daily_change("to_home")
+		"to_home":
+			if _daily_walk(daily_home_approach,delta):
+				_daily_change("enter")
+		"enter":
+			# Walk up to the facade threshold and conceal the actor only there.
+			var target := daily_home_entry
+			var step := actor.global_position.move_toward(target,1.2*delta)
+			var normal: Vector3 = daily_home.normal
+			actor.rotation.y = atan2(-normal.x,-normal.z)
+			if actor.global_position.distance_to(target)<=.28 or not world.pedestrian_segment_clear(actor.global_position,step):
+				if actor.global_position.distance_to(target)>.80:
+					actor.animate(delta,false)
+					return
+				_daily_change("rest")
+				return
+			if not world.pedestrian_space_clear(actor,step,.55): return
+			actor.walk_to(target,delta,1.2)
+			stand.global_transform = _daily_carry_pose(actor.global_position,actor.rotation.y)
+			for arm in actor.arms: arm.rotation.x = -.95
+		"rest":
+			if not working: return
+			if not world.pedestrian_space_clear(actor,daily_home_approach,.75,false): return
+			var normal: Vector3 = daily_home.normal
+			actor.global_position = daily_home_entry
+			actor.rotation.y = atan2(normal.x,normal.z)
+			stand.global_transform = _daily_carry_pose(actor.global_position,actor.rotation.y)
+			_daily_change("leave")
+		"leave":
+			var step := actor.global_position.move_toward(daily_home_approach,1.2*delta)
+			if not world.pedestrian_space_clear(actor,step,.55): return
+			actor.walk_to(daily_home_approach,delta,1.2)
+			stand.global_transform = _daily_carry_pose(actor.global_position,actor.rotation.y)
+			for arm in actor.arms: arm.rotation.x = -.95
+			if actor.global_position.distance_to(daily_home_approach)<.20: _daily_change("return")
+		"return":
+			if _daily_walk(daily_seller_pos,delta):
+				daily_lift_from = stand.global_transform
+				_daily_change("lower")
+		"lower":
+			actor.rotation.y = lerp_angle(actor.rotation.y,daily_seller_angle,minf(1.0,delta*7.0))
+			stand.global_transform = daily_lift_from.interpolate_with(daily_stall_pose,clampf(daily_anim/.9,0.0,1.0))
+			for arm in actor.arms: arm.rotation.x = -.85
+			if daily_anim>=.9:
+				stand.global_transform = daily_stall_pose
+				_daily_change("unpack")
+		"unpack":
+			actor.animate(delta,false)
+			for arm in actor.arms: arm.rotation.x = -.85+sin(daily_anim*6.0)*.18
+			_daily_apply_packing()
+			if daily_anim>=2.2: _daily_change("open")
+
 func _merchant_ready() -> bool:
-	return auto_unload_id.is_empty() and is_instance_valid(albertico) and albertico.is_visible_in_tree() and is_instance_valid(stand) and albertico.global_position.distance_to(stand.global_position)<2.5 and (first_story==null or first_story.fetch_phase.is_empty())
+	return (not adaptation_mode or daily_phase=="open") and auto_unload_id.is_empty() and is_instance_valid(albertico) and albertico.is_visible_in_tree() and is_instance_valid(stand) and albertico.global_position.distance_to(stand.global_position)<2.5 and (first_story==null or first_story.fetch_phase.is_empty())
 
 func _start_buyer() -> void:
 	if is_instance_valid(buyer) or not is_trading_hour() or not _merchant_ready() or ledger.total(ledger.stock)<=0 or world.pedestrian_router==null: return
@@ -1615,7 +1885,7 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 	if not editor and is_instance_valid(camera):
 		for merchant in get_tree().get_nodes_in_group("mission_merchant_visuals"):
 			if merchant is Person and merchant.is_visible_in_tree() and merchant.global_position.distance_squared_to(camera.global_position)<625.0:
-				merchant.animate(delta,false)
+				if merchant!=albertico or not adaptation_mode or daily_phase in ["","open"]: merchant.animate(delta,false)
 	delivery_gesture = maxf(0.0,delivery_gesture-delta)
 	if delivery_gesture>0.0 and is_instance_valid(albertico) and albertico is Person:
 		for arm in albertico.arms: arm.rotation.x = lerpf(arm.rotation.x,-.9,minf(delta*10.0,1.0))
@@ -1627,8 +1897,9 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 		arrow.position.y = 2.68+sin(phase*3.0)*.13
 		factory_arrow.position.y = 1.90+sin(phase*3.0)*.13
 	if ledger.stage==4 and not editor:
-		_tick_auto_unload(delta)
-		var open_now := is_trading_hour()
+		if adaptation_mode: _tick_albertico_daily(delta)
+		if not adaptation_mode or daily_phase=="open": _tick_auto_unload(delta)
+		var open_now := is_trading_hour() and (not adaptation_mode or daily_phase=="open")
 		if trading_open!=open_now:
 			trading_open = open_now
 			ledger.sales_clock = 0.0
@@ -1657,6 +1928,7 @@ func tick(delta: float,in_vehicle: bool,editor: bool) -> void:
 # The first handover authorizes only the vehicle the player just unloaded.
 # Until a visible delivery succeeds, its paid box remains in vehicle cargo.
 func _request_auto_unload() -> void:
+	if adaptation_mode and daily_phase!="open": return
 	if not auto_unload_id.is_empty() or last_unloaded_id.is_empty() or not is_instance_valid(stand): return
 	if ledger.total(ledger.cargo.get(last_unloaded_id,{}))<=0: return
 	var body := _cargo_vehicle(last_unloaded_id)
