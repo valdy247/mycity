@@ -272,11 +272,28 @@ const CALL_NO := [
 	["Tú","Dale.","player_no_end",0.56]
 ]
 var call_generation := 0
-const CALL_DIALOGUE_VERSION := 2
+const CALL_DIALOGUE_VERSION := 3
 var call_ring_started := false
+var call_session_offered := false
+var call_last_blocker := ""
+
+func _call_unlocked() -> bool:
+	var adaptation: Dictionary = business.ledger.life_data.get("adaptation",{})
+	return business.ledger.stage==4 or (game.adaptation_mode and bool(adaptation.get("investment_complete",false)))
+
+func _prepare_call() -> void:
+	if _stage()!=0: return
+	state.stage = 1
+	business.ledger.add_message("Carlos","Llámame. Tengo un trabajo pintando una casa cerca de Flores y Estévez.")
+	_save()
 
 func open_call() -> void:
-	if _stage()==0: return
+	if not _call_unlocked() and _stage()==0:
+		business._open("Carlos","La llamada estará disponible después de completar la primera inversión con Albertico.")
+		business._button("Cerrar",business.close)
+		return
+	if _stage()==0: _prepare_call()
+	call_session_offered = true
 	if _stage()!=1:
 		business._open("Carlos",objective())
 		if _stage()==2:
@@ -292,7 +309,8 @@ func _play_call(lines: Array,decision: int) -> void:
 	call_generation += 1
 	var generation := call_generation
 	business.phone_mode = true
-	business._open("Llamada · Carlos"," ")
+	business._open("Llamada · Carlos")
+	print("MyCity Carlos: diálogo abierto; etapa=",starting_stage," rama=",decision)
 	if is_instance_valid(business.phone_ring): business.phone_ring.stop()
 	var subtitle := Label.new()
 	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -321,6 +339,8 @@ func _play_call(lines: Array,decision: int) -> void:
 	voice.stop()
 	match decision:
 		0:
+			state.call_dialogue_version = CALL_DIALOGUE_VERSION
+			_save()
 			business._button("Sí",_call_yes)
 			business._button("No",_call_no)
 		1:
@@ -1004,28 +1024,36 @@ func _follow(delta: float) -> void:
 			follow_clock = 0.0
 			follow_stall = 0.0
 
+# Run incoming calls independently of the main physics mission dispatch.
+# Only the full painting/companion simulation still depends on tick().
+func _process(delta: float) -> void:
+	if game==null or business==null or not is_instance_valid(game.garage): return
+	if call_session_offered or int(state.get("call_dialogue_version",0))>=CALL_DIALOGUE_VERSION: return
+	var blocker := ""
+	if not _call_unlocked(): blocker = "primera inversión pendiente"
+	elif is_instance_valid(game.arrival_story) and game.arrival_story.active(): blocker = "historia de llegada activa"
+	elif game.home_exit_loading: blocker = "cargando la ciudad"
+	elif inside or game.garage.inside: blocker = "dentro de una casa"
+	elif game.driving or game.taxi_riding or game.bus_riding or game.garage.riding: blocker = "en vehículo"
+	elif game.touch_blocked(): blocker = "menú, mapa o diálogo abierto"
+	if blocker!=call_last_blocker:
+		call_last_blocker = blocker
+		print("MyCity Carlos: ", "listo para llamar" if blocker.is_empty() else blocker, "; Albertico=",business.ledger.stage,"; Carlos=",_stage())
+	if not blocker.is_empty():
+		call_wait = 0.0
+		call_ring_started = false
+		return
+	call_wait += delta
+	if call_wait>=8.0 and not call_ring_started:
+		call_ring_started = true
+		if is_instance_valid(business.phone_ring): business.phone_ring.play()
+	if call_wait>=9.0:
+		call_session_offered = true
+		_prepare_call()
+		print("MyCity Carlos: llamada entrante iniciada")
+		_play_call(CALL_INTRO,0)
+
 func tick(delta: float) -> void:
-	# Older saves may already have received or completed the original text call.
-	# Offer the voiced version once without resetting painting, rewards or vehicles.
-	if business.ledger.stage==4 and int(state.get("call_dialogue_version",0))<CALL_DIALOGUE_VERSION and not inside:
-		if business.modal_open() or game.driving or game.taxi_riding or game.bus_riding or game.garage.inside or game.garage.riding or game.taxis.dialog.visible:
-			call_wait = 0.0
-			call_ring_started = false
-		else:
-			call_wait += delta
-			if call_wait>=8.0 and not call_ring_started:
-				call_ring_started = true
-				if is_instance_valid(business.phone_ring): business.phone_ring.play()
-			if call_wait>=9.0:
-				if _stage()==0:
-					state.stage = 1
-					business.ledger.add_message("Carlos","Llámame. Tengo un trabajo pintando una casa cerca de Flores y Estévez.")
-				# Mark the offer at presentation, so declining or closing never
-				# results in an endless incoming-call loop. Manual callback remains.
-				state.call_dialogue_version = CALL_DIALOGUE_VERSION
-				_save()
-				_play_call(CALL_INTRO,0)
-				return
 	if _stage()<=1: return
 	if _stage()==5:
 		if farewell: _farewell_tick(delta)
