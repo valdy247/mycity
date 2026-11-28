@@ -149,7 +149,12 @@ func _walk(delta: float) -> void:
 	game.player.velocity.z = move.z*speed
 	if not game.player.is_on_floor(): game.player.velocity.y -= 18.0*delta
 	else: game.player.velocity.y = 0.0
+	var before: Vector3 = game.player.global_position
 	game.player.move_and_slide()
+	if is_instance_valid(actor) and actor.visible and _actor_overlaps_player(actor.global_position):
+		if Vector2(before.x-actor.global_position.x,before.z-actor.global_position.z).length()>Vector2(game.player.global_position.x-actor.global_position.x,game.player.global_position.z-actor.global_position.z).length():
+			game.player.global_position = before
+			game.player.velocity = Vector3.ZERO
 
 func _say(i: int) -> void:
 	line = i
@@ -257,6 +262,25 @@ func _clean_tick(delta: float) -> void:
 			_save()
 			_set_phase("two_hours")
 
+func _actor_overlaps_player(at: Vector3, minimum: float = 1.10) -> bool:
+	var player_at: Vector3 = game.player.global_position-Vector3.UP*.86
+	return absf(at.y-player_at.y)<1.6 and Vector2(at.x-player_at.x,at.z-player_at.z).length()<minimum
+
+func _separate_actor_position(at: Vector3) -> Vector3:
+	if not _actor_overlaps_player(at,1.45): return at
+	var player_at: Vector3 = game.player.global_position-Vector3.UP*.86
+	for radius in [1.65,2.2,3.0,4.0]:
+		for i in range(12):
+			var angle := float(i)*TAU/12.0
+			var candidate := player_at+Vector3(cos(angle),0,sin(angle))*float(radius)
+			if at.y>70.0: candidate.y = at.y
+			else: candidate = game.yordi_mission._ground(candidate,false)
+			if not candidate.is_finite() or _actor_overlaps_player(candidate,1.45): continue
+			if not world.pedestrian_segment_clear(candidate,candidate): continue
+			if not world.pedestrian_space_clear(actor,candidate,.7,false): continue
+			return candidate
+	return Vector3.INF
+
 func _spawn_actor(at: Vector3) -> void:
 	if not is_instance_valid(actor):
 		actor = Person.new()
@@ -264,7 +288,11 @@ func _spawn_actor(at: Vector3) -> void:
 		actor.setup(810)
 		actor.remove_from_group("social_people")
 		actor.remove_from_group("pedestrian_spacing")
-	actor.global_position = at
+	var safe := _separate_actor_position(at)
+	if not safe.is_finite():
+		actor.hide()
+		return
+	actor.global_position = safe
 	actor.show()
 
 func _door_return() -> void:
@@ -608,7 +636,7 @@ func _helper_tick(delta: float,unloading: bool) -> void:
 	if unloading:
 		if actor.global_position.y<70.0:
 			if not _helper_walk(delta,_house_out()): return
-			actor.global_position = Vector3(-.7,110,4.45)
+			_spawn_actor(Vector3(-2.35,110,3.9))
 			_clear_helper_path()
 			return
 		if not _helper_walk(delta,OIL-Vector3.UP*.86,true): return
@@ -633,7 +661,7 @@ func _toggle_home() -> bool:
 		return true
 	if not game.garage.inside and story._house_near():
 		game.garage._enter()
-		if game.garage.inside and (phase!="unload" or _all_at("stored")): _spawn_actor(Vector3(-.7,110,4.45))
+		if game.garage.inside and (phase!="unload" or _all_at("stored")): _spawn_actor(Vector3(-2.35,110,3.9))
 		return true
 	return false
 
@@ -744,7 +772,7 @@ func _restore() -> void:
 			else: _dialogue(0,0,"clean")
 		"return_door": _set_phase("return_door","return_door")
 		"outbound":
-			_spawn_actor(Vector3(-.7,110,3.7))
+			_spawn_actor(Vector3(-2.35,110,3.9))
 			_set_phase("outbound","outbound")
 		"shop","load","return":
 			if world.food_factory.is_empty(): return
@@ -752,7 +780,7 @@ func _restore() -> void:
 			game.garage.inside = false
 			var f: Dictionary = world.food_factory
 			game.player.global_position = Vector3(f.center)+Basis(f.basis)*Vector3(0,.96,3.55)
-			_spawn_actor(Vector3(f.center)+Basis(f.basis)*Vector3(.4,.1,3.2))
+			_spawn_actor(Vector3(f.center)+Basis(f.basis)*Vector3(1.8,.1,3.2))
 			_set_phase(resume,resume)
 			_rebuild_boxes()
 		"unload":
@@ -765,7 +793,7 @@ func _restore() -> void:
 			_set_phase("unload","unload")
 			_rebuild_boxes()
 		"neighbor","table_room","table_carry","finish":
-			_spawn_actor(Vector3(-.7,110,4.45))
+			_spawn_actor(Vector3(-2.35,110,3.9))
 			_set_phase("neighbor","neighbor")
 		_: _set_phase("return_door","return_door")
 
@@ -849,7 +877,7 @@ func tick(delta: float) -> void:
 			story.subtitle.text = "[E] Abrir puerta" if _near(ENTRY,1.7) else ""
 		"enter_actor":
 			_face(actor.global_position+Vector3.UP*1.45)
-			if actor.walk_to(Vector3(-.7,110,4.1),delta,1.3):
+			if actor.walk_to(Vector3(-.7,110,4.95),delta,1.3):
 				game.garage.set_guest_door(false)
 				_credit()
 				_money()
@@ -917,3 +945,9 @@ func tick(delta: float) -> void:
 		"table_carry":
 			_table_tick(delta)
 			story.subtitle.text = "[E] Instalar mesa" if game.player.global_position.y<70.0 and _near(_stall_position()+Vector3.UP*.86,2.1) else ""
+
+	# Final guard after scripted moves, checkpoint restoration and helper actions.
+	if phase!="ride" and is_instance_valid(actor) and actor.visible and not actor.is_queued_for_deletion() and _actor_overlaps_player(actor.global_position):
+		var safe := _separate_actor_position(actor.global_position)
+		if safe.is_finite(): actor.global_position = safe
+		else: actor.hide()
