@@ -7,6 +7,8 @@ const KEYS := ["pollo","huevos","aceite"]
 const ENTRY := Vector3(-.7,110.86,4.85)
 const FRIDGE := Vector3(-5.18,110.86,.85)
 const OIL := Vector3(-5.38,110.86,-.65)
+# Clear aisle between the sofa and the dining chair in the current rental layout.
+const KITCHEN_AISLE := [Vector3(-2.35,110,1.0),Vector3(-5.15,110,1.0)]
 const TABLE_ROOM := Vector3(60,110,0)
 const LINES := [
 	["Tú","Déjame ponerme a limpiar un poco esta casa mientras Albertico viene.",4.4],
@@ -707,10 +709,23 @@ func _helper_walk(delta: float,target: Vector3,inside_house: bool = false) -> bo
 	if not target.is_finite(): return false
 	if actor.global_position.distance_to(target)<.85: return true
 	if inside_house:
-		# A known free corridor around the sofa and dining table.
+		# The old z=.35 route crosses the dining chair collision shape.
+		# Choose a clear path from the current position, including after a reload.
 		if helper_path.is_empty():
-			helper_path = PackedVector3Array([Vector3(-2.35,110,3.9),Vector3(-2.35,110,.35),Vector3(-5.32,110,.35),target])
+			var start: Vector3 = actor.global_position
+			for option in [[target],[KITCHEN_AISLE[1],target],[KITCHEN_AISLE[0],KITCHEN_AISLE[1],target]]:
+				var previous: Vector3 = start
+				var clear := true
+				for point in option:
+					if not world.pedestrian_segment_clear(previous,Vector3(point)):
+						clear = false
+						break
+					previous = Vector3(point)
+				if clear:
+					helper_path = PackedVector3Array(option)
+					break
 			helper_index = 0
+			if helper_path.is_empty(): return false
 		if helper_index>=helper_path.size(): return true
 		if _walk_actor_checked(helper_path[helper_index],delta,1.8): helper_index += 1
 		return helper_index>=helper_path.size()
@@ -822,8 +837,8 @@ func _neighbor_lead(delta: float) -> void:
 		if neighbor_exit_path.is_empty():
 			neighbor_exit_path = PackedVector3Array()
 			if actor.global_position.x< -3.0:
-				neighbor_exit_path.append(Vector3(-5.32,110,.35))
-				neighbor_exit_path.append(Vector3(-2.35,110,.35))
+				neighbor_exit_path.append(KITCHEN_AISLE[1])
+				neighbor_exit_path.append(KITCHEN_AISLE[0])
 			neighbor_exit_path.append(Vector3(-2.35,110,3.9))
 			neighbor_exit_path.append(Vector3(-.7,110,4.95))
 			neighbor_exit_index = 0
@@ -1202,9 +1217,13 @@ func tick(delta: float) -> void:
 		"unload":
 			_helper_tick(delta,true)
 			if carry.is_empty() and not _all_at("stored"):
-				if game.garage.inside: _mark(ENTRY)
-				else: _mark(_trunk())
-				story.subtitle.text = "[E] Salir por otra caja" if game.garage.inside else "[E] Recoger caja del taxi"
+				var remaining_player_boxes: bool = String(_box_states().get("pollo",""))=="taxi" or String(_box_states().get("huevos",""))=="taxi"
+				if remaining_player_boxes:
+					if game.garage.inside: _mark(ENTRY)
+					else: _mark(_trunk())
+					story.subtitle.text = "[E] Salir por otra caja" if game.garage.inside else "[E] Recoger caja del taxi"
+				else:
+					story.subtitle.text = "Albertico está guardando el aceite. Deja libre el paso de la cocina."
 			elif not carry.is_empty():
 				var target: Vector3 = OIL if carry=="aceite" else FRIDGE
 				_mark(target if game.garage.inside else _house_out())
