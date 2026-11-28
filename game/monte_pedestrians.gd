@@ -479,7 +479,7 @@ func _profile_for(style: int,at: Vector3) -> Dictionary:
 	var workplace: Dictionary = {}
 	if not commerce_destinations.is_empty(): workplace = commerce_destinations[posmod(style,commerce_destinations.size())]
 	var profile := {"id":"resident_"+key,"style":style,"name":first_names[posmod(style,first_names.size())]+" "+surnames[posmod(floori(float(style)/3.0),surnames.size())],"home":home,"workplace":workplace,"money":200+posmod(style*37,800),"activity":"street","job":job,"last_work":-1000.0,"last_purchase":-1000.0}
-	Residents.normalize(profile,style,resident_clock)
+	Residents.advance(profile,style,resident_clock)
 	# Never evict known residents to create new identities.
 	if profiles.size()<MAX_PROFILES:
 		profiles[key] = profile
