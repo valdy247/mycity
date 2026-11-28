@@ -6,6 +6,7 @@ const MAX_TREES := 32
 var world
 var areas: Array = []
 var sites: Array = []
+var sport_sites: Array = []
 var walkways: Array = []
 var index: Dictionary = {}
 const PONTON_ID := "23918119"
@@ -415,6 +416,7 @@ func _ponton_diamond(anchor: Vector2,poly: PackedVector2Array,occupied: Array[Ve
 					if not _free(q,poly,.55): break
 					end = q
 				_ponton_strip(home,end,.075,poly,chalk,"ponton_chalk",.074)
+			sport_sites.append({"kind":"pelota","start":_v(home,.085),"target":_v(center,.085),"name":"Práctica de bateo · El Pontón"})
 			occupied.append(center)
 			return true
 	return false
@@ -438,6 +440,7 @@ func _ponton_court(anchor: Vector2,poly: PackedVector2Array,occupied: Array[Vect
 			_paint(PackedVector2Array([a,b,c,d]),.062,concrete,"ponton_court")
 			for pair in [[a,b],[b,c],[c,d],[d,a],[center-side*dims.x,center+side*dims.x]]:
 				_ponton_strip(pair[0],pair[1],.075,poly,chalk,"ponton_court_lines",.072)
+			sport_sites.append({"kind":"futbol","start":_v(center,.08),"target":_v(center+axis*(dims.y-1.3),.08),"name":"Tiros al arco · El Pontón"})
 			occupied.append(center)
 			return true
 	return false
@@ -517,6 +520,7 @@ func _build_ponton(item: Dictionary) -> void:
 	print("MyCity El Pontón: ",field_count," diamonds, ",court_count," courts; mapped buildings preserved.")
 
 func build() -> void:
+	sport_sites.clear()
 	var lawn := _mat("lawn",Color("#687d49"))
 	var paving := _mat("path",Color("#b6ad97"))
 	var bare := _mat("bare_dirt",Color("#81765f"))
