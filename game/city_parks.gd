@@ -8,6 +8,8 @@ var areas: Array = []
 var sites: Array = []
 var walkways: Array = []
 var index: Dictionary = {}
+const PONTON_ID := "23918119"
+var ponton_boundary := PackedVector2Array()
 var leaf_mesh := SphereMesh.new()
 var leaf_mat: StandardMaterial3D
 
@@ -19,7 +21,19 @@ static func area(poly: PackedVector2Array) -> float:
 
 func reserve(city) -> void:
 	world = city
+	# Reserve the named sports centre before the generic park limit.
 	for source in city.geography.park_areas:
+		if String(source.id)==PONTON_ID:
+			ponton_boundary = source.poly
+			break
+	if ponton_boundary.is_empty(): ponton_boundary = _ponton_from_streets()
+	if not ponton_boundary.is_empty():
+		areas.append({"id":PONTON_ID,"name":"El Pontón","poly":ponton_boundary,"ponton":true})
+		city.street_geometry._register(index,ponton_boundary)
+	else:
+		push_warning("MyCity El Pontón: no verified local boundary; neighbouring buildings preserved.")
+	for source in city.geography.park_areas:
+		if String(source.id)==PONTON_ID: continue
 		var poly: PackedVector2Array = source.poly
 		if area(poly)<35.0 or area(poly)>85000.0: continue
 		if city._stadium_reserved(poly): continue
@@ -37,6 +51,25 @@ func reserve(city) -> void:
 
 # The user identified the park by Monte / Estévez. Match its existing
 # polygon rather than guessing a new parcel or deleting adjacent houses.
+func _ponton_from_streets() -> PackedVector2Array:
+	# Older local exports may omit the sports centre way. Only reconstruct
+	# a block when four mapped intersections actually enclose the OSM pin.
+	var anchor: Vector3 = world.geography.project(23.12511,-82.36973)
+	var north: Vector3 = world._market_corner("oquendo","santo tomas",anchor)
+	var east: Vector3 = world._market_corner("nueva","santo tomas",anchor)
+	for south_name in ["arroyo","manglar"]:
+		var se: Vector3 = world._market_corner("nueva",String(south_name),anchor)
+		var sw: Vector3 = world._market_corner("oquendo",String(south_name),anchor)
+		if not north.is_finite() or not east.is_finite() or not se.is_finite() or not sw.is_finite(): continue
+		var poly := PackedVector2Array([Vector2(north.x,north.z),Vector2(east.x,east.z),Vector2(se.x,se.z),Vector2(sw.x,sw.z)])
+		if area(poly)<2500.0 or area(poly)>45000.0 or Geometry2D.triangulate_polygon(poly).is_empty(): continue
+		if not Geometry2D.is_point_in_polygon(Vector2(anchor.x,anchor.z),poly): continue
+		for inset in Geometry2D.offset_polygon(poly,-6.0):
+			if Geometry2D.is_point_in_polygon(Vector2(anchor.x,anchor.z),inset):
+				print("MyCity El Pontón: block inferred from verified local street intersections.")
+				return inset
+	return PackedVector2Array()
+
 func _identify_alcobenda() -> void:
 	for item in areas:
 		if world.geography.normalized(String(item.name)).contains("alcobenda"):
@@ -101,6 +134,8 @@ func suppress_building(fp: Dictionary) -> bool:
 	var original := area(poly)
 	if original<.1: return false
 	for park in world.street_geometry.near(index,poly):
+		# The sports complex includes real auxiliary buildings and a neighbouring school.
+		if park==ponton_boundary: continue
 		var overlap := 0.0
 		for piece in Geometry2D.intersect_polygons(poly,park): overlap += area(piece)
 		if overlap/original>=.90: return true
@@ -320,6 +355,140 @@ func _debris(poly: PackedVector2Array,routes: Array,hub: Vector2,rng: RandomNumb
 		visual.visibility_range_end = 85.0
 		add_child(visual)
 
+# El Pontón: worn neighbourhood baseball grounds and concrete sports
+# courts, based on the aerial references, not a modern spectator stadium.
+# Everything is static and clipped to mapped ground; no per-frame work.
+func _ponton_circle(center: Vector2,radius: float,poly: PackedVector2Array,mat: StandardMaterial3D,key: String,y: float) -> void:
+	var patch := PackedVector2Array()
+	for i in range(16):
+		var angle := TAU*float(i)/16.0
+		patch.append(center+Vector2(cos(angle),sin(angle))*radius)
+	for part in Geometry2D.intersect_polygons(patch,poly): _paint(part,y,mat,key)
+
+func _ponton_strip(a: Vector2,b: Vector2,width: float,poly: PackedVector2Array,mat: StandardMaterial3D,key: String,y: float) -> void:
+	if a.distance_to(b)<.05: return
+	var axis := (b-a).normalized()
+	var side := Vector2(-axis.y,axis.x)*width*.5
+	var strip := PackedVector2Array([a-side,b-side,b+side,a+side])
+	for part in Geometry2D.intersect_polygons(strip,poly): _paint(part,y,mat,key)
+
+func _ponton_open_rect(center: Vector2,axis: Vector2,hx: float,hz: float,poly: PackedVector2Array) -> bool:
+	var side := Vector2(-axis.y,axis.x)
+	# Check corners, edges and interior against the actual mapped buildings
+	# and streets before drawing a sports feature.
+	for x in range(-2,3):
+		for z in range(-2,3):
+			if not _free(center+side*hx*float(x)*.5+axis*hz*float(z)*.5,poly,.75): return false
+	return true
+
+func _ponton_diamond(anchor: Vector2,poly: PackedVector2Array,occupied: Array[Vector2],forward: Vector2) -> bool:
+	var dirt := _mat("ponton_infield",Color("#ad8c60"))
+	var chalk := _mat("ponton_chalk",Color("#c6bba0"))
+	var base_mat := _mat("ponton_bases",Color("#ded4bd"))
+	var side := Vector2(-forward.y,forward.x)
+	for scale_value in [18.0,15.0,12.0,9.0]:
+		var distance := float(scale_value)
+		for shift in [Vector2.ZERO,Vector2(-6,0),Vector2(6,0),Vector2(0,-6),Vector2(0,6),Vector2(-12,0),Vector2(12,0),Vector2(0,-12),Vector2(0,12)]:
+			var center: Vector2 = anchor+shift
+			var separated := true
+			for old in occupied:
+				if old.distance_to(center)<distance*1.55+8.0: separated = false
+			if not separated: continue
+			var half := distance/sqrt(2.0)
+			if not _ponton_open_rect(center,forward,half+2.0,half+2.0,poly): continue
+			var home := center-forward*half
+			var first := center+side*half
+			var second := center+forward*half
+			var third := center-side*half
+			for base in [home,first,second,third]:
+				_ponton_circle(base,1.65,poly,dirt,"ponton_infield",.064)
+				world._cube(_v(base,.085),Vector3(.38,.025,.38),base_mat,atan2(forward.x,forward.y)+PI*.25)
+			for pair in [[home,first],[first,second],[second,third],[third,home]]:
+				_ponton_strip(pair[0],pair[1],.85,poly,dirt,"ponton_infield",.064)
+			_ponton_circle(center,2.0,poly,dirt,"ponton_infield",.064)
+			world._cube(_v(center,.087),Vector3(.58,.025,.15),base_mat,atan2(forward.x,forward.y))
+			for base in [first,third]:
+				var direction: Vector2 = (base-home).normalized()
+				var end := base
+				for metre in range(1,35):
+					var q: Vector2 = base+direction*float(metre)
+					if not _free(q,poly,.55): break
+					end = q
+				_ponton_strip(home,end,.075,poly,chalk,"ponton_chalk",.074)
+			occupied.append(center)
+			return true
+	return false
+
+func _ponton_court(anchor: Vector2,poly: PackedVector2Array,occupied: Array[Vector2]) -> bool:
+	var axis := Vector2(0,-1)
+	var side := Vector2(-axis.y,axis.x)
+	var concrete := _mat("ponton_court",Color("#a4a397"))
+	var chalk := _mat("ponton_court_lines",Color("#cbc4ae"))
+	for dims in [Vector2(8,14),Vector2(6,10),Vector2(4,7)]:
+		for shift in [Vector2.ZERO,Vector2(0,-8),Vector2(0,8),Vector2(-8,0),Vector2(8,0)]:
+			var center := anchor+shift
+			var safe := true
+			for old in occupied:
+				if old.distance_to(center)<maxf(dims.x,dims.y)+18.0: safe = false
+			if not safe or not _ponton_open_rect(center,axis,dims.x,dims.y,poly): continue
+			var a: Vector2 = center-side*dims.x-axis*dims.y
+			var b: Vector2 = center+side*dims.x-axis*dims.y
+			var c: Vector2 = center+side*dims.x+axis*dims.y
+			var d: Vector2 = center-side*dims.x+axis*dims.y
+			_paint(PackedVector2Array([a,b,c,d]),.062,concrete,"ponton_court")
+			for pair in [[a,b],[b,c],[c,d],[d,a],[center-side*dims.x,center+side*dims.x]]:
+				_ponton_strip(pair[0],pair[1],.075,poly,chalk,"ponton_court_lines",.072)
+			occupied.append(center)
+			return true
+	return false
+
+func _build_ponton(item: Dictionary) -> void:
+	var poly: PackedVector2Array = item.poly
+	var rect: Rect2 = world.street_geometry.bounds(poly)
+	var grass := _mat("ponton_grass",Color("#69794e"))
+	var worn := _mat("ponton_worn",Color("#93856a"))
+	var dark_grass := _mat("ponton_grass_dark",Color("#576d47"))
+	_paint(poly,.048,grass,"ponton_grass")
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 23918119
+	# Sparse irregular worn patches, not perfectly manicured grass.
+	for i in range(24):
+		var p := rect.position+Vector2(rng.randf(),rng.randf())*rect.size
+		if not _free(p,poly,1.4): continue
+		_ponton_circle(p,rng.randf_range(1.8,4.2),poly,dark_grass if i%3==0 else worn,"ponton_dark" if i%3==0 else "ponton_worn",.055)
+	var occupied: Array[Vector2] = []
+	var field_count := 0
+	# Aerial reference: two worn diamonds across the western/central
+	# clearing and rectangular paved sports areas towards the east.
+	for fraction in [Vector2(.40,.66),Vector2(.38,.29)]:
+		var anchor: Vector2 = rect.position+fraction*rect.size
+		if _ponton_diamond(anchor,poly,occupied,Vector2(.86,-.51).normalized()): field_count += 1
+	var court_count := 0
+	for fraction in [Vector2(.78,.66),Vector2(.78,.37)]:
+		if _ponton_court(rect.position+fraction*rect.size,poly,occupied): court_count += 1
+	# Choose a real road-facing access near Clavel where available.
+	var gps := _hub(poly)
+	var best := INF
+	for i in range(poly.size()):
+		var a := poly[i]
+		var b := poly[(i+1)%poly.size()]
+		var mid := (a+b)*.5
+		var inward := (rect.get_center()-mid).normalized()
+		for offset in [2.0,4.0,6.0]:
+			var entry := mid+inward*float(offset)
+			if not _free(entry,poly,.8): continue
+			for edge in world.geography.roads_near(_v(entry),25.0):
+				if not bool(edge.driveable): continue
+				var nearest := Geometry3D.get_closest_point_to_segment(_v(entry),edge.a,edge.b)
+				var score := nearest.distance_to(_v(entry))
+				if world._market_named(edge,"clavel"): score -= 30.0
+				if score<best:
+					best = score
+					gps = entry
+			break
+	if gps.is_finite(): sites.append({"name":"El Pontón","p":_v(gps,.065),"id":PONTON_ID})
+	print("MyCity El Pontón: ",field_count," diamonds, ",court_count," courts; mapped buildings preserved.")
+
 func build() -> void:
 	var lawn := _mat("lawn",Color("#687d49"))
 	var paving := _mat("path",Color("#b6ad97"))
@@ -334,6 +503,9 @@ func build() -> void:
 	leaf_mat.roughness = 1.0
 	for item in areas:
 		var poly: PackedVector2Array = item.poly
+		if bool(item.get("ponton",false)):
+			_build_ponton(item)
+			continue
 		var hub := _hub(poly)
 		var neglected := bool(item.get("neglected",false))
 		var dump := bool(item.get("dump",false))
