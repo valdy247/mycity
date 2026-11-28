@@ -59,6 +59,7 @@ func setup(mission) -> void:
 	if not state.has("fatigue"): state.fatigue = 15.0
 	if not state.has("coffee_minutes"): state.coffee_minutes = 0.0
 	if not state.has("coffee_cups"): state.coffee_cups = 0
+	if not state.has("coffee_served"): state.coffee_served = false
 	if not state.has("alarm_minute"): state.alarm_minute = -1
 	if not state.has("supplies"): state.supplies = INITIAL.duplicate(true)
 	if business.adaptation_mode and not state.supplies.get("primary",{}).has("aceite"):
@@ -160,7 +161,7 @@ func _make_hud() -> void:
 	sleep_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	sleep_bar.add_theme_stylebox_override("background",bg)
 	var rest_fill := StyleBoxFlat.new()
-	rest_fill.bg_color = Color("#899acb")
+	rest_fill.bg_color = Color("#79c9ae")
 	rest_fill.set_corner_radius_all(6)
 	sleep_bar.add_theme_stylebox_override("fill",rest_fill)
 	sleep_label = Label.new()
@@ -181,8 +182,9 @@ func _update_hud() -> void:
 	var hunger := 100.0-float(state.fullness)
 	fullness_bar.value = hunger
 	clock_label.text = "Hambre %d%% · Día %d · %s" % [roundi(hunger),int(state.day),format_time(int(state.minutes))]
-	sleep_bar.value = float(state.fatigue)
-	sleep_label.text = "Sueño %d%%" % roundi(float(state.fatigue))
+	var energy := clampf(100.0-float(state.fatigue),0.0,100.0)
+	sleep_bar.value = energy
+	sleep_label.text = "Energía %d%%" % roundi(energy)
 	if float(state.coffee_minutes)>0.0: sleep_label.text += " · Café activo"
 
 static func format_time(minute: int) -> String:
@@ -216,12 +218,20 @@ func sleep_at_home() -> String:
 func brew_home_coffee() -> bool:
 	if int(state.coffee_cups)>0: return false
 	state.coffee_cups = 4
+	state.coffee_served = false
+	ledger.save_game()
+	return true
+
+func serve_home_coffee() -> bool:
+	if int(state.coffee_cups)<=0 or bool(state.coffee_served): return false
+	state.coffee_served = true
 	ledger.save_game()
 	return true
 
 func drink_home_coffee() -> bool:
-	if int(state.coffee_cups)<=0: return false
+	if int(state.coffee_cups)<=0 or not bool(state.coffee_served): return false
 	state.coffee_cups = int(state.coffee_cups)-1
+	state.coffee_served = false
 	state.coffee_minutes = minf(180.0,float(state.coffee_minutes)+90.0)
 	state.fatigue = maxf(0.0,float(state.fatigue)-5.0)
 	_update_hud()
