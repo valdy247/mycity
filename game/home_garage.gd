@@ -183,6 +183,8 @@ var waypoint_active := false
 var inside := false
 var previous_first := true
 var riding := false
+var market_buyer: Node3D
+var vehicle_wear_clock := 0.0
 var ride_kind := ""
 var ride_speed := 0.0
 var borrowed_body: CharacterBody3D
@@ -201,6 +203,8 @@ func setup(controller) -> void:
 	var life: Dictionary = business.ledger.life_data
 	if not life.has("garage"): life.garage = {}
 	state = life.garage
+	if not state.has("vehicle_condition"): state.vehicle_condition = {}
+	if not state.has("vehicle_energy"): state.vehicle_energy = {}
 	if not state.has("bathroom"): state.bathroom = {"door":PI*.5,"need":randf_range(12.0,25.0),"rate":randf_range(.28,.45),"hands_dirty":false,"flush":false}
 	if not state.has("rice_recipe"): state.rice_recipe = {"added":[],"remaining":0.0,"portions":0,"hand":"","lid":true,"stock":{"arroz":12,"sal":24,"aceite":24}}
 	# A restored game starts outside; return any kitchen utensil to its shelf.
@@ -389,6 +393,40 @@ func receive_paint_wheel() -> bool:
 	_refresh_preview()
 	return true
 
+func _vehicle_condition(kind: String) -> float:
+	return clampf(float(state.vehicle_condition.get(kind,100.0)),0.0,100.0)
+
+func _vehicle_energy(kind: String) -> float:
+	return clampf(float(state.vehicle_energy.get(kind,100.0)),0.0,100.0)
+
+func _vehicle_service_menu(kind: String) -> void:
+	if not inside or not _complete(kind): return
+	var condition := _vehicle_condition(kind)
+	var price := maxi(1,ceili(float(Kit.total(kind))*(100.0-condition)*.003))
+	var power := "Batería" if kind=="triciclo" else "Combustible"
+	business._open("Mantenimiento · "+String(Kit.KITS[kind].name),"Estado: %d%%" % roundi(condition)+("\n"+power+": %d%%" % roundi(_vehicle_energy(kind)) if kind!="bicicleta" else ""))
+	var away := owned.has(kind) and is_instance_valid(owned[kind]) and (owned[kind] as Node3D).global_position.distance_to(world.garage_home_site.road)>16.0
+	business._button("Reparar · %d CUP" % price,_service_vehicle.bind(kind,false),condition>=99.9 or away or _listed(kind) or business.ledger.cash<price)
+	if kind!="bicicleta":
+		var charge := _vehicle_charge_price(kind)
+		business._button(("Recargar batería" if kind=="triciclo" else "Repostar")+" · %d CUP" % charge,_service_vehicle.bind(kind,true),_vehicle_energy(kind)>=99.9 or away or _listed(kind) or business.ledger.cash<charge)
+	business._button("Volver",_project_menu)
+
+func _vehicle_charge_price(kind: String) -> int:
+	return maxi(1,ceili((100.0-_vehicle_energy(kind))*(.5 if kind=="triciclo" else 2.0)))
+
+func _service_vehicle(kind: String,energy: bool) -> void:
+	if not inside or not _complete(kind) or _listed(kind): return
+	if owned.has(kind) and is_instance_valid(owned[kind]) and (owned[kind] as Node3D).global_position.distance_to(world.garage_home_site.road)>16.0: return
+	if energy and (kind=="bicicleta" or _vehicle_energy(kind)>=99.9): return
+	if not energy and _vehicle_condition(kind)>=99.9: return
+	var price := _vehicle_charge_price(kind) if energy else maxi(1,ceili(float(Kit.total(kind))*(100.0-_vehicle_condition(kind))*.003))
+	if business.ledger.cash<price: return
+	if energy: state.vehicle_energy[kind] = 100.0
+	else: state.vehicle_condition[kind] = 100.0
+	business.ledger.spend(price)
+	_vehicle_service_menu(kind)
+
 func _upgrade_vehicle(kind: String) -> void:
 	if not _unlocked(kind) or not _complete(kind) or _listed(kind) or not inside: return
 	var upgrades: Dictionary = state.upgrades
@@ -401,7 +439,7 @@ func _upgrade_vehicle(kind: String) -> void:
 	_project_menu()
 
 func _sale_price(kind: String) -> int:
-	return roundi(float(Kit.total(kind))*(1.25+.15*float(state.upgrades.get(kind,0))))
+	return roundi(float(Kit.total(kind))*(1.25+.15*float(state.upgrades.get(kind,0)))*lerpf(.70,1.0,_vehicle_condition(kind)/100.0))
 
 func _list_vehicle(kind: String) -> void:
 	if not _unlocked(kind) or not _complete(kind) or riding or not state.listing.is_empty(): return
@@ -411,23 +449,111 @@ func _list_vehicle(kind: String) -> void:
 
 func _confirm_listing(kind: String) -> void:
 	if not _unlocked(kind) or not _complete(kind) or riding or not state.listing.is_empty(): return
-	state.listing = {"kind":kind,"price":_sale_price(kind),"remaining":25.0}
+	state.listing = {"kind":kind,"price":_sale_price(kind),"remaining":25.0,"phase":"waiting","attempt":0}
 	_save()
 	business.close()
-	business._notify("Vehículo publicado en Marketplace. Esperando comprador.")
+	business._notify("Vehículo publicado. Recibirás ofertas en el teléfono.")
 
 func _tick_listing(delta: float) -> void:
 	var listing: Dictionary = state.listing
 	if listing.is_empty(): return
-	listing.remaining = float(listing.remaining)-delta
-	if float(listing.remaining)>0.0: return
 	var kind := String(listing.kind)
-	if riding and ride_kind==kind: return
-	if not _complete(kind):
-		state.listing = {}
-		_save()
+	if not Kit.KITS.has(kind) or not _complete(kind):
+		_cancel_vehicle_listing()
 		return
-	var price := int(listing.price)
+	if not listing.has("phase"): listing.phase = "waiting"
+	if String(listing.phase)!="waiting": return
+	listing.remaining = maxf(0.0,float(listing.remaining)-delta)
+	if float(listing.remaining)>0.0: return
+	listing.attempt = int(listing.get("attempt",0))+1
+	var discount := maxi(0,12-business.ledger.reputation("Marketplace")/10-int(listing.attempt)*2)
+	listing.offer = maxi(1,roundi(float(listing.price)*(1.0-float(discount)/100.0)))
+	listing.phase = "offer"
+	business.ledger.add_message("Marketplace","Buenas, ¿todavía tienes "+String(Kit.KITS[kind].name)+"? Te ofrezco "+str(listing.offer)+" CUP. Responde en Marketplace.")
+	_save()
+	business._notify("Marketplace · Nueva oferta por tu vehículo")
+
+func _vehicle_listing_menu() -> void:
+	var listing: Dictionary = state.listing
+	if listing.is_empty():
+		open_phone_market()
+		return
+	var kind := String(listing.kind)
+	var phase := String(listing.get("phase","waiting"))
+	business._open("Marketplace · "+String(Kit.KITS[kind].name),"Precio anunciado: %d CUP" % int(listing.price))
+	match phase:
+		"waiting":
+			business._button("Esperando propuestas...",_vehicle_listing_menu,true)
+		"offer":
+			business._button("Aceptar oferta · %d CUP" % int(listing.offer),_accept_vehicle_offer.bind(false))
+			business._button("Contraoferta · %d CUP" % int(listing.price),_accept_vehicle_offer.bind(true))
+			business._button("Rechazar y esperar",_reject_vehicle_offer)
+		"agreed":
+			var near := _vehicle_handover_near(kind)
+			business._button("Encontrarse con comprador",_vehicle_handover,not near)
+			business._button("Marcar lugar de entrega",_vehicle_meeting_gps)
+	business._button("Cancelar publicación",_cancel_vehicle_listing)
+	business._button("Volver",open_phone_market)
+
+func _accept_vehicle_offer(counter: bool) -> void:
+	var listing: Dictionary = state.listing
+	if String(listing.get("phase",""))!="offer": return
+	if counter and int(listing.get("attempt",1))<2 and business.ledger.reputation("Marketplace")<65:
+		business.ledger.add_message("Marketplace","No me alcanza para ese precio, hermano. Suerte con la venta.")
+		_reject_vehicle_offer()
+		return
+	listing.agreed = int(listing.price) if counter else int(listing.offer)
+	listing.phase = "agreed"
+	business.ledger.add_message("Marketplace","Trato hecho. Nos vemos donde tienes el vehículo. Te pago al recibirlo.")
+	_save()
+	_vehicle_listing_menu()
+
+func _reject_vehicle_offer() -> void:
+	if String(state.listing.get("phase",""))!="offer": return
+	state.listing.phase = "waiting"
+	state.listing.remaining = 35.0
+	_save()
+	_vehicle_listing_menu()
+
+func _cancel_vehicle_listing() -> void:
+	state.listing = {}
+	if is_instance_valid(market_buyer): market_buyer.queue_free()
+	market_buyer = null
+	_save()
+	business._notify("Publicación cancelada. El vehículo sigue siendo tuyo.")
+	if business.modal_open(): business.close()
+
+func _vehicle_meeting_point(kind: String) -> Vector3:
+	var body: Node3D = owned.get(kind)
+	if is_instance_valid(body): return body.global_position
+	return world.garage_home_site.get("door",Vector3.ZERO)
+
+func _vehicle_meeting_gps() -> void:
+	if state.listing.is_empty(): return
+	_set_waypoint(_vehicle_meeting_point(String(state.listing.kind)),"Comprador · Marketplace")
+	_save()
+	business.close()
+
+func _vehicle_handover_near(kind: String) -> bool:
+	if riding or game.driving or game.taxi_riding or game.bus_riding or not _free_hands(): return false
+	var body: Node3D = owned.get(kind)
+	if is_instance_valid(body): return not inside and game.player.global_position.distance_to(body.global_position)<4.5
+	return inside and game.player.global_position.distance_to(ROOM+BENCH)<3.5
+
+func _vehicle_handover() -> void:
+	var listing: Dictionary = state.listing
+	if String(listing.get("phase",""))!="agreed" or not _vehicle_handover_near(String(listing.kind)): return
+	business._open("Comprador","Está bien, me quedo con el vehículo. Aquí tienes los %d CUP. ¿Cerramos el trato?" % int(listing.agreed))
+	business._button("Entregar vehículo y cobrar",_complete_vehicle_sale)
+	business._button("Todavía no",_vehicle_listing_menu)
+
+func _complete_vehicle_sale() -> void:
+	var listing: Dictionary = state.listing
+	if String(listing.get("phase",""))!="agreed": return
+	var kind := String(listing.kind)
+	if not _complete(kind) or not _vehicle_handover_near(kind): return
+	var price := int(listing.agreed)
+	if price<=0: return
 	if owned.has(kind):
 		var body: CharacterBody3D = owned[kind]
 		if is_instance_valid(body):
@@ -437,6 +563,8 @@ func _tick_listing(delta: float) -> void:
 	state.parked.erase(kind)
 	state.projects.erase(kind)
 	state.upgrades.erase(kind)
+	state.vehicle_condition.erase(kind)
+	state.vehicle_energy.erase(kind)
 	state.vehicle_sales[kind] = int(state.vehicle_sales.get(kind,0))+1
 	var next := mini(VEHICLE_ORDER.size()-1,VEHICLE_ORDER.find(kind)+1)
 	state.vehicle_level = maxi(int(state.vehicle_level),next)
@@ -444,10 +572,12 @@ func _tick_listing(delta: float) -> void:
 	state.listing = {}
 	business.ledger.cash += price
 	business.ledger.revenue += price
+	business.ledger.change_reputation("Marketplace",4)
 	business.ledger.add_message("Marketplace","Vendiste "+String(Kit.KITS[kind].name)+" por "+str(price)+" CUP. "+_progression_hint())
 	_refresh_preview()
 	_save()
-	business._notify("Vehículo vendido · +"+str(price)+" CUP")
+	business.close()
+	business._notify("Vehículo entregado · +"+str(price)+" CUP")
 
 func _save() -> void:
 	business.ledger.save_game()
@@ -3420,7 +3550,9 @@ func _project_menu() -> void:
 		var level := int(state.upgrades.get(kind,0))
 		var price := roundi(float(Kit.total(kind))*.12)
 		business._button("Mejorar rendimiento · %d/2 · %d CUP" % [level,price],_upgrade_vehicle.bind(kind),level>=2 or not inside or _listed(kind) or business.ledger.cash<price)
-		business._button("Publicado · esperando comprador" if _listed(kind) else "Vender en Facebook · %d CUP" % _sale_price(kind),_list_vehicle.bind(kind),not state.listing.is_empty())
+		if _listed(kind): business._button("Ver ofertas y entrega",_vehicle_listing_menu)
+		else: business._button("Vender en Facebook · %d CUP" % _sale_price(kind),_list_vehicle.bind(kind),not state.listing.is_empty())
+		business._button("Estado y mantenimiento",_vehicle_service_menu.bind(kind))
 		business._button("Otros proyectos",_garage_menu)
 		business._button("Cerrar",business.close)
 		return
@@ -3525,7 +3657,8 @@ func _show_map(point: Vector3,label_value: String) -> void:
 	business._button("Cerrar",business.close)
 
 func open_phone_market() -> void:
-	business._open("Facebook Marketplace (juego)",_progression_hint()+"\nCompra repuestos. Instálalos mirando el vehículo en tu garaje.")
+	business._open("Facebook Marketplace (juego)",_progression_hint()+"\nCompra repuestos o negocia la venta de tu vehículo.")
+	if not state.listing.is_empty(): business._button("Mi publicación · Ver ofertas",_vehicle_listing_menu)
 	for kind in Kit.KITS:
 		business._button(String(Kit.KITS[kind].name)+(" · Bloqueado" if not _unlocked(String(kind)) else ""),_phone_parts.bind(String(kind)),not _unlocked(String(kind)))
 	if game.yordi_mission!=null and game.yordi_mission.can_list():
@@ -3889,7 +4022,14 @@ func drive(delta: float,movement: Vector2) -> void:
 	var spec: Dictionary = Kit.KITS[ride_kind]
 	var speed := float(spec.speed)*(1.0 if riding_borrowed() else 1.0+.08*float(state.upgrades.get(ride_kind,0)))
 	var boost: bool = game.control_pressed(KEY_SHIFT) and movement.y<0.0 and game.gameplay_input()
-	var target := -movement.y*(minf(45.0,speed*3.0) if boost else (speed if movement.y<=0 else speed*.28))
+	if not riding_borrowed():
+		speed *= lerpf(.55,1.0,_vehicle_condition(ride_kind)/100.0)
+		if ride_kind=="bicicleta":
+			speed *= lerpf(1.0,.70,smoothstep(70.0,100.0,float(business.life.state.fatigue)))
+		elif _vehicle_energy(ride_kind)<=0.0:
+			speed = minf(speed,2.0) # Limp-home mode prevents stranding.
+			boost = false
+	var target := -movement.y*(minf(45.0,speed*1.35) if boost else (speed if movement.y<=0 else speed*.28))
 	var brake: bool = game.control_pressed(KEY_SPACE) or ride_exit_requested
 	ride_speed = move_toward(ride_speed,0.0 if brake else target,delta*(16.0 if brake else (15.0 if boost else 4.0)))
 	if ride_exit_requested and absf(ride_speed)<.3:
@@ -3908,7 +4048,19 @@ func drive(delta: float,movement: Vector2) -> void:
 		ride_speed = 0.0
 	else: body.global_position.y = float(hit.position.y)+.035
 	if game.incidents!=null: game.incidents.vehicle_motion(body,old,impact_speed,float(spec.width),float(spec.length))
-	if body.get_slide_collision_count()>0: ride_speed *= .35
+	if body.get_slide_collision_count()>0:
+		ride_speed *= .35
+		if not riding_borrowed() and absf(impact_speed)>5.0:
+			state.vehicle_condition[ride_kind] = maxf(0.0,_vehicle_condition(ride_kind)-minf(.8,delta*5.0))
+	if not riding_borrowed():
+		var distance := body.global_position.distance_to(old.origin)
+		if distance>.001:
+			state.vehicle_condition[ride_kind] = maxf(0.0,_vehicle_condition(ride_kind)-distance*.002)
+			if ride_kind=="bicicleta":
+				business.life.state.fatigue = minf(100.0,float(business.life.state.fatigue)+distance*.004)
+				business.life.state.fullness = maxf(0.0,float(business.life.state.fullness)-distance*.002)
+			else:
+				state.vehicle_energy[ride_kind] = maxf(0.0,_vehicle_energy(ride_kind)-distance*.012)
 	game.player.global_position = body.global_position+Vector3.UP*.8
 	last_save += delta
 	if last_save>=10.0:
