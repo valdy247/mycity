@@ -980,6 +980,7 @@ func _finish() -> void:
 		state.taxi_payment_pending = true
 		state.taxi_money_with_albertico = true
 		state.investment_complete = true
+		ledger.change_reputation("Albertico",8)
 		state.investment_stage = "done"
 		ledger.add_message("Albertico","Ya tenemos mercancía. Te aviso cuando quede poca.")
 		_save()
