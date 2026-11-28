@@ -21,6 +21,7 @@ const BUILD_BUDGET_USEC := 4000
 var build_wait := .20
 var elapsed := 0.0
 var population_clock := 0.0
+var outdoor_population_anchor := Vector3.INF
 var serial := 200
 var shape := CapsuleShape3D.new()
 var profiles: Dictionary = {}
@@ -551,6 +552,13 @@ func _populate() -> void:
 	var camera := get_viewport().get_camera_3d()
 	if camera==null: return
 	var at := camera.global_position
+	# The rental room lives 110 metres above the city. Keep its nearby street
+	# residents active instead of deleting and recreating them on each exit.
+	if at.y>70.0:
+		if outdoor_population_anchor.is_finite(): at = outdoor_population_anchor
+		elif not world.garage_home_site.is_empty(): at = Vector3(world.garage_home_site.door)
+		else: return
+	else: outdoor_population_anchor = at
 	for i in range(walkers.size()-1,-1,-1):
 		var person: Person = walkers[i].node
 		if person.has_meta("incident_role"): continue
@@ -562,7 +570,7 @@ func _populate() -> void:
 	candidates.shuffle()
 	var added := 0
 	for id in candidates:
-		if walkers.size()>=MAX_WALKERS or added>=6: break
+		if walkers.size()>=MAX_WALKERS or added>=2: break
 		if graph.get_point_connections(int(id)).is_empty(): continue
 		# Roadway nodes are for fallback travel, not ordinary population spawns.
 		if graph.get_point_weight_scale(int(id))>=ROAD_COST: continue
@@ -665,7 +673,7 @@ func tick(delta: float) -> void:
 	var dt := elapsed
 	elapsed = 0.0
 	population_clock += dt
-	if population_clock>=1.5:
+	if population_clock>=.5:
 		population_clock = 0.0
 		_populate()
 	var camera := get_viewport().get_camera_3d()
